@@ -92,7 +92,7 @@ test.describe('compliance expiry registers read every row', () => {
     for (const what of ['"Contracts"', '"Renewals"', '"Expiry alerts"']) expect(page).toContain(`<ListLoadError what=${what}`);
     expect(page).toContain("'Visa and iqama records'");
     // The dashboard preview says it is a preview of a longer list.
-    expect(page).toContain("pageWindowText(alerts.length, alertsTotal, 'expirations')");
+    expect(page).toContain("t('Showing {shown} of {total} expirations'");
     // The passport KPIs drill down to a tab that renders the passport register, not a blank page.
     expect(page).toContain("(tab === 'visa' || tab === 'passports') && <VisaPassportTab");
   });
