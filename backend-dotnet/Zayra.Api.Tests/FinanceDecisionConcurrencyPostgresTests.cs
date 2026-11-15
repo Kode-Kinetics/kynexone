@@ -171,7 +171,7 @@ public class FinanceDecisionConcurrencyPostgresTests
     // ══════════════════════ Advances ══════════════════════
 
     [Fact]
-    public async Task TwoSimultaneousAdvanceApprovals_ExactlyOneWins_AndCashLeavesOnce()
+    public async Task TwoSimultaneousAdvanceApprovals_ExactlyOneWins_AndNothingIsPaidUntilPayout()
     {
         var tenantId = await SeedTenantAsync();
 
@@ -190,16 +190,45 @@ public class FinanceDecisionConcurrencyPostgresTests
 
             await using var db = _fx.CreateDb();
             var adv = await db.SalaryAdvances.AsNoTracking().SingleAsync(x => x.Id == advanceId);
-            adv.Status.Should().Be("Active", $"round {round}");
+            adv.Status.Should().Be("Approved", $"round {round}");
             adv.ApprovedAmount.Should().Be(3_000m);
-            adv.OutstandingBalance.Should().Be(3_000m);
-            (adv.ApprovedAmount - adv.TotalRepaid - adv.OutstandingBalance).Should().Be(0m,
-                $"round {round}: the advance reconciliation invariant");
+            adv.OutstandingBalance.Should().Be(0m, $"round {round}: nothing is owed until the payout");
 
             (await db.AdvanceInstallments.AsNoTracking().CountAsync(x => x.AdvanceId == advanceId))
                 .Should().Be(3, $"round {round}: one schedule, not two");
             (await db.AdvanceApprovals.AsNoTracking().CountAsync(x => x.AdvanceId == advanceId))
                 .Should().Be(1, $"round {round}: one approval record, not two");
+            (await db.FinanceGlEntries.AsNoTracking()
+                .CountAsync(x => x.SourceEntityId == advanceId && x.EventType == "Disbursement"))
+                .Should().Be(0, $"round {round}: approval moves no cash");
+        }
+    }
+
+    [Fact]
+    public async Task TwoSimultaneousAdvancePayouts_WithDifferentReferences_ExactlyOneWins_AndCashLeavesOnce()
+    {
+        var tenantId = await SeedTenantAsync();
+
+        for (var round = 0; round < Rounds; round++)
+        {
+            var advanceId = await SeedPendingAdvanceAsync(tenantId);
+            (await ApproveAdvanceAsync(tenantId, advanceId)).Should().BeOfType<OkObjectResult>();
+
+            var results = await RaceAsync(
+                () => PayAdvanceAsync(tenantId, advanceId, $"BANK-A-{round}"),
+                () => PayAdvanceAsync(tenantId, advanceId, $"BANK-B-{round}"));
+
+            results.Should().NotContainNulls($"round {round}: no contender may throw a 500");
+            results.OfType<OkObjectResult>().Should().HaveCount(1, $"round {round}: exactly one payout wins");
+            results.OfType<ConflictObjectResult>().Should().HaveCount(1,
+                $"round {round}: the loser sees the advance already paid under another reference");
+
+            await using var db = _fx.CreateDb();
+            var adv = await db.SalaryAdvances.AsNoTracking().SingleAsync(x => x.Id == advanceId);
+            adv.Status.Should().Be("Active", $"round {round}");
+            adv.OutstandingBalance.Should().Be(3_000m);
+            (adv.ApprovedAmount - adv.TotalRepaid - adv.OutstandingBalance).Should().Be(0m,
+                $"round {round}: the advance reconciliation invariant");
             (await db.FinanceGlEntries.AsNoTracking()
                 .CountAsync(x => x.SourceEntityId == advanceId && x.EventType == "Disbursement"))
                 .Should().Be(1, $"round {round}: cash leaves once");
@@ -228,19 +257,17 @@ public class FinanceDecisionConcurrencyPostgresTests
             var disbursements = await db.FinanceGlEntries.AsNoTracking()
                 .CountAsync(x => x.SourceEntityId == advanceId && x.EventType == "Disbursement");
 
-            if (adv.Status == "Active")
+            disbursements.Should().Be(0, $"round {round}: neither an approval nor a rejection moves cash");
+            if (adv.Status == "Approved")
             {
-                disbursements.Should().Be(1, $"round {round}");
                 (await db.AdvanceInstallments.AsNoTracking().CountAsync(x => x.AdvanceId == advanceId))
                     .Should().Be(3, $"round {round}");
             }
             else
             {
                 adv.Status.Should().Be("Rejected", $"round {round}");
-                disbursements.Should().Be(0,
-                    $"round {round}: a Rejected header over a live disbursement is the exact defect");
                 (await db.AdvanceInstallments.AsNoTracking().CountAsync(x => x.AdvanceId == advanceId))
-                    .Should().Be(0, $"round {round}");
+                    .Should().Be(0, $"round {round}: a Rejected header over a live schedule is the exact defect");
             }
         }
     }
@@ -427,10 +454,15 @@ public class FinanceDecisionConcurrencyPostgresTests
     private async Task<Guid> SeedPendingAdvanceAsync(Guid tenantId)
     {
         await using var db = _fx.CreateDb();
+        // The advance pays a serving employee: approval and payout both check employment.
+        var employee = new Employee { TenantId = tenantId, EmployeeCode = $"AR-{Guid.NewGuid():N}"[..16], FullName = "Racer", Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-2) };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
         var adv = new SalaryAdvance
         {
             TenantId = tenantId,
-            EmployeeId = Guid.NewGuid(),
+            EmployeeId = employee.PublicId,
+            EmployeeIntId = employee.Id,
             EmployeeName = "Racer",
             AdvanceNumber = $"AD-{Guid.NewGuid():N}"[..16],
             RequestedAmount = 3_000m,
@@ -503,6 +535,14 @@ public class FinanceDecisionConcurrencyPostgresTests
             advanceId,
             new AdvanceApproveRequest(3_000m, 3, DateOnly.FromDateTime(DateTime.UtcNow.AddMonths(1))),
             CancellationToken.None);
+    }
+
+    private async Task<IActionResult> PayAdvanceAsync(Guid tenantId, Guid advanceId, string reference)
+    {
+        await using var db = _fx.CreateDb();
+        await db.Database.OpenConnectionAsync();
+        return await Advances(db, tenantId).Payout(
+            advanceId, new AdvancePayoutRequest(DateOnly.FromDateTime(DateTime.UtcNow), reference, null), CancellationToken.None);
     }
 
     private async Task<IActionResult> RejectAdvanceAsync(Guid tenantId, Guid advanceId)

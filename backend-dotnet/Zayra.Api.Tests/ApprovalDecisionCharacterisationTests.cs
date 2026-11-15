@@ -249,9 +249,11 @@ public class ApprovalDecisionCharacterisationTests
     // ─────────────────────────────────────────────────────────────────────────────
 
     [Theory]
+    [InlineData("Approved")]
     [InlineData("Active")]
     [InlineData("Rejected")]
     [InlineData("Settled")]
+    [InlineData("Cancelled")]
     public async Task Advances_Approve_OnANonPendingAdvance_IsAPlainStringBadRequest_NotAConflict(string status)
     {
         // Pinned inconsistency: Approve refuses with 400 + bare string, while Reject (below)
@@ -269,9 +271,11 @@ public class ApprovalDecisionCharacterisationTests
     }
 
     [Theory]
+    [InlineData("Approved")]     // approved but not paid: withdrawn through Cancel, not Reject
     [InlineData("Active")]
     [InlineData("Settled")]
     [InlineData("Rejected")]
+    [InlineData("Cancelled")]
     public async Task Advances_Reject_OnANonPendingAdvance_IsConflictWithErrorCode(string status)
     {
         // This is the guard the correctness batch added. Before it, rejecting an Active advance
@@ -291,24 +295,28 @@ public class ApprovalDecisionCharacterisationTests
     }
 
     [Fact]
-    public async Task Advances_Approve_ActivatesGeneratesInstallmentsPostsGlAndWritesApprovalRowAndAudit()
+    public async Task Advances_Approve_AgreesTermsGeneratesInstallmentsAndWritesApprovalRowAndAudit_ButPostsNoJournal()
     {
+        // Approval moved to Pending -> Approved: it agrees the amount and the schedule; the disbursement journal and the
+        // receivable balance wait for Finance's payout (AdvancesController.Payout).
         await using var db = CreateDb();
         var f = await SeedAdvanceAsync(db, status: "Pending");
+        var start = DateOnly.FromDateTime(DateTime.UtcNow).AddMonths(1);
 
         var result = await Advances(db, f.TenantId, Guid.NewGuid())
-            .Approve(f.AdvanceId, new AdvanceApproveRequest(2_400m, 3, new DateOnly(2026, 12, 1)), CancellationToken.None);
+            .Approve(f.AdvanceId, new AdvanceApproveRequest(2_400m, 3, start), CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
         var adv = await db.SalaryAdvances.SingleAsync();
-        Assert.Equal("Active", adv.Status);
+        Assert.Equal("Approved", adv.Status);
         Assert.Equal(2_400m, adv.ApprovedAmount);
         Assert.Equal(3, adv.Installments);
         Assert.Equal(800m, adv.InstallmentAmount);
-        Assert.Equal(2_400m, adv.OutstandingBalance);
+        Assert.Equal(0m, adv.OutstandingBalance);
+        Assert.Equal(start, adv.RepaymentStartDate);
 
         Assert.Equal(3, await db.AdvanceInstallments.CountAsync());
-        Assert.NotEmpty(await db.FinanceGlEntries.Where(x => x.SourceEntityId == f.AdvanceId).ToListAsync());
+        Assert.Empty(await db.FinanceGlEntries.Where(x => x.SourceEntityId == f.AdvanceId).ToListAsync());
 
         var approval = Assert.Single(await db.AdvanceApprovals.ToListAsync());
         Assert.Equal("Approved", approval.Status);
@@ -362,7 +370,7 @@ public class ApprovalDecisionCharacterisationTests
             .Approve(f.AdvanceId, new AdvanceApproveRequest(500m, 1, null), CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(approve);
-        Assert.Equal("Active", (await db.SalaryAdvances.SingleAsync()).Status);
+        Assert.Equal("Approved", (await db.SalaryAdvances.SingleAsync()).Status);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────

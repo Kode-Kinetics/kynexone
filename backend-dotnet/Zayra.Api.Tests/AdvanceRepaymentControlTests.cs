@@ -445,8 +445,10 @@ public class AdvanceRepaymentControlTests
     }
 
     [Fact]
-    public async Task Approve_ByAnIndependentApprover_WithinPolicy_Disburses()
+    public async Task Approve_ByAnIndependentApprover_WithinPolicy_AgreesTheTerms_AndPaysNothing()
     {
+        // Approval no longer disburses: the advance waits for Finance to record the payout (AdvancePayoutLifecycleTests),
+        // which is where the balance is set and the disbursement journal is posted.
         await using var db = CreateDb();
         var f = await SeedAsync(db);
         var advanceId = await SeedPendingAdvanceAsync(db, f, requested: 3_000m);
@@ -456,10 +458,11 @@ public class AdvanceRepaymentControlTests
 
         Assert.IsType<OkObjectResult>(result);
         var adv = await db.SalaryAdvances.SingleAsync(x => x.Id == advanceId);
-        Assert.Equal("Active", adv.Status);
-        Assert.Equal(2_400m, adv.OutstandingBalance);
+        Assert.Equal("Approved", adv.Status);
+        Assert.Equal(2_400m, adv.ApprovedAmount);
+        Assert.Equal(0m, adv.OutstandingBalance);
         Assert.Equal(3, await db.AdvanceInstallments.CountAsync(x => x.AdvanceId == advanceId));
-        Assert.Single(await db.FinanceGlEntries.Where(x => x.SourceEntityId == advanceId && x.EventType == "Disbursement").ToListAsync());
+        Assert.Empty(await db.FinanceGlEntries.Where(x => x.SourceEntityId == advanceId).ToListAsync());
     }
 
     // ── Fixture ───────────────────────────────────────────────────────────────────────────────────

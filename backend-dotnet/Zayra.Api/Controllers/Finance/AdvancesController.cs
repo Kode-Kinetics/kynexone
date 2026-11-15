@@ -20,7 +20,7 @@ namespace Zayra.Api.Controllers.Finance;
 [ApiController]
 [Route("api/finance/advances")]
 [Zayra.Api.Infrastructure.Finance.GlCostCentreRuleFilter]
-public class AdvancesController : ControllerBase
+public partial class AdvancesController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly IDataScopeService _scopeService;
@@ -256,17 +256,21 @@ public class AdvancesController : ControllerBase
         return Ok(SalaryAdvanceDto.Project(adv));
     }
 
+    /// <summary>
+    /// Pending → Approved: the checker agrees the amount, the instalments and the schedule. No money moves and no journal is
+    /// posted here; the advance waits for Finance to record the payout (<see cref="Payout"/>), as an approved loan waits for its
+    /// payment batch. Payroll collects only Active advances, so an Approved one is never deducted.
+    /// </summary>
     [HttpPatch("{id:guid}/approve")]
     [Authorize(Roles = "Admin,HR Manager,Finance,Manager")]
     public Task<IActionResult> Approve(Guid id, [FromBody] AdvanceApproveRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
         var uid = GetUserId();
-        // Cash is already out the door on this path: the disbursement journal and the whole
-        // installment schedule are written here. The Pending check below is a read-then-write guard
-        // and closes only a sequential replay — two simultaneous approvals both read Pending, both
-        // pass, and both disburse. Serialized on the advance for the same reasons, and by the same
-        // mechanism, as LoansController.DecideApproval.
+        // The whole installment schedule is written here. The Pending check below is a read-then-write
+        // guard and closes only a sequential replay: two simultaneous approvals both read Pending, both
+        // pass, and both write a schedule. Serialized on the advance for the same reasons, and by the
+        // same mechanism, as LoansController.DecideApproval.
         return FinanceDecisionSerializer.SerializeAsync<IActionResult>(
             _db, FinanceDecisionSerializer.ScopeAdvance, tid, id, async () =>
         {
@@ -333,14 +337,17 @@ public class AdvancesController : ControllerBase
         }
 
         var oldStatus = adv.Status;
-        adv.Status = "Active"; adv.ApprovedAmount = req.ApprovedAmount;
+        adv.Status = AdvanceStatuses.Approved; adv.ApprovedAmount = req.ApprovedAmount;
         // Whole cents per installment; GenerateAdvanceInstallments puts the remainder in the last one so the
         // schedule sums exactly to the principal.
         adv.InstallmentAmount = req.Installments > 0
             ? decimal.Round(req.ApprovedAmount / req.Installments, 2, MidpointRounding.ToZero) : req.ApprovedAmount;
-        adv.Installments = req.Installments; adv.OutstandingBalance = req.ApprovedAmount;
+        // Nothing is owed until the payout: the receivable, and the balance payroll recovers, start there.
+        adv.Installments = req.Installments; adv.OutstandingBalance = 0m;
+        // The agreed first repayment date, or null when the approver left it to the payout (one month after payment).
         adv.RepaymentStartDate = req.RepaymentStartDate; adv.UpdatedAtUtc = DateTime.UtcNow; adv.UpdatedBy = uid;
 
+        // A provisional schedule when no date was agreed; Payout re-dates it from the paid date.
         GenerateAdvanceInstallments(tid, adv, req.RepaymentStartDate);
 
         var approval = new AdvanceApproval
@@ -351,15 +358,10 @@ public class AdvancesController : ControllerBase
         };
         _db.AdvanceApprovals.Add(approval);
 
-        // POD-B1b — post-once so a repeated approve can never disburse (and credit cash) twice.
-        if (!await DisbursementAlreadyPostedAsync(tid, id, ct))
-            await PostGlEntry(tid, uid, await ResolveAdvanceCompanyAsync(tid, adv, ct), adv.Id, adv.AdvanceNumber,
-                "Advance", "Disbursement", "ADVANCE_RECEIVABLE", "CASH_BANK", req.ApprovedAmount, null, ct);
-
         await _db.SaveChangesAsync(ct);
         await WriteAdvanceAudit(tid, uid, id, "AdvanceApproved",
             JsonSerializer.Serialize(new { Status = oldStatus }),
-            JsonSerializer.Serialize(new { Status = "Active", ApprovedAmount = req.ApprovedAmount }), ct);
+            JsonSerializer.Serialize(new { Status = adv.Status, ApprovedAmount = req.ApprovedAmount, adv.Installments, adv.RepaymentStartDate }), ct);
         return Ok(SalaryAdvanceDto.Project(adv));
         }, ct);
     }
@@ -415,6 +417,122 @@ public class AdvancesController : ControllerBase
     }
 
     /// <summary>
+    /// Approved → Active: Finance records that the approved advance was paid, with the bank or cash reference and the paid date,
+    /// and the disbursement journal posts Dr Employee Salary Advances (ADVANCE_RECEIVABLE, 1410) / Cr Cash/Bank (CASH_BANK, 1000)
+    /// for the approved amount, dated and periodised on the paid date, in the advance's company and currency, once (the same
+    /// post-once probe as before). This mirrors the loan payment outcome (LoansController.RecordPaymentLineOutcome): the same
+    /// Admin/Finance gate with the role re-checked in the body, the same closed-period refusal, the same reference evidence.
+    /// <para>Controls: the advance lock is held for the whole unit; only an Approved advance can be paid; the payer is never the
+    /// person who approved it, nor the employee it pays; the employee must still be serving; a repeat with the same reference
+    /// returns the paid advance and posts nothing, a different reference is refused.</para>
+    /// <para>The first repayment date: the agreed date when one was agreed and it is not before the payment, otherwise one month
+    /// after the paid date. The date used is stored and the schedule is re-dated from it, so payroll starts collecting exactly
+    /// when the schedule says (audit P2-1: the old flow stored null and built the schedule from approval day plus a month, so
+    /// payroll collected a month early and the instalment stamps drifted).</para>
+    /// </summary>
+    [HttpPost("{id:guid}/payout")]
+    [Authorize(Roles = "Admin,Finance")]
+    public Task<IActionResult> Payout(Guid id, [FromBody] AdvancePayoutRequest req, CancellationToken ct)
+    {
+        var tid = GetTenantId();
+        var uid = GetUserId();
+        return FinanceDecisionSerializer.SerializeAsync<IActionResult>(
+            _db, FinanceDecisionSerializer.ScopeAdvance, tid, id, async () =>
+        {
+        // The role gate resolves to loans.write, which HR roles also hold: paying is the Finance tier only.
+        if (!IsFinanceActor()) return Forbid();
+        if (uid == null) return Unauthorized();
+        var reference = req.Reference?.Trim();
+        if (string.IsNullOrEmpty(reference) || reference.Length > MaxPaymentReferenceLength)
+            return BadRequest(Refusal("advance_payout_reference_required",
+                $"A payment reference of up to {MaxPaymentReferenceLength} characters is required.",
+                $"مرجع الدفع مطلوب، بحد أقصى {MaxPaymentReferenceLength} حرفًا."));
+        if (req.Notes is { Length: > 1000 })
+            return BadRequest(Refusal("advance_payout_notes_too_long",
+                "Payout notes can be at most 1000 characters.", "يجب ألا تتجاوز ملاحظات الصرف 1000 حرف."));
+
+        var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+        if (adv == null) return NotFound();
+        if (!await CanAccessAdvanceAsync(adv, ct)) return Forbid();
+
+        // Idempotent replay: the same reference returns the paid advance and posts nothing. A legacy Active advance (paid by the
+        // old approve-and-disburse flow) has no reference, so any payout of it is refused.
+        if (adv.Status is AdvanceStatuses.Active or AdvanceStatuses.Closed or AdvanceStatuses.Settled)
+            return adv.PaymentReference is { } paidReference && string.Equals(paidReference, reference, StringComparison.Ordinal)
+                ? Ok(SalaryAdvanceDto.Project(adv))
+                : Conflict(Refusal("advance_already_paid",
+                    $"Advance {adv.AdvanceNumber} has already been paid out.",
+                    $"تم صرف السلفة {adv.AdvanceNumber} بالفعل."));
+        if (adv.Status != AdvanceStatuses.Approved)
+            return Conflict(Refusal("invalid_advance_state",
+                $"Only an approved advance can be paid out (current: {adv.Status}).",
+                $"لا يمكن صرف إلا سلفة معتمدة (الحالة الحالية: {adv.Status})."));
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var paidDate = req.PaidDate ?? today;
+        if (paidDate == default || paidDate > today || paidDate < DateOnly.FromDateTime(adv.CreatedAtUtc))
+            return BadRequest(Refusal("advance_payout_date_invalid",
+                "The paid date cannot be in the future or before the advance was requested.",
+                "لا يمكن أن يكون تاريخ الصرف في المستقبل أو قبل تاريخ طلب السلفة."));
+
+        // Maker-checker: whoever approved the advance does not also release the cash.
+        var approvers = await _db.AdvanceApprovals.AsNoTracking()
+            .Where(x => x.TenantId == tid && x.AdvanceId == id && x.Status == "Approved" && x.ApprovedBy != null)
+            .Select(x => x.ApprovedBy!.Value).ToListAsync(ct);
+        if (approvers.Contains(uid.Value))
+            return BadRequest(Refusal("advance_payer_is_approver",
+                "Maker-checker control: the person who approved this advance cannot also record its payout.",
+                "ضابط الفصل بين المهام: لا يمكن لمن اعتمد السلفة أن يسجل صرفها أيضًا."));
+        // Nor does the employee it pays record paying themselves.
+        if (await IsAdvanceEmployeeAsync(adv, uid.Value, ct)
+            || (adv.EmployeeIntId is int subjectId && await SubjectDecisionBar.CallerIsSubjectAsync(_db, tid, uid, subjectId, ct)))
+            return BadRequest(Refusal("advance_payer_is_subject",
+                "Segregation of duties: you cannot record the payout of a salary advance paid to you.",
+                "الفصل بين المهام: لا يمكنك تسجيل صرف سلفة راتب مدفوعة لك."));
+
+        var companyId = await ResolveAdvanceCompanyAsync(tid, adv, ct);
+        if (await PeriodCloseGuard.IsClosedAsync(_db, tid, companyId, paidDate.ToString("yyyy-MM"), ct))
+            return UnprocessableEntity(Refusal("advance_payout_period_closed",
+                $"The accounting period {paidDate:yyyy-MM} is closed. Reopen it or use a paid date in an open period.",
+                $"الفترة المحاسبية {paidDate:yyyy-MM} مغلقة. أعد فتحها أو استخدم تاريخ صرف في فترة مفتوحة."));
+        // One bank reference evidences one payout in a company, as for loan payments.
+        if (await _db.SalaryAdvances.AnyAsync(x => x.TenantId == tid && x.Id != id && x.CompanyId == adv.CompanyId
+                && x.PaymentReference == reference, ct))
+            return Conflict(Refusal("advance_payout_reference_used",
+                "This payment reference is already recorded against another advance.",
+                "مرجع الدفع هذا مسجل بالفعل لسلفة أخرى."));
+        // Defence in depth: an Approved advance never has a journal; if one exists, nothing is posted twice.
+        if (await DisbursementAlreadyPostedAsync(tid, id, ct))
+            return Conflict(Refusal("advance_already_paid",
+                $"Advance {adv.AdvanceNumber} already has a disbursement journal.",
+                $"يوجد قيد صرف للسلفة {adv.AdvanceNumber} بالفعل."));
+
+        var agreedStart = adv.RepaymentStartDate;
+        var start = agreedStart is { } agreed && agreed >= paidDate ? agreed : paidDate.AddMonths(1);
+        adv.Status = AdvanceStatuses.Active;
+        adv.OutstandingBalance = adv.ApprovedAmount;
+        adv.RepaymentStartDate = start;
+        adv.PaidAtUtc = DateTime.UtcNow; adv.PaymentReference = reference; adv.PaidByUserId = uid;
+        adv.UpdatedAtUtc = DateTime.UtcNow; adv.UpdatedBy = uid;
+        var schedule = await _db.AdvanceInstallments
+            .Where(x => x.TenantId == tid && x.AdvanceId == id).OrderBy(x => x.InstallmentNumber).ToListAsync(ct);
+        foreach (var row in schedule) row.DueDate = start.AddMonths(row.InstallmentNumber - 1);
+
+        await PostGlEntry(tid, uid, companyId, adv.Id, adv.AdvanceNumber,
+            "Advance", "Disbursement", "ADVANCE_RECEIVABLE", "CASH_BANK", adv.ApprovedAmount, null, paidDate, ct);
+        await _db.SaveChangesAsync(ct);
+        await WriteAdvanceAudit(tid, uid, id, "AdvancePaidOut",
+            JsonSerializer.Serialize(new { Status = AdvanceStatuses.Approved, RepaymentStartDate = agreedStart }),
+            JsonSerializer.Serialize(new
+            {
+                adv.Status, adv.ApprovedAmount, PaidDate = paidDate, adv.PaymentReference, req.Notes,
+                AgreedRepaymentStartDate = agreedStart, EffectiveRepaymentStartDate = start,
+            }), ct);
+        return Ok(SalaryAdvanceDto.Project(adv));
+        }, ct);
+    }
+
+    /// <summary>
     /// Refused, exactly as <c>LoansController.MarkInstallmentPaid</c> refuses it. This route let an operator write
     /// any amount (negative included) straight onto an installment, retire the balance and post a cash receipt,
     /// with no payment reference, no bounds, no data-scope check and no bar on the borrower recording their own
@@ -456,20 +574,28 @@ public class AdvancesController : ControllerBase
         {
             GeneratedAtUtc = DateTime.UtcNow,
             TotalAdvances = advances.Count,
-            ActiveAdvances = advances.Count(x => x.Status == "Active"),
+            ActiveAdvances = advances.Count(x => x.Status == AdvanceStatuses.Active),
             // Payroll closes a fully deducted advance as "Closed"; a manual settlement used "Settled". Both are settled.
-            SettledAdvances = advances.Count(x => x.Status is "Settled" or "Closed"),
-            PendingAdvances = advances.Count(x => x.Status == "Pending"),
-            TotalDisbursed = advances.Sum(x => x.ApprovedAmount),
+            SettledAdvances = advances.Count(x => x.Status is AdvanceStatuses.Settled or AdvanceStatuses.Closed),
+            PendingAdvances = advances.Count(x => x.Status == AdvanceStatuses.Pending),
+            // Approved and waiting for Finance to pay: agreed, not disbursed.
+            ApprovedAwaitingPayout = advances.Count(x => x.Status == AdvanceStatuses.Approved),
+            CancelledAdvances = advances.Count(x => x.Status == AdvanceStatuses.Cancelled),
+            // Only money that was paid out: an approved advance awaiting payout has disbursed nothing.
+            TotalDisbursed = advances.Where(x => AdvanceStatuses.IsPaid(x.Status)).Sum(x => x.ApprovedAmount),
             TotalOutstanding = advances.Sum(x => x.OutstandingBalance),
             TotalRepaid = advances.Sum(x => x.TotalRepaid),
             GlEntriesCount = glEntries.Count,
-            Reconciliation = advances.Select(a => new
+            Reconciliation = advances.Select(a =>
             {
-                a.AdvanceNumber, a.EmployeeName, a.Status, a.ApprovedAmount,
-                a.TotalRepaid, a.OutstandingBalance,
-                BalanceCheck = Math.Round(a.ApprovedAmount - a.TotalRepaid - a.OutstandingBalance, 2),
-                IsReconciled = Math.Abs(a.ApprovedAmount - a.TotalRepaid - a.OutstandingBalance) < 0.01m,
+                var disbursed = AdvanceStatuses.IsPaid(a.Status) ? a.ApprovedAmount : 0m;
+                return new
+                {
+                    a.AdvanceNumber, a.EmployeeName, a.Status, a.ApprovedAmount,
+                    a.TotalRepaid, a.OutstandingBalance,
+                    BalanceCheck = Math.Round(disbursed - a.TotalRepaid - a.OutstandingBalance, 2),
+                    IsReconciled = Math.Abs(disbursed - a.TotalRepaid - a.OutstandingBalance) < 0.01m,
+                };
             }).ToList(),
         });
     }
@@ -501,17 +627,16 @@ public class AdvancesController : ControllerBase
     /// </summary>
     private async Task PostGlEntry(Guid tid, Guid? uid, Guid? companyId, Guid entityId, string entityRef,
         string module, string eventType, string debitDriverKey, string creditDriverKey,
-        decimal amount, string? currency, CancellationToken ct)
+        decimal amount, string? currency, DateOnly entryDate, CancellationToken ct)
     {
         var resolvedCurrency = string.IsNullOrWhiteSpace(currency)
             ? await GlAccountResolver.ResolveCurrencyAsync(_db, tid, companyId, ct)
             : currency;
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
         // POD-B1 (req-4) — no GL posting into a closed period. Single choke point covers every advance
-        // disbursement/repayment post. POD-B1b tightens it from a group-wide close to the advance's OWN
-        // company (a group-wide close still blocks — PeriodCloseGuard.cs:31). Throws BEFORE the Add so
-        // nothing is persisted.
-        await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, companyId, today.ToString("yyyy-MM"), ct);
+        // disbursement post. POD-B1b tightens it from a group-wide close to the advance's OWN company (a
+        // group-wide close still blocks — PeriodCloseGuard.cs:31). Throws BEFORE the Add so nothing is
+        // persisted. Payout refuses a closed period with a coded 422 first; this stays as the backstop.
+        await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, companyId, entryDate.ToString("yyyy-MM"), ct);
         var glCtx = await GlAccountResolver.LoadAsync(_db, tid, companyId, ct);
         _db.FinanceGlEntries.Add(new FinanceGlEntry
         {
@@ -520,7 +645,7 @@ public class AdvancesController : ControllerBase
             DebitAccount = GlAccountResolver.AccountLabel(debitDriverKey, glCtx),
             CreditAccount = GlAccountResolver.AccountLabel(creditDriverKey, glCtx),
             Amount = amount, Currency = resolvedCurrency,
-            EntryDate = today, Period = today.ToString("yyyy-MM"),
+            EntryDate = entryDate, Period = entryDate.ToString("yyyy-MM"),
             Description = $"{module} {eventType}: {entityRef}",
             PostedBy = uid, PostedByName = GetUserName(),
         });
@@ -540,8 +665,8 @@ public class AdvancesController : ControllerBase
             .FirstOrDefaultAsync(ct);
     }
 
-    /// <summary>POD-B1b — an advance may only be disbursed to GL once; Approve() could otherwise be
-    /// replayed and credit Cash/Bank twice.</summary>
+    /// <summary>POD-B1b — an advance may only be disbursed to GL once; a replayed payout (or a legacy advance
+    /// disbursed at approval by the old flow) must never credit Cash/Bank twice.</summary>
     private Task<bool> DisbursementAlreadyPostedAsync(Guid tid, Guid advanceId, CancellationToken ct) =>
         // IgnoreQueryFilters is intentional: a post-once probe must see the advance's existing journal
         // whatever company it was attributed to; the TenantId + SourceEntityId predicate keeps it
@@ -585,6 +710,12 @@ public class AdvancesController : ControllerBase
     private bool IsFinanceActor() => User.IsInRole("Admin") || User.IsInRole("Finance");
     /// <summary>Same money shape as LoansController.IsMoney: positive, two decimals, within the column.</summary>
     private static bool IsMoney(decimal value) => value > 0 && value <= 999999999999.99m && decimal.Round(value, 2) == value;
+
+    /// <summary>Same limit as the payment_reference column.</summary>
+    private const int MaxPaymentReferenceLength = 100;
+
+    /// <summary>Every refusal names a machine code and carries the sentence in English and Arabic, for the reader's language.</summary>
+    private static object Refusal(string code, string message, string messageAr) => new { error = code, message, messageAr };
 
     private async Task<bool> CanAccessAdvanceAsync(SalaryAdvance adv, CancellationToken ct)
     {
@@ -643,5 +774,8 @@ public class AdvancesController : ControllerBase
 public record AdvancePolicyRequest(string PolicyName, decimal MaxPercentageOfSalary, int MaxAdvancesPerYear, int MinServiceMonths, bool AllowInstallments, int MaxInstallments, int CooldownMonths, bool RequiresApproval);
 public record CreateAdvanceRequest(Guid EmployeeId, string EmployeeName, decimal RequestedAmount, string RepaymentType, int Installments, DateOnly? RepaymentStartDate, string? Reason, int? EmployeeIntId = null);
 public record AdvanceApproveRequest(decimal ApprovedAmount, int Installments, DateOnly? RepaymentStartDate);
+/// <summary>Payout of an approved advance. <paramref name="PaidDate"/> defaults to today; <paramref name="Reference"/> is the
+/// bank or cash reference (required, at most 100 characters).</summary>
+public record AdvancePayoutRequest(DateOnly? PaidDate, string? Reference, string? Notes);
 public record RejectRequest(string? Reason);
 public record PayAdvanceInstallmentRequest(decimal AmountPaid, DateOnly PaidDate, Guid? PayrollRunId);

@@ -386,6 +386,25 @@ public class SalaryAdvance : ITenantOwned, ICompanyScopedOperational
     public Guid? UpdatedBy { get; set; }
 }
 
+/// <summary>
+/// The salary-advance status vocabulary. Pending → Approved (terms agreed, awaiting payout) → Active (paid, recovered by
+/// payroll) → Closed; Rejected and Cancelled are the unpaid exits; Settled is a legacy manual settlement. AdvancesController owns
+/// every transition; payroll moves Active to Closed.
+/// </summary>
+public static class AdvanceStatuses
+{
+    public const string Pending = "Pending";
+    public const string Approved = "Approved";
+    public const string Active = "Active";
+    public const string Closed = "Closed";
+    public const string Settled = "Settled";
+    public const string Rejected = "Rejected";
+    public const string Cancelled = "Cancelled";
+
+    /// <summary>The cash left: paid out and being recovered, or recovered. An Approved advance has not been paid.</summary>
+    public static bool IsPaid(string? status) => status is Active or Closed or Settled;
+}
+
 public class AdvanceApproval : ITenantOwned
 {
     public Guid Id { get; set; } = Guid.NewGuid();
