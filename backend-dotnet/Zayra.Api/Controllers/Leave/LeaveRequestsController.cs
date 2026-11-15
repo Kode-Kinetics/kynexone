@@ -443,7 +443,9 @@ public class LeaveRequestsController : ControllerBase
             Reason = req.Reason ?? string.Empty,
             // An emergency waives the notice period, so only leave administration may mark one: whoever may file leave for
             // others (leave.write). On an employee's own request the flag is ignored, silently, as the apps never send it.
-            IsEmergency = req.IsEmergency && User.HasPermission("leave.write"),
+            // Filing on someone's behalf as an emergency is leave administration. The subject never decides about their own
+            // request, so the flag is ignored when the request is for the caller's own employee record, leave.write or not.
+            IsEmergency = req.IsEmergency && !isSelf && User.HasPermission("leave.write"),
             AttachmentPath = attachmentPath,
             DelegateEmployeeId = delegateEmployee?.Id,
             DelegateEmployeeName = delegateEmployee?.FullName ?? string.Empty,

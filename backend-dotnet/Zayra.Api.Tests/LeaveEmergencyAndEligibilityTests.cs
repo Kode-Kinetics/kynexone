@@ -138,14 +138,30 @@ public sealed class LeaveEmergencyAndEligibilityTests
     }
 
     [Fact]
-    public async Task A_leave_administrator_filing_their_own_emergency_is_honoured()
+    public async Task A_leave_administrators_emergency_flag_on_their_own_request_is_ignored_and_the_notice_period_applies()
     {
+        // Separation of duties: the subject never decides about their own request, so holding leave.write does not
+        // let HR waive the notice period for their own leave.
         var w = await LeaveBatch1World.CreateAsync();
         await AddNoticePolicyAsync(w, 14);
 
         var result = await SubmitAsync(w, HrManagerOwnCaller(w), w.LeaveType, emergency: true, ShortNoticeDay());
 
-        result.Should().BeOfType<CreatedResult>().Subject.Value.Should().BeOfType<LeaveRequest>().Subject.IsEmergency.Should().BeTrue();
+        RefusalOf(result).Should().Contain("advance notice");
+        (await w.Db.LeaveRequests.AnyAsync(r => r.EmployeeId == w.Emp.Id)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task A_leave_administrators_own_request_with_notice_is_stored_as_not_an_emergency()
+    {
+        var w = await LeaveBatch1World.CreateAsync();
+        await AddNoticePolicyAsync(w, 1);
+        var day = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(20);
+        while (day.DayOfWeek is DayOfWeek.Friday or DayOfWeek.Saturday) day = day.AddDays(1);
+
+        var result = await SubmitAsync(w, HrManagerOwnCaller(w), w.LeaveType, emergency: true, day);
+
+        result.Should().BeOfType<CreatedResult>().Subject.Value.Should().BeOfType<LeaveRequest>().Subject.IsEmergency.Should().BeFalse();
     }
 
     [Fact]
