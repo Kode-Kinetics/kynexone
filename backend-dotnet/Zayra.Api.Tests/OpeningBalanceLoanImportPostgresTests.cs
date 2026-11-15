@@ -213,7 +213,7 @@ public class OpeningBalanceLoanImportPostgresTests(PostgresFixture fixture)
                     {
                         new Claim("tenant_id", tid.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
                         new Claim(ClaimTypes.Name, "consultant"), new Claim(ClaimTypes.Role, "Admin"),
-                        new Claim("permission", "payroll.read"), new Claim("permission", "payroll.write"),
+                        new Claim("permission", "payroll.read"), new Claim("permission", "payroll.write"), new Claim("permission", "finance.opening_balances.import"),
                     }, "test")),
                 },
             },

@@ -69,7 +69,8 @@ public class OpeningBalanceDryRunAndRolePostgresTests(PostgresFixture fixture)
             expectErrors: true, roles: new[] { "HR Manager" });
         Assert.Contains("opening_balance_needs_finance", Assert.Single(advance), StringComparison.Ordinal);
 
-        // An HR Manager who is also a Finance approver may.
+        // An HR Manager who is also a Finance approver may (the loan type exists; a finance importer does not create one).
+        await K.EnsureLoanTypeAsync(fixture, b);
         await K.CommitAsync(fixture, b, "loans", K.LoanCsv(b, number, paid: 3, outstanding: 300m, cutover), roles: new[] { "HR Manager", "Finance Approver" });
         Assert.Single(await K.OpeningJournalAsync(fixture, b, (await K.LoanAsync(fixture, b, number)).Id));
     }
@@ -82,6 +83,7 @@ public class OpeningBalanceDryRunAndRolePostgresTests(PostgresFixture fixture)
     {
         var (b, cutover, number) = await K.SeedAsync(fixture, "FN-LN");
         await K.CommitAsync(fixture, b, "companyCutover", await K.CutoverCsvAsync(fixture, b));   // HR's part (Admin here)
+        await K.EnsureLoanTypeAsync(fixture, b);
 
         await K.CommitAsync(fixture, b, "loans", K.LoanCsv(b, number, paid: 3, outstanding: 300m, cutover), roles: new[] { "Finance" });
         Assert.Single(await K.OpeningJournalAsync(fixture, b, (await K.LoanAsync(fixture, b, number)).Id));

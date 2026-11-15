@@ -24,12 +24,13 @@ internal static class OpeningBalanceImportKit
 
     /// <summary>Commits one package and returns its row errors (none expected unless <paramref name="expectErrors"/>).</summary>
     internal static async Task<IReadOnlyList<string>> CommitAsync(PostgresFixture fx, Kit.Borrower b, string section, string csv,
-        bool withCutover = false, bool expectErrors = false, bool dryRun = false, params string[] roles)
+        bool withCutover = false, bool expectErrors = false, bool dryRun = false, string[]? roles = null, Guid? userId = null,
+        string[]? denied = null)
     {
         var sections = new Dictionary<string, string> { [section] = csv };
         if (withCutover) sections["companyCutover"] = await CutoverCsvAsync(fx, b);
         await using var db = fx.CreateDb();
-        var controller = Migration(db, b.Tenant, roles.Length == 0 ? new[] { "Admin" } : roles);
+        var controller = Migration(db, b.Tenant, roles ?? new[] { "Admin" }, userId, denied);
         var result = dryRun
             ? await controller.Preview(new MigrationPackageRequest($"pkg-{Guid.NewGuid():N}", sections, true), default)
             : await controller.Commit(new MigrationPackageRequest($"pkg-{Guid.NewGuid():N}", sections, false), default);
@@ -55,6 +56,36 @@ internal static class OpeningBalanceImportKit
         decimal original = 600m, decimal instalment = 100m, int total = 6) =>
         "EmployeeCode,AdvanceNumber,OriginalAmount,InstallmentAmount,TotalInstallments,InstallmentsPaid,OutstandingBalance,FirstUnpaidDueDate,Currency,SourceSystem,SourceRecordId\n" +
         $"{b.EmployeeCode},{number},{original},{instalment},{total},{paid},{outstanding},{firstUnpaid:yyyy-MM-dd},SAR,SAP,ADV-1\n";
+
+    /// <summary>A loan type the package's loan rows name (LEGACY), as HR would have set it up.</summary>
+    internal static async Task EnsureLoanTypeAsync(PostgresFixture fx, Kit.Borrower b, string code = "LEGACY")
+    {
+        await using var db = fx.CreateDb();
+        if (await db.LoanTypes.AnyAsync(t => t.TenantId == b.Tenant && t.Code == code)) return;
+        db.LoanTypes.Add(new LoanType { TenantId = b.Tenant, Code = code, NameEn = "Legacy loan", IsActive = true, MaxAmount = 0m, MaxInstallments = 12 });
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>A second employee of the borrower's company. Returns (id, code).</summary>
+    internal static async Task<(int Id, string Code)> AddColleagueAsync(PostgresFixture fx, Kit.Borrower b)
+    {
+        await using var db = fx.CreateDb();
+        var e = new Employee
+        {
+            TenantId = b.Tenant, CompanyId = b.CompanyId, EmployeeCode = $"COL-{Guid.NewGuid():N}"[..14], FullName = "Colleague",
+            Nationality = "Saudi", Status = "Active", JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        };
+        db.Employees.Add(e);
+        await db.SaveChangesAsync();
+        return (e.Id, e.EmployeeCode);
+    }
+
+    /// <summary>Links the borrower's employee record to the user <paramref name="userId"/> (their own login).</summary>
+    internal static async Task LinkBorrowerToUserAsync(PostgresFixture fx, Kit.Borrower b, Guid userId)
+    {
+        await using var db = fx.CreateDb();
+        await db.Employees.Where(e => e.Id == b.EmployeeId).ExecuteUpdateAsync(x => x.SetProperty(e => e.UserAccountId, userId));
+    }
 
     internal static async Task<EmployeeLoan> LoanAsync(PostgresFixture fx, Kit.Borrower b, string number)
     {
@@ -87,8 +118,23 @@ internal static class OpeningBalanceImportKit
         await db.SaveChangesAsync();
     }
 
-    internal static MigrationImportController Migration(ZayraDbContext db, Guid tid, params string[] roles) =>
-        new(db, new Pbkdf2PasswordHasher(), new AuditService(db))
+    /// <summary>Permission keys a role's seeded bundle carries, as far as the import cares.</summary>
+    private static IEnumerable<string> BundleOf(string role) => role switch
+    {
+        "Admin" => new[] { "finance.opening_balances.import", "employees.bulk_import" },
+        "Finance" or "Finance Approver" or "Finance Controller" => new[] { "finance.opening_balances.import" },
+        _ => Array.Empty<string>(),
+    };
+
+    internal static MigrationImportController Migration(ZayraDbContext db, Guid tid, params string[] roles) => Migration(db, tid, roles, null, null);
+
+    /// <param name="denied">Keys removed from the caller's permissions, as a per-user Deny override removes them.</param>
+    internal static MigrationImportController Migration(ZayraDbContext db, Guid tid, string[] roles, Guid? userId, string[]? denied)
+    {
+        roles = roles.Length == 0 ? new[] { "Admin" } : roles;
+        var permissions = new[] { "payroll.read", "payroll.write" }.Concat(roles.SelectMany(BundleOf)).Distinct()
+            .Except(denied ?? Array.Empty<string>());
+        return new(db, new Pbkdf2PasswordHasher(), new AuditService(db))
         {
             ControllerContext = new ControllerContext
             {
@@ -96,11 +142,12 @@ internal static class OpeningBalanceImportKit
                 {
                     User = new ClaimsPrincipal(new ClaimsIdentity(new[]
                     {
-                        new Claim("tenant_id", tid.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                        new Claim("tenant_id", tid.ToString()), new Claim(ClaimTypes.NameIdentifier, (userId ?? Guid.NewGuid()).ToString()),
                         new Claim(ClaimTypes.Name, "consultant"),
-                        new Claim("permission", "payroll.read"), new Claim("permission", "payroll.write"),
-                    }.Concat((roles.Length == 0 ? new[] { "Admin" } : roles).Select(r => new Claim(ClaimTypes.Role, r))), "test")),
+                    }.Concat(roles.Select(r => new Claim(ClaimTypes.Role, r)))
+                     .Concat(permissions.Select(p => new Claim("permission", p))), "test")),
                 },
             },
         };
+    }
 }

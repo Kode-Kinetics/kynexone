@@ -561,15 +561,18 @@ public sealed partial class MigrationImportController : ControllerBase
             {
                 RequireOpeningJournalRole();
                 var loanPlan = await PlanLoanAsync(row, tenantId, cutover, ct);
+                RefuseOwnRecord(loanPlan.Employee, loanPlan.LoanNumber);
                 var loan = await _db.EmployeeLoans.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.LoanNumber == loanPlan.LoanNumber && !x.IsDeleted, ct);
                 if (loan is not null && await GuardLoanRestatementAsync(loan, loanPlan, tenantId, ct)) return "skipped";
                 await PrepareLoanJournalAsync(loanPlan, loan, tenantId, ct);
+                await RequireLoanTypeAsync(loanPlan, tenantId, ct);
                 return loan is null ? "created" : "updated";
             }
             case "advances":
             {
                 RequireOpeningJournalRole();
                 var advancePlan = await PlanAdvanceAsync(row, tenantId, cutover, ct);
+                RefuseOwnRecord(advancePlan.Employee, advancePlan.AdvanceNumber);
                 var advance = await _db.SalaryAdvances.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.AdvanceNumber == advancePlan.AdvanceNumber && !x.IsDeleted, ct);
                 if (advance is not null) await GuardAdvanceRestatementAsync(advance, advancePlan, tenantId, ct);
                 await PrepareAdvanceJournalAsync(advancePlan, advance, tenantId, ct);

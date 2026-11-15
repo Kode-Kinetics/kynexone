@@ -657,6 +657,7 @@ public sealed partial class MigrationImportController
     {
         RequireOpeningJournalRole();
         var plan = await PlanLoanAsync(row, tenantId, cutover, ct);
+        RefuseOwnRecord(plan.Employee, plan.LoanNumber);
 
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(
             x => x.TenantId == tenantId && x.LoanNumber == plan.LoanNumber && !x.IsDeleted, ct);
@@ -665,6 +666,7 @@ public sealed partial class MigrationImportController
         // leaves the loan, its schedule and the ledger exactly as they were.
         if (loan is not null && await GuardLoanRestatementAsync(loan, plan, tenantId, ct)) return "skipped";
         var journal = await PrepareLoanJournalAsync(plan, loan, tenantId, ct);
+        await RequireLoanTypeAsync(plan, tenantId, ct);
 
         var loanType = await ResolveLoanTypeAsync(plan, tenantId, ct);
 
@@ -710,7 +712,6 @@ public sealed partial class MigrationImportController
 
     /// <summary>The permission that lets the finance roles import the opening-balance debt sections (loans, advances).</summary>
     internal const string OpeningBalanceImportPermission = "finance.opening_balances.import";
-    private static readonly string[] FinanceImportRoles = { "Finance", "Finance Controller", "Finance Approver" };
     private static readonly string[] DebtSections = { "loans", "advances" };
 
     private bool HasPermissionClaim(string permission) =>
@@ -723,7 +724,9 @@ public sealed partial class MigrationImportController
         || (User.IsInRole("HR Manager") && !HasPermissionClaim(OpeningBalanceImportPermission));
 
     /// <summary>A finance importer: a finance role, or the opening-balance import permission.</summary>
-    private bool IsFinanceImporter => FinanceImportRoles.Any(User.IsInRole) || HasPermissionClaim(OpeningBalanceImportPermission);
+    /// <summary>A finance importer holds finance.opening_balances.import. Decided by the permission, never the role name, so a per-user
+    /// Deny of the key takes the access away (Admin holds it through its bundle like any other key).</summary>
+    private bool IsFinanceImporter => HasPermissionClaim(OpeningBalanceImportPermission);
 
     /// <summary>
     /// The package gate. An importer imports any section. A finance importer who is not also an importer imports the opening-balance
@@ -747,10 +750,48 @@ public sealed partial class MigrationImportController
 
     private void RequireOpeningJournalRole()
     {
-        if (User.IsInRole("Admin") || IsFinanceImporter) return;
+        if (IsFinanceImporter) return;
         throw new InvalidOperationException(
             "[opening_balance_needs_finance] Loan and advance rows post an opening balance to the general ledger, so Finance (or an Admin) imports them; HR imports the rest of the package. " +
             "/ ترحّل صفوف القروض والسلف رصيدًا افتتاحيًا إلى دفتر الأستاذ العام، لذا تستوردها المالية (أو مسؤول النظام)؛ وتستورد الموارد البشرية بقية الحزمة.");
+    }
+
+    /// <summary>The subject never decides: nobody imports an opening balance onto their own employee record, whatever their role.</summary>
+    private void RefuseOwnRecord(Employee employee, string reference)
+    {
+        if (UserId() is Guid me && employee.UserAccountId == me)
+            throw new InvalidOperationException(
+                $"[opening_balance_own_record] {reference} is a debt of your own employee record, so you cannot import it. Another Finance user or an Admin must. " +
+                $"/ {reference} دين على سجلك الوظيفي، فلا يمكنك استيراده. يجب أن يستورده مستخدم آخر من المالية أو مسؤول النظام.");
+    }
+
+    /// <summary>A restatement never re-points a debt: the row must name the employee and company the existing record already has.</summary>
+    private static void RefuseRepointing(int? existingEmployee, Guid? existingCompany, Employee employee, string reference)
+    {
+        if (existingEmployee != employee.Id || existingCompany != employee.CompanyId)
+            throw new InvalidOperationException(
+                $"[opening_balance_repoint_refused] {reference} already belongs to a different employee or company than this row names, so it is not restated. A debt is never moved to another person or company by an import. " +
+                $"/ {reference} يتبع موظفًا أو شركة غير ما يذكره هذا السطر، فلا يُعاد بيانه. لا يُنقل دين إلى شخص أو شركة أخرى عبر الاستيراد.");
+    }
+
+    /// <summary>Forgiving part of a carried-in debt (restating it lower) is an Admin's decision; Finance is asked to get one.</summary>
+    private void RequireAdminToReduce(decimal current, decimal restated, string reference)
+    {
+        if (restated < current && !User.IsInRole("Admin"))
+            throw new InvalidOperationException(
+                $"[opening_balance_reduction_needs_admin] Restating {reference} from {current:N2} down to {restated:N2} forgives part of the debt, which needs an Admin. Ask an Admin to import this row. " +
+                $"/ إعادة بيان {reference} من {current:N2} إلى {restated:N2} تُسقط جزءًا من الدين، وهذا يتطلب مسؤول النظام. اطلب من مسؤول النظام استيراد هذا السطر.");
+    }
+
+    /// <summary>A loan type a row names but the tenant does not have is created only by an importer with HR's reach (Admin or
+    /// employees.bulk_import); a finance-only importer is refused the row and told which type to set up first.</summary>
+    private async Task RequireLoanTypeAsync(LoanPlan plan, Guid tenantId, CancellationToken ct)
+    {
+        if (User.IsInRole("Admin") || HasPermissionClaim("employees.bulk_import")) return;
+        if (await _db.LoanTypes.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.Code == plan.LoanTypeCode && !x.IsDeleted, ct)) return;
+        throw new InvalidOperationException(
+            $"[loan_type_missing] Loan type {plan.LoanTypeCode} does not exist, and a Finance import does not create loan types. Ask HR or an Admin to set up loan type {plan.LoanTypeCode}, then import this row again. " +
+            $"/ نوع القرض {plan.LoanTypeCode} غير موجود، واستيراد المالية لا ينشئ أنواع القروض. اطلب من الموارد البشرية أو مسؤول النظام إعداد نوع القرض {plan.LoanTypeCode} ثم أعد استيراد هذا السطر.");
     }
 
     /// <summary>
@@ -769,11 +810,16 @@ public sealed partial class MigrationImportController
             throw new InvalidOperationException(
                 $"[loan_not_carried_in] Loan {plan.LoanNumber} already exists and was not carried in by an opening-balance import, so it is not restated. Use a different loan number, or correct the loan from the loan screen. " +
                 $"/ القرض {plan.LoanNumber} موجود بالفعل ولم يُرحَّل باستيراد أرصدة افتتاحية، فلا يُعاد بيانه. استخدم رقم قرض آخر، أو صحّح القرض من شاشة القرض.");
+        RefuseRepointing(loan.EmployeeIntId, loan.CompanyId, plan.Employee, plan.LoanNumber);
         if (loan.Status is not ("Active" or "Overdue"))
             throw new InvalidOperationException(
                 $"[loan_not_active] Loan {plan.LoanNumber} is {loan.Status}, so it is not restated or reopened. " +
                 $"/ القرض {plan.LoanNumber} حالته {loan.Status}، فلا يُعاد بيانه ولا يُعاد فتحه.");
-        if (!await RecoveredSinceImportAsync(loan, ct)) return false;
+        if (!await RecoveredSinceImportAsync(loan, ct))
+        {
+            RequireAdminToReduce(loan.OutstandingBalance, plan.OutstandingBalance, plan.LoanNumber);
+            return false;
+        }
         // Once anything has been recovered, the package no longer describes the loan: it states the world at cutover and the loan
         // has moved on. The same figures again are a no-op; different figures are refused.
         if (origin.CarriedAmount == plan.OutstandingBalance && loan.ApprovedAmount == plan.OriginalAmount
@@ -951,6 +997,7 @@ public sealed partial class MigrationImportController
     {
         RequireOpeningJournalRole();
         var plan = await PlanAdvanceAsync(row, tenantId, cutover, ct);
+        RefuseOwnRecord(plan.Employee, plan.AdvanceNumber);
 
         var advance = await _db.SalaryAdvances.FirstOrDefaultAsync(
             x => x.TenantId == tenantId && x.AdvanceNumber == plan.AdvanceNumber && !x.IsDeleted, ct);
@@ -1006,6 +1053,7 @@ public sealed partial class MigrationImportController
         if (!carriedIn)
             throw new InvalidOperationException(
                 $"[advance_not_carried_in] Advance {plan.AdvanceNumber} already exists and was not carried in by an opening-balance import, so it is not restated. Use a different advance number, or correct the advance in Salary Advances.");
+        RefuseRepointing(advance.EmployeeIntId, advance.CompanyId, plan.Employee, plan.AdvanceNumber);
         if (await _db.PayrollRunConsumptions.AsNoTracking().AnyAsync(
                 c => c.TenantId == tenantId && c.ArtifactType == PayrollConsumptionArtifacts.Advance && c.ArtifactId == advance.Id, ct))
             throw new InvalidOperationException(
@@ -1021,6 +1069,7 @@ public sealed partial class MigrationImportController
             throw new InvalidOperationException(
                 $"[advance_moved_to_employee_receivable] Advance {plan.AdvanceNumber} has been moved (in part) to the 1420 employee receivable by a final settlement, so its opening balance is not restated. Correct it in Salary Advances. " +
                 $"/ نُقلت السلفة {plan.AdvanceNumber} (جزئيًا) إلى ذمم الموظفين المدينة 1420 بتسوية نهائية، فلا يُعاد بيان رصيدها الافتتاحي. صحّحها من شاشة السلف.");
+        RequireAdminToReduce(advance.OutstandingBalance, plan.OutstandingBalance, plan.AdvanceNumber);
     }
 
     private Task<Zayra.Api.Infrastructure.Finance.OpeningBalanceJournal.Prepared> PrepareAdvanceJournalAsync(
