@@ -284,7 +284,8 @@ public class LeaveRequestsController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        if (_storage is null) return NotFound();
+        // Every download is audited: with no audit service there is no download (fail closed, same answer as no storage).
+        if (_storage is null || _audit is null) return NotFound();
 
         var request = await _db.LeaveRequests.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (request is null || string.IsNullOrWhiteSpace(request.AttachmentPath)) return NotFound();
@@ -313,15 +314,16 @@ public class LeaveRequestsController : ControllerBase
         try { contents = await _storage.GetBytesAsync(tenantId.Value, document.StorageUrl, ct); }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or InvalidOperationException) { return NotFound(); }
 
-        if (_audit is not null)
-            await _audit.RecordEventAsync("leave.attachment_downloaded", nameof(LeaveRequest), id.ToString(),
-                new Zayra.Api.Application.Auth.RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(),
-                    this.GetUserId(), tenantId.Value),
-                System.Text.Json.JsonSerializer.Serialize(new { documentId = document.Id, employeeId = request.EmployeeId }), ct);
+        await _audit.RecordEventAsync("leave.attachment_downloaded", nameof(LeaveRequest), id.ToString(),
+            new Zayra.Api.Application.Auth.RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(),
+                this.GetUserId(), tenantId.Value),
+            System.Text.Json.JsonSerializer.Serialize(new { documentId = document.Id, employeeId = request.EmployeeId }), ct);
 
         var declared = (document.ContentType ?? string.Empty).Split(';')[0].Trim();
         var inline = InlineAttachmentTypes.Contains(declared);
         Response.Headers["X-Content-Type-Options"] = "nosniff";
+        // Whatever the stored type, the response may not run scripts or load anything if a browser opens it.
+        Response.Headers["Content-Security-Policy"] = "sandbox";
         Response.Headers.CacheControl = "no-store";
         Response.Headers.ContentDisposition = new Microsoft.Net.Http.Headers.ContentDispositionHeaderValue(inline ? "inline" : "attachment")
         {
