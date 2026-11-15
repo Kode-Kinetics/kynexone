@@ -593,11 +593,15 @@ public partial class AdvancesController : ControllerBase
                 $"The accounting period {paidDate:yyyy-MM} is closed. Reopen it or use a paid date in an open period.",
                 $"الفترة المحاسبية {paidDate:yyyy-MM} مغلقة. أعد فتحها أو استخدم تاريخ صرف في فترة مفتوحة."));
         // One bank reference evidences one payout in a company, as for loan payments.
+        // This check is a courtesy for the common case; two different advances paid at the same moment can both pass it (the advance
+        // lock is per advance), so the unique indexes on payment_reference are the guard and the save below maps their violation to
+        // the same refusal.
+        IActionResult ReferenceUsed() => Conflict(Refusal("advance_payout_reference_used",
+            "This payment reference is already recorded against another advance.",
+            "مرجع الدفع هذا مسجل بالفعل لسلفة أخرى."));
         if (await _db.SalaryAdvances.AnyAsync(x => x.TenantId == tid && x.Id != id && x.CompanyId == adv.CompanyId
                 && x.PaymentReference == reference, ct))
-            return Conflict(Refusal("advance_payout_reference_used",
-                "This payment reference is already recorded against another advance.",
-                "مرجع الدفع هذا مسجل بالفعل لسلفة أخرى."));
+            return ReferenceUsed();
         // Defence in depth: an Approved advance never has a journal; if one exists, nothing is posted twice.
         if (await DisbursementAlreadyPostedAsync(tid, id, ct))
             return Conflict(Refusal("advance_already_paid",
@@ -617,7 +621,13 @@ public partial class AdvancesController : ControllerBase
 
         await PostGlEntry(tid, uid, companyId, adv.Id, adv.AdvanceNumber,
             "Advance", "Disbursement", "ADVANCE_RECEIVABLE", "CASH_BANK", adv.ApprovedAmount, null, paidDate, ct);
-        await _db.SaveChangesAsync(ct);
+        try { await _db.SaveChangesAsync(ct); }
+        catch (DbUpdateException ex) when (IsPaymentReferenceViolation(ex))
+        {
+            // Another payout committed this reference between the check above and this write. Nothing of this payout was kept:
+            // the failed statement aborts the transaction, which the serializer ends without committing the advance or its journal.
+            return ReferenceUsed();
+        }
         await WriteAdvanceAudit(tid, uid, id, "AdvancePaidOut",
             JsonSerializer.Serialize(new { Status = AdvanceStatuses.Approved, RepaymentStartDate = agreedStart }),
             JsonSerializer.Serialize(new
@@ -1005,6 +1015,15 @@ public partial class AdvancesController : ControllerBase
                     "Read the advance's employee to check employment and apply the salary cap, even after a legal-entity transfer.")
                 .AsNoTracking().FirstOrDefaultAsync(x => x.Id == empId, ct)
             : null;
+
+    /// <summary>The unique violation of one of the two payment-reference indexes (<c>salary_advances</c>): another advance in the same
+    /// company already carries this reference.</summary>
+    private static bool IsPaymentReferenceViolation(DbUpdateException ex) =>
+        ex.InnerException is Npgsql.PostgresException
+        {
+            SqlState: Npgsql.PostgresErrorCodes.UniqueViolation,
+            ConstraintName: "ux_salary_advances_payment_reference" or "ux_salary_advances_payment_reference_unattributed",
+        };
 
     /// <summary>Audit P3: the first repayment date may not be before yesterday (a request typed late in the day in another
     /// timezone) nor more than twelve months out. Null when no date is given or it is inside the window.</summary>

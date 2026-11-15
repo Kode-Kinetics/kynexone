@@ -42,11 +42,36 @@ namespace Zayra.Api.Migrations
                 type: "character varying(100)",
                 maxLength: 100,
                 nullable: true);
+
+            // One bank or cash reference evidences one payout in a company. The columns are new and nothing has been written to
+            // payment_reference, so both indexes are created over empty values. NULL is distinct in a unique index, so the legacy
+            // advance that has no company gets its own index (the payout's check treats "no company" as one bucket per tenant).
+            migrationBuilder.CreateIndex(
+                name: "ux_salary_advances_payment_reference",
+                table: "salary_advances",
+                columns: new[] { "tenant_id", "company_id", "payment_reference" },
+                unique: true,
+                filter: "payment_reference IS NOT NULL");
+
+            migrationBuilder.CreateIndex(
+                name: "ux_salary_advances_payment_reference_unattributed",
+                table: "salary_advances",
+                columns: new[] { "tenant_id", "payment_reference" },
+                unique: true,
+                filter: "company_id IS NULL AND payment_reference IS NOT NULL");
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.DropIndex(
+                name: "ux_salary_advances_payment_reference_unattributed",
+                table: "salary_advances");
+
+            migrationBuilder.DropIndex(
+                name: "ux_salary_advances_payment_reference",
+                table: "salary_advances");
+
             migrationBuilder.DropColumn(
                 name: "cancel_reason",
                 table: "salary_advances");

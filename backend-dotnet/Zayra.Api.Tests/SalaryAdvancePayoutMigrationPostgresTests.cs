@@ -91,6 +91,41 @@ public sealed class SalaryAdvancePayoutMigrationPostgresTests
             .Should().Be(5, "the migration re-applies after a rollback");
     }
 
+    /// <summary>Review P2-2: one bank reference evidences one payout in a company, enforced by the database and not only by a check
+    /// the controller makes before it writes. Two partial unique indexes, created and dropped with the columns: one for an advance
+    /// that has a company, one for the legacy advance that has none (NULL is distinct in a unique index).</summary>
+    [Fact]
+    public async Task AddsThePartialUniqueReferenceIndexes_AndRollsThemBackWithTheColumns()
+    {
+        await using var container = new PostgreSqlBuilder().WithImage("postgres:16-alpine").Build();
+        await container.StartAsync();
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseNpgsql(container.GetConnectionString()).Options);
+        var migrator = db.Database.GetInfrastructure().GetRequiredService<IMigrator>();
+        var all = db.Database.GetMigrations().ToList();
+        var thisMigration = all.Single(m => m.EndsWith(MigrationSuffix, StringComparison.Ordinal));
+        var previous = all[all.IndexOf(thisMigration) - 1];
+
+        await migrator.MigrateAsync(thisMigration);
+
+        var company = await Scalar<string>(container,
+            "SELECT indexdef FROM pg_indexes WHERE tablename = 'salary_advances' AND indexname = 'ux_salary_advances_payment_reference'");
+        company.Should().Contain("UNIQUE").And.Contain("(tenant_id, company_id, payment_reference)")
+            .And.Contain("WHERE (payment_reference IS NOT NULL)");
+        var legacy = await Scalar<string>(container,
+            "SELECT indexdef FROM pg_indexes WHERE tablename = 'salary_advances' AND indexname = 'ux_salary_advances_payment_reference_unattributed'");
+        legacy.Should().Contain("UNIQUE").And.Contain("(tenant_id, payment_reference)")
+            .And.Contain("company_id IS NULL").And.Contain("payment_reference IS NOT NULL");
+
+        await migrator.MigrateAsync(previous);
+        (await Scalar<long>(container,
+            "SELECT count(*) FROM pg_indexes WHERE tablename = 'salary_advances' AND indexname LIKE 'ux_salary_advances_payment_reference%'"))
+            .Should().Be(0, "the rollback drops both indexes");
+        await migrator.MigrateAsync(thisMigration);
+        (await Scalar<long>(container,
+            "SELECT count(*) FROM pg_indexes WHERE tablename = 'salary_advances' AND indexname LIKE 'ux_salary_advances_payment_reference%'"))
+            .Should().Be(2, "the migration re-applies after a rollback");
+    }
+
     private static async Task Exec(PostgreSqlContainer container, string sql)
     {
         await using var conn = new NpgsqlConnection(container.GetConnectionString());

@@ -31061,9 +31061,19 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "CompanyId");
 
+                    b.HasIndex("TenantId", "CompanyId", "PaymentReference")
+                        .IsUnique()
+                        .HasDatabaseName("ux_salary_advances_payment_reference")
+                        .HasFilter("payment_reference IS NOT NULL");
+
                     b.HasIndex("TenantId", "EmployeeId", "Status");
 
                     b.HasIndex("TenantId", "EmployeeIntId", "Status");
+
+                    b.HasIndex("TenantId", "PaymentReference")
+                        .IsUnique()
+                        .HasDatabaseName("ux_salary_advances_payment_reference_unattributed")
+                        .HasFilter("company_id IS NULL AND payment_reference IS NOT NULL");
 
                     b.ToTable("salary_advances", (string)null);
                 });
