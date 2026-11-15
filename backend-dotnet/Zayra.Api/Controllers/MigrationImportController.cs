@@ -407,8 +407,69 @@ public sealed partial class MigrationImportController : ControllerBase
     {
         if (!TryParseSection(section, csv, out var parsedRows, out var parseError))
             return new SectionResult { Received = 0, Skipped = 0, Errors = { parseError! } };
-        var result = new SectionResult { Received = parsedRows.Count, AmountTotal = SectionControlTotal(section, parsedRows) };
         if (dryRun) return (await ValidateSectionAsync(section, csv, tenantId, cutover, ct)).ToApplyResult();
+        if (section is "loans" or "advances" && _db.Database.IsRelational() && _db.Database.CurrentTransaction is null)
+            return await ApplyDebtSectionLockedAsync(section, parsedRows, tenantId, cutover, ct);
+        return await ApplyRowsAsync(section, parsedRows, tenantId, cutover, ct);
+    }
+
+    /// <summary>
+    /// Loans and advances carry balances other writers move under the finance.loan / finance.advance locks: payroll Process
+    /// collects an instalment, the settlement payment moves a leaver's leftover to 1420, the void gives an instalment back. A
+    /// restatement here read the row, overwrote OutstandingBalance / TotalRepaid / Status and saved without those locks, so a
+    /// payroll pass between the read and the save lost its instalment (or the restatement was lost). The section now runs in
+    /// one transaction that first takes the lock of every existing loan or advance its rows name — all at once, in the shared
+    /// order (FinanceDecisionSerializer.AcquireDebtLocksAsync, ascending key) — and holds them until its save commits, so each
+    /// row is read and written as the sole writer. A row for a new loan or advance needs no lock: nothing else can see it yet.
+    ///
+    /// <para>Retry-safe: a transient failure rolls the transaction back, everything this attempt started tracking is detached,
+    /// and the section is applied again from committed state.</para>
+    /// </summary>
+    private async Task<SectionResult> ApplyDebtSectionLockedAsync(
+        string section, List<Dictionary<string, string>> parsedRows, Guid tenantId, CutoverContext cutover, CancellationToken ct)
+    {
+        var trackedInAttempt = new List<object>();
+        void OnTracked(object? _, Microsoft.EntityFrameworkCore.ChangeTracking.EntityTrackedEventArgs e) => trackedInAttempt.Add(e.Entry.Entity);
+        _db.ChangeTracker.Tracked += OnTracked;
+        try
+        {
+            var strategy = _db.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
+            {
+                foreach (var entity in trackedInAttempt)
+                {
+                    var entry = _db.Entry(entity);
+                    if (entry.State != EntityState.Detached) entry.State = EntityState.Detached;
+                }
+                trackedInAttempt.Clear();
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
+                var numbers = parsedRows
+                    .Select(r => Val(r, section == "loans" ? "LoanNumber" : "AdvanceNumber").Trim())
+                    .Where(n => n.Length > 0).Distinct(StringComparer.Ordinal).ToList();
+                var loanIds = section == "loans"
+                    ? await _db.EmployeeLoans.AsNoTracking().Where(x => x.TenantId == tenantId && numbers.Contains(x.LoanNumber) && !x.IsDeleted)
+                        .Select(x => x.Id).ToListAsync(ct)
+                    : new List<Guid>();
+                var advanceIds = section == "advances"
+                    ? await _db.SalaryAdvances.AsNoTracking().Where(x => x.TenantId == tenantId && numbers.Contains(x.AdvanceNumber) && !x.IsDeleted)
+                        .Select(x => x.Id).ToListAsync(ct)
+                    : new List<Guid>();
+                await Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.AcquireDebtLocksAsync(_db, tenantId, loanIds, advanceIds, ct);
+                var result = await ApplyRowsAsync(section, parsedRows, tenantId, cutover, ct);
+                await tx.CommitAsync(ct);
+                return result;
+            });
+        }
+        finally
+        {
+            _db.ChangeTracker.Tracked -= OnTracked;
+        }
+    }
+
+    private async Task<SectionResult> ApplyRowsAsync(
+        string section, List<Dictionary<string, string>> parsedRows, Guid tenantId, CutoverContext cutover, CancellationToken ct)
+    {
+        var result = new SectionResult { Received = parsedRows.Count, AmountTotal = SectionControlTotal(section, parsedRows) };
         var seenKeys = new HashSet<string>(StringComparer.Ordinal);
         // Entities that START being tracked while a row runs, collected from the change tracker's Tracked event:
         // anything ADDED by a row that then fails is detached, so a half-built row is never inserted by the section's
