@@ -5314,6 +5314,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.InstallmentAmount).HasPrecision(14, 2);
             entity.Property(x => x.TotalRepaid).HasPrecision(14, 2);
             entity.Property(x => x.OutstandingBalance).HasPrecision(14, 2);
+            entity.Property(x => x.PaymentReference).HasMaxLength(100);
+            entity.Property(x => x.CancelReason).HasMaxLength(1000);
             entity.HasIndex(x => new { x.TenantId, x.AdvanceNumber }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.EmployeeIntId, x.Status });

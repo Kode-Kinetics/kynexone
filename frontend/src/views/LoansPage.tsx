@@ -867,6 +867,7 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
       });
       setCreateModal(false); setSelectedEmployee(null); toast?.success?.(t('Advance request submitted.')); load();
     }
+    // A refusal is { error, message, messageAr }: show its sentence in the reader's language, never the object.
     catch (e) { setError(apiErrorReason(e, t('Failed to create advance.'), locale)); }
     finally { setSaving(false); }
   };
