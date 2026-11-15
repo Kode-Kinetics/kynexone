@@ -255,6 +255,8 @@ public partial class AdvancesController : ControllerBase
 
             if (await SalaryCapRefusalAsync(tid, employee, policy, req.RequestedAmount, ct) is { } capRefusal)
                 return BadRequest(capRefusal);
+            if (await CumulativeCapRefusalAsync(tid, employee, policy, req.RequestedAmount, null, ct) is { } cumulativeRefusal)
+                return BadRequest(cumulativeRefusal);
         }
 
         var advNumber = await NextAdvanceNumberAsync(tid, ct);
@@ -356,6 +358,8 @@ public partial class AdvancesController : ControllerBase
         {
             if (await SalaryCapRefusalAsync(tid, employee, policy, req.ApprovedAmount, ct) is { } capRefusal)
                 return BadRequest(capRefusal);
+            if (await CumulativeCapRefusalAsync(tid, employee, policy, req.ApprovedAmount, adv.Id, ct) is { } cumulativeRefusal)
+                return BadRequest(cumulativeRefusal);
         }
 
         var oldStatus = adv.Status;
@@ -834,15 +838,51 @@ public partial class AdvancesController : ControllerBase
     private async Task<string?> SalaryCapRefusalAsync(Guid tid, Employee employee, AdvancePolicy policy, decimal amount, CancellationToken ct)
     {
         if (policy.MaxPercentageOfSalary <= 0) return null;
+        if (await SalaryCapAsync(tid, employee, policy, ct) is not { } cap)
+            return "An active salary structure in the company's currency is required to apply the advance policy's salary cap.";
+        return amount > cap.Amount
+            ? $"The amount exceeds the policy limit of {policy.MaxPercentageOfSalary:0.##}% of monthly salary ({cap.Amount:0.00} {cap.Currency})."
+            : null;
+    }
+
+    /// <summary>The policy's percentage of the employee's monthly wage, in the company's currency; null when the wage is unknown.</summary>
+    private async Task<(decimal Amount, string Currency)?> SalaryCapAsync(Guid tid, Employee employee, AdvancePolicy policy, CancellationToken ct)
+    {
         var salary = await new LoanEligibilityService(_db).SalaryAsOfAsync(tid, employee.Id, DateOnly.FromDateTime(DateTime.UtcNow), ct);
         var wage = LoanEligibilityService.MonthlyWage(salary);
         var currency = await GlAccountResolver.ResolveCurrencyAsync(_db, tid, employee.CompanyId, ct);
         if (salary == null || wage <= 0 || !string.Equals(salary.Currency, currency, StringComparison.OrdinalIgnoreCase))
-            return "An active salary structure in the company's currency is required to apply the advance policy's salary cap.";
-        var cap = decimal.Round(wage * policy.MaxPercentageOfSalary / 100m, 2, MidpointRounding.ToZero);
-        return amount > cap
-            ? $"The amount exceeds the policy limit of {policy.MaxPercentageOfSalary:0.##}% of monthly salary ({cap:0.00} {currency})."
-            : null;
+            return null;
+        return (decimal.Round(wage * policy.MaxPercentageOfSalary / 100m, 2, MidpointRounding.ToZero), currency);
+    }
+
+    /// <summary>
+    /// Decision G2: the salary cap covers everything the employee owes or has asked for, not each request alone. A second 50%
+    /// advance used to pass while the first was still fully outstanding. The open exposure is the requested amount of Pending
+    /// requests, the approved amount of advances awaiting payout and the outstanding balance of Active ones (this advance
+    /// excluded at approval); with the new amount it must stay within the cap. Null when within it, when nothing else is open
+    /// (the per-request check has decided), or when the policy sets no percentage.
+    /// </summary>
+    private async Task<object?> CumulativeCapRefusalAsync(Guid tid, Employee employee, AdvancePolicy policy, decimal amount,
+        Guid? excludeAdvanceId, CancellationToken ct)
+    {
+        if (policy.MaxPercentageOfSalary <= 0) return null;
+        var open = await _db.SalaryAdvances.AsNoTracking()
+            .Where(x => x.TenantId == tid && x.EmployeeIntId == employee.Id && !x.IsDeleted && x.Id != excludeAdvanceId
+                && (x.Status == AdvanceStatuses.Pending || x.Status == AdvanceStatuses.Approved || x.Status == AdvanceStatuses.Active))
+            .Select(x => new { x.Status, x.RequestedAmount, x.ApprovedAmount, x.OutstandingBalance })
+            .ToListAsync(ct);
+        var owed = open.Sum(x => x.Status == AdvanceStatuses.Pending ? x.RequestedAmount
+            : x.Status == AdvanceStatuses.Approved ? x.ApprovedAmount : x.OutstandingBalance);
+        if (owed <= 0m) return null;
+        // An unknown wage was already refused by the per-request check.
+        if (await SalaryCapAsync(tid, employee, policy, ct) is not { } cap || owed + amount <= cap.Amount) return null;
+        var headroom = Math.Max(0m, cap.Amount - owed);
+        return Refusal("advance_cumulative_limit",
+            $"This advance and the {owed:0.00} {cap.Currency} already requested or owed on other advances exceed the policy limit of " +
+            $"{policy.MaxPercentageOfSalary:0.##}% of monthly salary ({cap.Amount:0.00} {cap.Currency}). At most {headroom:0.00} {cap.Currency} more can be advanced.",
+            $"هذه السلفة مع {owed:0.00} {cap.Currency} مطلوبة أو مستحقة على سلف أخرى تتجاوز حد السياسة البالغ " +
+            $"{policy.MaxPercentageOfSalary:0.##}% من الراتب الشهري ({cap.Amount:0.00} {cap.Currency}). الحد الأقصى الإضافي الممكن {headroom:0.00} {cap.Currency}.");
     }
 
     /// <summary>
