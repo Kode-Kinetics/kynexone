@@ -3050,14 +3050,7 @@ public class EmployeesController : ControllerBase
 
             // Enforce employee limit
             if (await EmployeeSeatLimit.ReachedAsync(_db, tenantId, cancellationToken) is { } reached)
-                return StatusCode(402, new
-                {
-                    error           = "employee_limit_reached",
-                    currentCount    = reached.Count,
-                    maxAllowed      = reached.Max,
-                    message         = $"Your plan allows up to {reached.Max} active employees. You have {reached.Count}. Upgrade your plan to add more.",
-                    upgradeRequired = true,
-                });
+                return StatusCode(402, EmployeeLimitBody(new EmployeeLimitReachedException(reached.Count, reached.Max)));
 
             // CanViewSensitive() — the write response is a read of the record and obeys the same mask
             // gate as GET {id}; see IEmployeeManagementService.CreateAsync.
@@ -4540,6 +4533,7 @@ public class EmployeesController : ControllerBase
         catch (EmployeeActivationBlockedException ex) { await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken); return this.NotActivatable(ex); }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (SettledServiceReactivationException ex) { return Conflict(SettledServiceBody(ex)); }
+        catch (EmployeeLimitReachedException ex) { return StatusCode(402, EmployeeLimitBody(ex)); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
         // PATCH /status reaches the identical separation insert whenever the target is an exit status, so
         // two concurrent calls hit the same partial unique index. Without this it surfaced as a 500 — the
@@ -4685,8 +4679,20 @@ public class EmployeesController : ControllerBase
         catch (EmployeeActivationBlockedException ex) { await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken); return this.NotActivatable(ex); }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (SettledServiceReactivationException ex) { return Conflict(SettledServiceBody(ex)); }
+        catch (EmployeeLimitReachedException ex) { return StatusCode(402, EmployeeLimitBody(ex)); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
+
+    /// <summary>402 for a person who would push the head count past the plan's limit: both languages, and the way forward (upgrade).</summary>
+    private static object EmployeeLimitBody(EmployeeLimitReachedException ex) => new
+    {
+        error = EmployeeLimitReachedException.Code,
+        currentCount = ex.Count,
+        maxAllowed = ex.Max,
+        message = ex.Message,
+        messageAr = ex.MessageAr,
+        upgradeRequired = true,
+    };
 
     /// <summary>409 for a return to work over service a final settlement already closed: both languages, and the way forward (Rehire).</summary>
     private static object SettledServiceBody(SettledServiceReactivationException ex) => new
@@ -4788,6 +4794,7 @@ public class EmployeesController : ControllerBase
             }
             catch (EstablishmentBudgetExceededException) { _db.ChangeTracker.Clear(); blocked.Add(new { id, error = "establishment_budget_exceeded" }); }
             catch (SettledServiceReactivationException) { _db.ChangeTracker.Clear(); blocked.Add(new { id, error = SettledServiceReactivationException.Code }); }
+            catch (EmployeeLimitReachedException) { _db.ChangeTracker.Clear(); blocked.Add(new { id, error = EmployeeLimitReachedException.Code }); }
             catch (InvalidOperationException ex) { _db.ChangeTracker.Clear(); blocked.Add(new { id, error = ex.Message }); }
         }
         _db.ChangeTracker.Clear();
@@ -4980,6 +4987,12 @@ public class EmployeesController : ControllerBase
             {
                 _db.ChangeTracker.Clear(); // discard this row's tracked-but-rolled-back mutation
                 items.Add(new(id, code, name, "skipped", "establishment_budget_exceeded", null));
+                skipped++;
+            }
+            catch (EmployeeLimitReachedException)
+            {
+                _db.ChangeTracker.Clear();
+                items.Add(new(id, code, name, "skipped", EmployeeLimitReachedException.Code, null));
                 skipped++;
             }
             catch (SettledServiceReactivationException)
@@ -5526,100 +5539,113 @@ public class EmployeesController : ControllerBase
         {
             // Recovery path for a mistaken merge (twins wrongly merged). Reverses the link + restores the record. It needs employees.write,
             // like the merge. Authorised above by the row's own company (the merged record is soft-deleted).
-            // IgnoreQueryFilters is intentional: the merged record is soft-deleted so the global !IsDeleted
-            // filter hides it — bypass to read it back (scope already enforced above).
-            var merged = await _db.Employees.IgnoreQueryFilters()
-                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && x.IsDeleted && x.DuplicateOfEmployeeId != null, ct);
-            if (merged is null) return NotFound();
-            var intoId = merged.DuplicateOfEmployeeId;
-            merged.IsDeleted = false;
-            merged.DeletedAtUtc = null;
-            merged.DeletedBy = null;
-            merged.RetentionUntilUtc = null;
-            merged.PrivacyStatus = string.Empty;
-            // The status it had before the merge, read from the merge's own audit row. A merge made before that was recorded has nothing to
-            // read: it falls back to Draft (Active is never assumed) and the status history says so. ONLY the newest merge row is read: an
-            // older merge's status is never borrowed. That row's time also bounds which payroll-footprint row belongs to this merge (below).
-            var mergeAudits = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
-                    "Unmerge reads the merge's own audit row, whatever company it was written under; the tenant is pinned.")
-                .Where(a => a.Action == "employee.merged_into_existing" && a.EntityId == id.ToString() && a.Metadata != null)
-                .OrderByDescending(a => a.CreatedAtUtc).Select(a => new { a.Metadata, a.CreatedAtUtc }).Take(1).ToListAsync(ct);
-            string? recordedStatus = null;
-            DateTime? mergeAuditAt = mergeAudits.Count > 0 ? mergeAudits[0].CreatedAtUtc : null;
-            foreach (var row in mergeAudits)
+            // STEP 1 (one transaction): the merged row is read FOR UPDATE and brought back as a Draft. A second unmerge of the same record waits
+            // for the first to commit and then finds nothing to undo (404), so a record is restored once, with one history row and one audit row.
+            // STEP 2: going on to the pre-merge status is a normal status change with its own transaction and every gate a normal one has.
+            // STEP 3: the payroll footprint (WPS, salary structure) goes back only once the record has really left Draft.
+            async Task<UnmergeStepOne?> RestoreRecordAsync()
             {
-                try
+                _db.ChangeTracker.Clear();
+                // IgnoreQueryFilters is intentional: the merged record is soft-deleted so the global !IsDeleted
+                // filter hides it — bypass to read it back (scope already enforced above; TenantId is re-applied in this predicate).
+                var merged = await _db.Employees.IgnoreQueryFilters()
+                    .TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                    .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && x.IsDeleted && x.DuplicateOfEmployeeId != null, ct);
+                if (merged is null) return null;
+                var survivorId = merged.DuplicateOfEmployeeId;
+                merged.IsDeleted = false;
+                merged.DeletedAtUtc = null;
+                merged.DeletedBy = null;
+                merged.RetentionUntilUtc = null;
+                merged.PrivacyStatus = string.Empty;
+                // The status it had before the merge, read from the merge's own audit row. A merge made before that was recorded has nothing to
+                // read: it falls back to Draft (Active is never assumed) and the status history says so. ONLY the newest merge row is read: an
+                // older merge's status is never borrowed.
+                var mergeAudits = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                        "Unmerge reads the merge's own audit row, whatever company it was written under; the tenant is pinned.")
+                    .Where(a => a.Action == "employee.merged_into_existing" && a.EntityId == id.ToString() && a.Metadata != null)
+                    .OrderByDescending(a => a.CreatedAtUtc).Select(a => new { a.Metadata }).Take(1).ToListAsync(ct);
+                string? recorded = null;
+                foreach (var row in mergeAudits)
                 {
-                    using var doc = JsonDocument.Parse(row.Metadata!);
-                    if (doc.RootElement.TryGetProperty("previousStatus", out var ps) && ps.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(ps.GetString()))
-                    { recordedStatus = ps.GetString(); break; }
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(row.Metadata!);
+                        if (doc.RootElement.TryGetProperty("previousStatus", out var ps) && ps.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(ps.GetString()))
+                        { recorded = ps.GetString(); break; }
+                    }
+                    catch (JsonException) { /* an unreadable row proves nothing */ }
                 }
-                catch (JsonException) { /* an unreadable row proves nothing */ }
-            }
-            // The record always comes back as Draft first. Going on to the pre-merge status is a normal status change (below), so it passes
-            // every gate a normal status change does: the activation/readiness gate, the establishment seat check, the plan's employee limit.
-            var requestedStatus = recordedStatus is null ? null : EmployeeStatuses.Canonical(recordedStatus) ?? recordedStatus;
-            var statusBeforeUnmerge = merged.Status;
-            merged.Status = EmployeeStatuses.Draft;
-            var restoreHistoryId = Guid.NewGuid();
-            _db.EmployeeStatusHistories.Add(new EmployeeStatusHistory
-            {
-                Id = restoreHistoryId, TenantId = tenantId, EmployeeId = id, OldStatus = statusBeforeUnmerge ?? string.Empty, NewStatus = merged.Status,
-                EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow), ChangedByUserId = context.UserId,
-                Reason = recordedStatus is null
-                    ? "Merge undone. The status before the merge was not recorded (an older merge), so the record returns to Draft."
-                    : string.Equals(requestedStatus, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase)
-                        ? "Merge undone. The record returns to Draft, the status it had before the merge."
-                        : $"Merge undone. The record returns to Draft first, then to {requestedStatus}, the status it had before the merge, if the normal status checks allow it.",
-            });
-            merged.DuplicateOfEmployeeId = null;
+                // The record always comes back as Draft first. Going on to the pre-merge status is a normal status change (below), so it passes
+                // every gate a normal status change does: the activation/readiness gate, the establishment seat check, the plan's employee limit.
+                var requested = recorded is null ? null : EmployeeStatuses.Canonical(recorded) ?? recorded;
+                var statusBeforeUnmerge = merged.Status;
+                merged.Status = EmployeeStatuses.Draft;
+                var historyId = Guid.NewGuid();
+                _db.EmployeeStatusHistories.Add(new EmployeeStatusHistory
+                {
+                    Id = historyId, TenantId = tenantId, EmployeeId = id, OldStatus = statusBeforeUnmerge ?? string.Empty, NewStatus = merged.Status,
+                    EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow), ChangedByUserId = context.UserId,
+                    Reason = recorded is null
+                        ? "Merge undone. The status before the merge was not recorded (an older merge), so the record returns to Draft."
+                        : string.Equals(requested, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase)
+                            ? "Merge undone. The record returns to Draft, the status it had before the merge."
+                            : $"Merge undone. The record returns to Draft first, then to {requested}, the status it had before the merge, if the normal status checks allow it.",
+                });
+                merged.DuplicateOfEmployeeId = null;
 
-            // Put back only what the merge took away. The merge records how many salary structures it deactivated; a structure that was
-            // already inactive before the merge (a closed, historical package) must stay closed, so with no such record nothing is
-            // reactivated, and otherwise at most that many, latest effective date first. The footprint row must be the one THIS merge wrote:
-            // one at or after the merge's own audit row (an earlier merge-and-unmerge cycle's row, or a row with no merge row to be tied to,
-            // is never used).
-            var mergeFootprints = mergeAuditAt is not { } mergeTime
-                ? new List<string?>()
-                : await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                // What the merge took away is put back (step 3) only in the amount it recorded: a structure that was already inactive before the
+                // merge (a closed, historical package) must stay closed, so with no footprint row nothing is reactivated, and otherwise at most
+                // that many, latest effective date first. The footprint row is the newest one written since the record's last unmerge: a
+                // cycle that was already undone is never read again. It is NOT tied to the merge row's own time, because a merge made before
+                // the merge row was staged first wrote its footprint row just before it.
+                var lastReversedAt = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                        "Unmerge bounds the footprint lookup by the record's last unmerge, whatever company it was written under; the tenant is pinned.")
+                    .Where(a => a.Action == "employee.duplicate_merge_reversed" && a.EntityId == id.ToString())
+                    .OrderByDescending(a => a.CreatedAtUtc).Select(a => (DateTime?)a.CreatedAtUtc).FirstOrDefaultAsync(ct);
+                var mergeFootprints = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
                         "Unmerge reads the merge's own footprint audit row, whatever company it was written under; the tenant is pinned.")
-                    .Where(a => a.Action == "employee.payroll_footprint_deactivated" && a.EntityId == id.ToString() && a.Metadata != null && a.CreatedAtUtc >= mergeTime)
+                    .Where(a => a.Action == "employee.payroll_footprint_deactivated" && a.EntityId == id.ToString() && a.Metadata != null
+                                && (lastReversedAt == null || a.CreatedAtUtc > lastReversedAt))
                     .OrderByDescending(a => a.CreatedAtUtc)
                     .Select(a => a.Metadata)
                     .Take(20)
                     .ToListAsync(ct);
-            var mergeFootprint = mergeFootprints.FirstOrDefault(m => m is not null && m.Contains("merged_duplicate"));
-            var toReactivate = 0;
-            var wpsToRestore = 0;
-            if (mergeFootprint is not null)
-            {
-                try
+                var mergeFootprint = mergeFootprints.FirstOrDefault(m => m is not null && m.Contains("merged_duplicate"));
+                var reactivateCount = 0;
+                var wpsCount = 0;
+                if (mergeFootprint is not null)
                 {
-                    using var footprint = JsonDocument.Parse(mergeFootprint);
-                    if (footprint.RootElement.TryGetProperty("salaryDeactivated", out var n) && n.TryGetInt32(out var count)) toReactivate = Math.Max(0, count);
-                    if (footprint.RootElement.TryGetProperty("profileDeactivated", out var pd) && pd.TryGetInt32(out var profileCount)) wpsToRestore = Math.Max(0, profileCount);
+                    try
+                    {
+                        using var footprint = JsonDocument.Parse(mergeFootprint);
+                        if (footprint.RootElement.TryGetProperty("salaryDeactivated", out var n) && n.TryGetInt32(out var count)) reactivateCount = Math.Max(0, count);
+                        if (footprint.RootElement.TryGetProperty("profileDeactivated", out var pd) && pd.TryGetInt32(out var profileCount)) wpsCount = Math.Max(0, profileCount);
+                    }
+                    catch (JsonException) { /* an unreadable row proves nothing was deactivated: restore nothing */ }
                 }
-                catch (JsonException) { /* an unreadable row proves nothing was deactivated: restore nothing */ }
-            }
-            // WPS eligibility goes back only where the merge switched it off: at most as many profiles as the merge recorded clearing, and never
-            // for a twin that comes back with an exit status (the exit cascade's "never pay this profile again" gate stays shut). With no footprint
-            // row (an older merge) the profiles are left exactly as they are. A profile that was never WPS-eligible is never turned on.
-            if (wpsToRestore > 0 && !WpsRestoreBlockedStatuses.Contains(requestedStatus ?? EmployeeStatuses.Draft, StringComparer.OrdinalIgnoreCase))
-            {
-                var cleared = await _db.EmployeePayrollProfiles
-                    .Where(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted && !x.WpsEligible)
-                    .OrderBy(x => x.CreatedAtUtc).Take(wpsToRestore).ToListAsync(ct);
-                foreach (var p in cleared) { p.WpsEligible = true; p.UpdatedAtUtc = DateTime.UtcNow; p.UpdatedBy = context.UserId; }
-            }
-            if (toReactivate > 0)
-            {
-                var closed = await _db.EmployeeSalaryStructures
-                    .Where(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsActive)
-                    .OrderByDescending(x => x.EffectiveDate).Take(toReactivate).ToListAsync(ct);
-                foreach (var structure in closed) structure.IsActive = true;
+
+                await _db.SaveChangesAsync(ct);
+                return new UnmergeStepOne(survivorId, recorded, requested, historyId, reactivateCount, wpsCount);
             }
 
-            await _db.SaveChangesAsync(ct);
+            UnmergeStepOne? stepOne;
+            if (_db.Database.IsRelational() && _db.Database.CurrentTransaction is null)
+            {
+                var strategy = _db.Database.CreateExecutionStrategy();
+                stepOne = await strategy.ExecuteAsync(async () =>
+                {
+                    await using var tx = await _db.Database.BeginTransactionAsync(ct);
+                    var restored = await RestoreRecordAsync();
+                    if (restored is not null) await tx.CommitAsync(ct);
+                    return restored;
+                });
+            }
+            else
+                stepOne = await RestoreRecordAsync();
+            if (stepOne is null) return NotFound();
+            var (intoId, recordedStatus, requestedStatus, restoreHistoryId, toReactivate, wpsToRestore) = stepOne;
+            _db.ChangeTracker.Clear();
             await RefreshReadinessByIdAsync(tenantId, id, ct);
 
             // Back to the pre-merge status, only through the same checks a normal status change makes. Anything that stops it leaves the record
@@ -5629,7 +5655,8 @@ public class EmployeesController : ControllerBase
             {
                 if (EmployeeStatuses.Canonical(requestedStatus) is null)
                     fallbackReason = "status_change_refused";
-                else if (string.Equals(requestedStatus, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)
+                // The plan's limit applies to every status that counts toward it (the same list creating an employee counts), not to Active alone.
+                else if (EmployeeSeatLimit.IsCounted(requestedStatus)
                          && await EmployeeSeatLimit.ReachedAsync(_db, tenantId, ct) is not null)
                     fallbackReason = "plan_limit";
                 else
@@ -5642,12 +5669,15 @@ public class EmployeesController : ControllerBase
                             new EmployeeStatusChangeRequest(requestedStatus, DateOnly.FromDateTime(DateTime.UtcNow), "Merge undone: back to the status the record had before the merge."),
                             context, ct);
                     }
+                    // Only the status change's own gate refusals fall back to Draft. Anything else (a database fault, a timeout, a bug) is not a
+                    // refusal and must not be reported as one: it propagates, and the record stays the Draft step 1 committed.
                     catch (EmployeeActivationBlockedException) { fallbackReason = "activation_blocked"; }
-                    catch (EmployeeValidationException) { fallbackReason = "activation_blocked"; }
+                    catch (EmployeeValidationException ex) when (ex.Code == EmployeeProblemCodes.ValidationFailed) { fallbackReason = "activation_blocked"; }
+                    catch (EmployeeWarningsRequireAckException) { fallbackReason = "activation_blocked"; }
                     catch (EstablishmentBudgetExceededException) { fallbackReason = "establishment_full"; }
                     catch (SettledServiceReactivationException) { fallbackReason = "settled_service"; }
-                    catch (InvalidOperationException) { fallbackReason = "status_change_refused"; }
-                    catch (DbUpdateException) { fallbackReason = "status_change_refused"; }
+                    catch (EmployeeLimitReachedException) { fallbackReason = "plan_limit"; }
+                    catch (EmployeeStatusChangeRefusedException) { fallbackReason = "status_change_refused"; }
                     // A refused change rolled its own transaction back; nothing it tracked in memory may leak into what is written next.
                     if (fallbackReason is not null) _db.ChangeTracker.Clear();
                 }
@@ -5656,7 +5686,41 @@ public class EmployeesController : ControllerBase
             // IgnoreQueryFilters is intentional: the status the record ended on, read back whichever company filter applies; TenantId is re-applied explicitly in this predicate.
             var finalStatus = await _db.Employees.IgnoreQueryFilters().AsNoTracking()
                 .Where(x => x.TenantId == tenantId && x.Id == id).Select(x => x.Status).FirstAsync(ct);
-            var statusRestored = fallbackReason is null;
+            // The outcome decides, not the absence of an exception: a status change that returned nothing, or that ended on another status,
+            // has not restored the status.
+            var statusRestored = recordedStatus is not null && string.Equals(finalStatus, requestedStatus, StringComparison.OrdinalIgnoreCase);
+            if (!statusRestored && fallbackReason is null) fallbackReason = "status_change_refused";
+
+            // STEP 3: the payroll footprint goes back only once the record is past Draft, so a refused status leaves a plain Draft that is
+            // not WPS-eligible and has no active salary structure. WPS eligibility additionally never returns for a twin that comes back with an
+            // exit status (the exit cascade's "never pay this profile again" gate stays shut); the salary structure does, because a settlement
+            // still reads it. With no footprint row (an older merge) the profiles are left exactly as they are, and a profile that was never
+            // WPS-eligible is never turned on.
+            var isDraft = string.Equals(finalStatus, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase);
+            var payrollHeldBack = isDraft && (toReactivate > 0 || wpsToRestore > 0);
+            if (!isDraft)
+            {
+                if (wpsToRestore > 0 && !WpsRestoreBlockedStatuses.Contains(finalStatus, StringComparer.OrdinalIgnoreCase))
+                {
+                    var cleared = await _db.EmployeePayrollProfiles
+                        .Where(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted && !x.WpsEligible)
+                        .OrderBy(x => x.CreatedAtUtc).Take(wpsToRestore).ToListAsync(ct);
+                    foreach (var p in cleared) { p.WpsEligible = true; p.UpdatedAtUtc = DateTime.UtcNow; p.UpdatedBy = context.UserId; }
+                }
+                if (toReactivate > 0)
+                {
+                    var closed = await _db.EmployeeSalaryStructures
+                        .Where(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsActive)
+                        .OrderByDescending(x => x.EffectiveDate).Take(toReactivate).ToListAsync(ct);
+                    foreach (var structure in closed) structure.IsActive = true;
+                }
+                if (wpsToRestore > 0 || toReactivate > 0)
+                {
+                    await _db.SaveChangesAsync(ct);
+                    await RefreshReadinessByIdAsync(tenantId, id, ct);
+                }
+            }
+
             var (reasonEn, reasonAr) = fallbackReason switch
             {
                 "activation_blocked" => ("it does not yet meet the activation requirements (see its readiness checklist)", "لا يستوفي متطلبات التفعيل بعد (راجع قائمة الجاهزية الخاصة به)"),
@@ -5686,6 +5750,11 @@ public class EmployeesController : ControllerBase
             var messageAr = statusRestored
                 ? $"تم التراجع عن الدمج. عاد السجل بحالة {finalStatus}."
                 : $"تم التراجع عن الدمج. عاد السجل بحالة مسودة بدلاً من {requestedStatus ?? "حالته السابقة"}: {reasonAr}.";
+            if (payrollHeldBack)
+            {
+                messageEn += " Its WPS eligibility and salary structure were not restored: they come back only with an employed status, so set them again once the record is active.";
+                messageAr += " لم تتم استعادة أهلية نظام حماية الأجور وهيكل الراتب: لا يعودان إلا مع حالة توظيف، لذا أعد ضبطهما بعد تفعيل السجل.";
+            }
             if (loginClosed)
             {
                 messageEn += " Its login stays closed: the merge closed it, and it must be re-issued (a new welcome code) before this person can sign in.";
@@ -5693,10 +5762,10 @@ public class EmployeesController : ControllerBase
             }
 
             await _audit.WriteAsync("employee.duplicate_merge_reversed", "Employee", id.ToString(), context,
-                JsonSerializer.Serialize(new { restoredFromMergeInto = intoId, restoredStatus = finalStatus, requestedStatus, fallbackReason, reason = req.Reason?.Trim() }), ct);
+                JsonSerializer.Serialize(new { restoredFromMergeInto = intoId, restoredStatus = finalStatus, requestedStatus, fallbackReason, payrollRestored = !payrollHeldBack, reason = req.Reason?.Trim() }), ct);
             return Ok(new
             {
-                resolved = "unmerge", restored = id, status = finalStatus, requestedStatus, statusRestored, fallbackReason,
+                resolved = "unmerge", restored = id, status = finalStatus, requestedStatus, statusRestored, fallbackReason, payrollRestored = !payrollHeldBack,
                 loginClosed, loginReissueRequired = loginClosed, message = messageEn, messageAr,
             });
         }
@@ -6391,6 +6460,9 @@ public class EmployeesController : ControllerBase
     }
 
     /// <summary>A twin that comes back with one of these statuses is not put back in the bank file by an unmerge.</summary>
+    /// <summary>What step 1 of an unmerge (the locked, transactional restore of the record as a Draft) hands to the later steps.</summary>
+    private sealed record UnmergeStepOne(int? IntoId, string? RecordedStatus, string? RequestedStatus, Guid RestoreHistoryId, int ToReactivate, int WpsToRestore);
+
     private static readonly string[] WpsRestoreBlockedStatuses = ["Terminated", "Inactive", "Resigned", "Archived", "Exited", "Retired", "Deceased"];
 
     private static readonly string[] OpenTransferStatuses = ["PendingCurrentManager", "PendingNewManager", "PendingHrApproval"];

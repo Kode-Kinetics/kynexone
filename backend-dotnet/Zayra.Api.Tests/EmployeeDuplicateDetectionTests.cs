@@ -712,7 +712,7 @@ public class EmployeeDuplicateDetectionTests
         db.AuditLogs.Add(new AuditLog
         {
             TenantId = t, Action = "employee.merged_into_existing", EntityName = "Employee", EntityId = dupId.ToString(),
-            Metadata = "{\"reason\":\"same person\"}", CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10),
+            Metadata = "{\"reason\":\"same person\",\"previousStatus\":\"Confirmed\"}", CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10),
         });
         db.AuditLogs.Add(new AuditLog
         {

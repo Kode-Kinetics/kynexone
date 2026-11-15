@@ -756,7 +756,7 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
             seed.AuditLogs.Add(new AuditLog
             {
                 TenantId = t.TenantId, Action = "employee.merged_into_existing", EntityName = "Employee", EntityId = t.Duplicate.Id.ToString(),
-                Metadata = "{\"reason\":\"same person\"}", CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10),
+                Metadata = "{\"reason\":\"same person\",\"previousStatus\":\"Confirmed\"}", CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10),
             });
             await seed.SaveChangesAsync();
             if (mergeDeactivated > 0)
@@ -967,11 +967,11 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
     }
 
     [Fact]
-    public async Task Unmerge_RestoresWps_ForAnActiveTwinWhoseProfileTheMergeSwitchedOff()
+    public async Task Unmerge_RestoresWps_ForAnEmployedTwinWhoseProfileTheMergeSwitchedOff()
     {
-        var (_, wps) = await MergeThenUnmergeAsync("Active", profileWps: true);
+        var (_, wps) = await MergeThenUnmergeAsync("Confirmed", profileWps: true);
 
-        wps.Should().BeTrue("the merge cleared it, and the twin is Active again");
+        wps.Should().BeTrue("the merge cleared it, and the twin is employed again");
     }
 
     [Theory]
