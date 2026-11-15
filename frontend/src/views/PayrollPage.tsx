@@ -62,8 +62,11 @@ import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
-import { BankFileSteps } from '../components/payroll/BankFileSteps';
-import { deriveBankSteps, suggestedBatchReference, type BankFlowProgress, type BankStepKey } from '../lib/bankFileSteps';
+import { BankFileGuide, useBankHandOver, type GuideSlots } from '../components/payroll/BankFileGuide';
+import { Modal as SideDrawer } from '../components/Modal';
+import { deriveBankSteps, suggestedBatchReference, type BankFlowProgress } from '../lib/bankFileSteps';
+import { deriveBankStage } from '../lib/bankFileGuide';
+import { awaitingBankConfirmation } from '../lib/payrollPipeline';
 import { AttendanceReconciliationPanel } from '../components/payroll/AttendanceReconciliationPanel';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
 import { LoadFailedNotice, LoadFailedRow } from '../components/ui/LoadFailedRow';
@@ -2815,12 +2818,13 @@ function PayslipsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; o
 type LoadStatus = { status: 'idle' } | { status: 'loading' } | { status: 'ready' } | { status: 'failed'; error: unknown };
 const isForbidden = (error: unknown) => (error as { response?: { status?: number } } | null)?.response?.status === 403;
 
-function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?: string; onRunChange?: (id: string | null) => void; onNavigate?: (tab: string) => void }) {
+function BankWpsTab({ selectedRunId, onRunChange, onNavigate, onRunsChanged }: { selectedRunId?: string; onRunChange?: (id: string | null) => void; onNavigate?: (tab: string) => void; onRunsChanged?: () => void }) {
   const t = useT();
   // Creating a batch and generating the file need payroll.export (Admin) or payroll.payment_batch.manage. Without either the actions are shown off, with the reason.
   const { hasPermission } = useAuth();
   const canExport = paymentActionsAllowed(hasPermission, ['create']);
   const fmtAmt = useFmtAmt();
+  const monthLabel = useMonthLabel();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   // The run the page is showing (the pipeline's "Open Bank / WPS", or ?tab=bank-wps&run=) is the run this tab opens on.
@@ -2832,6 +2836,8 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
   const [paymentMethod, setPaymentMethod] = useState('WPS');
   const [error, setError] = useState('');
   const openBatchIdRef = useRef<string | null>(null);
+  // Whether the open batch's bank file existed the last time the flow reported (null: not reported yet for this batch).
+  const fileMadeRef = useRef<boolean | null>(null);
   // The run's only batch opens by itself (once per run): there is nothing to choose between.
   const autoOpenedRef = useRef<string | null>(null);
   const currentRunRef = useRef(runId);
@@ -2843,6 +2849,7 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
   const [reloadKey, setReloadKey] = useState(0);
   // Where the open batch is in check -> create -> download, reported by the bank-file gate and panel for the step strip above.
   const [flow, setFlow] = useState<BankFlowProgress | null>(null);
+  const [recordsOpen, setRecordsOpen] = useState(false);
   const runNames = useRunEmployeeLabels(runId);
 
   useEffect(() => {
@@ -2854,7 +2861,7 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
     let cancelled = false;
     openBatchIdRef.current = null;
     autoOpenedRef.current = null;
-    setBatches([]); setSelectedBatch(null); setRecords([]); setRecordsState({ status: 'idle' });
+    setBatches([]); setSelectedBatch(null); setRecords([]); setRecordsState({ status: 'idle' }); setRecordsOpen(false);
     if (!runId) { setBatchesState({ status: 'idle' }); return; }
     setError('');
     setBatchesState({ status: 'loading' });
@@ -2871,7 +2878,7 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
 
   const openBatch = (batch: PayrollPaymentBatch) => {
     openBatchIdRef.current = batch.id;
-    setSelectedBatch(batch); setRecords([]); setRecordsState({ status: 'loading' }); setFlow(null);
+    setSelectedBatch(batch); setRecords([]); setRecordsState({ status: 'loading' }); setFlow(null); setRecordsOpen(false); fileMadeRef.current = null;
     payrollApi.paymentRecords(batch.id)
       .then(rows => { if (openBatchIdRef.current === batch.id) { setRecords(rows); setRecordsState({ status: 'ready' }); } })
       .catch(error => { if (openBatchIdRef.current === batch.id) setRecordsState({ status: 'failed', error }); });
@@ -2892,15 +2899,22 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
     progress: flow,
     wpsStatus: selectedBatch ? (batches.find(b => b.id === selectedBatch.id)?.effectiveWpsStatus || batches.find(b => b.id === selectedBatch.id)?.wpsStatus) : null,
   });
-  // The flow is the Saudi bank-file flow: shown while no batch is open (what to do first) and for a Saudi batch; a WPS/SIF batch has its own button.
-  const showSteps = !!runId && (!selectedBatch || selectedBatch.isSaudi === true);
-  const jumpStep = (key: BankStepKey) => jumpTo(key === 'batch' ? 'bank-wps-batches' : key === 'download' && document.getElementById('bank-wps-generated-export') ? 'bank-wps-generated-export' : 'bank-wps-bank-file');
+  // The one stage the screen speaks from: the header, the step list, the primary button and the status chip all read it (lib/bankFileGuide.ts).
+  const stage = deriveBankStage(steps, flow);
+  const loadingGuide = runsState.status === 'loading' || batchesState.status === 'loading' || batchesState.status === 'idle';
+  const handOver = useBankHandOver(stage, loadingGuide);
+  // The bank file was made on this screen: the page's pipeline and run list read the batch list, so they are told to read it again and
+  // cannot go on saying "waiting for the bank file" while this tab says it is ready.
+  useEffect(() => {
+    if (!selectedBatch || !flow || flow.gate !== 'ready') return;
+    if (fileMadeRef.current === false && flow.generated) {
+      onRunsChanged?.();
+      payrollApi.listPaymentBatches(runId).then(rows => { if (currentRunRef.current === runId) setBatches(rows); }).catch(() => {});
+    }
+    fileMadeRef.current = flow.generated;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flow?.generated, flow?.gate, selectedBatch?.id]);
 
-  const jumpTo = (id: string) => {
-    const target = document.getElementById(id) ?? document.getElementById('bank-wps-bank-file');
-    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    target?.focus({ preventScroll: true });
-  };
   const currentBatch = batches.find(b => b.wpsStatus !== 'Voided') ?? null;
   const batchFileGenerated = !!currentBatch && (currentBatch.status === 'FileGenerated' || (!!currentBatch.effectiveWpsStatus && currentBatch.effectiveWpsStatus !== 'Draft'));
 
@@ -2957,46 +2971,91 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
     payrollApi.listPaymentBatches(runId).then(setBatches).catch(() => {});
   };
 
-  return (
-    <div className="space-y-4">
-      {confirmDialog}
-      <div className="flex flex-wrap items-center gap-3">
-        <select aria-label={t('Select payroll run')} className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
-          <option value="">{t('Select payroll run…')}</option>
-          <RunSelectOptions runs={runs} />
-        </select>
-        {runId && (
-          <>
-            <select aria-label={t('Payment method')} className={`${sel} w-40`} value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
-              {['WPS', 'BankTransfer', 'Cash'].map(m => <option key={m} value={m}>{m === 'BankTransfer' ? t('Bank transfer') : m === 'Cash' ? t('Cash') : m}</option>)}
-            </select>
-            {hasExistingBatch && currentBatch ? (
-              <p role="status" data-testid="bank-batch-status" className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                {t(batchFileGenerated ? 'Payment batch {number} created; bank file generated.' : 'Payment batch {number} created; bank file not generated yet.', { number: currentBatch.batchNumber })}
-              </p>
-            ) : (
-              <button type="button" className={btn.primary} onClick={createBatch} disabled={creating || !runIsLocked || !canExport}
-                title={canExport ? undefined : t(PAYMENT_ACTION_DENIED.create)}>
-                {creating ? t('Creating…') : t('Create Payment Batch')}
-              </button>
-            )}
-          </>
-        )}
+  // ── The run and its toolbar: a labelled run selector (the page's one more place to change run), nothing else.
+  const runSelect = (
+    <div className="flex flex-wrap items-center gap-2">
+      <label htmlFor="bank-wps-run" className="text-body-sm font-medium text-fg-muted">{t('Payroll run')}</label>
+      <select id="bank-wps-run" aria-label={t('Select payroll run')} className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
+        <option value="">{t('Select payroll run…')}</option>
+        <RunSelectOptions runs={runs} />
+      </select>
+    </div>
+  );
+
+  // ── The payment batches of the run: one list, used by step 1 and by a WPS/SIF batch's own layout.
+  const batchList = (
+    <div id="bank-wps-batches" tabIndex={-1} className="outline-none" data-testid="bank-batch-list">
+      {!runId ? <p className="p-5 text-sm text-fg-muted">{t('Choose a payroll run to see its payment batches.')}</p>
+        : batchesState.status === 'loading' ? <SkeletonRows rows={2} className="p-4" />
+        : batchesState.status === 'failed' ? <LoadFailedNotice error={batchesState.error} onRetry={() => setReloadKey(n => n + 1)} />
+        : batches.length === 0 ? <p className="p-5 text-sm text-slate-400">{t('No batches yet.')}</p> : (
+        <div className="divide-y divide-slate-100 rounded-lg border border-line dark:divide-white/5">
+          {batches.map(b => (
+            <div key={b.id} role="button" tabIndex={0} onClick={() => openBatch(b)}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openBatch(b); } }}
+              className={`w-full cursor-pointer px-4 py-3 text-start hover:bg-slate-50 dark:hover:bg-white/5 ${selectedBatch?.id === b.id ? 'bg-sapphire/5 dark:bg-sapphire/10' : ''}`}>
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium text-slate-800 dark:text-white">{b.batchNumber}</p>
+                {/* One status: the lifecycle's. The file-generation flag is a step toward it, not a second status. */}
+                <StatusBadge status={b.effectiveWpsStatus || b.wpsStatus || b.status} />
+              </div>
+              <p className="mt-1 text-xs text-slate-400">{b.paymentMethod} · {fmtAmt(b.totalAmount, b.currency)}</p>
+              {b.status !== 'FileGenerated' && (
+                <button type="button" onClick={e => { e.stopPropagation(); generateWps(b.id); }} className={`mt-1.5 ${btn.sm} h-6 px-2 text-xs disabled:opacity-50`}
+                  disabled={!canExport}
+                  title={!canExport ? t(PAYMENT_ACTION_DENIED.wps) : b.isSaudi ? t('For review only. The Saudi bank payroll file is the ANB Connect instruction.') : undefined}>
+                  {b.isSaudi ? t('Generate payroll register (internal — not a bank/WPS file)') : t('Generate WPS/SIF (not verified with any gateway)')}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  // ── The payment records table: a drawer in the guided flow, a panel in a WPS/SIF batch's layout.
+  const recordsTable = selectedBatch && (
+    <>
+      {/* A long batch scrolls inside its own region (header stays in view) instead of making the whole tab tall. */}
+      <div role="region" aria-label={t('Payment records')} tabIndex={0} className="max-h-[calc(100dvh-10rem)] overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-primary" data-testid="bank-records-scroll">
+      <table className="w-full min-w-[34rem] text-sm">
+        <thead className="sticky top-0 z-10 bg-surface">
+          <tr className="border-b border-slate-100 dark:border-white/[0.07]">
+            {[t('Employee'), t('Amount'), 'IBAN', t('WPS Reference'), t('Status')].map(h => (
+              <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
+          {recordsState.status === 'loading' && <tr><td colSpan={5} className="p-4"><SkeletonRows rows={4} /></td></tr>}
+          {recordsState.status === 'failed' && (isForbidden(recordsState.error)
+            ? <tr><td colSpan={5} role="alert" data-testid="bank-records-forbidden" className="py-8 text-center text-sm text-fg-muted">{t('The payment records need the Payroll export permission. Ask an administrator to give it to your role.')}</td></tr>
+            : <LoadFailedRow colSpan={5} error={recordsState.error} onRetry={() => openBatch(selectedBatch)} />)}
+          {recordsState.status === 'ready' && records.length === 0 && <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-400">{t('No records.')}</td></tr>}
+          {records.map(r => (
+            <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
+              <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">
+                {r.employeeName
+                  ? <><bdi>{r.employeeName}</bdi>{r.employeeCode && <span className="ms-1.5 whitespace-nowrap text-xs font-normal text-slate-400"><bdi>{r.employeeCode}</bdi></span>}</>
+                  : runNames[r.employeeId] ? <EmployeeLabelText label={runNames[r.employeeId]} /> : t('Emp #{id}', { id: r.employeeId })}
+              </td>
+              <td className="px-4 py-2 font-semibold text-slate-700 dark:text-slate-300">{r.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+              <td className="px-4 py-2 font-mono text-xs text-slate-500">{r.iban || <span className="text-rose-500">{t('Missing IBAN')}</span>}</td>
+              <td className="px-4 py-2 text-xs text-slate-400">{r.wpsReference}</td>
+              <td className="px-4 py-2"><StatusBadge status={r.status} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
       </div>
-      {runId && !runIsLocked && (
-        <div className="flex items-start gap-2 rounded-lg bg-amber-50 px-4 py-2.5 text-sm text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{t('This run is {status}. A payment batch can only be created once the run is Locked — finalise it on the Approvals tab (Lock Run) first.', { status: enumLabel(t, 'PayrollRunStatus', selectedRun?.status) })}</span>
-        </div>
-      )}
-      {runId && !canExport && (
-        <div role="note" className="flex items-start gap-2 rounded-lg bg-amber-50 px-4 py-2.5 text-sm text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{t(PAYMENT_ACTION_DENIED.create)}</span>
-        </div>
-      )}
+    </>
+  );
+
+  const failureBanners = (
+    <>
       {error && (
-        <div className="flex items-start gap-2 rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
+        <div role="alert" className="flex items-start gap-2 rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>{error}</span>
         </div>
@@ -3008,109 +3067,164 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
           <button type="button" className={btn.link} onClick={() => setReloadKey(n => n + 1)}>{t('Retry')}</button>
         </div>
       )}
+    </>
+  );
 
-      {showSteps && <BankFileSteps steps={steps} onJump={jumpStep} onOpenTracking={onNavigate ? () => onNavigate('payment-tracking') : undefined} />}
-      {selectedBatch && (
-        <nav aria-label={t('Jump to a section of this tab')} data-testid="bank-wps-jump" className="flex flex-wrap items-center gap-x-1 gap-y-1 rounded-lg bg-slate-50 px-3 py-1.5 text-xs dark:bg-white/5">
-          <span className="text-slate-500 dark:text-slate-400">{t('Jump to')}</span>
-          <button type="button" className={`${btn.link} px-1.5`} onClick={() => jumpTo('bank-wps-records')}>{t('Records')}</button>
-          {selectedBatch.isSaudi && <>
-            <span aria-hidden="true" className="text-slate-300">·</span>
-            <button type="button" className={`${btn.link} px-1.5`} onClick={() => jumpTo('bank-wps-bank-file')}>{t('Bank file')}</button>
-            <span aria-hidden="true" className="text-slate-300">·</span>
-            <button type="button" className={`${btn.link} px-1.5`} onClick={() => jumpTo('bank-wps-generated-export')}>{t('Generated export')}</button>
-          </>}
-        </nav>
-      )}
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div id="bank-wps-batches" tabIndex={-1} className="surface overflow-hidden outline-none">
-          <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
-            <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Payment Batches')}</p>
-          </div>
-          {!runId ? <p className="p-5 text-sm text-fg-muted">{t('Choose a payroll run to see its payment batches.')}</p>
-            : batchesState.status === 'loading' ? <SkeletonRows rows={2} className="p-4" />
-            : batchesState.status === 'failed' ? <LoadFailedNotice error={batchesState.error} onRetry={() => setReloadKey(n => n + 1)} />
-            : batches.length === 0 ? <p className="p-5 text-sm text-slate-400">{t('No batches yet.')}</p> : (
-            <div className="divide-y divide-slate-100 dark:divide-white/5">
-              {batches.map(b => (
-                <div key={b.id} role="button" tabIndex={0} onClick={() => openBatch(b)}
-                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openBatch(b); } }}
-                  className={`w-full cursor-pointer px-4 py-3 text-start hover:bg-slate-50 dark:hover:bg-white/5 ${selectedBatch?.id === b.id ? 'bg-sapphire/5 dark:bg-sapphire/10' : ''}`}>
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-medium text-slate-800 dark:text-white">{b.batchNumber}</p>
-                    {/* One status: the lifecycle's. The file-generation flag is a step toward it, not a second status. */}
-                    <StatusBadge status={b.effectiveWpsStatus || b.wpsStatus || b.status} />
-                  </div>
-                  <p className="mt-1 text-xs text-slate-400">{b.paymentMethod} · {fmtAmt(b.totalAmount, b.currency)}</p>
-                  {b.status !== 'FileGenerated' && (
-                    <button type="button" onClick={e => { e.stopPropagation(); generateWps(b.id); }} className={`mt-1.5 ${btn.sm} h-6 px-2 text-xs disabled:opacity-50`}
-                      disabled={!canExport}
-                      title={!canExport ? t(PAYMENT_ACTION_DENIED.wps) : b.isSaudi ? t('For review only. The Saudi bank payroll file is the ANB Connect instruction.') : undefined}>
-                      {b.isSaudi ? t('Generate payroll register (internal — not a bank/WPS file)') : t('Generate WPS/SIF (not verified with any gateway)')}
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
+  // A WPS/SIF batch (not the Saudi bank-file flow) keeps its own layout: the batch list, its records and the batch's own file button.
+  if (runId && selectedBatch && selectedBatch.isSaudi !== true) {
+    return (
+      <div className="space-y-4">
+        {confirmDialog}
+        <div className="flex flex-wrap items-center gap-3">
+          {runSelect}
+          {hasExistingBatch && currentBatch && (
+            <p role="status" data-testid="bank-batch-status" className="text-sm font-medium text-slate-700 dark:text-slate-200">
+              {t(batchFileGenerated ? 'Payment batch {number} created; bank file generated.' : 'Payment batch {number} created; bank file not generated yet.', { number: currentBatch.batchNumber })}
+            </p>
           )}
         </div>
-
-        <div id="bank-wps-records" tabIndex={-1} className="surface overflow-hidden outline-none lg:col-span-2">
-          {!selectedBatch ? (
-            <div className="flex flex-col items-center justify-center py-20 text-center">
-              <Landmark className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-              <p className="text-sm text-slate-400">{t('Select a batch to view payment records')}</p>
+        {failureBanners}
+        <div className="grid gap-4 lg:grid-cols-3">
+          <div className="surface overflow-hidden">
+            <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
+              <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Payment Batches')}</p>
             </div>
-          ) : (
-            <>
-              <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
-                <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Records — {batchNumber}', { batchNumber: selectedBatch.batchNumber })}</p>
-              </div>
-              {/* A long batch scrolls inside its own region (header stays in view) instead of making the whole tab tall. */}
-              <div role="region" aria-label={t('Payment records')} tabIndex={0} className="max-h-[22rem] overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-primary" data-testid="bank-records-scroll">
-              <table className="w-full min-w-[34rem] text-sm">
-                <thead className="sticky top-0 z-10 bg-surface">
-                  <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                    {[t('Employee'), t('Amount'), 'IBAN', t('WPS Reference'), t('Status')].map(h => (
-                      <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
-                  {recordsState.status === 'loading' && <tr><td colSpan={5} className="p-4"><SkeletonRows rows={4} /></td></tr>}
-                  {recordsState.status === 'failed' && (isForbidden(recordsState.error)
-                    ? <tr><td colSpan={5} role="alert" data-testid="bank-records-forbidden" className="py-8 text-center text-sm text-fg-muted">{t('The payment records need the Payroll export permission. Ask an administrator to give it to your role.')}</td></tr>
-                    : <LoadFailedRow colSpan={5} error={recordsState.error} onRetry={() => openBatch(selectedBatch)} />)}
-                  {recordsState.status === 'ready' && records.length === 0 && <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-400">{t('No records.')}</td></tr>}
-                  {records.map(r => (
-                    <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-                      <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">
-                        {r.employeeName
-                          ? <><bdi>{r.employeeName}</bdi>{r.employeeCode && <span className="ms-1.5 whitespace-nowrap text-xs font-normal text-slate-400"><bdi>{r.employeeCode}</bdi></span>}</>
-                          : runNames[r.employeeId] ? <EmployeeLabelText label={runNames[r.employeeId]} /> : t('Emp #{id}', { id: r.employeeId })}
-                      </td>
-                      <td className="px-4 py-2 font-semibold text-slate-700 dark:text-slate-300">{r.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                      <td className="px-4 py-2 font-mono text-xs text-slate-500">{r.iban || <span className="text-rose-500">{t('Missing IBAN')}</span>}</td>
-                      <td className="px-4 py-2 text-xs text-slate-400">{r.wpsReference}</td>
-                      <td className="px-4 py-2"><StatusBadge status={r.status} /></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              </div>
-            </>
-          )}
+            {batchList}
+          </div>
+          <div id="bank-wps-records" tabIndex={-1} className="surface overflow-hidden outline-none lg:col-span-2">
+            <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
+              <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Records — {batchNumber}', { batchNumber: selectedBatch.batchNumber })}</p>
+            </div>
+            {recordsTable}
+          </div>
+        </div>
+        <SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi={false} onProgress={setFlow} suggestedReference={suggestedBatchReference(selectedBatch.batchNumber, selectedRun)}
+          employeeIds={records.map(r => r.employeeId)} employeeLabels={{ ...runNames, ...employeeLabelsFromRecords(records) }} renderGuide={slots => <>{slots.steps?.check?.body ?? null}</>} />
+      </div>
+    );
+  }
+
+  if (!runId) {
+    return (
+      <div className="space-y-4">
+        {confirmDialog}
+        {runSelect}
+        {failureBanners}
+        <div className="surface flex flex-col items-center justify-center py-16 text-center" data-testid="bank-no-run">
+          <Landmark className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" aria-hidden="true" />
+          <p className="text-sm text-fg-muted">{t('Choose a payroll run to prepare its bank file.')}</p>
         </div>
       </div>
-      {selectedBatch?.isSaudi && (
-        <div className="flex items-start gap-2 rounded-lg bg-slate-50 px-4 py-2.5 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">
-          <Landmark className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>
-            {t('Saudi bank payroll file: the Payroll payment instruction file (bank format) — the ANB Connect instruction with WPS fields — is the file to send to the bank. Mudad accepts only the WPS file your bank signs — keep the bank’s output file or a Mudad screenshot as evidence before marking the batch Accepted.')}
-          </span>
+    );
+  }
+
+  // ── The guided flow: what the tab itself puts in the steps (the batch, its records, Payment Tracking)
+  const batchFacts = selectedBatch ? (
+    <>
+      <bdi>{selectedBatch.batchNumber}</bdi>
+      {recordsState.status === 'ready' && <> · {t('{count, plural, one {# employee} other {# employees}}', { count: records.length })}</>}
+      {' '}· {fmtAmt(selectedBatch.totalAmount, selectedBatch.currency)}
+    </>
+  ) : null;
+
+  const batchBody = (
+    <>
+      {!hasExistingBatch && batchesState.status === 'ready' && (
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor="bank-wps-method" className="text-body-sm font-medium text-fg-muted">{t('Payment method')}</label>
+          <select id="bank-wps-method" className={`${sel} w-40`} value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
+            {['WPS', 'BankTransfer', 'Cash'].map(m => <option key={m} value={m}>{m === 'BankTransfer' ? t('Bank transfer') : m === 'Cash' ? t('Cash') : m}</option>)}
+          </select>
         </div>
       )}
-      {selectedBatch && <div id="bank-wps-bank-file" tabIndex={-1} className="outline-none"><SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi={selectedBatch.isSaudi === true} onProgress={setFlow} suggestedReference={suggestedBatchReference(selectedBatch.batchNumber, selectedRun)} employeeIds={records.map(r => r.employeeId)} employeeLabels={{ ...runNames, ...employeeLabelsFromRecords(records) }} /></div>}
+      {batchList}
+    </>
+  );
+
+  const recordsRow = selectedBatch && (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-body-sm" data-testid="bank-records-row">
+      {recordsState.status === 'loading' && <div className="w-full max-w-xs"><SkeletonRows rows={1} /></div>}
+      {recordsState.status === 'failed' && (isForbidden(recordsState.error)
+        ? <p role="alert" data-testid="bank-records-forbidden" className="text-fg-muted">{t('The payment records need the Payroll export permission. Ask an administrator to give it to your role.')}</p>
+        : <div className="w-full"><LoadFailedNotice error={recordsState.error} onRetry={() => openBatch(selectedBatch)} /></div>)}
+      {recordsState.status === 'ready' && (
+        <button type="button" className={btn.link} onClick={() => setRecordsOpen(true)} data-testid="bank-records-open">
+          {t('View payment records ({count})', { count: records.length })}
+        </button>
+      )}
+    </div>
+  );
+
+  const trackingButton = onNavigate ? (
+    <button type="button" className="btn-secondary btn-sm" onClick={() => onNavigate('payment-tracking')}>{t('Open Payment Tracking')}</button>
+  ) : null;
+
+  const runStatusText = enumLabel(t, 'PayrollRunStatus', selectedRun?.status);
+  const batchSentence = stage.key === 'batch' && stage.reason === 'run_not_locked'
+    ? t('This run is {status}. A payment batch can only be created once the run is Locked — finalise it on the Approvals tab (Lock Run) first.', { status: runStatusText })
+    : undefined;
+  // The end state: submitted, and where the bank's confirmation stands (the same facts the page's pipeline reads).
+  const batchRow = selectedBatch ? batches.find(b => b.id === selectedBatch.id) : undefined;
+  const waitingOnBank = batchRow ? awaitingBankConfirmation(batchRow) : null;
+  const finishedText = waitingOnBank
+    ? (waitingOnBank.confirmed !== undefined && waitingOnBank.total !== undefined
+      ? t('Bank file submitted — waiting for the bank’s confirmation ({confirmed} of {total})', { confirmed: waitingOnBank.confirmed, total: waitingOnBank.total })
+      : t('Bank file submitted — waiting for the bank’s confirmation'))
+    : (batchRow?.effectiveWpsStatus || batchRow?.wpsStatus) === 'Submitted' ? t('Bank file submitted — waiting for the bank’s confirmation') : undefined;
+
+  const guide = (panel: GuideSlots) => (
+    <BankFileGuide
+      period={selectedRun ? monthLabel(selectedRun.month, selectedRun.year) : '—'}
+      stage={stage}
+      steps={steps}
+      hasBatches={hasExistingBatch}
+      loading={loadingGuide}
+      sentenceOverride={batchSentence}
+      finishedText={finishedText}
+      confirmation={handOver.confirmation}
+      onUserAction={handOver.onUserAction}
+      slots={{
+        ...panel,
+        steps: {
+          ...panel.steps,
+          batch: { summary: batchFacts, body: batchBody, reopen: 'change' },
+          check: { ...panel.steps?.check, body: <>{recordsRow}{panel.steps?.check?.body}</> },
+          download: { ...panel.steps?.download, body: <>{panel.steps?.download?.body}{trackingButton}</> },
+        },
+        actions: {
+          ...panel.actions,
+          batch: hasExistingBatch ? undefined : {
+            label: creating ? t('Creating…') : t('Create Payment Batch'), onClick: createBatch, busy: creating,
+            disabled: creating || !runIsLocked || !canExport || batchesState.status !== 'ready',
+          },
+          finished: trackingButton ? { label: t('Open Payment Tracking'), onClick: () => onNavigate?.('payment-tracking') } : undefined,
+        },
+        live: <>{error && <div role="alert" className="flex items-start gap-2 rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" /><span>{error}</span></div>}{panel.live}</>,
+        overlays: (
+          <>
+            {panel.overlays}
+            <SideDrawer isOpen={recordsOpen && !!selectedBatch} title={t('Records — {batchNumber}', { batchNumber: selectedBatch?.batchNumber ?? '' })} size="xl" placement="end" onClose={() => setRecordsOpen(false)} closeLabel={t('Close')}>
+              {recordsTable}
+            </SideDrawer>
+          </>
+        ),
+      }}
+    />
+  );
+
+  return (
+    <div className="space-y-4">
+      {confirmDialog}
+      {runSelect}
+      {runsState.status === 'failed' && failureBanners}
+      {runsState.status !== 'failed' && (
+        <>
+          {selectedBatch
+            ? <SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi onProgress={setFlow} suggestedReference={suggestedBatchReference(selectedBatch.batchNumber, selectedRun)}
+                employeeIds={records.map(r => r.employeeId)} employeeLabels={{ ...runNames, ...employeeLabelsFromRecords(records) }} renderGuide={guide} />
+            : guide({})}
+        </>
+      )}
     </div>
   );
 }
@@ -4427,7 +4541,7 @@ export function PayrollPage() {
       case 'validation':      return <ValidationTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
       case 'approvals':       return <ApprovalsTab selectedRunId={contextRunId} onRunChange={selectRunId} isAdmin={isAdmin} isFinance={isFinance} isHROrPayroll={isHROrPayroll || isAdmin} onReconNotReviewed={reconNotReviewed} />;
       case 'payslips':        return <PayslipsTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
-      case 'bank-wps':        return <BankWpsTab selectedRunId={contextRunId} onRunChange={selectRunId} onNavigate={navigateTab} />;
+      case 'bank-wps':        return <BankWpsTab selectedRunId={contextRunId} onRunChange={selectRunId} onNavigate={navigateTab} onRunsChanged={bumpRuns} />;
       case 'payment-tracking': return <PaymentTrackingTab selectedRunId={contextRunId} />;
       case 'reports':         return <ReportsTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
       case 'eosb':            return <EOSBTab />;

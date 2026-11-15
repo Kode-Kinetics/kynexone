@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { payrollUx } from '../src/i18n/payrollUx';
+import { bankFileGuide } from '../src/i18n/bankFileGuide';
 import { boot, HANDLED, PERMS, USER, type Handler, type Locale } from './demo-polish.fixture';
 
 /**
@@ -12,92 +13,11 @@ import { boot, HANDLED, PERMS, USER, type Handler, type Locale } from './demo-po
  */
 
 const LOCALES: Locale[] = ['en', 'ar'];
-const RUN_ID = '11111111-1111-4111-8111-111111111111';
-const BATCH_ID = 'b1';
-const COMPANY_ROW = { id: 'c1', name: 'Acme Arabia', legalNameEn: 'Acme Arabia LLC', tradeName: 'Acme Arabia', defaultCurrency: 'SAR', countryCode: 'SA', isActive: true };
-const RUN = {
-  id: RUN_ID, companyId: 'c1', year: 2026, month: 11, status: 'Locked', runType: 'Regular', totalGrossSalary: 144856.25, totalDeductions: 11267.35, totalNetSalary: 133588.9,
-  totalEmployerStatutoryCost: 10206.25, employeeCount: 9, createdAtUtc: '2026-11-14T00:50:00Z', processedAtUtc: '2026-11-14T00:51:00Z', lockedAtUtc: '2026-11-14T00:53:00Z',
-};
-const BATCH = {
-  id: BATCH_ID, payrollRunId: RUN_ID, batchNumber: 'PAY-202611-220353', paymentMethod: 'WPS', totalAmount: 133588.9, currency: 'SAR', status: 'Created', wpsStatus: 'Draft',
-  effectiveWpsStatus: 'Draft', wpsStatusLabel: 'Draft', wpsStatusChangedAtUtc: null, wpsSubmissionReference: null, wpsRejectionReason: null, createdAtUtc: '2026-11-14T01:05:00Z',
-  acceptanceEvidenceCount: 0, isSaudi: true, generatedFileLabel: null,
-};
-const NAMES = ['Maha Almutairi', 'Layla Al-Harbi', 'Fahad Alharbi', 'Nora Alharbi', 'Khalid Alotaibi', 'Sara Alzahrani', 'Omar Aldosari', 'Huda Alqahtani', 'Yousef Alshehri'];
-const RECORDS = NAMES.map((name, i) => ({
-  id: `r${i + 1}`, paymentBatchId: BATCH_ID, employeeId: 200 + i, employeeName: name, employeeCode: `EVT2-${String(i + 1).padStart(4, '0')}`, amount: 12000 + i * 350,
-  iban: `SA03800000006080101675${10 + i}`, wpsReference: `REF-${i + 1}`, status: 'Pending',
-}));
-const SETTINGS = {
-  formatId: 'anb-connect-csv-v1', molEstablishmentId: '7-1234567', mainAccountNumber: '0108061198800026', organizationName: 'Acme Arabia', organizationAddress1: 'Riyadh',
-  organizationAddress2: 'Olaya', organizationAddress3: 'Building 10', companyName: 'Acme Arabia LLC', narrative: 'November payroll', batchType: 'PAYROLL', autoWpsUpload: false,
-  nationalUnifiedNo: '', debitAccountIban: '',
-};
-const FORMATS = [{ id: 'anb-connect-csv-v1', name: 'ANB Connect payroll payment — header.csv + body.csv', bank: 'Arab National Bank (ANB)', channel: 'ANB Connect API channel (payroll-payment). Not the ANB corporate-portal WPY upload.',
-  sourceUrl: 'https://connect.anb.com.sa/apis/api/payroll-payment', reviewedOn: '2026-09-26', acceptanceStatus: 'specification-implemented; bank-acceptance-not-verified' }];
+import { RUN_ID, BATCH_ID, RUN, BATCH, RECORDS, bankHandler } from './bank-wps.fixture';
 
-type Opts = {
-  perms?: string[];
-  roles?: string[];
-  availability?: { enabled: boolean } | 'fail' | (() => { enabled: boolean } | 'fail');
-  batches?: unknown[] | 'fail' | 'forbidden';
-  records?: unknown[] | 'fail' | 'forbidden';
-  /** Delay (ms) before the batch list answers, to look at the loading state. */
-  slowBatches?: number;
-  posts?: string[];
-  extra?: Handler;
-  stages?: 'open' | 'folded' | 'default';
-  /** The check's answer (default: passes). */
-  validation?: { canExport: boolean; errors: { code: string; message: string; employeeId?: number; field?: string }[] };
-  runStatus?: string;
-};
-
-const bankHandler = (o: Opts = {}): Handler => (path, search, method, route) => {
-  if (method !== 'GET') o.posts?.push(`${method} ${path}`);
-  if (o.extra) { const x = o.extra(path, search, method, route); if (x !== undefined) return x; }
-  if (path === '/api/auth/me') return { ...USER, roles: o.roles ?? USER.roles, permissions: o.perms ?? [...PERMS, 'payroll.export', 'payroll.structure_manage'] };
-  if (path === '/api/payroll/runs') return { items: [{ ...RUN, status: o.runStatus ?? RUN.status }], total: 1, page: 1, pageSize: 100 };
-  if (path === '/api/payroll/companies') return [COMPANY_ROW];
-  if (path === '/api/payroll/readiness') return { year: 2026, month: 11, companyId: null, completionPercent: 100, isReadyForProcessing: true, totalActiveEmployees: 9, employeesWithSalary: 9, salaryCoveragePercent: 100, validationErrors: 0, payrollRunStatus: 'Locked', steps: [] };
-  if (path === '/api/payroll/overview') return { year: 2026, month: 11, totalCompanies: 1, totalActiveEmployees: 9, totalGrossPayroll: 144856.25, totalNetPayroll: 133588.9, totalValidationErrors: 0, totalPendingApprovals: 0, companies: [] };
-  if (/^\/api\/payroll\/runs\/[^/]+\/processing$/.test(path)) return { runId: RUN_ID, jobId: null, status: 'Idle', processedEmployees: null, totalEmployees: null, startedAtUtc: null, finishedAtUtc: null, errorCode: null };
-  if (/^\/api\/payroll\/runs\/[^/]+\/(validate|approvals)$/.test(path)) return [];
-  if (/^\/api\/payroll\/runs\/[^/]+\/validation-overrides$/.test(path)) return { runId: RUN_ID, overrides: [], overridableCodes: [], nonOverridableCodes: [] };
-  if (path === '/api/payroll/payment-batches') {
-    if (o.batches === 'fail') return (void route.fulfill({ status: 500, json: { message: 'boom' } }), HANDLED);
-    if (o.batches === 'forbidden') return (void route.fulfill({ status: 403, json: {} }), HANDLED);
-    const all = (o.batches ?? [BATCH]) as { payrollRunId: string }[];
-    const run = search.get('runId');
-    const body = run ? all.filter(b => b.payrollRunId === run) : all;
-    if (o.slowBatches) { setTimeout(() => void route.fulfill({ json: body }).catch(() => undefined), o.slowBatches); return HANDLED; }
-    return body;
-  }
-  if (path === `/api/payroll/payment-batches/${BATCH_ID}/records`) {
-    if (o.records === 'fail') return (void route.fulfill({ status: 500, json: { message: 'boom' } }), HANDLED);
-    if (o.records === 'forbidden') return (void route.fulfill({ status: 403, json: {} }), HANDLED);
-    return o.records ?? RECORDS;
-  }
-  const bp = '/api/payroll/bank-exports';
-  if (path === `${bp}/batches/${BATCH_ID}/availability`) {
-    const a = typeof o.availability === 'function' ? o.availability() : o.availability;
-    if (a === 'fail') return (void route.fulfill({ status: 500, json: { message: 'boom' } }), HANDLED);
-    return a ?? { enabled: true };
-  }
-  if (path === `${bp}/formats`) return FORMATS;
-  if (path === `${bp}/companies/c1/settings`) return SETTINGS;
-  if (path === `${bp}/companies/c1/templates`) return [];
-  if (path === `${bp}/batches/${BATCH_ID}/context`) return { companyId: 'c1', companyName: 'Acme Arabia', countryCode: 'SA', runStatus: 'Locked', existingExport: null };
-  if (path === `${bp}/batches/${BATCH_ID}/validate`) return { canExport: true, errors: [], warnings: [], employeeCount: 9, totalAmount: 133588.9, currency: 'SAR', formatId: 'anb-connect-csv-v1', ...(o.validation ?? {}) };
-  if (path === `${bp}/batches/${BATCH_ID}/generate`) {
-    const body = JSON.parse(route.request().postData() ?? '{}') as { batchReference: string; paymentDate: string };
-    return { id: '44444444-4444-4444-8444-444444444444', formatId: 'anb-connect-csv-v1', files: [{ name: 'header.csv', sha256: 'a'.repeat(64) }, { name: 'body.csv', sha256: 'b'.repeat(64) }],
-      batchReference: body.batchReference, paymentDate: body.paymentDate, employeeCount: 9, totalAmount: 133588.9, downloadUrl: `${bp}/batches/${BATCH_ID}/download` };
-  }
-  return undefined;
-};
-
-const say = (locale: Locale, key: string) => (locale === 'ar' ? payrollUx.ar[key] ?? `MISSING ${key}` : key);
+const say = (locale: Locale, key: string) => (locale === 'ar' ? payrollUx.ar[key] ?? bankFileGuide.ar[key] ?? `MISSING ${key}` : key);
+/** The records drawer: the payment records are one click from step 2, not a table in the page. */
+const openRecords = async (page: Page) => { await page.getByTestId('bank-records-open').click(); await expect(page.getByRole('dialog')).toBeVisible(); };
 const url = (tab: string) => `/payroll?tab=${tab}&run=${RUN_ID}`;
 const BANK_WORDS: Record<Locale, { tab: string }> = { en: { tab: 'Bank / WPS Files' }, ar: { tab: 'ملفات البنك' } };
 void BANK_WORDS;
@@ -117,7 +37,7 @@ for (const locale of LOCALES) {
       test.use({ viewport });
       test('the tab with a Saudi batch open', async ({ page }) => {
         await boot(page, { locale, url: url('bank-wps'), routes: bankHandler(), waitMs: 2500, stages: process.env.SHOT_PREFIX === 'before' ? 'open' : 'default' });
-        await expect(page.getByRole('cell', { name: /Maha Almutairi/ })).toBeVisible({ timeout: 90_000 });
+        await expect(page.getByTestId('bank-guide-sentence')).toBeVisible({ timeout: 90_000 });
         await page.waitForTimeout(2500);
         await shot(page, 'bank-wps', locale, form);
       });
@@ -137,7 +57,7 @@ for (const locale of LOCALES) {
       await expect(note).toBeVisible({ timeout: 90_000 });
       await expect(note).toContainText(say(locale, 'You cannot prepare the bank file'));
       await expect(note).toContainText(say(locale, 'Preparing the Saudi bank file needs the Payroll export permission. Ask an administrator to give it to your role, then come back to this batch.'));
-      await expect(page.getByRole('heading', { name: /ANB Connect/ })).toHaveCount(0);
+      await expect(page.getByTestId('bank-setup-summary')).toHaveCount(0);
       // The records the user may not read are not "No records."
       await expect(page.getByTestId('bank-records-forbidden')).toContainText(say(locale, 'The payment records need the Payroll export permission. Ask an administrator to give it to your role.'));
       await expect(page.getByText(/^(No records\.|لا توجد سجلات.?)$/)).toHaveCount(0);
@@ -158,7 +78,7 @@ for (const locale of LOCALES) {
       await expect(note).toBeVisible({ timeout: 90_000 });
       await expect(note).toContainText(say(locale, 'Could not check whether the bank file can be prepared'));
       await note.getByRole('button').click();
-      await expect(page.getByRole('heading', { name: /ANB Connect/ }).first()).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId('bank-setup-summary')).toBeVisible({ timeout: 30_000 });
       await expect(note).toHaveCount(0);
     });
 
@@ -167,7 +87,7 @@ for (const locale of LOCALES) {
       const panel = page.getByRole('tabpanel');
       await expect(panel.locator('.kx-skeleton').first()).toBeVisible({ timeout: 90_000 });
       await expect(panel.getByText(/^(No batches yet\.|لا توجد دفعات بعد.?)$/)).toHaveCount(0);
-      await expect(page.getByRole('button', { name: /PAY-202611-220353/ })).toBeVisible({ timeout: 30_000 });
+      await expect(step(page, 'batch')).toContainText('PAY-202611-220353', { timeout: 30_000 });
     });
 
     test('a failed batch list says it failed, never "No batches yet."', async ({ page }) => {
@@ -254,8 +174,10 @@ for (const locale of LOCALES) {
 
     test('the top bar does not cover an anchor, the assistant is the compact circle, and a long batch scrolls inside its own region', async ({ page }) => {
       await boot(page, { locale, url: url('bank-wps'), routes: bankHandler({ records: MANY }), waitMs: 2500 });
+      await expect(page.getByTestId('bank-records-open')).toBeVisible({ timeout: 90_000 });
+      await openRecords(page);
       const region = page.getByTestId('bank-records-scroll');
-      await expect(region).toBeVisible({ timeout: 90_000 });
+      await expect(region).toBeVisible();
       await expect(region).toHaveAttribute('role', 'region');
       const dims = await region.evaluate(el => ({ sh: el.scrollHeight, ch: el.clientHeight }));
       expect(dims.sh).toBeGreaterThan(dims.ch);
@@ -284,6 +206,7 @@ for (const locale of LOCALES) {
 }
 
 // ── W5: the bank file as four steps ───────────────────────────────────────────────────────────────
+// (The stage tests of the guided flow, one per place a batch can be, are in bank-guided.spec.ts.)
 
 const step = (page: Page, key: string) => page.locator(`[data-testid="bank-file-steps"] [data-step="${key}"]`);
 async function pickDate(page: Page, locale: Locale) {
@@ -327,31 +250,38 @@ for (const locale of LOCALES) {
       await pickDate(page, locale);
       await page.getByRole('button', { name: locale === 'ar' ? 'تحقق' : 'Validate', exact: true }).click();
       await expect(step(page, 'check')).toHaveAttribute('data-state', 'blocked');
-      await expect(step(page, 'check').getByTestId('bank-step-reason-check')).toContainText(say(locale, 'The check found blockers. Fix them in the bank file section, then check again.'));
+      // The step that is blocked is the stage, so its reason is the header's sentence (one place, not two).
+      await expect(page.getByTestId('bank-guide-sentence')).toContainText(say(locale, 'The check found blockers. Fix each one below, then check again.'));
       await expect(step(page, 'create')).toHaveAttribute('data-state', 'upcoming');
     });
 
     test('a closed gate blocks step 2 with its reason (switch off, no permission)', async ({ page }) => {
       await boot(page, { locale, url: url('bank-wps'), routes: bankHandler({ availability: { enabled: false } }), waitMs: 2500 });
       await expect(step(page, 'check')).toHaveAttribute('data-state', 'blocked', { timeout: 90_000 });
-      await expect(step(page, 'check').getByTestId('bank-step-reason-check')).toContainText(say(locale, 'Bank file export is switched off for this company. Ask the platform team.'));
+      await expect(page.getByTestId('bank-guide-sentence')).toContainText(say(locale, 'Bank file export is switched off for this company. Ask the platform team.'));
     });
 
     test('a run that is not locked and has no batch: step 1 is blocked, with the reason', async ({ page }) => {
       await boot(page, { locale, url: url('bank-wps'), routes: bankHandler({ batches: [], runStatus: 'Approved' }), waitMs: 2500 });
       await expect(step(page, 'batch')).toHaveAttribute('data-state', 'blocked', { timeout: 90_000 });
-      await expect(step(page, 'batch').getByTestId('bank-step-reason-batch')).toContainText(say(locale, 'Lock the run first: a payment batch can only be created once the run is Locked.'));
+      await expect(page.getByTestId('bank-guide-sentence')).toContainText(locale === 'ar' ? /قفل/ : /Locked/);
       await expect(step(page, 'check')).toHaveAttribute('data-state', 'upcoming');
     });
 
-    test('the bank batch number is suggested from the payment batch number, stays editable, and says where it came from', async ({ page }) => {
+    test('the bank batch number is suggested from the payment batch number, is shown as read-only with Change, stays editable, and says where it came from', async ({ page }) => {
       await boot(page, { locale, url: url('bank-wps'), routes: bankHandler(), waitMs: 2500 });
+      const suggested = locale === 'ar' ? 'مقترح من رقم دفعة الدفع' : 'Suggested from the payment batch number';
+      const readonly = page.getByTestId('bank-batch-reference-readonly');
+      await expect(readonly).toContainText('202611220353', { timeout: 90_000 });
+      await expect(page.getByText(suggested, { exact: false })).toBeVisible();
+      await readonly.getByRole('button', { name: locale === 'ar' ? 'تغيير' : 'Change' }).click();
       const input = page.getByLabel(locale === 'ar' ? 'رقم الدفعة' : 'Batch number', { exact: true });
-      await expect(input).toHaveValue('202611220353', { timeout: 90_000 });
-      await expect(page.getByText(locale === 'ar' ? 'مقترح من رقم دفعة الدفع' : 'Suggested from the payment batch number', { exact: false })).toBeVisible();
+      await expect(input).toHaveValue('202611220353');
+      await expect(input).toBeFocused();
+      await expect(page.getByText(suggested, { exact: false })).toBeVisible();
       await input.fill('202611999');
       await expect(input).toHaveValue('202611999');
-      await expect(page.getByText(locale === 'ar' ? 'مقترح من رقم دفعة الدفع' : 'Suggested from the payment batch number', { exact: false })).toHaveCount(0);
+      await expect(page.getByText(suggested, { exact: false })).toHaveCount(0);
       // The suggestion is only a starting value: the request carries what is in the box.
       await pickDate(page, locale);
       const validate = page.waitForRequest(r => r.url().endsWith('/validate'));
@@ -430,15 +360,19 @@ for (const locale of LOCALES) {
       const population = { runId: RUN_ID, runType: 'Regular', includesRecurringPay: true, populationMode: 'All', eligibleCount: 9, includedCount: 9, excludedCount: 0, notEligibleCount: 0,
         included: RECORDS.map(r => ({ employeeId: r.employeeId, code: r.employeeCode, name: r.employeeName })), excluded: [], notEligible: [] };
       await boot(page, { locale, url: url('bank-wps'), routes: bankHandler({ records: bare, extra: p => (/\/population$/.test(p) ? population : undefined) }), waitMs: 2500 });
+      await expect(page.getByTestId('bank-records-open')).toBeVisible({ timeout: 90_000 });
+      await openRecords(page);
       const row = page.getByRole('row', { name: /REF-1\b/ });
-      await expect(row).toContainText('Maha Almutairi', { timeout: 90_000 });
+      await expect(row).toContainText('Maha Almutairi');
       await expect(row).not.toContainText(/Emp #|#200/);
     });
 
     test('an employee code stays on one line in the records table; the name is what wraps', async ({ page }) => {
       await boot(page, { locale, url: url('bank-wps'), routes: bankHandler(), waitMs: 2500 });
+      await expect(page.getByTestId('bank-records-open')).toBeVisible({ timeout: 90_000 });
+      await openRecords(page);
       const code = page.getByRole('row', { name: /REF-1\b/ }).locator('bdi', { hasText: 'EVT2-0001' });
-      await expect(code).toBeVisible({ timeout: 90_000 });
+      await expect(code).toBeVisible();
       const box = await code.boundingBox();
       expect(box!.height, 'a code that broke at its hyphen would be two lines tall').toBeLessThan(20);
       await expect(code.locator('xpath=..')).toHaveClass(/whitespace-nowrap/);
@@ -456,10 +390,17 @@ for (const locale of LOCALES) {
     test('the Bank / WPS and Payment Tracking tabs leave no English in Arabic', async ({ page }) => {
       test.skip(locale === 'en', 'Arabic only');
       await boot(page, { locale, url: url('bank-wps'), routes: bankHandler({ batches: [BATCH] }), waitMs: 3000 });
-      await expect(page.getByRole('cell', { name: /Maha Almutairi/ })).toBeVisible({ timeout: 90_000 });
+      await expect(page.getByTestId('bank-records-open')).toBeVisible({ timeout: 90_000 });
       await page.waitForTimeout(1500);
+      // The guided flow, its footer notice opened, and the records drawer: all of it, not just the first screen.
+      await page.getByTestId('bank-pays-nobody').locator('xpath=..').getByRole('button').click();
+      await expect(page.getByTestId('bank-notice-details')).toBeVisible();
       const bank = await page.locator('main').innerText();
       expect(latinWords(bank), `Bank / WPS: ${[...new Set(latinWords(bank))].join(', ')}`).toEqual([]);
+      await openRecords(page);
+      const drawer = await page.getByRole('dialog').innerText();
+      expect(latinWords(drawer), `Bank / WPS records: ${[...new Set(latinWords(drawer))].join(', ')}`).toEqual([]);
+      await page.keyboard.press('Escape');
       await page.locator('#payroll-tab-payment-tracking').click();
       await expect(page.getByRole('tabpanel').getByRole('table')).toBeVisible({ timeout: 30_000 });
       const tracking = await page.getByRole('tabpanel').innerText();

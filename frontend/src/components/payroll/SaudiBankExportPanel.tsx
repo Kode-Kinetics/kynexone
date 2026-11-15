@@ -15,8 +15,9 @@
 // written to localStorage.
 
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import {
-  AlertTriangle, CheckCircle2, Download, ExternalLink, FileText, Landmark, Loader2, RefreshCw, Save, ShieldCheck,
+  AlertTriangle, CheckCircle2, ExternalLink, Loader2, RefreshCw, Save,
 } from 'lucide-react';
 import {
   saudiBankExportsApi, customBankTemplatesApi, saveBlob, isAbortError, extractApiError,
@@ -34,7 +35,10 @@ import { bankFileProductionAllowed, bankTemplatesAllowed } from '../../lib/payro
 import { EmployeeLabelText } from './EmployeeLabelText';
 import { SaudiBankBeneficiaryEditor } from './SaudiBankBeneficiaryEditor';
 import type { BankFlowProgress } from '../../lib/bankFileSteps';
+import { bankFixTarget, maskedTail, type BankFixTarget } from '../../lib/bankFileGuide';
 import { CustomBankTemplateEditor } from './CustomBankTemplateEditor';
+import { Modal } from '../Modal';
+import type { GuideSlots } from './BankFileGuide';
 
 // Copy for the custom-template format only (the ANB copy above is unchanged).
 export const CUSTOM_COPY = {
@@ -92,6 +96,12 @@ export type Copy = {
   required: string; tooLong: (max: number, len: number) => string; tooShort: (min: number) => string;
   controlChars: string; formulaPrefix: string; edgeSpaces: string; accountDigits: string; refDigits: string;
   dateRequired: string; fixFields: string; genericError: string; conflict: string;
+  // The guided Bank / WPS flow: the one-line setup row, the notice, the links, the step summaries.
+  bankSetup: string; setupComplete: string; setupIncomplete: string; account: string; edit: string; change: string;
+  payNobody: string; showDetails: string; hideDetails: string; bankFormats: string; editEmployeeBank: string; employeeBankTitle: string;
+  fix: string; fixInPeople: string; checkPassed: string; checkPassedWith: (n: number, total: string) => string;
+  createdSummary: (ref: string, date: string) => string; submittedSummary: string; creditDateRecap: string; changeInCheck: string;
+  readOnlyRefHelp: string;
 };
 
 export const EN: Copy = {
@@ -187,6 +197,27 @@ export const EN: Copy = {
   fixFields: 'Fix the highlighted fields.',
   genericError: 'The request failed. Please try again.',
   conflict: 'The server refused this because it conflicts with an existing export or batch number.',
+  bankSetup: 'Bank setup',
+  setupComplete: 'complete',
+  setupIncomplete: 'not complete',
+  account: 'account',
+  edit: 'Edit',
+  change: 'Change',
+  payNobody: 'This file pays nobody — your bank pays it.',
+  showDetails: 'Show details',
+  hideDetails: 'Hide details',
+  bankFormats: 'Bank formats',
+  editEmployeeBank: 'Edit an employee’s bank details',
+  employeeBankTitle: 'Employee bank details',
+  fix: 'Fix',
+  fixInPeople: 'Fix in People',
+  checkPassed: 'Passed',
+  checkPassedWith: (n, total) => `Passed · ${n} employee${n === 1 ? '' : 's'} · ${total}`,
+  createdSummary: (ref, date) => `Files created · batch number ${ref} · credit value date ${date}`,
+  submittedSummary: 'Recorded as submitted to the bank.',
+  creditDateRecap: 'Credit value date',
+  changeInCheck: 'To change the batch number or the date, reopen step 2 with Change. The check is then run again.',
+  readOnlyRefHelp: 'Suggested from the payment batch number.',
 };
 
 export const AR: Copy = {
@@ -282,6 +313,27 @@ export const AR: Copy = {
   fixFields: 'صحّح الحقول المحددة.',
   genericError: 'فشل الطلب. حاول مرة أخرى.',
   conflict: 'رفض الخادم الطلب لتعارضه مع تصدير أو رقم دفعة موجود.',
+  bankSetup: 'إعداد البنك',
+  setupComplete: 'مكتمل',
+  setupIncomplete: 'غير مكتمل',
+  account: 'الحساب',
+  edit: 'تعديل',
+  change: 'تغيير',
+  payNobody: 'هذا الملف لا يدفع لأحد — البنك هو من يدفع.',
+  showDetails: 'عرض التفاصيل',
+  hideDetails: 'إخفاء التفاصيل',
+  bankFormats: 'صيغ ملفات البنك',
+  editEmployeeBank: 'تعديل بيانات موظف البنكية',
+  employeeBankTitle: 'بيانات الموظف البنكية',
+  fix: 'معالجة',
+  fixInPeople: 'المعالجة من صفحة الموظفين',
+  checkPassed: 'نجح التحقق',
+  checkPassedWith: (n, total) => `نجح التحقق · ${n} من الموظفين · ${total}`,
+  createdSummary: (ref, date) => `أُنشئت الملفات · رقم الدفعة ${ref} · تاريخ قيمة الإيداع ${date}`,
+  submittedSummary: 'سُجّلت كمُرسلة إلى البنك.',
+  creditDateRecap: 'تاريخ قيمة الإيداع',
+  changeInCheck: 'لتغيير رقم الدفعة أو التاريخ أعد فتح الخطوة 2 بزر «تغيير». يُعاد التحقق بعدها.',
+  readOnlyRefHelp: 'مقترح من رقم دفعة الدفع.',
 };
 
 // ── Client-side checks (mirror the contract; the server remains authoritative) ─
@@ -411,9 +463,13 @@ export function Alert({ tone, children, icon = true }: { tone: 'error' | 'warn' 
   );
 }
 
-export function SaudiBankSettingsForm({ c, idPrefix, draft, setField, errors, formats, canManage, saving, otherBusy, dirty, onSubmit }: {
+export function SaudiBankSettingsForm({ c, idPrefix, draft, setField, errors, formats, canManage, saving, otherBusy, dirty, onSubmit, formId, hideSubmit = false }: {
   c: Copy;
   idPrefix: string;
+  /** The form's id, so a button elsewhere on the page (the guided flow's header) can submit it. */
+  formId?: string;
+  /** The submit button lives elsewhere (the guided flow's header); the form still says why it is busy or unsaved. */
+  hideSubmit?: boolean;
   draft: SaudiBankExportSettings;
   setField: (k: keyof SaudiBankExportSettings, v: string | boolean) => void;
   /** Only the errors to show: the caller decides when a field has been "touched". */
@@ -458,7 +514,7 @@ export function SaudiBankSettingsForm({ c, idPrefix, draft, setField, errors, fo
     );
   };
   return (
-    <form onSubmit={onSubmit} noValidate className="rounded-xl border border-slate-100 p-4 dark:border-white/10" aria-labelledby={fid('setup-title')}>
+    <form id={formId} onSubmit={onSubmit} noValidate className="rounded-xl border border-slate-100 p-4 dark:border-white/10" aria-labelledby={fid('setup-title')}>
       <h4 id={fid('setup-title')} className="text-sm font-semibold text-slate-800 dark:text-white">{c.setupTitle}</h4>
       <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{c.setupHelp}</p>
       {!canManage && <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">{c.noManagePerm}</p>}
@@ -499,10 +555,12 @@ export function SaudiBankSettingsForm({ c, idPrefix, draft, setField, errors, fo
         {!draftIsCustom && draft.autoWpsUpload && textInput('nationalUnifiedNo', c.nationalUnifiedNo, { help: c.nationalUnifiedNoHelp, ltr: true, numeric: true })}
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-3">
-        <button type="submit" className={btn.primary} disabled={saving || otherBusy} aria-describedby={otherBusy ? fid('save-reason') : undefined}>
-          {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Save className="h-4 w-4" aria-hidden="true" />}
-          {saving ? c.saving : c.saveSetup}
-        </button>
+        {!hideSubmit && (
+          <button type="submit" className={btn.primary} disabled={saving || otherBusy} aria-describedby={otherBusy ? fid('save-reason') : undefined}>
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Save className="h-4 w-4" aria-hidden="true" />}
+            {saving ? c.saving : c.saveSetup}
+          </button>
+        )}
         {otherBusy && <span id={fid('save-reason')} className="text-xs text-slate-400">{c.busy}</span>}
         {dirty && <span className="text-xs text-amber-700 dark:text-amber-400">{c.unsaved}</span>}
       </div>
@@ -516,8 +574,10 @@ type Busy = null | 'save' | 'validate' | 'generate' | 'download';
 type LoadState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready' };
 type ActionError = { message: string; issues?: SaudiBankExportIssue[] } | null;
 
-export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onProgress, suggestedReference }: {
+export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onProgress, suggestedReference, renderGuide }: {
   batchId: string; employeeIds?: number[]; employeeLabels?: Record<number, string>;
+  /** Draws the guided flow (header, four steps, footer) around what this panel supplies for each step. */
+  renderGuide: (slots: GuideSlots) => React.ReactNode;
   /** Pre-fills the batch number of a batch that has no export yet (editable; the server still refuses a reused one). */
   suggestedReference?: string;
   /** Where the batch is in check -> create -> download, for the step flow above the panel. */
@@ -543,6 +603,13 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   const [notice, setNotice] = useState('');
   const [showSettingsErrors, setShowSettingsErrors] = useState(false);
   const [showBatchErrors, setShowBatchErrors] = useState(false);
+  // The guided flow's drawers and small disclosures. A drawer never survives a batch change.
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [formatsOpen, setFormatsOpen] = useState(false);
+  const [beneficiary, setBeneficiary] = useState<{ employeeId: number | null } | null>(null);
+  const [refEditing, setRefEditing] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [pendingFocus, setPendingFocus] = useState<string | null>(null);
 
   // Stale-response guards: the batch this panel currently represents, a sync busy
   // flag (blocks double clicks before React re-renders) and the in-flight action.
@@ -573,6 +640,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
     setNotice('');
     setShowSettingsErrors(false);
     setShowBatchErrors(false);
+    setSetupOpen(false); setFormatsOpen(false); setBeneficiary(null); setRefEditing(false); setDetailsOpen(false); setPendingFocus(null);
 
     (async () => {
       try {
@@ -638,11 +706,16 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   const progressValidation: BankFlowProgress['validation'] = busy === 'validate' ? 'running'
     : !validation ? 'none' : validationStale ? 'stale' : validation.result.canExport ? 'passed' : 'blocked';
   const progressGenerated = !!artifact;
+  // The bank setup is a gate in front of step 2: complete means saved, valid, and a supported format to make it with.
+  const setupComplete = !!savedSettings && savedSettingsValid && !savedFormatUnsupported && formats.length > 0;
+  const progressSetup: NonNullable<BankFlowProgress['setup']> = setupComplete ? 'complete' : 'incomplete';
   useEffect(() => {
-    if (load.status !== 'ready') { onProgress?.({ gate: 'ready', validation: 'none', generated: false }); return; }
-    onProgress?.({ gate: 'ready', validation: progressValidation, generated: progressGenerated });
+    // Still loading: the step flow keeps saying it is checking. A failed load or a non-Saudi batch changes nothing it can act on.
+    if (load.status === 'loading') { onProgress?.({ gate: 'checking', validation: 'none', generated: false }); return; }
+    if (load.status !== 'ready' || !isSaudi) { onProgress?.({ gate: 'ready', validation: 'none', generated: false }); return; }
+    onProgress?.({ gate: 'ready', validation: progressValidation, generated: progressGenerated, setup: progressSetup });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [load.status, progressValidation, progressGenerated]);
+  }, [load.status, isSaudi, progressValidation, progressGenerated, progressSetup]);
 
   // Pre-select the only supported format when nothing is saved yet (explicit, visible choice).
   useEffect(() => {
@@ -706,6 +779,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
       // Keep any edits made while the save was in flight; otherwise adopt the server copy.
       setDraft((d) => (sameSettings(payload, d) ? saved : d));
       setShowSettingsErrors(false);
+      setSetupOpen(false);
       setNotice(c.saved);
     }, c.genericError);
   };
@@ -722,7 +796,8 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
       const result = await saudiBankExportsApi.validate(batchId, body, { signal });
       if (activeBatchRef.current !== startedFor) return;
       setValidation({ key: keyAtStart, result });
-      requestAnimationFrame(() => resultRef.current?.focus());
+      // A clean check hands over to step 3 (the guide moves focus there); blockers stay on this step, so the result takes focus.
+      if (!result.canExport || result.errors.length > 0) requestAnimationFrame(() => resultRef.current?.focus());
     }, c.genericError);
   };
 
@@ -739,7 +814,6 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
       };
       setArtifact(frozen);
       setCtx((prev) => (prev ? { ...prev, existingExport: frozen } : prev));
-      requestAnimationFrame(() => resultRef.current?.focus());
     }, c.genericError);
   };
 
@@ -754,49 +828,52 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   };
 
   // ── Render ────────────────────────────────────────────────────────────────────
+  // The panel keeps every guard and every action it had; it now hands the guided flow what each step shows (see BankFileGuide).
 
-  const header = (
-    <div className="flex items-start gap-3 border-b border-slate-100 px-4 py-3 dark:border-white/5">
-      <Landmark className="mt-0.5 h-5 w-5 shrink-0 text-sapphire" aria-hidden="true" />
-      <div className="min-w-0">
-        <h3 className="text-sm font-semibold text-slate-800 dark:text-white">{c.title}</h3>
-        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{c.subtitle}</p>
-      </div>
-    </div>
-  );
+  const setupFormId = `${uid}-setup-form`;
+  // Setup is the current step while it is incomplete (the form is shown in place); once complete it is a one-line row whose Edit opens a drawer.
+  const inlineSetup = !setupComplete && !progressGenerated;
+  const closeSetup = () => { setSetupOpen(false); setShowSettingsErrors(false); if (savedSettings) setDraft(savedSettings); };
+
+  // Move focus once the field it names has been drawn (a drawer opening, a read-only value turning into an input).
+  useEffect(() => {
+    if (!pendingFocus) return;
+    const timer = window.setTimeout(() => { focusField(pendingFocus); setPendingFocus(null); }, 80);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingFocus, setupOpen, refEditing]);
+
+  const onFix = (target: BankFixTarget) => {
+    if (target.kind === 'setup') {
+      if (inlineSetup) focusField(target.field);
+      else { setSetupOpen(true); setPendingFocus(target.field); }
+    } else if (target.kind === 'input') {
+      if (target.field === 'batchReference') setRefEditing(true);
+      setPendingFocus(target.field);
+    } else if (target.kind === 'beneficiary') {
+      setBeneficiary({ employeeId: employeeIds?.includes(target.employeeId) ? target.employeeId : null });
+    }
+  };
 
   if (load.status === 'loading') {
-    return (
-      <section className="surface overflow-hidden" aria-busy="true" aria-label={c.title}>
-        {header}
-        <div className="flex items-center gap-2 px-4 py-8 text-sm text-slate-400" role="status">
-          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> {c.loading}
-        </div>
-      </section>
-    );
+    return <>{renderGuide({ steps: { check: { body: (
+      <div className="flex items-center gap-2 text-body-sm text-fg-muted" role="status" aria-busy="true"><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> {c.loading}</div>
+    ) } } })}</>;
   }
 
   if (load.status === 'error') {
-    return (
-      <section className="surface overflow-hidden" aria-label={c.title}>
-        {header}
-        <div className="space-y-3 p-4">
-          <Alert tone="error"><span role="alert">{load.message}</span></Alert>
-          <button type="button" className={btn.ghost} onClick={() => setReloadToken((n) => n + 1)}>
-            <RefreshCw className="h-4 w-4" aria-hidden="true" /> {c.retry}
-          </button>
-        </div>
-      </section>
-    );
+    return <>{renderGuide({ steps: { check: { body: (
+      <div className="space-y-3">
+        <Alert tone="error"><span role="alert">{load.message}</span></Alert>
+        <button type="button" className={btn.ghost} onClick={() => setReloadToken((n) => n + 1)}>
+          <RefreshCw className="h-4 w-4" aria-hidden="true" /> {c.retry}
+        </button>
+      </div>
+    ) } } })}</>;
   }
 
   if (ctx && !isSaudi) {
-    return (
-      <section className="surface overflow-hidden" aria-label={c.title}>
-        {header}
-        <div className="p-4"><Alert tone="info">{c.notSaudi(ctx.countryCode)}</Alert></div>
-      </section>
-    );
+    return <>{renderGuide({ steps: { check: { body: <Alert tone="info">{c.notSaudi(ctx.countryCode)}</Alert> } } })}</>;
   }
 
   const bErr = (k: BatchKey) => (showBatchErrors ? batchErrors[k] ?? null : null);
@@ -813,57 +890,237 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   const downloadReason = busy ? c.busy : !artifact ? c.downloadNeedsArtifact : null;
 
   const result = validationCurrent ? validation!.result : null;
+  const canManageSetup = hasPermission('payroll.structure_manage');
+  const refReadOnly = !refEditing && !artifact && !!suggestedReference && batchInput.batchReference === suggestedReference && !bErr('batchReference');
+  const showDate = (iso: string) => (iso ? <bdi dir="ltr">{iso}</bdi> : '—');
 
-  return (
-    <section className="surface overflow-hidden" aria-label={c.title}>
-      {header}
-      <div className="space-y-4 p-4">
-        {/* Format facts + disclaimer */}
-        <dl className="grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
-          <div><dt className="text-slate-400">{c.company}</dt><dd className="font-medium text-slate-800 dark:text-white">{ctx?.companyName}</dd></div>
-          <div><dt className="text-slate-400">{c.runStatus}</dt><dd className="font-medium text-slate-800 dark:text-white">{enumLabel(t, 'PayrollRunStatus', ctx?.runStatus)}</dd></div>
-          {selectedFormat && (
-            <>
-              {!isCustomFormatId(selectedFormat.id) && <div><dt className="text-slate-400">{c.bank} · {c.channel}</dt><dd className="font-medium text-slate-800 dark:text-white">{t(selectedFormat.bank)} · {t(selectedFormat.channel)}</dd></div>}
-              <div><dt className="text-slate-400">{c.acceptance}</dt><dd className="font-mono text-amber-700 dark:text-amber-400">{bankAcceptanceLabel(t, selectedFormat.acceptanceStatus)}</dd></div>
-              {!isCustomFormatId(selectedFormat.id) && <div><dt className="text-slate-400">{c.reviewedOn}</dt><dd className="text-slate-700 dark:text-slate-300">{selectedFormat.reviewedOn}</dd></div>}
-              {!isCustomFormatId(selectedFormat.id) && <div className="min-w-0"><dt className="text-slate-400">{c.source}</dt>
-                <dd className="truncate">
-                  <a href={selectedFormat.sourceUrl} target="_blank" rel="noopener noreferrer" className={`${btn.link} inline-flex items-center gap-1`} dir="ltr" title={selectedFormat.sourceUrl}>
-                    {selectedFormat.sourceUrl} <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
-                  </a>
-                </dd>
-              </div>}
-            </>
-          )}
-        </dl>
+  const settingsForm = (hideSubmit: boolean) => (
+    <SaudiBankSettingsForm c={c} idPrefix={uid} formId={hideSubmit ? setupFormId : undefined} hideSubmit={hideSubmit} draft={draft} setField={setField}
+      errors={showSettingsErrors ? settingsErrors : {}} formats={formats} canManage={canManageSetup}
+      saving={busy === 'save'} otherBusy={busy !== null && busy !== 'save'} dirty={settingsDirty} onSubmit={onSave} />
+  );
 
+  // ── Step 2: the inputs the check runs on, and what the check found
+  const inputs = (
+    <div className="grid gap-3 sm:grid-cols-2">
+      {refReadOnly ? (
+        <div>
+          <p className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{c.batchReference}</p>
+          <p className="flex items-center gap-2 text-sm" data-testid="bank-batch-reference-readonly">
+            <bdi dir="ltr" className="font-mono text-fg">{batchInput.batchReference}</bdi>
+            <button type="button" className={btn.link} onClick={() => { setRefEditing(true); setPendingFocus('batchReference'); }}>{c.change}</button>
+          </p>
+          <p className="mt-1 text-[11px] text-slate-400">{c.readOnlyRefHelp}</p>
+        </div>
+      ) : (
+        <FieldShell id={fid('batchReference')} label={c.batchReference}
+          help={!artifact && suggestedReference && batchInput.batchReference === suggestedReference ? `${c.batchReferenceHelp} ${c.batchReferenceSuggested}` : c.batchReferenceHelp}
+          error={bErr('batchReference')}>
+          <input id={fid('batchReference')} className={`${inp} ${bErr('batchReference') ? inpErr : ''}`} value={batchInput.batchReference}
+            onChange={(e) => setBatchField('batchReference', e.target.value)} inputMode="numeric" dir="ltr" autoComplete="off"
+            aria-invalid={bErr('batchReference') ? true : undefined}
+            aria-describedby={describedBy('batchReference', bErr('batchReference'), true)} />
+        </FieldShell>
+      )}
+      <FieldShell id={fid('paymentDate')} label={c.paymentDate} help={c.paymentDateHelp} error={bErr('paymentDate')}>
+        <span id={fid('paymentDate')} tabIndex={-1} aria-describedby={describedBy('paymentDate', bErr('paymentDate'), true)} className="block outline-none">
+          <DatePicker placeholders aria-label={c.paymentDate} value={batchInput.paymentDate} onChange={(v) => setBatchField('paymentDate', v)} />
+        </span>
+      </FieldShell>
+    </div>
+  );
+
+  const exclusionsAndWarnings = result && (
+    <>
+      {(result.exclusions?.length ?? 0) > 0 && (
         <Alert tone="warn">
-          <p className="font-semibold">{c.disclaimerTitle}</p>
-          <p className="mt-1 text-xs">{c.disclaimer}</p>
-          <p className="mt-1 text-xs">{c.legacyNote}</p>
+          <p className="font-medium">{c.excludedTitle}</p>
+          <ul className="mt-1 list-disc space-y-0.5 ps-4 text-xs">
+            {result.exclusions!.map(x => (
+              <li key={x.employeeId}>
+                <span className="font-mono">{x.employeeCode}</span> — <span className="tabular-nums" dir="ltr">{fmtMoney(x.amount, result.currency)}</span> — {x.reason}
+              </li>
+            ))}
+          </ul>
         </Alert>
+      )}
+      {result.warnings.length > 0 && (
+        <Alert tone="warn">
+          <p className="font-medium">{c.warnings} ({result.warnings.length})</p>
+          <ul className="mt-1 list-disc space-y-0.5 ps-4 text-xs">
+            {result.warnings.map((w, i) => <li key={`${w.code}-${i}`}><span className="font-mono">{w.code}</span> — {w.message}</li>)}
+          </ul>
+        </Alert>
+      )}
+    </>
+  );
 
-        {draftIsCustom && <Alert tone="info">{cc.notice}</Alert>}
-        {formats.length === 0 && <Alert tone="error">{c.noFormats}</Alert>}
-        {savedFormatUnsupported && <Alert tone="error">{c.unsupportedFormat(savedSettings?.formatId ?? '')}</Alert>}
-        {!bankFileProductionAllowed(hasPermission) && <Alert tone="info">{c.noExportPerm}</Alert>}
+  const checkBody = (
+    <>
+      {inputs}
+      {artifact && (
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          {existingMatches ? c.existingMatches : c.existingDiffers(artifact.batchReference, (artifact.paymentDate ?? '').slice(0, 10))}
+        </p>
+      )}
+      {result && result.errors.length > 0 && <IssueList issues={result.errors} c={c} labels={employeeLabels} onFix={onFix} />}
+      {exclusionsAndWarnings}
+    </>
+  );
 
-        {/* Employer setup */}
-        <SaudiBankSettingsForm c={c} idPrefix={uid} draft={draft} setField={setField}
-          errors={showSettingsErrors ? settingsErrors : {}} formats={formats}
-          canManage={hasPermission('payroll.structure_manage')} saving={busy === 'save'} otherBusy={busy !== null && busy !== 'save'}
-          dirty={settingsDirty} onSubmit={onSave} />
+  // ── Step 3: what is about to be frozen
+  const createBody = (
+    <>
+      <dl className="grid gap-x-6 gap-y-1 text-body-sm sm:grid-cols-2" data-testid="bank-create-recap">
+        <div><dt className="text-slate-400">{c.paymentDate}</dt><dd className="font-medium text-fg">{showDate(batchInput.paymentDate)}</dd></div>
+        <div><dt className="text-slate-400">{c.batchReference}</dt><dd className="font-mono text-fg" dir="ltr">{batchInput.batchReference || '—'}</dd></div>
+        {result && <div><dt className="text-slate-400">{c.employees}</dt><dd className="tabular-nums text-fg">{result.employeeCount}</dd></div>}
+        {result && <div><dt className="text-slate-400">{c.total}</dt><dd className="tabular-nums text-fg" dir="ltr">{fmtMoney(result.totalAmount, result.currency)}</dd></div>}
+      </dl>
+      <p className="text-meta text-fg-muted">{c.changeInCheck}</p>
+      {exclusionsAndWarnings}
+      <p className="text-meta text-fg-muted">{c.generatedNote}</p>
+    </>
+  );
 
-        {/* Custom bank templates: layout configured by the customer, approved by a second person. The template routes stay with
-            payroll.export, so the editor is not shown to someone who only prepares the file. */}
-        {ctx && bankTemplatesAllowed(hasPermission) && (
+  // ── Step 4: the frozen files
+  const downloadBody = artifact && (
+    <div id="bank-wps-generated-export" tabIndex={-1} className="rounded-xl border border-teal-200 bg-teal-50/50 p-4 outline-none dark:border-teal-500/20 dark:bg-teal-500/5">
+      <p className="text-sm font-semibold text-slate-800 dark:text-white">{c.artifactTitle}</p>
+      <dl className="mt-2 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
+        <div><dt className="text-slate-400">{c.artifactId}</dt><dd className="break-all font-mono text-slate-700 dark:text-slate-300" dir="ltr">{artifact.id}</dd></div>
+        <div><dt className="text-slate-400">{c.format}</dt><dd className="text-slate-700 dark:text-slate-300">{bankFormatLabel(t, formats, artifact.formatId, cc.suffix)}</dd></div>
+        <div><dt className="text-slate-400">{c.batchReference}</dt><dd className="font-mono text-slate-700 dark:text-slate-300" dir="ltr">{artifact.batchReference}</dd></div>
+        <div><dt className="text-slate-400">{c.paymentDate}</dt><dd className="text-slate-700 dark:text-slate-300" dir="ltr">{(artifact.paymentDate ?? '').slice(0, 10)}</dd></div>
+        <div><dt className="text-slate-400">{c.employees}</dt><dd className="tabular-nums text-slate-700 dark:text-slate-300">{artifact.employeeCount}</dd></div>
+        <div><dt className="text-slate-400">{c.total}</dt><dd className="tabular-nums text-slate-700 dark:text-slate-300" dir="ltr">{fmtMoney(artifact.totalAmount, result?.currency ?? '')}</dd></div>
+      </dl>
+      <p className="mt-3 text-xs font-medium text-slate-500 dark:text-slate-400">{c.files}</p>
+      <ul className="mt-1 space-y-1">
+        {artifact.files.map((f) => (
+          <li key={f.name} className="text-xs" dir="ltr">
+            <span className="font-medium text-slate-800 dark:text-white">{f.name}</span>
+            <span className="block break-all font-mono text-[11px] text-slate-500">{f.sha256}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">{c.generatedNote}</p>
+      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{c.zipNote}</p>
+    </div>
+  );
+
+  // ── The live region under the header: what just happened
+  const live = (
+    <>
+      {notice && <Alert tone="ok">{notice}</Alert>}
+      {actionError && (
+        <Alert tone="error">
+          <p role="alert">{actionError.message}</p>
+          {actionError.issues && actionError.issues.length > 0 && <IssueList issues={actionError.issues} c={c} labels={employeeLabels} onFix={onFix} />}
+        </Alert>
+      )}
+      {validationStale && <Alert tone="warn">{c.staleValidation}</Alert>}
+      {result && (
+        <Alert tone={result.canExport && result.errors.length === 0 ? 'ok' : 'error'}>
+          <p className="font-medium">{result.canExport && result.errors.length === 0 ? c.validationOk : c.validationBlocked(result.errors.length)}</p>
+          <p className="mt-1 text-xs">
+            {c.employees}: <span className="tabular-nums">{result.employeeCount}</span> · {c.total}: <span className="tabular-nums" dir="ltr">{fmtMoney(result.totalAmount, result.currency)}</span>
+          </p>
+          {(result.exclusions?.length ?? 0) > 0 && (
+            <p className="mt-1 text-xs">
+              {c.excludedSummary(result.exclusions!.length)}: <span className="tabular-nums" dir="ltr">{fmtMoney(result.excludedTotal ?? 0, result.currency)}</span>
+              {' '}({c.runNet}: <span className="tabular-nums" dir="ltr">{fmtMoney(result.runNetTotal ?? 0, result.currency)}</span>)
+            </p>
+          )}
+        </Alert>
+      )}
+    </>
+  );
+
+  // ── The footer: the one-line bank setup, the notice, the secondary links
+  const accountTail = savedSettings ? maskedTail(isCustomFormatId(savedSettings.formatId) ? savedSettings.debitAccountIban : savedSettings.mainAccountNumber) : '';
+  const setupSummary = savedSettings && setupComplete ? (
+    <>
+      <span>{selectedFormat ? bankFormatLabel(t, formats, savedSettings.formatId, cc.suffix) : savedSettings.formatId}</span>
+      {accountTail && <> · {c.account} <bdi dir="ltr">{accountTail}</bdi></>}
+    </>
+  ) : null;
+
+  const footer = (
+    <>
+      {!inlineSetup && (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-body-sm" data-testid="bank-setup-summary">
+          <p className="min-w-0 text-fg">
+            <span className="font-semibold">{c.bankSetup}:</span>{' '}
+            {setupSummary}{setupSummary ? ' · ' : ''}
+            <span className={setupComplete ? 'font-medium text-success-fg' : 'font-medium text-warning-fg'}>{setupComplete ? c.setupComplete : c.setupIncomplete}</span>
+          </p>
+          <button type="button" className="btn-secondary btn-sm" onClick={() => setSetupOpen(true)}>{c.edit}</button>
+        </div>
+      )}
+      {formats.length === 0 && <Alert tone="error">{c.noFormats}</Alert>}
+      {savedFormatUnsupported && <Alert tone="error">{c.unsupportedFormat(savedSettings?.formatId ?? '')}</Alert>}
+      {!bankFileProductionAllowed(hasPermission) && <Alert tone="info">{c.noExportPerm}</Alert>}
+
+      <Alert tone="warn">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="font-medium" data-testid="bank-pays-nobody">{c.payNobody}</p>
+          <button type="button" className={btn.link} aria-expanded={detailsOpen} aria-controls={fid('notice-details')} onClick={() => setDetailsOpen(v => !v)}>
+            {detailsOpen ? c.hideDetails : c.showDetails}
+          </button>
+        </div>
+        {detailsOpen && (
+          <div id={fid('notice-details')} className="mt-2 space-y-2 text-xs" data-testid="bank-notice-details">
+            <p className="font-semibold">{c.disclaimerTitle}</p>
+            <p>{c.disclaimer}</p>
+            <p>{c.legacyNote}</p>
+            <p>{t('Saudi bank payroll file: the Payroll payment instruction file (bank format) — the ANB Connect instruction with WPS fields — is the file to send to the bank. Mudad accepts only the WPS file your bank signs — keep the bank’s output file or a Mudad screenshot as evidence before marking the batch Accepted.')}</p>
+            {draftIsCustom && <p>{cc.notice}</p>}
+            <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+              <div><dt className="text-slate-500">{c.company}</dt><dd className="font-medium text-slate-800 dark:text-white">{ctx?.companyName}</dd></div>
+              <div><dt className="text-slate-500">{c.runStatus}</dt><dd className="font-medium text-slate-800 dark:text-white">{enumLabel(t, 'PayrollRunStatus', ctx?.runStatus)}</dd></div>
+              {selectedFormat && (
+                <>
+                  {!isCustomFormatId(selectedFormat.id) && <div><dt className="text-slate-500">{c.bank} · {c.channel}</dt><dd className="font-medium text-slate-800 dark:text-white">{t(selectedFormat.bank)} · {t(selectedFormat.channel)}</dd></div>}
+                  <div><dt className="text-slate-500">{c.acceptance}</dt><dd className="font-mono">{bankAcceptanceLabel(t, selectedFormat.acceptanceStatus)}</dd></div>
+                  {!isCustomFormatId(selectedFormat.id) && <div><dt className="text-slate-500">{c.reviewedOn}</dt><dd>{selectedFormat.reviewedOn}</dd></div>}
+                  {!isCustomFormatId(selectedFormat.id) && <div className="min-w-0"><dt className="text-slate-500">{c.source}</dt>
+                    <dd className="truncate">
+                      <a href={selectedFormat.sourceUrl} target="_blank" rel="noopener noreferrer" className={`${btn.link} inline-flex items-center gap-1`} dir="ltr" title={selectedFormat.sourceUrl}>
+                        {selectedFormat.sourceUrl} <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+                      </a>
+                    </dd>
+                  </div>}
+                </>
+              )}
+            </dl>
+          </div>
+        )}
+      </Alert>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-body-sm">
+        {ctx && bankTemplatesAllowed(hasPermission) && <button type="button" className={btn.link} onClick={() => setFormatsOpen(true)}>{c.bankFormats}</button>}
+        {employeeIds && <button type="button" className={btn.link} onClick={() => setBeneficiary({ employeeId: null })}>{c.editEmployeeBank}</button>}
+      </div>
+    </>
+  );
+
+  // ── Drawers: the setup form, the bank formats (custom templates), one employee's bank details
+  const overlays = (
+    <>
+      <Modal isOpen={setupOpen && !inlineSetup} title={c.setupTitle} size="lg" placement="end" onClose={closeSetup} closeDisabled={busy === 'save'} closeLabel={t('Close')}>
+        {settingsForm(false)}
+      </Modal>
+      {/* Custom bank templates: layout configured by the customer, approved by a second person. The template routes stay with
+          payroll.export, so the editor is not offered to someone who only prepares the file. */}
+      {ctx && bankTemplatesAllowed(hasPermission) && (
+        <Modal isOpen={formatsOpen} title={c.bankFormats} size="xl" placement="end" onClose={() => setFormatsOpen(false)} closeLabel={t('Close')}>
           <CustomBankTemplateEditor
             companyId={ctx.companyId}
             batchId={batchId}
             batchReference={batchInput.batchReference}
             paymentDate={batchInput.paymentDate}
-            canManage={hasPermission('payroll.structure_manage')}
+            canManage={canManageSetup}
             canDecide={hasPermission('payroll.approve')}
             onChanged={() => {
               void customBankTemplatesApi.list(ctx.companyId).then((list) => {
@@ -871,159 +1128,66 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
               }).catch(() => undefined);
             }}
           />
-        )}
-
-        {/* Per-batch inputs + actions */}
-        <div className="rounded-xl border border-slate-100 p-4 dark:border-white/10">
-          <h4 className="text-sm font-semibold text-slate-800 dark:text-white">{c.batchTitle}</h4>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <FieldShell id={fid('batchReference')} label={c.batchReference}
-              help={!artifact && suggestedReference && batchInput.batchReference === suggestedReference ? `${c.batchReferenceHelp} ${c.batchReferenceSuggested}` : c.batchReferenceHelp}
-              error={bErr('batchReference')}>
-              <input id={fid('batchReference')} className={`${inp} ${bErr('batchReference') ? inpErr : ''}`} value={batchInput.batchReference}
-                onChange={(e) => setBatchField('batchReference', e.target.value)} inputMode="numeric" dir="ltr" autoComplete="off"
-                aria-invalid={bErr('batchReference') ? true : undefined}
-                aria-describedby={describedBy('batchReference', bErr('batchReference'), true)} />
-            </FieldShell>
-            <FieldShell id={fid('paymentDate')} label={c.paymentDate} help={c.paymentDateHelp} error={bErr('paymentDate')}>
-              <span id={fid('paymentDate')} tabIndex={-1} aria-describedby={describedBy('paymentDate', bErr('paymentDate'), true)} className="block outline-none">
-                <DatePicker aria-label={c.paymentDate} value={batchInput.paymentDate} onChange={(v) => setBatchField('paymentDate', v)} />
-              </span>
-            </FieldShell>
-          </div>
-
-          {artifact && (
-            <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-              {existingMatches ? c.existingMatches : c.existingDiffers(artifact.batchReference, (artifact.paymentDate ?? '').slice(0, 10))}
-            </p>
-          )}
-
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button type="button" className={btn.ghost} onClick={onValidate} disabled={!!validateReason}
-              aria-describedby={validateReason ? fid('validate-reason') : undefined}>
-              {busy === 'validate' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <ShieldCheck className="h-4 w-4" aria-hidden="true" />}
-              {busy === 'validate' ? c.validating : c.validate}
-            </button>
-            <button type="button" className={btn.primary} onClick={onGenerate} disabled={!canGenerate}
-              aria-describedby={generateReason ? fid('generate-reason') : undefined}>
-              {busy === 'generate' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <FileText className="h-4 w-4" aria-hidden="true" />}
-              {busy === 'generate' ? c.generating : c.generate}
-            </button>
-            <button type="button" className={btn.ghost} onClick={onDownload} disabled={!!downloadReason}
-              aria-describedby={downloadReason ? fid('download-reason') : undefined}>
-              {busy === 'download' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Download className="h-4 w-4" aria-hidden="true" />}
-              {busy === 'download' ? c.downloading : c.download}
-            </button>
-          </div>
-          <ul className="mt-2 space-y-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-            {validateReason && <li id={fid('validate-reason')}>{c.validate}: {validateReason}</li>}
-            {generateReason && <li id={fid('generate-reason')}>{c.generate}: {generateReason}</li>}
-            {downloadReason && <li id={fid('download-reason')}>{c.download}: {downloadReason}</li>}
-          </ul>
-        </div>
-
-        {/* Live region: notices, errors, validation result, artifact */}
-        <div ref={resultRef} tabIndex={-1} aria-live="polite" className="space-y-3 outline-none">
-          {notice && <Alert tone="ok">{notice}</Alert>}
-
-          {actionError && (
-            <Alert tone="error">
-              <p role="alert">{actionError.message}</p>
-              {actionError.issues && actionError.issues.length > 0 && <IssueList issues={actionError.issues} c={c} labels={employeeLabels} onFocusField={focusField} />}
-            </Alert>
-          )}
-
-          {validationStale && <Alert tone="warn">{c.staleValidation}</Alert>}
-
-          {result && (
-            <div className="space-y-2">
-              <Alert tone={result.canExport && result.errors.length === 0 ? 'ok' : 'error'}>
-                <p className="font-medium">{result.canExport && result.errors.length === 0 ? c.validationOk : c.validationBlocked(result.errors.length)}</p>
-                <p className="mt-1 text-xs">
-                  {c.employees}: <span className="tabular-nums">{result.employeeCount}</span> · {c.total}: <span className="tabular-nums" dir="ltr">{fmtMoney(result.totalAmount, result.currency)}</span>
-                </p>
-                {(result.exclusions?.length ?? 0) > 0 && (
-                  <p className="mt-1 text-xs">
-                    {c.excludedSummary(result.exclusions!.length)}: <span className="tabular-nums" dir="ltr">{fmtMoney(result.excludedTotal ?? 0, result.currency)}</span>
-                    {' '}({c.runNet}: <span className="tabular-nums" dir="ltr">{fmtMoney(result.runNetTotal ?? 0, result.currency)}</span>)
-                  </p>
-                )}
-                {result.errors.length > 0 && <IssueList issues={result.errors} c={c} labels={employeeLabels} onFocusField={focusField} />}
-              </Alert>
-              {(result.exclusions?.length ?? 0) > 0 && (
-                <Alert tone="warn">
-                  <p className="font-medium">{c.excludedTitle}</p>
-                  <ul className="mt-1 list-disc space-y-0.5 ps-4 text-xs">
-                    {result.exclusions!.map(x => (
-                      <li key={x.employeeId}>
-                        <span className="font-mono">{x.employeeCode}</span> — <span className="tabular-nums" dir="ltr">{fmtMoney(x.amount, result.currency)}</span> — {x.reason}
-                      </li>
-                    ))}
-                  </ul>
-                </Alert>
-              )}
-              {result.warnings.length > 0 && (
-                <Alert tone="warn">
-                  <p className="font-medium">{c.warnings} ({result.warnings.length})</p>
-                  <ul className="mt-1 list-disc space-y-0.5 ps-4 text-xs">
-                    {result.warnings.map((w, i) => <li key={`${w.code}-${i}`}><span className="font-mono">{w.code}</span> — {w.message}</li>)}
-                  </ul>
-                </Alert>
-              )}
-            </div>
-          )}
-
-          {artifact && (
-            <div id="bank-wps-generated-export" tabIndex={-1} className="rounded-xl border border-teal-200 bg-teal-50/50 p-4 outline-none dark:border-teal-500/20 dark:bg-teal-500/5">
-              <p className="text-sm font-semibold text-slate-800 dark:text-white">{c.artifactTitle}</p>
-              <dl className="mt-2 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
-                <div><dt className="text-slate-400">{c.artifactId}</dt><dd className="break-all font-mono text-slate-700 dark:text-slate-300" dir="ltr">{artifact.id}</dd></div>
-                <div><dt className="text-slate-400">{c.format}</dt><dd className="text-slate-700 dark:text-slate-300">{bankFormatLabel(t, formats, artifact.formatId, cc.suffix)}</dd></div>
-                <div><dt className="text-slate-400">{c.batchReference}</dt><dd className="font-mono text-slate-700 dark:text-slate-300" dir="ltr">{artifact.batchReference}</dd></div>
-                <div><dt className="text-slate-400">{c.paymentDate}</dt><dd className="text-slate-700 dark:text-slate-300" dir="ltr">{(artifact.paymentDate ?? '').slice(0, 10)}</dd></div>
-                <div><dt className="text-slate-400">{c.employees}</dt><dd className="tabular-nums text-slate-700 dark:text-slate-300">{artifact.employeeCount}</dd></div>
-                <div><dt className="text-slate-400">{c.total}</dt><dd className="tabular-nums text-slate-700 dark:text-slate-300" dir="ltr">{fmtMoney(artifact.totalAmount, result?.currency ?? '')}</dd></div>
-              </dl>
-              <p className="mt-3 text-xs font-medium text-slate-500 dark:text-slate-400">{c.files}</p>
-              <ul className="mt-1 space-y-1">
-                {artifact.files.map((f) => (
-                  <li key={f.name} className="text-xs" dir="ltr">
-                    <span className="font-medium text-slate-800 dark:text-white">{f.name}</span>
-                    <span className="block break-all font-mono text-[11px] text-slate-500">{f.sha256}</span>
-                  </li>
-                ))}
-              </ul>
-              <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">{c.generatedNote}</p>
-              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{c.zipNote}</p>
-            </div>
-          )}
-        </div>
-
-        {/* Per-employee BIC + address lines, submitted through the existing employee approval workflow.
-            Any submitted or reloaded change discards the last validation so the batch must be revalidated. */}
-        {employeeIds && <SaudiBankBeneficiaryEditor key={batchId} employeeIds={employeeIds} employeeLabels={employeeLabels} onChange={() => setValidation(null)} />}
-      </div>
-    </section>
+        </Modal>
+      )}
+      {/* Per-employee BIC + address lines, submitted through the existing employee approval workflow.
+          Any submitted or reloaded change discards the last validation so the batch must be revalidated. */}
+      {employeeIds && (
+        <Modal isOpen={beneficiary !== null} title={c.employeeBankTitle} size="lg" placement="end" onClose={() => setBeneficiary(null)} closeLabel={t('Close')}>
+          <SaudiBankBeneficiaryEditor key={`${batchId}-${beneficiary?.employeeId ?? 'any'}`} employeeIds={employeeIds} employeeLabels={employeeLabels}
+            initialEmployeeId={beneficiary?.employeeId ?? undefined} onChange={() => setValidation(null)} />
+        </Modal>
+      )}
+    </>
   );
+
+  return <>{renderGuide({
+    steps: {
+      setup: inlineSetup ? { body: settingsForm(true) } : undefined,
+      check: {
+        summary: result ? c.checkPassedWith(result.employeeCount, fmtMoney(result.totalAmount, result.currency)) : c.checkPassed,
+        reopen: artifact ? 'view' : 'change',
+        body: checkBody,
+      },
+      create: {
+        summary: artifact ? c.createdSummary(artifact.batchReference, (artifact.paymentDate ?? '').slice(0, 10)) : undefined,
+        body: createBody,
+      },
+      download: { summary: c.submittedSummary, reopen: 'view', body: downloadBody },
+    },
+    actions: {
+      setup: { label: busy === 'save' ? c.saving : c.saveSetup, form: setupFormId, disabled: busy !== null && busy !== 'save', busy: busy === 'save', reason: busy !== null && busy !== 'save' ? c.busy : null },
+      check: { label: busy === 'validate' ? c.validating : c.validate, onClick: onValidate, disabled: !!validateReason, busy: busy === 'validate', reason: validateReason },
+      create: { label: busy === 'generate' ? c.generating : c.generate, onClick: onGenerate, disabled: !canGenerate, busy: busy === 'generate', reason: generateReason },
+      download: { label: busy === 'download' ? c.downloading : c.download, onClick: onDownload, disabled: !!downloadReason, busy: busy === 'download', reason: downloadReason },
+    },
+    live,
+    liveRef: resultRef,
+    footer,
+    overlays,
+  })}</>;
 }
 
-const FOCUSABLE_FIELDS = new Set<string>([...SETTINGS_KEYS, 'batchReference', 'paymentDate']);
-
-function IssueList({ issues, c, labels, onFocusField }: { issues: SaudiBankExportIssue[]; c: Copy; labels?: Record<number, string>; onFocusField: (k: string) => void }) {
-  // Every blocker is rendered (scrollable, never truncated): the file is all-or-nothing.
+function IssueList({ issues, c, labels, onFix }: { issues: SaudiBankExportIssue[]; c: Copy; labels?: Record<number, string>; onFix: (target: BankFixTarget) => void }) {
+  // Every blocker is rendered (scrollable, never cut short): the file is all-or-nothing. Each one says where it is cured.
   return (
-    <ul className="mt-2 max-h-72 space-y-1 overflow-y-auto pe-1 text-xs">
-      {issues.map((i, idx) => (
-        <li key={`${i.code}-${i.employeeId ?? ''}-${i.field ?? ''}-${idx}`} className="rounded-md bg-white/60 px-2 py-1.5 dark:bg-black/10">
-          <span className="font-mono text-[11px] opacity-80">{i.code}</span>
-          {i.employeeId != null && i.employeeId !== '' && <span className="ms-2 font-medium"><EmployeeLabelText label={labels?.[Number(i.employeeId)] || c.employee(String(i.employeeId))} /></span>}
-          {i.field && <span className="ms-2 opacity-80">{c.field}: <span className="font-mono" dir="ltr">{i.field}</span></span>}
-          <span className="block">{i.message}</span>
-          {i.field && FOCUSABLE_FIELDS.has(i.field) && (
-            <button type="button" className={`${btn.link} mt-0.5`} onClick={() => onFocusField(i.field!)}>{c.goToField}</button>
-          )}
-        </li>
-      ))}
+    <ul className="max-h-72 space-y-1 overflow-y-auto pe-1 text-xs" data-testid="bank-blockers">
+      {issues.map((i, idx) => {
+        const target = bankFixTarget(i);
+        return (
+          <li key={`${i.code}-${i.employeeId ?? ''}-${i.field ?? ''}-${idx}`} className="rounded-md bg-white/60 px-2 py-1.5 dark:bg-black/10">
+            <span className="font-mono text-[11px] opacity-80">{i.code}</span>
+            {i.employeeId != null && i.employeeId !== '' && <span className="ms-2 font-medium"><EmployeeLabelText label={labels?.[Number(i.employeeId)] || c.employee(String(i.employeeId))} /></span>}
+            {i.field && <span className="ms-2 opacity-80">{c.field}: <span className="font-mono" dir="ltr">{i.field}</span></span>}
+            <span className="block">{i.message}</span>
+            {target.kind === 'people' ? (
+              <Link href={`/people/${target.employeeId}`} className={`${btn.link} mt-0.5 inline-block`} data-testid="bank-blocker-fix">{c.fixInPeople}</Link>
+            ) : target.kind !== 'none' && (
+              <button type="button" className={`${btn.link} mt-0.5`} data-testid="bank-blocker-fix" onClick={() => onFix(target)}>{c.fix}</button>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }

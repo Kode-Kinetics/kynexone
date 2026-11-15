@@ -174,7 +174,7 @@ function fileKindOf(b: PipelineBatch): BatchFileKind | undefined {
  * completes the stage, as before. The counts come from what the list carries, the unconfirmed payments and the share the
  * bank has spoken about: total = unconfirmed / (1 - coverage) and confirmed = total - unconfirmed.
  */
-function awaitingBankConfirmation(b: PipelineBatch): Reason | null {
+export function awaitingBankConfirmation(b: PipelineBatch): Reason | null {
   const unconfirmed = b.unconfirmedPayments?.count;
   if (typeof unconfirmed !== 'number' || unconfirmed <= 0) return null;
   if (wpsOf(b) === 'Paid' || wpsOf(b) === 'Reconciled') return null;

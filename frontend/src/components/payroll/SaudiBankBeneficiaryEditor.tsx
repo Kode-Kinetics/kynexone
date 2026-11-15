@@ -85,7 +85,14 @@ const riyadhToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Riy
 
 type Loaded = { id: number; label: string; parsed: Parsed };
 
-export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChange }: { employeeIds: number[]; /** "CODE · Name" by employee id, from the batch's records. */ employeeLabels?: Record<number, string>; onChange?: () => void }) {
+export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChange, initialEmployeeId }: {
+  employeeIds: number[];
+  /** "CODE · Name" by employee id, from the batch's records. */
+  employeeLabels?: Record<number, string>;
+  onChange?: () => void;
+  /** Opens with this employee chosen and loaded (a validation blocker's Fix names one). */
+  initialEmployeeId?: number;
+}) {
   const { locale } = useLocale();
   const c = locale === 'ar' ? AR : EN;
   const { hasPermission } = useAuth();
@@ -126,6 +133,14 @@ export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChan
       if (mounted.current && req === reqRef.current) setLoading(false);
     }
   };
+
+  // A blocker's Fix opens the editor on the employee it names; the employee must be one of this batch's.
+  useEffect(() => {
+    if (initialEmployeeId == null || !employeeIds.includes(initialEmployeeId)) return;
+    setSelected(initialEmployeeId);
+    void fetchOne(initialEmployeeId, false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialEmployeeId]);
 
   const onSelect = (v: string) => {
     const id = v ? Number(v) : null;
