@@ -14,9 +14,10 @@ import {
 import type {
   LoanType, EmployeeLoan, LoanApproval, LoanDetail, LoanRepaymentMethod,
   AdvancePolicy, SalaryAdvance, BonusType, BonusBatch, EmployeeBonus,
-  FinanceGlEntry, AuditLogEntry,
+  FinanceGlEntry, AuditLogEntry, AdvanceDetail,
 } from '../api/loans';
 import { Modal } from '../components/Modal';
+import { DatePicker } from '../components/ui/DateParts';
 import { useTenantSettings, useTenantSettingsContext } from '../contexts/TenantSettingsContext';
 import { EmployeeSearchSelect } from '../components/EmployeeSearchSelect';
 import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
@@ -786,56 +787,84 @@ export function AdvancePolicyTab() {
 
 // ── Salary Advances ───────────────────────────────────────────────────────────
 
-function AdvancesTab() {
+const ADVANCE_STATUS_FILTER = ['Pending', 'Approved', 'Active', 'Closed', 'Rejected', 'Cancelled'] as const;
+
+function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
   const { t } = useLocale();
+  const { user, hasPermission } = useAuth();
   const { currencyCode } = useTenantSettings();
   const fx = useFormat();
   const fmt = (n: number) => fx.plain.money(n, currencyCode);
+  // The list and the detail are `loans.read` / `loans.write` on the API; requesting is `loans.self` (own record) or `loans.write` (on someone's behalf).
+  // An employee with only `loans.self` can request an advance but is not given the list by the server, so none is offered.
+  const canRead = hasPermission('loans.read') || hasPermission('loans.write');
+  const showList = canRead && !ownAccounts;
   const [items, setItems] = useState<SalaryAdvance[]>([]);
   const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(showList);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [filterStatus, setFilterStatus] = useState('');
   const [page, setPage] = useState(1);
   const pageSize = 20;
+  const toast = useAppToast();
 
   const [createModal, setCreateModal] = useState(false);
   const [approveModal, setApproveModal] = useState(false);
   const [selected, setSelected] = useState<SalaryAdvance | null>(null);
-  const [createForm, setCreateForm] = useState({ requestedAmount: 0, repaymentType: 'FullDeduction', installments: 1, repaymentStartDate: '', reason: '' });
+  const [createForm, setCreateForm] = useState({ requestedAmount: 0, repaymentType: 'OneTime', installments: 1, repaymentStartDate: '', reason: '' });
   const [selectedEmployee, setSelectedEmployee] = useState<EmployeeSelection | null>(null);
   const [approveForm, setApproveForm] = useState({ approvedAmount: 0, installments: 1, repaymentStartDate: '' });
   const [rejectReason, setRejectReason] = useState('');
   const [rejectModal, setRejectModal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [detail, setDetail] = useState<AdvanceDetail | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailError, setDetailError] = useState<unknown>(null);
 
   const load = useCallback(async () => {
+    if (!showList) { setLoading(false); return; }
     setLoading(true);
-    try { const r = await advancesApi.list({ status: filterStatus || undefined, page, pageSize }); setItems(r.items); setTotal(r.total); } catch { /**/ }
+    try { const r = await advancesApi.list({ status: filterStatus || undefined, page, pageSize }); setItems(r.items); setTotal(r.total); setLoadError(null); }
+    catch (e) { setItems([]); setTotal(0); setLoadError(e); }
     finally { setLoading(false); }
-  }, [filterStatus, page]);
+  }, [filterStatus, page, showList]);
   useEffect(() => { load(); }, [load]);
 
+  const openDetail = async (advance: SalaryAdvance) => {
+    setSelected(advance); setDetail(null); setDetailError(null); setDetailOpen(true);
+    try { setDetail(await advancesApi.get(advance.id)); } catch (e) { setDetailError(e); }
+  };
+
   const createAdvance = async () => {
-    if (!selectedEmployee) { setError(t('Select an employee')); return; }
+    if (!ownAccounts && !selectedEmployee) { setError(t('Select an employee')); return; }
+    if (createForm.requestedAmount <= 0) { setError(t('Enter a positive amount and a whole number of installments.')); return; }
     setSaving(true); setError('');
     try {
       await advancesApi.create({
-        ...createForm,
+        requestedAmount: createForm.requestedAmount,
+        repaymentType: createForm.repaymentType,
+        installments: createForm.repaymentType === 'Installments' ? createForm.installments : 1,
+        reason: createForm.reason || undefined,
+        // Self-service names no employee: the server takes the signed-in employee. HR and Finance name one.
         employeeId: '00000000-0000-0000-0000-000000000000',
-        employeeName: selectedEmployee.fullName,
-        employeeIntId: selectedEmployee.intId,
+        employeeName: ownAccounts ? (user?.fullName ?? '') : selectedEmployee!.fullName,
+        employeeIntId: ownAccounts ? undefined : selectedEmployee!.intId,
       });
-      setCreateModal(false); setSelectedEmployee(null); load();
+      setCreateModal(false); setSelectedEmployee(null); toast?.success?.(t('Advance request submitted.')); load();
     }
-    catch (e: any) { setError(e?.response?.data || 'Failed to create advance.'); }
+    catch (e) { setError(apiErrorReason(e, t('Failed to create advance.'))); }
     finally { setSaving(false); }
   };
 
   const approve = async () => {
     if (!selected) return;
     setSaving(true); setError('');
-    try { await advancesApi.approve(selected.id, approveForm); setApproveModal(false); load(); }
+    try {
+      // The start date sent is the one on screen; an empty field is not sent at all (it used to go as an empty string).
+      await advancesApi.approve(selected.id, { ...approveForm, repaymentStartDate: approveForm.repaymentStartDate || undefined });
+      setApproveModal(false); load();
+    }
     catch (e) { setError(apiErrorReason(e, t('Failed to approve.'))); }
     finally { setSaving(false); }
   };
@@ -848,19 +877,29 @@ function AdvancesTab() {
     finally { setSaving(false); }
   };
 
+  const repaymentTypeLabel = (type: string) => t(type === 'OneTime' || type === 'FullDeduction' ? 'Full deduction' : type === 'Installments' ? 'Installments' : type);
+
   return (
     <>
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <select value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }} className="select" title={t('Filter by status')}>
-            <option value="">{t('All Statuses')}</option>
-            {['Pending', 'Approved', 'Active', 'Settled', 'Rejected'].map((s) => <option key={s} value={s}>{enumLabel(t, 'LoanStatus', s)}</option>)}
-          </select>
-          <button type="button" onClick={() => { setCreateForm({ requestedAmount: 0, repaymentType: 'FullDeduction', installments: 1, repaymentStartDate: '', reason: '' }); setSelectedEmployee(null); setError(''); setCreateModal(true); }} className="btn-primary">
+        <div className="flex items-center justify-between gap-3">
+          {showList ? (
+            <select value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }} className="select" title={t('Filter by status')}>
+              <option value="">{t('All Statuses')}</option>
+              {ADVANCE_STATUS_FILTER.map((s) => <option key={s} value={s}>{s === 'Approved' ? t('Approved — awaiting payout') : enumLabel(t, 'LoanStatus', s)}</option>)}
+            </select>
+          ) : <span />}
+          <button type="button" onClick={() => { setCreateForm({ requestedAmount: 0, repaymentType: 'OneTime', installments: 1, repaymentStartDate: '', reason: '' }); setSelectedEmployee(null); setError(''); setCreateModal(true); }} className="btn-primary">
             <Plus className="h-4 w-4" /> {t('New Advance Request')}
           </button>
         </div>
-        <div className="surface overflow-hidden">
+        {!showList && (
+          <p role="note" className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">
+            {t('Your request is approved by someone other than you, then repaid through payroll. HR and Finance follow its status.')}
+          </p>
+        )}
+        {showList && (
+        <div className="surface overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
@@ -872,31 +911,37 @@ function AdvancesTab() {
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading ? (
                 <tr><td colSpan={8} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+              ) : loadError != null ? (
+                <LoadFailedRow colSpan={8} error={loadError} onRetry={() => { void load(); }} />
               ) : items.length === 0 ? (
                 <tr><td colSpan={8} className="py-12 text-center text-slate-400">{t('No advances found')}</td></tr>
               ) : items.map((a) => (
-                <tr key={a.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
+                <tr key={a.id} className="cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03]" onClick={() => openDetail(a)}>
                   <td className="px-4 py-3 font-mono text-xs text-slate-500">{a.advanceNumber}</td>
                   <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{a.employeeName}</td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(a.requestedAmount)}</td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{a.approvedAmount > 0 ? fmt(a.approvedAmount) : '—'}</td>
                   <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{fmt(a.outstandingBalance)}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{t(a.repaymentType === 'FullDeduction' ? 'Full deduction' : a.repaymentType === 'Installments' ? 'Installments' : a.repaymentType)}</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{repaymentTypeLabel(a.repaymentType)}</td>
                   <td className="px-4 py-3"><StatusBadge status={a.status} /></td>
-                  <td className="px-4 py-3">
-                    {a.status === 'Pending' && (
-                      <div className="flex gap-1">
-                        <button type="button" onClick={() => { setSelected(a); setApproveForm({ approvedAmount: a.requestedAmount, installments: a.installments || 1, repaymentStartDate: '' }); setError(''); setApproveModal(true); }} className="btn-primary h-6 px-2 text-xs">{t('Approve')}</button>
-                        <button type="button" onClick={() => { setSelected(a); setRejectReason(''); setError(''); setRejectModal(true); }} className="h-6 px-2 text-xs rounded-lg border border-red-200 text-red-500 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/20">{t('Reject')}</button>
-                      </div>
-                    )}
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center gap-1">
+                      <button type="button" onClick={() => openDetail(a)} className="rounded px-2 py-1 text-xs text-sapphire hover:bg-sapphire/10" aria-label={t('View advance {number}', { number: a.advanceNumber })}>{t('View')}</button>
+                      {a.status === 'Pending' && (
+                        <>
+                          <button type="button" onClick={() => { setSelected(a); setApproveForm({ approvedAmount: a.requestedAmount, installments: a.installments || 1, repaymentStartDate: (a.repaymentStartDate ?? '').slice(0, 10) }); setError(''); setApproveModal(true); }} className="btn-primary h-6 px-2 text-xs">{t('Approve')}</button>
+                          <button type="button" onClick={() => { setSelected(a); setRejectReason(''); setError(''); setRejectModal(true); }} className="h-6 px-2 text-xs rounded-lg border border-red-200 text-red-500 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/20">{t('Reject')}</button>
+                        </>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        {total > pageSize && (
+        )}
+        {showList && total > pageSize && (
           <div className="flex items-center justify-between text-sm text-slate-500">
             <span>{t('{total} total', { total })}</span>
             <div className="flex gap-2">
@@ -908,21 +953,109 @@ function AdvancesTab() {
         )}
       </div>
 
+      <Modal isOpen={detailOpen && !!selected} title={t('Advance — {number}', { number: selected?.advanceNumber ?? '' })} onClose={() => setDetailOpen(false)} size="lg"
+        footer={<button type="button" onClick={() => setDetailOpen(false)} className="btn-secondary ms-auto">{t('Close')}</button>}>
+        {selected && (
+          <div className="space-y-4" data-testid="advance-detail">
+            {detailError != null && (
+              <div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">
+                <p>{apiErrorReason(detailError, t('The advance could not be loaded.'))}</p>
+                <button type="button" className="btn-secondary mt-2 h-7 px-2 text-xs" onClick={() => { void openDetail(selected); }}>{t('Retry')}</button>
+              </div>
+            )}
+            {(() => {
+              const adv = detail?.advance ?? selected;
+              const payoutDate = adv.paidOutDate;
+              return (
+                <>
+                  <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
+                    <div className="surface rounded-lg p-3"><p className="mb-1 text-xs text-slate-400">{t('Employee')}</p><p className="font-semibold text-slate-900 dark:text-white">{adv.employeeName}</p></div>
+                    <div className="surface rounded-lg p-3"><p className="mb-1 text-xs text-slate-400">{t('Status')}</p><StatusBadge status={adv.status} /></div>
+                    <div className="surface rounded-lg p-3"><p className="mb-1 text-xs text-slate-400">{t('Requested')}</p><p className="font-semibold text-slate-900 dark:text-white">{fmt(adv.requestedAmount)}</p></div>
+                    <div className="surface rounded-lg p-3"><p className="mb-1 text-xs text-slate-400">{t('Approved')}</p><p className="font-semibold text-slate-900 dark:text-white">{adv.approvedAmount > 0 ? fmt(adv.approvedAmount) : '—'}</p></div>
+                    <div className="surface rounded-lg p-3"><p className="mb-1 text-xs text-slate-400">{t('Repaid')}</p><p className="font-semibold text-slate-900 dark:text-white">{fmt(adv.totalRepaid)}</p></div>
+                    <div className="surface rounded-lg p-3"><p className="mb-1 text-xs text-slate-400">{t('Outstanding')}</p><p className="font-semibold text-slate-900 dark:text-white">{fmt(adv.outstandingBalance)}</p></div>
+                    <div className="surface rounded-lg p-3"><p className="mb-1 text-xs text-slate-400">{t('Repayment')}</p><p className="font-semibold text-slate-900 dark:text-white">{repaymentTypeLabel(adv.repaymentType)}{adv.installments > 1 ? ` · ${adv.installments}` : ''}</p></div>
+                    <div className="surface rounded-lg p-3"><p className="mb-1 text-xs text-slate-400">{t('Repayment Start Date')}</p><p className="font-semibold text-slate-900 dark:text-white">{adv.repaymentStartDate ? fx.plain.date(adv.repaymentStartDate) : '—'}</p></div>
+                    <div className="surface rounded-lg p-3"><p className="mb-1 text-xs text-slate-400">{t('Requested on')}</p><p className="font-semibold text-slate-900 dark:text-white">{fx.plain.date(adv.createdAtUtc)}</p></div>
+                  </div>
+                  {adv.reason && <p className="text-sm text-slate-600 dark:text-slate-300"><span className="text-xs text-slate-400">{t('Reason')}: </span>{adv.reason}</p>}
+                  {adv.rejectionReason && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300"><span className="text-xs">{t('Rejection Reason')}: </span>{adv.rejectionReason}</p>}
+                  {(payoutDate || adv.payoutReference) && (
+                    <p data-testid="advance-payout" className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-200">
+                      {t('Paid out on {date}. Reference: {reference}', { date: payoutDate ? fx.plain.date(payoutDate) : '—', reference: adv.payoutReference || '—' })}
+                    </p>
+                  )}
+                </>
+              );
+            })()}
+            {detail == null && detailError == null && <div className="flex justify-center py-4"><div className="h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>}
+            {detail && (
+              <>
+                <div>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{t('Repayment schedule')}</p>
+                  {detail.installments.length === 0 ? <p className="py-3 text-center text-sm text-slate-400">{t('No installments scheduled yet')}</p> : (
+                    <div className="surface max-h-56 overflow-y-auto">
+                      <table className="w-full text-xs">
+                        <thead><tr className="border-b border-slate-100 dark:border-white/10">{['#', 'Due Date', 'Amount Due', 'Paid', 'Status'].map((h) => <th key={h} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400">{h === '#' ? h : t(h)}</th>)}</tr></thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
+                          {detail.installments.map((ins) => (
+                            <tr key={ins.id}>
+                              <td className="px-3 py-2 text-slate-500">{ins.installmentNumber}</td>
+                              <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{fx.plain.date(ins.dueDate)}</td>
+                              <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{fmt(ins.amountDue)}</td>
+                              <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{fmt(ins.amountPaid)}{ins.paidDate ? ` · ${fx.plain.date(ins.paidDate)}` : ''}</td>
+                              <td className="px-3 py-2"><StatusBadge status={ins.status} /></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+                {(detail.approvals ?? []).length > 0 && (
+                  <div data-testid="advance-approvals">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{t('Approval Route')}</p>
+                    <ul className="space-y-1 text-sm text-slate-600 dark:text-slate-300">
+                      {(detail.approvals ?? []).map((step) => (
+                        <li key={step.id}>{t('Step {step} — {role} · {status}', { step: step.stepOrder, role: t(step.approverRole), status: enumLabel(t, 'ApprovalStatus', step.status) })}{step.approvedByName ? ` · ${step.approvedByName}` : ''}{step.decidedAtUtc ? ` · ${fx.plain.dateTime(step.decidedAtUtc)}` : ''}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{t('Audit Trail')}</p>
+                  <AuditTrailTable logs={detail.auditLogs ?? []} />
+                </div>
+                {(detail.glEntries ?? []).length > 0 && (
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{t('GL Entries')}</p>
+                    <GlEntriesTable entries={detail.glEntries} fmt={fmt} />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </Modal>
+
       <Modal isOpen={createModal} title={t('New Advance Request')} onClose={() => setCreateModal(false)}
         footer={<><button type="button" onClick={() => setCreateModal(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={createAdvance} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Submitting…') : t('Submit')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label={t('Employee')} required>
-            <EmployeeSearchSelect value={selectedEmployee} onChange={setSelectedEmployee} required />
-          </FormField>
+          {!ownAccounts && (
+            <FormField label={t('Employee')} required>
+              <EmployeeSearchSelect value={selectedEmployee} onChange={setSelectedEmployee} required />
+            </FormField>
+          )}
           <FormField label={t('Requested Amount ({currency})', { currency: fx.currencyLabel(currencyCode) })} required><input type="number" value={createForm.requestedAmount} onChange={(e) => setCreateForm(x => ({ ...x, requestedAmount: Number(e.target.value) }))} className="input w-full" title={t('Requested Amount')} min="1" /></FormField>
           <FormField label={t('Repayment Type')}>
             <select value={createForm.repaymentType} onChange={(e) => setCreateForm(x => ({ ...x, repaymentType: e.target.value }))} className="select w-full" title={t('Repayment Type')}>
-              {['FullDeduction', 'Installments'].map((v) => <option key={v} value={v}>{v === 'FullDeduction' ? t('Full deduction') : t('Installments')}</option>)}
+              {['OneTime', 'Installments'].map((v) => <option key={v} value={v}>{repaymentTypeLabel(v)}</option>)}
             </select>
           </FormField>
           {createForm.repaymentType === 'Installments' && (
-            <FormField label={t('Installments')}><input type="number" value={createForm.installments} onChange={(e) => setCreateForm(x => ({ ...x, installments: Number(e.target.value) }))} className="input w-full" title={t('Installments')} /></FormField>
+            <FormField label={t('Installments')}><input type="number" value={createForm.installments} onChange={(e) => setCreateForm(x => ({ ...x, installments: Number(e.target.value) }))} className="input w-full" title={t('Installments')} min={1} step={1} /></FormField>
           )}
           <FormField label={t('Reason')}><textarea value={createForm.reason} onChange={(e) => setCreateForm(x => ({ ...x, reason: e.target.value }))} className="input w-full" rows={2} title={t('Reason')} /></FormField>
         </div>
@@ -933,8 +1066,8 @@ function AdvancesTab() {
         <FormError error={error} />
         <div className="space-y-3">
           <FormField label={t('Approved Amount ({currency})', { currency: fx.currencyLabel(currencyCode) })} required><input type="number" value={approveForm.approvedAmount} onChange={(e) => setApproveForm(x => ({ ...x, approvedAmount: Number(e.target.value) }))} className="input w-full" title={t('Approved Amount')} /></FormField>
-          <FormField label={t('Installments')}><input type="number" value={approveForm.installments} onChange={(e) => setApproveForm(x => ({ ...x, installments: Number(e.target.value) }))} className="input w-full" title={t('Installments')} /></FormField>
-          <FormField label={t('Repayment Start Date')}><input type="date" value={approveForm.repaymentStartDate} onChange={(e) => setApproveForm(x => ({ ...x, repaymentStartDate: e.target.value }))} className="input w-full" title={t('Repayment Start Date')} /></FormField>
+          <FormField label={t('Installments')}><input type="number" value={approveForm.installments} onChange={(e) => setApproveForm(x => ({ ...x, installments: Number(e.target.value) }))} className="input w-full" title={t('Installments')} min={1} step={1} /></FormField>
+          <FormField label={t('Repayment Start Date')}><DatePicker aria-label={t('Repayment Start Date')} value={approveForm.repaymentStartDate} onChange={(v) => setApproveForm(x => ({ ...x, repaymentStartDate: v }))} /></FormField>
         </div>
       </Modal>
 
@@ -1784,7 +1917,7 @@ function AuditReportTab() {
 
 export function LoansPage() {
   const { t } = useLocale();
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const { companyVersion } = useCompany();
   const canViewFinanceModules = user?.roles.some(role => ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director'].includes(role)) ?? false;
   const canViewTeam = canViewFinanceModules || !!user?.roles.includes('Manager');
@@ -1842,7 +1975,7 @@ export function LoansPage() {
       {activeTab === 'loans' && <LoanAccountSummary key={companyVersion} mine={ownAccounts} version={summaryVersion} />}
 
       <div className="flex items-center gap-1 overflow-x-auto border-b border-slate-200 dark:border-white/[0.08]">
-        {tabs.filter(tab => tab.id === 'loans' || (!ownAccounts && (tab.id === 'loanPayments' ? canManagePayments : canViewFinanceModules))).map(({ id, label, icon: Icon }) => (
+        {tabs.filter(tab => tab.id === 'loans' || (tab.id === 'advances' && ownAccounts && hasPermission('loans.self')) || (!ownAccounts && (tab.id === 'loanPayments' ? canManagePayments : canViewFinanceModules))).map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"
@@ -1862,7 +1995,7 @@ export function LoansPage() {
       <div>
         {activeTab === 'loans' && <LoansTab key={`${companyVersion}-${ownAccounts}`} mine={ownAccounts} loanTypes={loanTypes} onPayments={() => setActiveTab('loanPayments')} onChanged={refreshSummary} />}
         {activeTab === 'loanPayments' && canManagePayments && <LoanPaymentsTab key={companyVersion} onChanged={refreshSummary} />}
-        {activeTab === 'advances' && <AdvancesTab />}
+        {activeTab === 'advances' && <AdvancesTab key={`${companyVersion}-${ownAccounts}`} ownAccounts={ownAccounts} />}
         {activeTab === 'bonusBatches' && <BonusBatchesTab bonusTypes={bonusTypes} />}
         {activeTab === 'auditReport' && <AuditReportTab />}
       </div>

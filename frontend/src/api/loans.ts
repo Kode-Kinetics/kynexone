@@ -160,6 +160,20 @@ export interface SalaryAdvance {
   rejectionReason?: string;
   isLockedByPayroll: boolean;
   createdAtUtc: string;
+  /** Set once the advance has been paid out (the payout step records the date and the bank or cash reference). */
+  paidOutDate?: string | null;
+  payoutReference?: string | null;
+}
+
+export interface AdvanceApprovalStep {
+  id: string;
+  advanceId: string;
+  stepOrder: number;
+  approverRole: string;
+  approvedByName: string;
+  status: string;
+  comments: string;
+  decidedAtUtc?: string | null;
 }
 
 export interface AdvanceInstallment {
@@ -170,6 +184,7 @@ export interface AdvanceInstallment {
   amountDue: number;
   amountPaid: number;
   status: string;
+  paidDate?: string | null;
 }
 
 // ── Bonus Types ───────────────────────────────────────────────────────────────
@@ -327,12 +342,14 @@ export const advancePolicyApi = {
     client.post<AdvancePolicy>('/api/finance/advances/policy', body).then(r => r.data),
 };
 
+export interface AdvanceDetail { advance: SalaryAdvance; installments: AdvanceInstallment[]; approvals?: AdvanceApprovalStep[]; auditLogs: AuditLogEntry[]; glEntries: FinanceGlEntry[] }
+
 export const advancesApi = {
   list: (params: { employeeId?: string; status?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ total: number; items: SalaryAdvance[] }>('/api/finance/advances', { params }).then(r => r.data),
 
   get: (id: string) =>
-    client.get<{ advance: SalaryAdvance; installments: AdvanceInstallment[]; auditLogs: AuditLogEntry[]; glEntries: FinanceGlEntry[] }>(`/api/finance/advances/${id}`).then(r => r.data),
+    client.get<AdvanceDetail>(`/api/finance/advances/${id}`).then(r => r.data),
 
   create: (body: { employeeId?: string; employeeName: string; requestedAmount: number; repaymentType: string; installments: number; repaymentStartDate?: string; reason?: string; employeeIntId?: number }) =>
     client.post<SalaryAdvance>('/api/finance/advances', body).then(r => r.data),
