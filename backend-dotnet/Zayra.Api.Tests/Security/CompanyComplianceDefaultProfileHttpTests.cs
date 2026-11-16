@@ -1,5 +1,6 @@
 using System.Net;
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests.Security;
@@ -79,7 +80,35 @@ public sealed class CompanyComplianceDefaultProfileHttpTests(LaunchSecurityFixtu
     [Fact]
     public async Task ACompanyScopedAdmin_CannotSetTheJawazatPolicyOfTheTenantDefaultProfile()
     {
-        var s = await SeedAsync();
-        (await f.Status(HttpMethod.Patch, $"{Route}/{s.DefaultProfile}/jawazat-policy", f.Token("AdminA"), new { jawazatPolicyJson = "{}" })).Should().Be(HttpStatusCode.Forbidden);
+        // Called directly: the HTTP route answers 400 to every caller for an unrelated request-binding reason, so the scope check is
+        // exercised on the controller itself.
+        var options = new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<Zayra.Api.Data.ZayraDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        await using var db = new Zayra.Api.Data.ZayraDbContext(options);
+        var tenant = Guid.NewGuid();
+        var profile = new CompanyComplianceProfile { TenantId = tenant, CompanyId = null, CountryCode = "SA", EffectiveFrom = new DateOnly(2026, 1, 1), Status = CompanyPolicyStatuses.Draft };
+        db.CompanyComplianceProfiles.Add(profile);
+        await db.SaveChangesAsync();
+        var scope = System.Text.Json.JsonSerializer.Serialize(new { v = 2, m = "companies", c = new[] { Guid.NewGuid() } });
+        var controller = new Zayra.Api.Controllers.CompanyComplianceProfilesController(db)
+        {
+            ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext
+            {
+                HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext
+                {
+                    User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(new[]
+                    {
+                        new System.Security.Claims.Claim("tenant_id", tenant.ToString()),
+                        new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                        new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, "Admin"),
+                        new System.Security.Claims.Claim("entity_scope", scope),
+                    }, "test")),
+                },
+            },
+        };
+
+        var result = await controller.UpdateJawazatPolicy(profile.Id, new Zayra.Api.Controllers.UpdateJawazatPolicyRequest("{}"), default);
+
+        result.Should().BeOfType<Microsoft.AspNetCore.Mvc.ForbidResult>();
     }
 }

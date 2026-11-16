@@ -7,6 +7,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
+using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Models;
