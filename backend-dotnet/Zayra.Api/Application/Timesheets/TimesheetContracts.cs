@@ -117,5 +117,5 @@ public interface ITimesheetService
     // ── Managers / HR. ──
     Task<PagedResult<TimesheetSummaryDto>> ListAsync(Guid tenantId, TimesheetQuery query, CancellationToken ct);
     Task<TimesheetDto?> GetAsync(Guid tenantId, Guid timesheetId, CancellationToken ct);
-    Task<IReadOnlyList<TimesheetVarianceRowDto>> GetAttendanceVarianceAsync(Guid tenantId, DateOnly from, DateOnly to, int? employeeId, bool overAllocatedOnly, CancellationToken ct);
+    Task<IReadOnlyList<TimesheetVarianceRowDto>> GetAttendanceVarianceAsync(Guid tenantId, DateOnly from, DateOnly to, int? employeeId, bool overAllocatedOnly, CancellationToken ct, IReadOnlyCollection<int>? allowedEmployeeIds = null);
 }
