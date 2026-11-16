@@ -179,6 +179,8 @@ export interface VarianceReport {
   lines: VarianceLine[];
   /** Per-row complaints from the CSV parser. Rows that errored were NOT compared. */
   registerErrors: string[];
+  /** The run's own currency (its company's default, else the tenant's). */
+  currency: string;
 }
 
 /**
