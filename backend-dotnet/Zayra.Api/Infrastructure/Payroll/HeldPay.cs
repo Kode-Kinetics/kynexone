@@ -44,7 +44,7 @@ public static class HeldPay
     public const string ActionForfeit = "forfeit";
 
     /// <summary>One suspended employee's pay for the period, computed by the run.</summary>
-    public sealed record Candidate(int EmployeeId, string EmployeeCode, string EmployeeName, decimal Amount, object Breakdown);
+    public sealed record Candidate(int EmployeeId, string EmployeeCode, string EmployeeName, decimal Amount);
 
     /// <summary>Statuses in which a run can still be processed (and so could still write or rewrite a hold).</summary>
     public static bool RunIsOpen(string? status) =>
@@ -83,14 +83,21 @@ public static class HeldPay
                 TenantId = tenantId, PayrollRunId = run.Id, EmployeeId = c.EmployeeId,
                 AdjustmentType = HoldAdjustmentType, Amount = c.Amount, Status = Held,
                 Reason = SuspendedReason, SourceType = HoldSource, SourceId = null,
-                SourceSnapshotJson = JsonSerializer.Serialize(new
-                {
-                    reason = SuspendedReason, period, employeeCode = c.EmployeeCode, employeeName = c.EmployeeName,
-                    breakdown = c.Breakdown,
-                }),
+                SourceSnapshotJson = HoldRecordJson(period, c.EmployeeCode, c.EmployeeName),
             });
         }
     }
+
+    /// <summary>
+    /// The hold's own record, not an employee row: the reason, the month and who it is owed to (code and name, so the amount
+    /// is never anonymous). No salary components, bank, identity or other employee data: the amount is the row's own column.
+    /// </summary>
+    internal static string HoldRecordJson(string period, string employeeCode, string employeeName) =>
+        JsonSerializer.Serialize(new { reason = SuspendedReason, period, employeeCode, employeeName });
+
+    /// <summary>A release's own record: which hold it pays, the run and month it was held in. No employee data.</summary>
+    internal static string ReleaseRecordJson(Guid holdId, Guid heldRunId, string heldPeriod) =>
+        JsonSerializer.Serialize(new { holdId, heldRunId, heldPeriod, reason = SuspendedReason });
 
     /// <summary>The result of a release or forfeit: an HTTP status and the body to answer with.</summary>
     public sealed record DecisionOutcome(int StatusCode, object Body);
@@ -189,7 +196,7 @@ public static class HeldPay
                     AdjustmentType = ReleaseAdjustmentType, Amount = hold.Amount, Status = "Approved",
                     Reason = trimmedReason.Length > 0 ? $"{label}. {trimmedReason}" : label,
                     SourceType = ReleaseSource, SourceId = hold.Id,
-                    SourceSnapshotJson = JsonSerializer.Serialize(new { holdId = hold.Id, heldRunId = holdingRun.Id, heldPeriod, reason = SuspendedReason }),
+                    SourceSnapshotJson = ReleaseRecordJson(hold.Id, holdingRun.Id, heldPeriod),
                 });
             }
             db.AuditLogs.Add(new AuditLog

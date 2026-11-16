@@ -1157,12 +1157,7 @@ public sealed class PayrollRunProcessor
                         : PayComponentEngine.Compute(heldConfigured, new PayComponentContext { Basic = hBasic, Gross = hGross }).Earnings.Sum(x => x.Amount);
                     var amount = Math.Round(hGross + hCash + hConfigured, 2);
                     if (amount <= 0m) continue;
-                    heldCandidates.Add(new HeldPay.Candidate(e.Id, e.EmployeeCode, e.FullName, amount, new
-                    {
-                        basic = hBasic, housing = hHousing, transport = hTransport, otherAllowances = hOther,
-                        cashAllowances = hCash, configuredEarnings = hConfigured,
-                        prorationFactor = pr.Factor, paidFrom = pr.PaidFrom, paidTo = pr.PaidTo,
-                    }));
+                    heldCandidates.Add(new HeldPay.Candidate(e.Id, e.EmployeeCode, e.FullName, amount));
                 }
             }
         }
