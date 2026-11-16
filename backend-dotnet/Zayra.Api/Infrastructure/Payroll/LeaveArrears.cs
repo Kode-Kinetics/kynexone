@@ -102,8 +102,9 @@ public static class LeaveArrears
 
     /// <summary>
     /// S4, C2-C5 — when an approved leave is cancelled, every month whose deduction a run already took gets ONE credit row
-    /// (negative amount, same month), equal to what was actually taken: the consumption witness of each consumed row (what
-    /// the run deducted after the month's cap), or the row's amount where no witness exists (a run older than witnesses).
+    /// (negative amount, same month), equal to what was actually taken and is still collected: the consumption witness of
+    /// each consumed row (what the run deducted after the month's cap), or the row's amount where no witness exists (a run
+    /// older than witnesses), except in a month collected in parts, where an unwitnessed row's take was handed back by a void.
     /// Idempotent per (leave, month): calling it again writes nothing. Pending rows are not this method's business; the
     /// caller deletes them. Rows are added to the context, not saved. Returns the rows it added.
     /// </summary>
@@ -124,6 +125,11 @@ public static class LeaveArrears
                 .ToListAsync(ct))
             .GroupBy(c => c.ArtifactId)
             .ToDictionary(g => g.Key, g => g.Sum(c => c.Amount));
+        var remainderMonths = (await db.LeavePayrollImpacts.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.LeaveRequestId == leaveRequestId && x.ImpactType == RemainderImpactType)
+                .Select(x => x.PayPeriod)
+                .ToListAsync(ct))
+            .ToHashSet(StringComparer.Ordinal);
         var alreadyCredited = (await db.LeavePayrollImpacts.AsNoTracking()
                 .Where(x => x.TenantId == tenantId && x.LeaveRequestId == leaveRequestId && x.ImpactType == ReversalImpactType)
                 .Select(x => x.PayPeriod)
@@ -136,7 +142,11 @@ public static class LeaveArrears
         foreach (var month in consumed.GroupBy(x => x.PayPeriod).OrderBy(g => g.Key, StringComparer.Ordinal))
         {
             if (alreadyCredited.Contains(month.Key)) continue;
-            var taken = Math.Round(month.Sum(x => witnessed.TryGetValue(x.Id, out var w) ? w : x.Amount), 2);
+            // A consumed row with no witness is a row a run took before witnesses existed: its amount is what was taken. But a
+            // month that has a remainder row was collected by THIS mechanism, where every take is witnessed; a consumed row there
+            // without a witness is one whose collecting run was voided (its take handed back), so it refunds nothing.
+            var collectedInParts = remainderMonths.Contains(month.Key);
+            var taken = Math.Round(month.Sum(x => witnessed.TryGetValue(x.Id, out var w) ? w : collectedInParts ? 0m : x.Amount), 2);
             if (taken <= 0m) continue;
             var first = month.OrderBy(x => x.SliceFrom).First();
             var row = new LeavePayrollImpact
