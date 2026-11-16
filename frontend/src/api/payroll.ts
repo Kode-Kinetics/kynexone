@@ -254,7 +254,6 @@ export interface PayrollPopulationEntry {
   message: string;
 }
 
-/** A blocking compliance error a human consciously cleared, with the reason they gave. */
 /** One held amount (server HeldPay.HoldRow). */
 export interface PayrollHeldPayItem {
   holdId: string;
@@ -308,6 +307,7 @@ export interface LeaveSliceSplitReport {
   sickScaleRows: LeaveSliceSplitRow[];
 }
 
+/** A blocking compliance error a human consciously cleared, with the reason they gave. */
 export interface PayrollValidationOverride {
   id: string;
   code: string;

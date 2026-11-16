@@ -74,8 +74,8 @@ export function HeldPayPanel({ runId, amount }: { runId: string; amount: (n: num
           <li key={item.holdId} className="text-xs text-slate-800 dark:text-slate-200" data-testid="held-pay-row">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span>
-                <span className="font-semibold">{`${item.employeeCode} — ${item.employeeName}`}</span>
-                <span className="ms-2 tabular-nums">{amount(item.amount)}</span>
+                <bdi className="font-semibold">{`${item.employeeCode} — ${item.employeeName}`}</bdi>
+                <bdi className="ms-2 tabular-nums">{amount(item.amount)}</bdi>
                 <span className="ms-2 opacity-80">{t('Held in {period}', { period: item.heldPeriod })}</span>
                 <span className="ms-2 opacity-80">{statusText(item)}</span>
               </span>
