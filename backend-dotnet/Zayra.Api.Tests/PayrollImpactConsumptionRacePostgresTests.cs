@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Jobs;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests;
@@ -148,9 +149,14 @@ public sealed class PayrollImpactConsumptionRacePostgresTests
 
         await using var db = _fx.CreateDb();
         var leave = await db.LeavePayrollImpacts.AsNoTracking().Where(x => x.TenantId == w.TenantId).ToListAsync();
-        leave.Should().ContainSingle("a deduction a committed run already consumed must not be deleted underneath it")
-            .Which.Status.Should().Be("Processed");
-        (await WitnessIdsAsync(db, w, PayrollConsumptionArtifacts.LeaveImpact)).Should().Equal(leave[0].Id);
+        var consumed = leave.Where(x => x.ImpactType != LeaveArrears.ReversalImpactType).Should()
+            .ContainSingle("a deduction a committed run already consumed must not be deleted underneath it").Subject;
+        consumed.Status.Should().Be("Processed");
+        (await WitnessIdsAsync(db, w, PayrollConsumptionArtifacts.LeaveImpact)).Should().Equal(consumed.Id);
+        // The cancellation then gives that deduction back, once, as a pending credit the next open run pays.
+        var credit = leave.Where(x => x.ImpactType == LeaveArrears.ReversalImpactType).Should().ContainSingle().Subject;
+        credit.Status.Should().Be("Pending");
+        credit.Amount.Should().BeNegative();
         (await db.LeaveRequests.AsNoTracking().SingleAsync(x => x.Id == leaveRequestId)).Status.Should().Be("Cancelled");
     }
 
