@@ -1110,11 +1110,37 @@ public sealed class PayrollRunProcessor
                         .ToListAsync(cancellationToken))
                     .GroupBy(x => x.EmployeeId)
                     .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.EffectiveDate).First());
+                // The SAME earnings basis as a paid employee's gross (the slip loop): the prorated package, the salary record's
+                // own cash allowances (definitions confirmed by Finance, prorated as other allowances), and the configured-value
+                // earnings, all before deductions. A last working day in the period shortens it as it would a paid leaver's.
+                var heldRecordIds = suspendedSalaries.Values.Select(x => x.Id).ToList();
+                var heldAllowances = (await _db.EmployeeSalaryAllowances.AsNoTracking()
+                        .Where(x => x.TenantId == tenantId && heldRecordIds.Contains(x.SalaryStructureId))
+                        .ToListAsync(cancellationToken))
+                    .ToLookup(x => x.SalaryStructureId);
+                var heldAllowanceDefinitions = new Dictionary<string, PayComponent>(cashAllowanceDefinitions, StringComparer.Ordinal);
+                var missingCodes = heldAllowances.SelectMany(g => g).Select(x => x.Code).Distinct()
+                    .Where(c => !heldAllowanceDefinitions.ContainsKey(c)).ToList();
+                if (missingCodes.Count > 0)
+                {
+                    var versions = await CashAllowanceDefinitions.VersionsAsync(_db, tenantId, missingCodes, cancellationToken, companyId: company.Id);
+                    foreach (var code in missingCodes)
+                        if (CashAllowanceDefinitions.InEffect(versions[code], periodStart) is { } d) heldAllowanceDefinitions[d.Code] = d;
+                }
+                var heldLwd = (await Op(_db.EmployeeOffboardings).AsNoTracking()
+                        .Where(o => o.TenantId == tenantId && o.Status != "Cancelled" && suspendedIds.Contains(o.EmployeeId))
+                        .Select(o => new { o.EmployeeId, o.LastWorkingDay, o.CreatedAtUtc })
+                        .ToListAsync(cancellationToken))
+                    .GroupBy(o => o.EmployeeId)
+                    .ToDictionary(g => g.Key, g => g.OrderByDescending(o => o.CreatedAtUtc).First().LastWorkingDay);
+                var heldConfigured = payComponents.Where(PayComponentEngine.IsConfiguredValue).ToList();
                 foreach (var e in suspendedPeople.OrderBy(x => x.Id))
                 {
                     if (!suspendedSalaries.TryGetValue(e.Id, out var s)) continue;
                     var joined = e.JoiningDate == default ? (DateOnly?)null : DateOnly.FromDateTime(e.JoiningDate);
-                    var pr = ProrationCalculator.Compute(periodStart, periodEnd, joined, null, policy.Basis, workWeekConfig);
+                    DateOnly? lwd = heldLwd.TryGetValue(e.Id, out var l) && l >= periodStart && l <= periodEnd
+                        && (joined is null || l >= joined) ? l : null;
+                    var pr = ProrationCalculator.Compute(periodStart, periodEnd, joined, lwd, policy.Basis, workWeekConfig);
                     if (pr.IsExcluded) continue;
                     var other = s.FoodAllowance + s.MobileAllowance + s.OtherAllowance;
                     var pkg = ProrationCalculator.Apply(s.BasicSalary, s.HousingAllowance, s.TransportAllowance, other, pr.Factor);
@@ -1122,11 +1148,19 @@ public sealed class PayrollRunProcessor
                     var hHousing   = policy.Prorates(ProratedComponentCodes.Housing)         ? pkg.Housing         : s.HousingAllowance;
                     var hTransport = policy.Prorates(ProratedComponentCodes.Transport)       ? pkg.Transport       : s.TransportAllowance;
                     var hOther     = policy.Prorates(ProratedComponentCodes.OtherAllowances) ? pkg.OtherAllowances : other;
-                    var amount = Math.Round(hBasic + hHousing + hTransport + hOther, 2);
+                    var hGross = hBasic + hHousing + hTransport + hOther;
+                    var hCash = 0m;
+                    foreach (var line in heldAllowances[s.Id])
+                        if (heldAllowanceDefinitions.TryGetValue(line.Code, out var def) && !string.IsNullOrWhiteSpace(def.GlDriverKey) && def.FinanceConfirmedAtUtc is not null)
+                            hCash += policy.Prorates(ProratedComponentCodes.OtherAllowances) ? ProrationCalculator.ApplyScalar(line.Amount, pr.Factor) : line.Amount;
+                    var hConfigured = heldConfigured.Count == 0 ? 0m
+                        : PayComponentEngine.Compute(heldConfigured, new PayComponentContext { Basic = hBasic, Gross = hGross }).Earnings.Sum(x => x.Amount);
+                    var amount = Math.Round(hGross + hCash + hConfigured, 2);
                     if (amount <= 0m) continue;
                     heldCandidates.Add(new HeldPay.Candidate(e.Id, e.EmployeeCode, e.FullName, amount, new
                     {
                         basic = hBasic, housing = hHousing, transport = hTransport, otherAllowances = hOther,
+                        cashAllowances = hCash, configuredEarnings = hConfigured,
                         prorationFactor = pr.Factor, paidFrom = pr.PaidFrom, paidTo = pr.PaidTo,
                     }));
                 }

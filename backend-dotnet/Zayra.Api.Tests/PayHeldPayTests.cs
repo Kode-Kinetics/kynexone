@@ -322,4 +322,31 @@ public class PayHeldPayTests
         outcome.StatusCode.Should().Be(403);
         (await Holds(db)).Single().Status.Should().Be(HeldPay.Held);
     }
+
+    /// <summary>P2-A6: the held amount is the month's pay on the same earnings basis as a paid colleague's gross.</summary>
+    [Fact]
+    public async Task TheHeldAmount_IncludesConfiguredEarnings_LikeAPaidColleaguesGross()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        await Zayra.Api.Infrastructure.Seed.PayComponentSeeder.SeedTenantDefaultsAsync(db, co.TenantId, CancellationToken.None);
+        db.PayComponents.Add(new PayComponent
+        {
+            TenantId = co.TenantId, CompanyId = co.CompanyId, Code = "SITE_ALLOWANCE", NameEn = "Site allowance", NameAr = "Site allowance",
+            ComponentType = PayComponentTypes.Earning, CalcMethod = PayComponentCalcMethods.Fixed, Value = 500m,
+            GlDriverKey = "EARN:OTHER", DisplayOrder = 500, IsActive = true,
+        });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var active = await AddEmployee(db, co, "Active");
+        await AddEmployee(db, co, "Suspended");
+        var mar = await AddRun(db, co, 2026, 3);
+
+        await Process(db, co, mar.Id);
+
+        var colleague = (await Slip(db, mar.Id, active.Id))!;
+        colleague.GrossSalary.Should().Be(Basic + Housing + 500m);
+        (await Holds(db)).Single().Amount.Should().Be(colleague.GrossSalary, "the hold is the full month's pay before deductions");
+    }
 }
