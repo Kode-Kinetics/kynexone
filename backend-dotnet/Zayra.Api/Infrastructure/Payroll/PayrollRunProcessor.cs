@@ -532,9 +532,16 @@ public sealed class PayrollRunProcessor
                      && x.ImpactType != AttendanceImpactTypes.OvertimePayable
                      && employeeIdsForRun.Contains(x.EmployeeId))
             .ToListAsync(cancellationToken);
-        var leaveImpacts = await _db.LeavePayrollImpacts.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.PayPeriod == $"{run.Year}-{run.Month:00}" && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId))
+        // L13/L14 — a leave impact dated on or before this month that no run ever collected (approved after its own month
+        // closed, or left behind) is no longer lost: it is swept into the EARLIEST open run, as arrears for its own month.
+        // A closed run is never edited. A prior-month row is taken here only when no other open run of this company sits
+        // between its month and this one (that run is earlier, so it takes it).
+        var runPeriodKey = $"{run.Year}-{run.Month:00}";
+        var leaveImpactsLoaded = await _db.LeavePayrollImpacts.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && string.Compare(x.PayPeriod, runPeriodKey) <= 0 && x.Status != "Processed"
+                     && employeeIdsForRun.Contains(x.EmployeeId))
             .ToListAsync(cancellationToken);
+        var leaveImpacts = await LeaveArrears.SelectForRunAsync(_db, tenantId, company.Id, run, leaveImpactsLoaded, cancellationToken);
 
         // ── ERR_ATTENDANCE_IMPACT_STALE: never deduct attendance impacts that no longer match their days ─────────
         // This run is about to deduct the pending impacts loaded above exactly as they stand. One written by an older
@@ -884,10 +891,10 @@ public sealed class PayrollRunProcessor
         var proratedEmpIds = employees.Where(e => prorationByEmp[e.Id].IsProrated).Select(e => e.Id).ToHashSet();
         if (proratedEmpIds.Count > 0 && leaveImpacts.Count > 0)
         {
-            var reqIds = leaveImpacts.Where(x => proratedEmpIds.Contains(x.EmployeeId)).Select(x => x.LeaveRequestId).Distinct().ToList();
+            var reqIds = leaveImpacts.Where(x => proratedEmpIds.Contains(x.EmployeeId) && x.PayPeriod == runPeriodKey && !LeaveArrears.IsReversal(x)).Select(x => x.LeaveRequestId).Distinct().ToList();
             var reqs = reqIds.Count == 0 ? new List<LeaveRequest>() : await Op(_db.LeaveRequests).AsNoTracking()
                 .Where(r => r.TenantId == tenantId && reqIds.Contains(r.Id)).ToListAsync(cancellationToken);
-            foreach (var imp in leaveImpacts.Where(x => proratedEmpIds.Contains(x.EmployeeId)))
+            foreach (var imp in leaveImpacts.Where(x => proratedEmpIds.Contains(x.EmployeeId) && x.PayPeriod == runPeriodKey && !LeaveArrears.IsReversal(x)))
             {
                 var req = reqs.FirstOrDefault(r => r.Id == imp.LeaveRequestId);
                 if (req is null) continue;
@@ -1314,6 +1321,9 @@ public sealed class PayrollRunProcessor
         var settlementsDisbursed = new List<EmployeeFinalSettlement>();
         var settlementEncashmentTaken = new List<(Guid BalanceId, int EmployeeId, decimal Days)>();
         var settlementRecoveryReduced = new List<(int Id, string Code, string Name, decimal Planned, decimal Taken)>();
+        // L13/L14 — per-attempt, like everything above: the arrears rows this pass collects from, and who had some carried.
+        var leaveArrearsTakenAll = new List<(LeavePayrollImpact Row, decimal Taken)>();
+        var leaveArrearsCarried = new List<(int Id, string Code, string Name, decimal Carried, decimal Taken)>();
         // One pass over each per-employee source, instead of a full scan per employee (employees x rows).
         // Lookups keep source order, so every per-employee sequence is exactly what the scan produced.
         var salaryByEmp = salaryAssignments.ToLookup(x => x.EmployeeId);
@@ -1439,8 +1449,14 @@ public sealed class PayrollRunProcessor
             var lopDayRate = lopDayDivisor > 0 && lopBase > 0 ? lopBase / lopDayDivisor : 0m;
             var lopDeduction = Math.Round(lopDays * lopDayRate, 2);
 
-            var leaveDeduction = leaveByEmp[e.Id]
-                .Where(x => x.ImpactType.Contains("Deduction", StringComparison.OrdinalIgnoreCase))
+            // This month's own leave rows are this month's deduction. Rows of an EARLIER month this run swept in (L13/L14)
+            // are arrears, collected below within the cap once the loan instalments are known.
+            var empLeaveRows = leaveByEmp[e.Id]
+                .Where(x => x.ImpactType.Contains("Deduction", StringComparison.OrdinalIgnoreCase)).ToList();
+            var priorLeaveRows = empLeaveRows
+                .Where(x => x.PayPeriod != runPeriodKey && !LeaveArrears.IsReversal(x) && x.Amount > 0m).ToList();
+            var leaveDeduction = empLeaveRows
+                .Where(x => x.PayPeriod == runPeriodKey && !LeaveArrears.IsReversal(x))
                 .Sum(x =>
                 {
                     // Unpaid leave was priced on basic when the leave was approved; when the company prices absence on its
@@ -1805,13 +1821,34 @@ public sealed class PayrollRunProcessor
             // ADVANCE_EMI lines do not.
             var totalLoanDeduction = Math.Round(loanEmi + advEmi, 2);
 
+            // ── L13/L14: UNPAID-LEAVE ARREARS, WITHIN THE CAP ─────────────────────────────────────────────
+            // Recovery of pay already paid for unpaid days of an earlier month. Taken AFTER the loan and advance instalments
+            // (they keep their place), oldest month first, and only as far as the company's cap on the wage due allows
+            // once every other deduction of the month is counted (LeaveArrears.Budget). What does not fit is carried to the
+            // next run, never dropped, and never drives net below zero.
+            var empArrearsTaken = new List<(LeavePayrollImpact Row, decimal Taken)>();
+            decimal leaveArrearsTaken = 0m;
+            if (includesRecurringPay && priorLeaveRows.Count > 0)
+            {
+                var wageReductions = attendanceDeduction + lopDeduction + leaveDeduction;
+                var budget = LeaveArrears.Budget(companyPayrollRules.ArrearsDeductionCapPct, earningsForPeriod, wageReductions,
+                    deductionsBeforeDebt - wageReductions + totalLoanDeduction,
+                    Math.Max(0m, Math.Round(affordable - totalLoanDeduction, 2)));
+                empArrearsTaken = LeaveArrears.Allocate(priorLeaveRows, budget);
+                leaveArrearsTaken = Math.Round(empArrearsTaken.Sum(x => x.Taken), 2);
+                leaveArrearsTakenAll.AddRange(empArrearsTaken);
+                var carried = Math.Round(priorLeaveRows.Sum(x => x.Amount) - leaveArrearsTaken, 2);
+                if (carried > 0m)
+                    leaveArrearsCarried.Add((e.Id, e.EmployeeCode, e.FullName, carried, leaveArrearsTaken));
+            }
+
             // ── POD-C3 (POD-B3 handoff): net the 1420 receivable a prior void recognised ─────────────
             // min(outstanding, net before recovery) — net then equals "what we should have paid − what we
             // already paid", which is the definition of a recovery. Never drives net negative.
             decimal receivableRecovery = 0m;
             if (run.NetsPriorReceivable && receivableByEmp.TryGetValue(e.Id, out var empReceivables))
             {
-                var recoverable = Math.Max(0m, Math.Round(affordable - totalLoanDeduction, 2));
+                var recoverable = Math.Max(0m, Math.Round(affordable - totalLoanDeduction - leaveArrearsTaken, 2));
                 // POD-C3-FIX — how much of this employee's recovery came from a receivable recognised in a
                 // DIFFERENT period, and which periods those were. Recovering inside the SAME period is not
                 // a wage deduction at all (the replacement run re-pays the very month whose cash the
@@ -1843,7 +1880,7 @@ public sealed class PayrollRunProcessor
                     receivableResidualEmployees.Add((e.Id, e.EmployeeCode, e.FullName, residual));
             }
 
-            var deductions = deductionsBeforeDebt + totalLoanDeduction + receivableRecovery;
+            var deductions = deductionsBeforeDebt + totalLoanDeduction + receivableRecovery + leaveArrearsTaken;
             // C3: net salary cannot be negative (GCC labour law); engine Rule 3 will flag this.
             // (gross bonus in, bonus tax out) == (net bonus in) — take-home is unchanged by POD-B1b.
             var rawNet = earningsForPeriod - deductions;
@@ -2164,6 +2201,13 @@ public sealed class PayrollRunProcessor
             // Source "Recovery" routes to DED:RECEIVABLE_RECOVERY, which CREDITS the 1420 ASSET the void
             // debited. Routing it to DED:OTHER (2199) would credit a liability nobody owes and leave the
             // receivable ageing forever — the exact gap B3 handed to C3.
+            // L13/L14 — unpaid-leave arrears, one line per month they belong to, emitted OUTSIDE both emission branches (neither
+            // owns them, so the legacy block and the component engine stay identical). Source "Leave": the same DED:LEAVE
+            // driver as the month's own unpaid-leave line.
+            foreach (var g in empArrearsTaken.GroupBy(x => x.Row.PayPeriod).OrderBy(g => g.Key, StringComparer.Ordinal))
+                AddDeduction(tenantId, company.Id, id, e.Id, LeaveArrears.ArrearsCode, LeaveArrears.ArrearsLabel(g.Key),
+                    Math.Round(g.Sum(x => x.Taken), 2), "Leave");
+
             if (receivableRecovery > 0m)
                 AddDeduction(tenantId, company.Id, id, e.Id,
                     PayrollRecoveryComponents.ReceivableRecovery, PayrollRecoveryComponents.ReceivableRecoveryName,
@@ -2297,9 +2341,28 @@ public sealed class PayrollRunProcessor
                 .Where(x => x.TenantId == tenantId && attendanceImpactIds.Contains(x.Id) && x.Status != "Processed")
                 .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
 
-            var leaveImpactIds = leaveImpacts.Select(x => x.Id).ToList();
-            foreach (var x in leaveImpacts)
-                Witness(PayrollConsumptionArtifacts.LeaveImpact, x.Id, x.EmployeeId, x.Amount, x.Status);
+            // L13/L14 — an earlier month's row is consumed only if this run collected from it. One the cap could not reach stays
+            // Pending for the next run; one collected in part is consumed and its uncollected part carried on a remainder row of
+            // the same month, witnessed so a void or reopen of this run deletes it again (the original returns to Pending).
+            var arrearsTakenById = leaveArrearsTakenAll.ToDictionary(x => x.Row.Id, x => x.Taken);
+            var consumedLeave = leaveImpacts
+                .Where(x => (x.PayPeriod == runPeriodKey && !LeaveArrears.IsReversal(x)) || arrearsTakenById.ContainsKey(x.Id))
+                .ToList();
+            var leaveImpactIds = consumedLeave.Select(x => x.Id).ToList();
+            foreach (var x in consumedLeave)
+                Witness(PayrollConsumptionArtifacts.LeaveImpact, x.Id, x.EmployeeId,
+                    arrearsTakenById.TryGetValue(x.Id, out var takenFromRow) ? takenFromRow : x.Amount, x.Status);
+            foreach (var (row, taken) in leaveArrearsTakenAll.Where(t => t.Taken < t.Row.Amount))
+            {
+                var remainder = new LeavePayrollImpact
+                {
+                    TenantId = tenantId, LeaveRequestId = row.LeaveRequestId, EmployeeId = row.EmployeeId,
+                    PayPeriod = row.PayPeriod, ImpactType = LeaveArrears.RemainderImpactType, Days = 0m,
+                    Amount = Math.Round(row.Amount - taken, 2), SliceFrom = row.SliceFrom, SliceTo = row.SliceTo, Status = "Pending",
+                };
+                _db.LeavePayrollImpacts.Add(remainder);
+                Witness(LeaveArrears.RemainderArtifact, remainder.Id, remainder.EmployeeId, remainder.Amount, null);
+            }
             var markedLeave = await _db.LeavePayrollImpacts
                 .Where(x => x.TenantId == tenantId && leaveImpactIds.Contains(x.Id) && x.Status != "Processed")
                 .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
@@ -2510,6 +2573,12 @@ public sealed class PayrollRunProcessor
                 $"{name} ({code}): {amount:N2} of loan/advance instalment could not be funded by this period's net " +
                 "pay and was CARRIED FORWARD, not written off. The outstanding balance is unchanged for that " +
                 "portion, so the next run will collect it.");
+        foreach (var (empId, code, name, carried, taken) in leaveArrearsCarried)
+            C3Warn("LEAVE_ARREARS_CARRIED_FORWARD", empId,
+                $"{name} ({code}): {carried:N2} of unpaid-leave arrears from earlier months was not collected this month " +
+                $"({taken:N2} was), because total deductions are limited to {companyPayrollRules.ArrearsDeductionCapPct:0.##}% of the wage due " +
+                "and net pay cannot fall below zero. It is carried to the next run, not written off; anything still owed when " +
+                "employment ends is shown on the final settlement.");
         foreach (var (empId, code, name, amount) in receivableResidualEmployees)
             C3Warn("WARN_RECEIVABLE_RESIDUAL", empId,
                 $"{name} ({code}): {amount:N2} of a prior voided run's disbursed net pay remains outstanding on the " +

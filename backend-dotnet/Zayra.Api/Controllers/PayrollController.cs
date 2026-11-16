@@ -8660,7 +8660,21 @@ public partial class PayrollController : ControllerBase
             .Where(l => l.TenantId == tenantId && l.SettlementId == id)
             .OrderBy(l => l.SortOrder)
             .ToListAsync(cancellationToken);
-        return Ok(ProjectSettlement(s, lines, null));
+        // L13/L14 — unpaid-leave money no run has collected yet (arrears the cap carried, or a refund still to pay) is
+        // shown on the settlement, so what is still owed either way is settled there rather than lost with the leaver.
+        var owedLeave = await _db.LeavePayrollImpacts.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == s.EmployeeId && x.Status != "Processed"
+                     && x.ImpactType.Contains("Deduction") && x.Amount != 0m)
+            .Select(x => new { x.PayPeriod, x.Amount })
+            .ToListAsync(cancellationToken);
+        var outstandingLeave = new
+        {
+            owedByEmployee = owedLeave.Where(x => x.Amount > 0m).Sum(x => x.Amount),
+            owedToEmployee = -owedLeave.Where(x => x.Amount < 0m).Sum(x => x.Amount),
+            months = owedLeave.GroupBy(x => x.PayPeriod).OrderBy(g => g.Key, StringComparer.Ordinal)
+                .Select(g => new { period = g.Key, amount = g.Sum(x => x.Amount) }).ToList(),
+        };
+        return Ok(ProjectSettlement(s, lines, null, outstandingLeave));
     }
 
     /// <summary>POD-C1 — Draft → PendingApproval. Maker/checker: the approver may not be the creator.</summary>
@@ -9407,7 +9421,8 @@ public partial class PayrollController : ControllerBase
 
     /// <summary>JSON body for a settlement, a strict SUPERSET of the pre-C1 /final-settlement response.</summary>
     private static object ProjectSettlement(
-        EmployeeFinalSettlement s, IReadOnlyList<FinalSettlementLine> lines, FinalSettlementPlan? plan)
+        EmployeeFinalSettlement s, IReadOnlyList<FinalSettlementLine> lines, FinalSettlementPlan? plan,
+        object? outstandingLeaveDeductions = null)
         => new
         {
             // ── every field the pre-C1 endpoint returned, at the SAME path ────────────────────────────
@@ -9465,6 +9480,8 @@ public partial class PayrollController : ControllerBase
             eosbResult = SafeEosbBreakdown(s.EosbResultJson),
             appliedRule = SafeEosbRule(s.EosbResultJson),
             warnings = plan?.Warnings ?? new List<string>(),
+            // Unpaid-leave arrears not yet collected, and leave refunds not yet paid (null where not computed).
+            outstandingLeaveDeductions,
             lines = lines.Select(l => new
             {
                 l.ComponentCode, l.ComponentName, l.LineType, l.Source, l.Amount, l.Quantity,

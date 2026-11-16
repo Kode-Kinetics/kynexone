@@ -11,6 +11,7 @@ type T = (key: string, params?: MessageParams) => string;
 const BY_CODE: Record<string, string> = {
   GOSI_COHORT_NOT_RECORDED: 'GOSI cohort not recorded, so the contribution basis is unverified. Enter the GOSI first-registration date on the employee record; the next run picks it up.',
   HELD_PAY_RELEASE_NOT_PAID: 'Held pay released into this run is not paid by it, because the employee is not in this run. It stays owed. Include the employee in the run and process it again.',
+  LEAVE_ARREARS_CARRIED_FORWARD: 'Unpaid-leave arrears from earlier months were not all collected this month, because deductions stay within the company’s share of the wage due. The rest carries to the next run; anything still owed when employment ends is shown on the final settlement.',
   IMPORTED_BANK_DETAILS_UNVERIFIED: 'Bank details came from an employee import and have not been confirmed by a second person. Confirm them on the employee record before a run is locked.',
   WARN_ARREARS_LOOKBACK_TRUNCATED: 'A salary change reaches back further than the arrears lookback, so some finalised periods were not settled by this run. Raise a supplementary run, or widen the arrears lookback in the payroll settings.',
 };

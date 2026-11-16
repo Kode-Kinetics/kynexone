@@ -21,6 +21,8 @@ const ar: Record<string, string> = {
   // Run findings (server codes HELD_PAY_RELEASE_NOT_PAID, LEAVE_ARREARS_CARRIED_FORWARD).
   'Held pay released into this run is not paid by it, because the employee is not in this run. It stays owed. Include the employee in the run and process it again.':
     'الأجر المحتجز الذي صُرف إلى هذا المسير لا يدفعه هذا المسير لأن الموظف ليس ضمنه. ويبقى مستحقًا. أدرج الموظف في المسير ثم عالجه من جديد.',
+  'Unpaid-leave arrears from earlier months were not all collected this month, because deductions stay within the company’s share of the wage due. The rest carries to the next run; anything still owed when employment ends is shown on the final settlement.':
+    'لم تُحصَّل كل متأخرات الإجازات غير المدفوعة من الأشهر السابقة هذا الشهر، لأن الخصومات تبقى ضمن النسبة التي حددتها الشركة من الأجر المستحق. ويُرحَّل الباقي إلى المسير التالي، وما يبقى مستحقًا عند انتهاء الخدمة يظهر في التسوية النهائية.',
 };
 
 export const heldPay = {

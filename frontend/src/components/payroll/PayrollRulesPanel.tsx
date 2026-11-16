@@ -57,6 +57,10 @@ const LABELS: Record<PayrollRuleKey, { label: string; help: string }> = {
     label: 'Smallest change that needs an explanation',
     help: 'A change below this amount is never flagged, however large its percentage. Leave empty for the platform default: 0.',
   },
+  arrears_deduction_cap_pct: {
+    label: 'Most a month\'s deductions can take (%)',
+    help: 'When unpaid-leave arrears from earlier months are collected, all of the month\'s deductions together stay within this share of the wage due. The rest carries to the next month. Leave empty for the statutory 50%. Allowed: 1 to 50.',
+  },
   recon_signoff_required: {
     label: 'Reconciliation sign-off before approval',
     help: 'Whether a manpower and value reconciliation must be signed off before a payroll run can be approved. Leave empty for the default: required.',
@@ -70,6 +74,7 @@ function display(key: PayrollRuleKey, value: string | null, t: ReturnType<typeof
   if (key === 'max_probation_days') return t('{n} days', { n: value });
   if (key === 'recon_variance_pct') return t('{n}% of the prior amount', { n: value });
   if (key === 'recon_variance_min_amount') return t('Changes of at least {n}', { n: value });
+  if (key === 'arrears_deduction_cap_pct') return t('{n}% of the wage due', { n: value });
   return t('{n}× the hourly rate', { n: value });
 }
 

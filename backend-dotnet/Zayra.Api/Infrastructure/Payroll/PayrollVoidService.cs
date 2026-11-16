@@ -1209,6 +1209,23 @@ public sealed class PayrollVoidService
                 });
         }
 
+        // L13/L14 — an arrears row this run collected only in part was carried on a remainder row it wrote. The remainder goes
+        // away again and the original returns to Pending whole. If a later run already collected the remainder, the original
+        // stays consumed and only the part THIS run took is owed again, as a new pending remainder of the same month, so
+        // nothing is collected twice.
+        var remainderWitnesses = witnesses.Where(w => w.ArtifactType == LeaveArrears.RemainderArtifact).ToList();
+        var keepConsumed = new HashSet<(Guid RequestId, string Period, int EmployeeId)>();
+        if (remainderWitnesses.Count > 0)
+        {
+            var remainderIds = remainderWitnesses.Select(w => w.ArtifactId).ToList();
+            var remainders = await _db.LeavePayrollImpacts.Where(x => x.TenantId == tenantId && remainderIds.Contains(x.Id)).ToListAsync(ct);
+            foreach (var rem in remainders)
+            {
+                if (rem.Status == "Processed") keepConsumed.Add((rem.LeaveRequestId, rem.PayPeriod, rem.EmployeeId));
+                else _db.LeavePayrollImpacts.Remove(rem);
+            }
+        }
+
         var leaveIds = witnesses.Where(w => w.ArtifactType == PayrollConsumptionArtifacts.LeaveImpact)
                                 .Select(w => w.ArtifactId).ToList();
         if (leaveIds.Count > 0)
@@ -1219,6 +1236,17 @@ public sealed class PayrollVoidService
             {
                 var row = rows.FirstOrDefault(x => x.Id == w.ArtifactId);
                 if (row is null) continue;
+                if (keepConsumed.Contains((row.LeaveRequestId, row.PayPeriod, row.EmployeeId)) && !LeaveArrears.IsReversal(row))
+                {
+                    _db.LeavePayrollImpacts.Add(new LeavePayrollImpact
+                    {
+                        TenantId = row.TenantId, LeaveRequestId = row.LeaveRequestId, EmployeeId = row.EmployeeId,
+                        PayPeriod = row.PayPeriod, ImpactType = LeaveArrears.RemainderImpactType, Days = 0m, Amount = w.Amount,
+                        SliceFrom = row.SliceFrom, SliceTo = row.SliceTo, Status = "Pending",
+                    });
+                    result.ImpactsReleased++;
+                    continue;
+                }
                 row.Status = w.PriorStatus ?? "Pending";
                 row.ProcessedAtUtc = null;
                 result.ImpactsReleased++;
