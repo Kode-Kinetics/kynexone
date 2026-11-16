@@ -283,6 +283,8 @@ public class AuthSeeder : IAuthSeeder
         await EnsureRole(tenantId, "Finance", "Processes separate employee loan payments and receipts", Ps(new[] {
             "dashboard.read", "employees.read", "loans.read", "loans.write", "loans.approve",
             "approvals.read", "approvals.decide", "finance.gl.read", "reports.read", "notifications.read",
+            // Imports the opening-balance loans and advances (rows that post an opening journal), and no other import section.
+            "finance.opening_balances.import",
             // CMP: Finance sees merit budgets and totals and may decide a worksheet step routed to it.
             "compensation.read", "compensation.approve"
         }), 7, true, cancellationToken);
@@ -297,6 +299,8 @@ public class AuthSeeder : IAuthSeeder
             "dashboard.read", "employees.read", "payroll.read", "payroll.approve", "payroll.lock",
             "loans.read", "loans.approve", "approvals.read", "approvals.decide",
             "finance.gl.read", "payroll.rates.read", "finance.erp.confirm",
+            // Imports the opening-balance loans and advances (rows that post an opening journal), and no other import section.
+            "finance.opening_balances.import",
             // M2: pays and confirms. WPS status, settle and remit; deliberately NOT payroll.payment_batch.manage, so no single built-in role
             // both prepares the bank file and pays it.
             "payroll.wps_status.update", "payroll.payment.settle", "payroll.remit.manage",
@@ -553,6 +557,7 @@ public class AuthSeeder : IAuthSeeder
             // Finance — GL / ERP hand-off checker. Separate from finance.gl.manage (which produces the export)
             // so the person who exports a journal is not the person who attests the ERP posted it.
             ("finance.erp.confirm", "Finance", "Confirm or reject that the client's ERP imported a GL journal export"),
+            ("finance.opening_balances.import", "Finance", "Import carried-in loan and advance opening balances (posts their opening journals); no other import section"),
             // Payroll — client rate configuration (Phase 2)
             ("payroll.rates.read", "Payroll", "View company and statutory rate configuration"),
             ("payroll.rates.manage", "Payroll", "Manage non-statutory company rate policies"),

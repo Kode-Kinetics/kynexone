@@ -39,9 +39,7 @@ public class AdvanceCompanyScopeTests
         Assert.Equal((300m, 300m), (collected.OutstandingBalance, collected.TotalRepaid));
     }
 
-    [Fact(Skip = "OPEN: the settlement plan (PayrollController.FinalSettlement) still counts advances of every company while the run " +
-                 "now recovers only its own company's; the matching company filter on the plan's advance query was not applied in this " +
-                 "branch and needs a decision. Until then the run reports the difference as WARN_SETTLEMENT_RECOVERY_REDUCED.")]
+    [Fact]
     public async Task FinalSettlement_PlansOnlyTheAdvanceOwnedByTheSettlementCompany()
     {
         await using var h = await Fixture.Create();
@@ -53,6 +51,37 @@ public class AdvanceCompanyScopeTests
         Assert.IsType<OkObjectResult>(await h.Payroll().FinalSettlement(new(h.Employee.Id, new(2026, 1, 31), OtherDuesAmount: 5000), default));
 
         Assert.Equal(600m, (await h.Db.EmployeeFinalSettlements.AsNoTracking().SingleAsync()).PlannedAdvanceRecovery);
+    }
+
+    /// <summary>
+    /// The run collects the same advances whoever asks: a company-scoped caller (the background job passes the caller's companies)
+    /// collects this company's advance AND a legacy advance with no company, exactly as a group-level caller does. The shared rule
+    /// is read tenant-wide with the company and legacy predicate explicit, never through the caller's company filter.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ARun_CollectsTheSameAdvances_ForAGroupCaller_AndACompanyScopedCaller(bool groupScope)
+    {
+        await using var h = await Fixture.Create();
+        var legacy = h.Advance(h.Company.Id);
+        legacy.CompanyId = null;
+        h.Db.AddRange(legacy, h.Advance(h.Company.Id));
+        var run = new PayrollRun { TenantId = h.Tid, CompanyId = h.Company.Id, Year = 2026, Month = 1 };
+        h.Db.Add(run);
+        await h.Db.SaveChangesAsync();
+
+        var processor = new Zayra.Api.Infrastructure.Payroll.PayrollRunProcessor(h.Db, new ZeroDeductionPack(), new StubRuleReader(),
+            new Zayra.Api.Infrastructure.Governance.CompanyTaxPolicyResolver(h.Db), new Zayra.Api.Infrastructure.Employees.EmployeeActivationGuard(h.Db),
+            new Zayra.Api.Infrastructure.Payroll.ProrationPolicyResolver(new Zayra.Api.Infrastructure.Payroll.CompanyRatePolicyResolver(h.Db)),
+            new Zayra.Api.Infrastructure.WorkWeek.WorkWeekService(h.Db));
+        var outcome = await processor.ProcessAsync(new Zayra.Api.Infrastructure.Payroll.PayrollProcessRequest(
+            run.Id, h.Tid, null, null, GroupScope: groupScope, CompanyIds: groupScope ? null : new[] { h.Company.Id }), null, default);
+        Assert.Equal(200, outcome.StatusCode);
+
+        var deductions = await h.Db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.PayrollRunId == run.Id && d.ComponentCode == "ADVANCE_EMI").Select(d => d.Amount).ToListAsync();
+        Assert.Equal(600m, deductions.Sum());
     }
 
     private sealed class Fixture : IAsyncDisposable

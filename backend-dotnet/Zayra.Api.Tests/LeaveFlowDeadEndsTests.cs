@@ -386,6 +386,37 @@ public class LeaveFlowDeadEndsTests
         (await QueueAsync(w.EmployeeLogin)).Should().BeEmpty("the employee never decides their own cancellation");
     }
 
+    [Fact]
+    public async Task D7_the_queue_says_a_document_is_attached_only_to_whoever_may_open_it()
+    {
+        var w = await SeedAsync(twoStepRoute: true);
+        var atManager = await SubmitAsync(w, 14);
+        var atHr = await Svc(w).SubmitRequestAsync(w.TenantId, new LeaveRequest
+        {
+            TenantId = w.TenantId, EmployeeId = w.Emp.Id, EmployeeName = w.Emp.FullName, LeaveTypeId = w.Annual.Id,
+            LeaveTypeName = w.Annual.NameEn, StartDate = NextWorkday(30), EndDate = NextWorkday(30), DayType = "Full", Reason = "Sick",
+        }, w.EmployeeLogin.UserId);
+        await Svc(w).ApproveRequestAsync(w.TenantId, atHr.Id, w.ManagerLogin.UserId, "mgr", null);
+        foreach (var r in w.Db.LeaveRequests.Where(r => r.Id == atManager.Id || r.Id == atHr.Id))
+            r.AttachmentPath = $"{w.TenantId:N}/documents/{Guid.NewGuid():N}_note.pdf";
+        await w.Db.SaveChangesAsync();
+
+        async Task<Dictionary<string, JsonElement>> QueueAsync(Login who)
+        {
+            var result = await (await LeaveAsync(who: who, w: w)).AwaitingDecision(ct: CancellationToken.None);
+            using var json = JsonDocument.Parse(JsonSerializer.Serialize(result.Should().BeOfType<OkObjectResult>().Subject.Value,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            return json.RootElement.GetProperty("items").EnumerateArray().ToDictionary(x => x.GetProperty("id").GetString()!, x => x.Clone());
+        }
+
+        // The line manager decides the request but may not open the employee's (often medical) document: not even told it exists.
+        var manager = await QueueAsync(w.ManagerLogin);
+        manager[atManager.Id.ToString()].GetProperty("hasDocument").GetBoolean().Should().BeFalse();
+        manager[atManager.Id.ToString()].TryGetProperty("attachmentPath", out _).Should().BeFalse("the queue never carries the storage key");
+        // HR decides the HR step and may open it.
+        (await QueueAsync(w.HrLogin))[atHr.Id.ToString()].GetProperty("hasDocument").GetBoolean().Should().BeTrue();
+    }
+
     // ── 2b. Viewers who see leave but do not decide it ───────────────────────
 
     private static async Task<(List<JsonElement> Items, int Total, bool Truncated)> WaitingAsync(World w, Login who)

@@ -43,6 +43,10 @@ async function boot(page: Page, url: string, opts: Boot) {
     // The dashboard's own figures are not under test: a failed read is a state it already handles.
     if (path === '/api/payroll/overview' || path === '/api/payroll/readiness' || path === '/api/payroll/reports/summary') return json({ message: 'not under test' }, 503);
     if (path === '/api/payroll/final-settlements') return json({ outstandingTotal: 18250.5, note: '', rows: opts.rows });
+    if (path === '/api/payroll/final-settlements/s-1/complete-without-payment' && request.method() === 'POST') {
+      posts.push(path);
+      return json({ settlementId: 's-1', status: 'Paid', alreadyCompleted: false, residualDebtReclassed: 2500, residualDebtUnbooked: 0 });
+    }
     if (path === `/api/payroll/final-settlements/s-1/offcycle-run` && request.method() === 'POST') {
       posts.push(path); created = !opts.createFails;
       return opts.createFails ? json({ error: 'regular_run_exists', message: 'A payroll run already exists for this period.' }, 409) : json({ runId: RUN_ID, created: true });
@@ -152,5 +156,50 @@ test.describe('Off-cycle run for an approved final settlement', () => {
   test('the dashboard card in Arabic', async ({ page }) => {
     await boot(page, '/payroll', { permissions: PAYROLL, rows: [row({})], locale: 'ar' });
     await expect(page.getByTestId('settlement-run-duty-card')).toContainText('تسوية واحدة تحتاج دورة خارج الدورة', { timeout: 60_000 });
+  });
+});
+
+/**
+ * A leaver whose debts took all of the final pay has a zero net: no bank batch will ever pay the settlement, so it is completed
+ * with nothing to pay. The register offers that only on a Disbursing settlement the server marks completable, only to a user who
+ * may settle payments, and only after a confirmation; the server enforces all of it again.
+ */
+test.describe('Completing a zero-net final settlement with nothing to pay', () => {
+  const zeroNet = row({ status: 'Disbursing', netPayable: 500, runDutyOpen: false, payrollRunId: RUN_ID, linkedRunId: RUN_ID, linkedRunStatus: 'Locked', completableWithoutPayment: true });
+  const SETTLER = ['payroll.read', 'payroll.payment.settle', 'dashboard.read'];
+
+  test('a payment settler completes it after confirming', async ({ page }) => {
+    const { errors, posts } = await boot(page, '/payroll?tab=final-settlement', { permissions: SETTLER, rows: [zeroNet] });
+    const button = page.getByRole('button', { name: 'Complete — nothing to pay' });
+    await expect(button).toBeVisible({ timeout: 60_000 });
+    await button.click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toContainText('Complete this settlement with nothing to pay?');
+    expect(posts).toHaveLength(0);
+    await dialog.getByRole('button', { name: 'Complete — nothing to pay' }).click();
+    await expect.poll(() => posts).toEqual(['/api/payroll/final-settlements/s-1/complete-without-payment']);
+    expect(errors).toEqual([]);
+  });
+
+  test('a user who may not settle payments is not offered it', async ({ page }) => {
+    await boot(page, '/payroll?tab=final-settlement', { permissions: ['payroll.read', 'payroll.write', 'payroll.approve', 'dashboard.read'], rows: [zeroNet] });
+    await expect(page.getByText('Settlement Register')).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText('Layla Nasser').first()).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Complete — nothing to pay' })).toHaveCount(0);
+  });
+
+  test('a settlement with money to pay is not offered it', async ({ page }) => {
+    await boot(page, '/payroll?tab=final-settlement', { permissions: SETTLER, rows: [{ ...zeroNet, completableWithoutPayment: false }] });
+    await expect(page.getByText('Settlement Register')).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText('Layla Nasser').first()).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Complete — nothing to pay' })).toHaveCount(0);
+  });
+
+  test('in Arabic the action and its confirmation are Arabic', async ({ page }) => {
+    await boot(page, '/payroll?tab=final-settlement', { permissions: SETTLER, rows: [zeroNet], locale: 'ar' });
+    const button = page.getByRole('button', { name: 'إتمام — لا يوجد مبلغ للدفع' });
+    await expect(button).toBeVisible({ timeout: 60_000 });
+    await button.click();
+    await expect(page.getByRole('dialog')).toContainText('هل تُتم هذه التسوية دون دفع أي مبلغ؟');
   });
 });

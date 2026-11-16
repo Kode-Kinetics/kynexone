@@ -6,6 +6,8 @@ import type { Page, Route } from '@playwright/test';
  * screen makes, and a per-test route table. Nothing is read from or written to a real backend.
  */
 export type Locale = 'en' | 'ar';
+/** Returned by a handler that answers the route itself (a status, a delay): the shell then does not fulfil it again. */
+export const HANDLED = Symbol('route handled by the handler');
 /** Return a JSON body to answer the request, or undefined to fall through to the defaults. */
 export type Handler = (path: string, search: URLSearchParams, method: string, route: Route) => unknown | undefined;
 
@@ -20,15 +22,17 @@ export const USER = {
 };
 export const COMPANY = { id: 'c1', name: 'Acme Arabia', legalNameEn: 'Acme Arabia LLC', tradeName: 'Acme Arabia', defaultCurrency: 'SAR', countryCode: 'SA', isActive: true, wpsEmployerId: '1234567890', gosiEmployerId: '55512345', code: 'ACME' };
 
-export async function boot(page: Page, opts: { locale: Locale; url: string; routes?: Handler; waitMs?: number }) {
+/** `stages`: the run pipeline's remembered stage-card state. The specs written before the cards started folded open them; 'default' leaves nothing stored. */
+export async function boot(page: Page, opts: { locale: Locale; url: string; routes?: Handler; waitMs?: number; stages?: 'open' | 'folded' | 'default' }) {
   const errors: string[] = [];
   const requests: string[] = [];
   page.on('pageerror', e => errors.push(e.message));
-  await page.addInitScript((locale: string) => {
+  await page.addInitScript(([locale, stages]) => {
     localStorage.setItem('zayra_access_token', 'fixture');
     localStorage.setItem('kynexone-locale-choice-v2', locale);
     localStorage.setItem('kynexone-company:reviewer', 'c1');
-  }, opts.locale);
+    if (stages !== 'default') localStorage.setItem('kynexone-payroll-pipeline-stages', stages);
+  }, [opts.locale, opts.stages ?? 'open'] as const);
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -36,6 +40,7 @@ export async function boot(page: Page, opts: { locale: Locale; url: string; rout
     requests.push(`${request.method()} ${path}`);
     const json = (body: unknown, status = 200) => route.fulfill({ status, json: body });
     const custom = opts.routes?.(path, url.searchParams, request.method(), route);
+    if (custom === HANDLED) return;
     if (custom !== undefined) return json(custom);
     if (path === '/api/auth/me') return json(USER);
     if (path === '/api/auth/mfa/status') return json({ promptToEnroll: false });

@@ -62,6 +62,9 @@ export function LockSummary({ data }: { data: LockSummaryData }) {
       <p className="text-body-sm text-fg-muted">
         {t('Locking posts the payroll journal and freezes these figures. A locked run can no longer be reopened; a correction means voiding it and creating a replacement.')}
       </p>
+      <p className="rounded-lg border border-line bg-surface-sunken px-3 py-2 text-body-sm text-fg" data-testid="lock-summary-payslips">
+        {t('Locking also publishes the payslips to the employees: each payslip that exists when you lock becomes visible to that employee in Self-Service, and any generated later is published straight away.')}
+      </p>
 
       <dl className="divide-y divide-line rounded-lg border border-line">
         {rows.map(r => (

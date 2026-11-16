@@ -27,9 +27,7 @@ public class OpeningBalanceAdvanceImportPostgresTests(PostgresFixture fixture)
     /// <summary>The event type of the opening journal (GlEventTypes.OpeningBalance).</summary>
     private const string OpeningBalanceEvent = "OpeningBalance";
 
-    [Fact(Skip = "OPEN (needs a decision): the import does not yet post the carried-in advance to the ledger (DR 1410 / CR 3900, once " +
-                 "per origin row, a restatement posting the difference) nor build its instalment schedule. That change adds a ledger " +
-                 "writer to the import and was not applied in this branch.")]
+    [Fact]
     public async Task CarriedInAdvance_PostsItsOpeningJournalOnce_BuildsItsSchedule_AndARestatementPostsTheDifference()
     {
         var (b, cutover, number) = await SeedAsync();
@@ -58,6 +56,81 @@ public class OpeningBalanceAdvanceImportPostgresTests(PostgresFixture fixture)
         schedule = await ScheduleAsync(advance.Id);
         Assert.Equal(500m, schedule.Where(i => i.Status == "Pending").Sum(i => i.AmountDue - i.AmountPaid));
         Assert.Equal(1, schedule.Count(i => i.Status == "Paid"));
+    }
+
+    /// <summary>
+    /// The opening journal is what makes the carried-in advance a receivable on this company's ledger: the 1410 tie-out (sub-ledger
+    /// against GL) holds straight after the import, and still holds once payroll has collected an instalment and the run's Lock
+    /// journal has credited 1410 with it.
+    /// </summary>
+    [Fact]
+    public async Task CarriedInAdvance_TiesOutWithTheLedger_AfterTheImport_AndAfterOnePayrollDeduction()
+    {
+        var (b, cutover, number) = await SeedAsync();
+        await CommitAsync(b, AdvanceCsv(b, number, paid: 3, outstanding: 300m, cutover), withCutover: true);
+        Assert.Equal((300m, 300m, true), await TieOutAsync(b));
+
+        var runId = await Kit.SeedDraftRunAsync(fixture, b, b.Today.Year, b.Today.Month);
+        await using (var db = fixture.CreateDb())
+            Assert.Equal(200, (await Kit.ProcessAsync(db, b, runId, null, CancellationToken.None)).StatusCode);
+        await using (var db = fixture.CreateDb()) await ReconTestSupport.SignOffAsync(db, runId);
+        await using (var db = fixture.CreateDb())
+        {
+            var approved = await Kit.Payroll(db, b.Tenant).Approve(runId, new PayrollDecisionRequest("reviewed"), CancellationToken.None);
+            Assert.True(approved is OkObjectResult, Describe(approved));
+        }
+        await using (var db = fixture.CreateDb())
+        {
+            var locked = await Kit.Payroll(db, b.Tenant).Lock(runId, CancellationToken.None);
+            Assert.True(locked is OkObjectResult, Describe(locked));
+        }
+
+        var advance = await AdvanceAsync(b, number);
+        Assert.Equal(200m, advance.OutstandingBalance);
+        Assert.Equal((200m, 200m, true), await TieOutAsync(b));
+    }
+
+    /// <summary>
+    /// The client's ERP already holds a carried-in balance from the old system, so the opening journal never goes to it: the
+    /// ERP journal export leaves every OpeningBalance line out, and the preview says how many and how much, in English and
+    /// Arabic. The ledger keeps the line, so the 1410 tie-out still holds.
+    /// </summary>
+    [Fact]
+    public async Task CarriedInAdvance_OpeningJournal_IsLeftOutOfTheErpExport_ThePreviewSaysSo_AndTheTieOutStillHolds()
+    {
+        var (b, cutover, number) = await SeedAsync();
+        await CommitAsync(b, AdvanceCsv(b, number, paid: 3, outstanding: 300m, cutover), withCutover: true);
+        // A restatement down: the excluded lines are a 300 increase and a 100 reduction, 200 net (never a gross 400).
+        await CommitAsync(b, AdvanceCsv(b, number, paid: 4, outstanding: 200m, cutover));
+        var advance = await AdvanceAsync(b, number);
+        var period = $"{cutover:yyyy-MM}";
+
+        await using (var db = fixture.CreateDb())
+        {
+            var selection = await Zayra.Api.Infrastructure.Finance.JournalExportBuilder.SelectAsync(db, b.Tenant,
+                new Zayra.Api.Infrastructure.Finance.JournalExportFilter(Period: period, CompanyId: b.CompanyId));
+            Assert.DoesNotContain(selection.Entries, e => e.SourceEntityId == advance.Id);
+            Assert.DoesNotContain(selection.Entries, e => e.EventType == OpeningBalanceEvent);
+            Assert.Equal((2, 200m, 300m, 100m), (selection.OpeningBalanceExcludedCount, selection.OpeningBalanceExcludedNet,
+                selection.OpeningBalanceExcludedDebits, selection.OpeningBalanceExcludedCredits));
+        }
+
+        await using (var db = fixture.CreateDb())
+        {
+            var preview = Assert.IsType<OkObjectResult>(await ExportController(db, b.Tenant)
+                .Preview(period, null, b.CompanyId, "SAR", false, false, "generic-csv", default));
+            using var doc = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(preview.Value));
+            var note = doc.RootElement.GetProperty("openingBalanceExcluded");
+            Assert.Equal((2, 200m, 300m, 100m), (note.GetProperty("count").GetInt32(), note.GetProperty("net").GetDecimal(),
+                note.GetProperty("debits").GetDecimal(), note.GetProperty("credits").GetDecimal()));
+            Assert.Contains("200.00", note.GetProperty("message").GetString());
+            Assert.Contains("ERP", note.GetProperty("message").GetString());
+            Assert.False(string.IsNullOrWhiteSpace(note.GetProperty("messageAr").GetString()));
+            Assert.DoesNotContain(doc.RootElement.GetProperty("sample").EnumerateArray(),
+                l => l.GetProperty("EventType").GetString() == OpeningBalanceEvent);
+        }
+
+        Assert.Equal((200m, 200m, true), await TieOutAsync(b));
     }
 
     [Fact]
@@ -145,6 +218,37 @@ public class OpeningBalanceAdvanceImportPostgresTests(PostgresFixture fixture)
         return dto.Errors.ToList();
     }
 
+    private static Zayra.Api.Controllers.Finance.GlJournalExportsController ExportController(ZayraDbContext db, Guid tid)
+    {
+        var exports = new Zayra.Api.Infrastructure.Finance.JournalExportService(db, JournalExportFormatterGoldenTests.AllFormatters());
+        return new Zayra.Api.Controllers.Finance.GlJournalExportsController(db, exports, new Zayra.Api.Infrastructure.Finance.PeriodHandoffReconciler(db, exports))
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim("tenant_id", tid.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                        new Claim(ClaimTypes.Name, "Finance"), new Claim("is_group_scope", "true"),
+                        new Claim("permission", "finance.gl.read"), new Claim("permission", "finance.gl.export"),
+                    }, "test")),
+                },
+            },
+        };
+    }
+
+    /// <summary>The company's 1410 tie-out row: (sub-ledger, GL, tied out).</summary>
+    private async Task<(decimal SubLedger, decimal Gl, bool Tied)> TieOutAsync(Kit.Borrower b)
+    {
+        await using var db = fixture.CreateDb();
+        var row = (await Zayra.Api.Infrastructure.Finance.AdvanceReceivableTieOut.ComputeAsync(db, b.Tenant, new[] { b.CompanyId }, CancellationToken.None)).Single();
+        return (row.SubLedgerOutstanding, row.GlBalance, row.IsTiedOut);
+    }
+
+    private static string Describe(IActionResult result) =>
+        result is ObjectResult o ? $"{o.StatusCode}: {System.Text.Json.JsonSerializer.Serialize(o.Value)}" : result.GetType().Name;
+
     private async Task<SalaryAdvance> AdvanceAsync(Kit.Borrower b, string number)
     {
         await using var db = fixture.CreateDb();
@@ -201,7 +305,7 @@ public class OpeningBalanceAdvanceImportPostgresTests(PostgresFixture fixture)
                     {
                         new Claim("tenant_id", tid.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
                         new Claim(ClaimTypes.Name, "consultant"), new Claim(ClaimTypes.Role, "Admin"),
-                        new Claim("permission", "payroll.read"), new Claim("permission", "payroll.write"),
+                        new Claim("permission", "payroll.read"), new Claim("permission", "payroll.write"), new Claim("permission", "finance.opening_balances.import"),
                     }, "test")),
                 },
             },

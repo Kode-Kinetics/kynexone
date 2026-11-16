@@ -17,8 +17,13 @@ public static class LeaveFileKeyExposure
     /// <summary>The roles that administer leave and so may see an attachment key.</summary>
     public static readonly string[] Roles = ["Admin", "HR Manager", "HR Officer"];
 
-    public static bool MaySeeKey(ClaimsPrincipal user, DataScope scope, int leaveEmployeeId) =>
-        scope.CallerEmployeeId == leaveEmployeeId || Roles.Any(user.IsInRole);
+    /// <param name="callerEmployeeId">
+    /// The caller's own employee record when the data scope cannot say: an organisation-wide scope carries no
+    /// <c>CallerEmployeeId</c>, which hid their OWN document from Payroll and Finance users. Resolve it with
+    /// <see cref="Zayra.Api.Infrastructure.Common.CallerEmployeeResolver"/>.
+    /// </param>
+    public static bool MaySeeKey(ClaimsPrincipal user, DataScope scope, int leaveEmployeeId, int? callerEmployeeId = null) =>
+        scope.CallerEmployeeId == leaveEmployeeId || callerEmployeeId == leaveEmployeeId || Roles.Any(user.IsInRole);
 
     /// <summary>
     /// The attachment column of the leave CSV export: the key for HR/Admin, empty for any other exporter (an Auditor reads
@@ -31,9 +36,9 @@ public static class LeaveFileKeyExposure
     /// The request as <paramref name="user"/> may see it. For a reader who may not see the key this is a DETACHED copy
     /// with the key blanked: the tracked entity is never changed, so a later SaveChanges can never erase the stored key.
     /// </summary>
-    public static LeaveRequest ForReader(ZayraDbContext db, LeaveRequest request, ClaimsPrincipal user, DataScope scope)
+    public static LeaveRequest ForReader(ZayraDbContext db, LeaveRequest request, ClaimsPrincipal user, DataScope scope, int? callerEmployeeId = null)
     {
-        if (string.IsNullOrEmpty(request.AttachmentPath) || MaySeeKey(user, scope, request.EmployeeId)) return request;
+        if (string.IsNullOrEmpty(request.AttachmentPath) || MaySeeKey(user, scope, request.EmployeeId, callerEmployeeId)) return request;
         var copy = (LeaveRequest)db.Entry(request).CurrentValues.ToObject();
         copy.AttachmentPath = string.Empty;
         return copy;

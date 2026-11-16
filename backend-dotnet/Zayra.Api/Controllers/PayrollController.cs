@@ -4686,7 +4686,7 @@ public partial class PayrollController : ControllerBase
     /// </list>
     /// </summary>
     private async Task<PaidSettlementResult> FinalizePaidSettlementsAsync(
-        Guid tenantId, PayrollRun run, PayrollPaymentBatch batch, GlResolutionContext glCtx,
+        Guid tenantId, PayrollRun run, PayrollPaymentBatch? batch, GlResolutionContext glCtx,
         string settlementPeriod, IReadOnlySet<int> paidEmployeeIds, CancellationToken ct)
     {
         // Only the leavers whose money actually moved: in the settled bank batch, or with a payment
@@ -4723,15 +4723,14 @@ public partial class PayrollController : ControllerBase
         // entity's 1410 receivable; this company's settlement neither reclassifies nor reports it. A legacy advance with no company
         // is still dispositioned here, as payroll still collects it (PayrollRunProcessor, collectableAdvance).
         System.Linq.Expressions.Expression<Func<SalaryAdvance, bool>> openAdvance = a =>
-            a.TenantId == tenantId && (a.CompanyId == run.CompanyId || a.CompanyId == null) && a.Status == "Active" && a.EmployeeIntId != null
-            && employeeIds.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0;
+            a.EmployeeIntId != null && employeeIds.Contains(a.EmployeeIntId.Value);
         var loanIds = await _db.EmployeeLoans.AsNoTracking().Where(openLoan).Select(l => l.Id).ToListAsync(ct);
-        var advanceIds = await _db.SalaryAdvances.AsNoTracking().Where(openAdvance).Select(a => a.Id).ToListAsync(ct);
+        var advanceIds = await Infrastructure.Payroll.AdvanceRecoveryScope.Query(_db, tenantId, run.CompanyId).AsNoTracking().Where(openAdvance).Select(a => a.Id).ToListAsync(ct);
         await Infrastructure.Finance.FinanceDecisionSerializer.AcquireDebtLocksAsync(_db, tenantId, loanIds, advanceIds, ct);
         var loans = loanIds.Count == 0 ? new List<EmployeeLoan>() : await _db.EmployeeLoans
             .Where(openLoan).Where(l => loanIds.Contains(l.Id))
             .ToListAsync(ct);
-        var advances = advanceIds.Count == 0 ? new List<SalaryAdvance>() : await _db.SalaryAdvances
+        var advances = advanceIds.Count == 0 ? new List<SalaryAdvance>() : await Infrastructure.Payroll.AdvanceRecoveryScope.Query(_db, tenantId, run.CompanyId)
             .Where(openAdvance).Where(a => advanceIds.Contains(a.Id))
             .ToListAsync(ct);
 
@@ -4802,7 +4801,8 @@ public partial class PayrollController : ControllerBase
         foreach (var s in settlements)
         {
             s.Status = FinalSettlementStatuses.Paid;
-            s.PaymentBatchId = batch.Id;
+            // Null when the settlement paid nothing and was completed without a batch (CompleteFinalSettlementWithoutPayment).
+            s.PaymentBatchId = batch?.Id;
             s.PaidAtUtc = DateTime.UtcNow;
             s.UpdatedAtUtc = DateTime.UtcNow;
 
@@ -4822,7 +4822,11 @@ public partial class PayrollController : ControllerBase
                 if (moved <= 0m) continue;
                 l.OutstandingBalance = Math.Round(l.OutstandingBalance - moved, 2);
                 l.TotalRepaid = Math.Round(l.TotalRepaid, 2);   // unchanged: a reclass is not a repayment
-                if (l.OutstandingBalance <= 0m) l.Status = "Closed";
+                if (l.OutstandingBalance <= 0m)
+                {
+                    l.Status = "Closed";
+                    await CloseRemainingInstalmentsAsync(tenantId, loanId: l.Id, advanceId: null, ct);
+                }
             }
             foreach (var a in advances.Where(a => a.EmployeeIntId == s.EmployeeId && a.OutstandingBalance > 0m))
             {
@@ -4830,17 +4834,21 @@ public partial class PayrollController : ControllerBase
                 if (moved <= 0m) continue;
                 var before = a.OutstandingBalance;
                 a.OutstandingBalance = Math.Round(a.OutstandingBalance - moved, 2);
-                if (a.OutstandingBalance <= 0m) a.Status = "Closed";
+                if (a.OutstandingBalance <= 0m)
+                {
+                    a.Status = "Closed";
+                    await CloseRemainingInstalmentsAsync(tenantId, loanId: null, advanceId: a.Id, ct);
+                }
                 // On the advance's own trail, with the amount: the advance audit counts it (a move to 1420 is not a repayment, so
                 // TotalRepaid is unchanged and only this row explains the drop in the balance).
                 _db.AdvanceAuditLogs.Add(Infrastructure.Payroll.AdvanceResidualAudit.Entry(
-                    tenantId, a, moved, before, s.Id, run.Id, batch.Id, GetUserId(), GetUserName()));
+                    tenantId, a, moved, before, s.Id, run.Id, batch?.Id, GetUserId(), GetUserName()));
             }
 
             await PayrollAudit("payroll.final_settlement.paid", "EmployeeFinalSettlement", s.Id.ToString(), new
             {
                 s.EmployeeId, s.EmployeeCode, s.NetPayable, s.Currency,
-                runId = run.Id, batchId = batch.Id, period = settlementPeriod,
+                runId = run.Id, batchId = batch?.Id, period = settlementPeriod,
                 residualReclassed = s.ResidualDebtReclassed, residualUnbooked = s.ResidualDebtUnbooked,
             }, ct);
         }
@@ -4849,6 +4857,183 @@ public partial class PayrollController : ControllerBase
             settlements.Select(s => s.Id).ToList(),
             Math.Round(totalReclassed, 2), Math.Round(totalUnbooked, 2));
     }
+
+    /// <summary>
+    /// A loan or advance a final settlement closed by moving its leftover to 1420 keeps no Pending instalments. A row the final pay
+    /// paid part of is cut to what was paid and marked Paid; every other open row is Cancelled, the status a schedule closed without
+    /// payment already takes (a cancelled advance's or loan's rows): nothing was paid on it, the debt now lives in the 1420
+    /// sub-ledger. Marking those Paid would claim a repayment the deduction statement would then show.
+    ///
+    /// <para>Not witnessed, on purpose: a void of the settlement run leaves the 1420 move standing, so what the move closed stays
+    /// closed. The void reopens only what the run itself took (its own instalment witnesses), and the cut row reopens at the amount
+    /// the run took, so the reopened schedule adds up to exactly the balance the void gives back.</para>
+    /// </summary>
+    private async Task CloseRemainingInstalmentsAsync(Guid tenantId, Guid? loanId, Guid? advanceId, CancellationToken ct)
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        if (loanId is Guid lid)
+            foreach (var row in await _db.LoanInstallments.Where(i => i.TenantId == tenantId && i.LoanId == lid && i.Status == "Pending").ToListAsync(ct))
+            {
+                if (row.AmountPaid > 0m) { row.AmountDue = row.AmountPaid; row.Status = "Paid"; row.PaidDate ??= today; }
+                else row.Status = "Cancelled";
+            }
+        if (advanceId is Guid aid)
+            foreach (var row in await _db.AdvanceInstallments.Where(i => i.TenantId == tenantId && i.AdvanceId == aid && i.Status == "Pending").ToListAsync(ct))
+            {
+                if (row.AmountPaid > 0m) { row.AmountDue = row.AmountPaid; row.Status = "Paid"; row.PaidDate ??= today; }
+                else row.Status = AdvanceStatuses.Cancelled;
+            }
+    }
+
+    /// <summary>
+    /// Completes a final settlement that pays nothing. When the leaver's debts took all of the final pay the settlement run's
+    /// payslip nets to zero, so no payment batch will ever pay it (a run whose only payslip is zero has nothing to settle, and a
+    /// batch leaves a zero net out), and the settlement used to wait in Disbursing for ever with the leftover debt still on the
+    /// ex-employee's loan or advance. This is the explicit step that closes it, through the same finalisation a paid batch runs
+    /// (<see cref="FinalizePaidSettlementsAsync"/>): the settlement becomes Paid with no batch and no bank payment, the
+    /// offboarding's settlement tick is set, and the residual loan and advance debt moves to 1420 exactly as it does in a batch.
+    ///
+    /// <para>Only for a settlement awaiting payment (Disbursing) on its Locked run whose payslip nets to exactly zero. Same
+    /// permission as settling a payment batch (payroll.payment.settle, or payroll.export). Maker-checker as for approval: whoever
+    /// calculated or submitted the settlement may not complete it, nor may the leaver. Idempotent: asking again for a settlement
+    /// already completed answers alreadyCompleted and changes nothing. Lock order as the batch settlement: the payment lock of every
+    /// batch of the run, the run row FOR UPDATE, then (inside the finalisation) the leaver's loans and advances. Audited.</para>
+    /// </summary>
+    [HttpPost("final-settlements/{id:guid}/complete-without-payment")]
+    public async Task<IActionResult> CompleteFinalSettlementWithoutPayment(Guid id, [FromBody] PayrollReasonRequest? req, CancellationToken cancellationToken)
+    {
+        if (!HasPaymentPermission(PaymentPermissions.Settle)) return Forbid();
+        var tenantId = GetTenantId();
+        if (GetUserId() is not Guid actorId)
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "actor_unidentified",
+                message = "A settlement can only be completed by an identified user.",
+                messageAr = "لا يمكن إتمام التسوية إلا من قبل مستخدم معروف الهوية.",
+            });
+        var reason = string.IsNullOrWhiteSpace(req?.Reason) ? null : req!.Reason!.Trim();
+        if (reason is { Length: > 500 })
+            return BadRequest(new { error = "reason_too_long", message = "The reason can be at most 500 characters.", messageAr = "يجب ألا يتجاوز السبب 500 حرف." });
+
+        // Company-scoped read: a settlement outside the caller's companies reads back null.
+        var runId = await _db.EmployeeFinalSettlements.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.Id == id)
+            .Select(s => new { s.PayrollRunId })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (runId is null) return NotFound();
+        if (runId.PayrollRunId is not Guid settlementRunId) return SettlementNotAwaitingPayment(null);
+        var batchIds = await _db.PayrollPaymentBatches.AsNoTracking()
+            .Where(b => b.TenantId == tenantId && b.PayrollRunId == settlementRunId)
+            .Select(b => b.Id).ToListAsync(cancellationToken);
+
+        return await InRunRowLockTransactionAsync(async () =>
+        {
+            // Step 1 of the shared lock order: the payment lock of every batch of this run, ascending key, so a concurrent settle
+            // of one of them (which finalises this run's zero-net leavers too) runs strictly before or after this.
+            foreach (var batchId in batchIds.OrderBy(b => Infrastructure.Finance.FinanceDecisionSerializer.ComputeLockKey(BatchPaymentLockScope, tenantId, b)))
+                await Infrastructure.Finance.FinanceDecisionSerializer.AcquireAsync(_db, BatchPaymentLockScope, tenantId, batchId, cancellationToken);
+            return await CompleteFinalSettlementWithoutPaymentCoreAsync(tenantId, id, settlementRunId, actorId, reason, cancellationToken);
+        }, cancellationToken);
+    }
+
+    private async Task<IActionResult> CompleteFinalSettlementWithoutPaymentCoreAsync(
+        Guid tenantId, Guid id, Guid runId, Guid actorId, string? reason, CancellationToken cancellationToken)
+    {
+        // Step 2: the run row FOR UPDATE (as the batch settlement, the void and Lock take it), then everything is re-read under it.
+        var run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Id == runId, cancellationToken);
+        if (run is null) return NotFound();
+        var s = await _db.EmployeeFinalSettlements.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (s is null) return NotFound();
+
+        if (s.Status == FinalSettlementStatuses.Paid && s.PayrollRunId == runId)
+            return Ok(new
+            {
+                settlementId = s.Id, status = s.Status, alreadyCompleted = true,
+                residualDebtReclassed = s.ResidualDebtReclassed, residualDebtUnbooked = s.ResidualDebtUnbooked,
+            });
+        if (s.Status != FinalSettlementStatuses.Disbursing || s.PayrollRunId != runId) return SettlementNotAwaitingPayment(s.Status);
+        if (run.Status != "Locked")
+            return Conflict(new
+            {
+                error = "run_not_locked",
+                message = $"The settlement run is '{run.Status}'. A settlement can be completed only once its run is Locked.",
+                messageAr = "لا يمكن إتمام التسوية إلا بعد قفل مسير الرواتب الخاص بها.",
+                runStatus = run.Status,
+            });
+
+        // Duties: never the leaver, never whoever calculated or submitted the settlement (the approval's maker-checker).
+        if (await _db.Employees.AsNoTracking().AnyAsync(e => e.TenantId == tenantId && e.Id == s.EmployeeId && e.UserAccountId == actorId, cancellationToken))
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "subject_is_recorder",
+                message = "You cannot complete your own final settlement. Another finance user must do it.",
+                messageAr = "لا يمكنك إتمام تسوية نهاية خدمتك بنفسك. يجب أن يقوم بذلك مستخدم مالي آخر.",
+            });
+        if (await SettlementMakerRoleAsync(tenantId, s, actorId, cancellationToken) is { } makerRole)
+            return Conflict(new
+            {
+                error = "segregation_of_duties",
+                message = $"You {makerRole} this settlement, so you cannot also complete it. A different user who settles payments must complete it.",
+                messageAr = "لا يمكنك إتمام تسوية قمت بحسابها أو تقديمها. يجب أن يتمها مستخدم آخر مخوّل بتسوية المدفوعات.",
+                settlementId = s.Id,
+            });
+
+        // Exactly zero, from the run's own payslip: anything to pay goes through the bank batch or a recorded outside payment.
+        var nets = await _db.PayrollSlips.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.RunId == runId && x.EmployeeId == s.EmployeeId && x.Status != "Voided")
+            .Select(x => x.NetSalary).ToListAsync(cancellationToken);
+        if (nets.Count == 0)
+            return UnprocessableEntity(new
+            {
+                error = "settlement_payslip_missing",
+                message = "The settlement run has no payslip for this leaver, so there is nothing to show the final pay is zero.",
+                messageAr = "لا توجد قسيمة راتب لهذا الموظف في مسير التسوية، فلا يمكن التحقق من أن صافي المستحق صفر.",
+            });
+        if (nets.Any(n => n != 0m))
+            return UnprocessableEntity(new
+            {
+                error = "settlement_net_not_zero",
+                message = $"This leaver's final pay is {nets.Sum():N2}, not zero. Pay it through the payment batch (or record the payment made outside the bank file); only a settlement with nothing to pay is completed this way.",
+                messageAr = "صافي المستحق النهائي لهذا الموظف ليس صفرًا. ادفعه عبر دفعة الرواتب (أو سجّل الدفعة خارج الملف البنكي)؛ هذا الإجراء مخصص فقط للتسويات التي لا يوجد فيها مبلغ للدفع.",
+                netPay = nets.Sum(),
+            });
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var period = $"{today.Year}-{today.Month:D2}";
+        if (await PeriodCloseGuard.IsClosedAsync(_db, tenantId, run.CompanyId, period, cancellationToken))
+            return UnprocessableEntity(new
+            {
+                error = "gl_period_closed",
+                message = $"GL period {period} is closed. Reopen it before completing this settlement.",
+                messageAr = $"الفترة المحاسبية {period} مقفلة. أعد فتحها قبل إتمام هذه التسوية.",
+                period,
+            });
+
+        var glCtx = await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken);
+        var result = await FinalizePaidSettlementsAsync(
+            tenantId, run, null, glCtx, period, new HashSet<int> { s.EmployeeId }, cancellationToken);
+        await PayrollAudit("payroll.final_settlement.completed_without_payment", "EmployeeFinalSettlement", s.Id.ToString(), new
+        {
+            s.EmployeeId, s.EmployeeCode, runId, period, reason,
+            residualDebtReclassed = result.ResidualReclassed, residualDebtUnbooked = result.ResidualUnbooked,
+        }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(new
+        {
+            settlementId = s.Id, status = FinalSettlementStatuses.Paid, alreadyCompleted = false, reason,
+            residualDebtReclassed = result.ResidualReclassed, residualDebtUnbooked = result.ResidualUnbooked,
+        });
+    }
+
+    private IActionResult SettlementNotAwaitingPayment(string? status) => Conflict(new
+    {
+        error = "settlement_not_awaiting_payment",
+        message = $"Only a settlement awaiting payment on its locked run (Disbursing) can be completed{(status is null ? "" : $" (this one is '{status}')")}.",
+        messageAr = "لا يمكن إتمام إلا تسوية بانتظار الدفع في مسير رواتب مقفل.",
+        status,
+    });
 
     /// <summary>
     /// Reverses a net-pay settlement via contra entries (re-opening 2100) and reverts the batch to
@@ -8236,6 +8421,25 @@ public partial class PayrollController : ControllerBase
             var held = heldBy.Where(h => h.EmployeeId == s.EmployeeId && h.CompanyId == s.CompanyId).OrderByDescending(h => h.CreatedAtUtc).FirstOrDefault();
             return held is null ? (null, null) : (held.RunId, held.Status);
         }
+        // A Disbursing settlement whose Locked run's payslip nets to exactly zero has no batch that will pay it: Finance completes it
+        // with nothing to pay (CompleteFinalSettlementWithoutPayment, which checks all of this again). Flagged so the register can
+        // offer that step.
+        var disbursingRunIds = rows.Where(r => r.Status == FinalSettlementStatuses.Disbursing && r.PayrollRunId != null)
+            .Select(r => r.PayrollRunId!.Value).Distinct().ToList();
+        var lockedRunIds = disbursingRunIds.Count == 0 ? new HashSet<Guid>() : (await _db.PayrollRuns.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && disbursingRunIds.Contains(r.Id) && r.Status == "Locked")
+            .Select(r => r.Id).ToListAsync(cancellationToken)).ToHashSet();
+        var lockedRunList = lockedRunIds.ToList();
+        var settlementNets = lockedRunList.Count == 0
+            ? new Dictionary<(Guid RunId, int EmployeeId), List<decimal>>()
+            : (await _db.PayrollSlips.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && lockedRunList.Contains(x.RunId) && employeeIds.Contains(x.EmployeeId) && x.Status != "Voided")
+                .Select(x => new { x.RunId, x.EmployeeId, x.NetSalary }).ToListAsync(cancellationToken))
+              .GroupBy(x => (x.RunId, x.EmployeeId))
+              .ToDictionary(g => g.Key, g => g.Select(x => x.NetSalary).ToList());
+        bool CompletableWithoutPayment(EmployeeFinalSettlement s) =>
+            s.Status == FinalSettlementStatuses.Disbursing && s.PayrollRunId is Guid r && lockedRunIds.Contains(r)
+            && settlementNets.TryGetValue((r, s.EmployeeId), out var nets) && nets.Count > 0 && nets.All(n => n == 0m);
         return Ok(new
         {
             outstandingTotal = Math.Round(rows
@@ -8263,6 +8467,7 @@ public partial class PayrollController : ControllerBase
                 linkedRunId = LinkedRun(s).RunId,
                 linkedRunStatus = LinkedRun(s).Status,
                 runDutyOpen = s.Status == FinalSettlementStatuses.Approved && LinkedRun(s).RunId is null,
+                completableWithoutPayment = CompletableWithoutPayment(s),
             }).ToList(),
         });
     }
@@ -9257,9 +9462,10 @@ public partial class PayrollController : ControllerBase
             .Where(l => l.TenantId == tenantId && l.CompanyId == companyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue")
                      && l.EmployeeIntId == employee.Id && l.OutstandingBalance > 0)
             .ToListAsync(ct);
-        var advances = await _db.SalaryAdvances.AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.Status == "Active"
-                     && a.EmployeeIntId == employee.Id && a.OutstandingBalance > 0)
+        // Exactly the advances the settlement run will recover (and the settlement payment will disposition): this company's, and
+        // legacy advances with no company. One shared rule, so the plan cannot count an advance another legal entity owns.
+        var advances = await Infrastructure.Payroll.AdvanceRecoveryScope.Query(_db, tenantId, companyId).AsNoTracking()
+            .Where(a => a.EmployeeIntId == employee.Id)
             .ToListAsync(ct);
         var receivables = await _db.PayrollEmployeeReceivables.AsNoTracking()
             .Where(r => r.TenantId == tenantId && r.EmployeeId == employee.Id

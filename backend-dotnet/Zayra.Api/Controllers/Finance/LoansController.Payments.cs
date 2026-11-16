@@ -374,7 +374,8 @@ public partial class LoansController
         // balance this receipt is about to settle.
         if (await HasUnfinishedPayrollInstalmentAsync(tid, loan.Id, ct))
             return Conflict("A payroll run that includes this loan has not been locked yet. Lock or void it before recording a cash settlement.");
-        var originalDisbursement = await OriginalDisbursementAsync(loan, ct);
+        // A carried-in loan has no disbursement; its opening journal is its booking on the receivable.
+        var originalDisbursement = await BookingJournalAsync(loan, ct);
         if (originalDisbursement == null) return Conflict(LoanJournalReconciliationRequired);
         var companyId = originalDisbursement.CompanyId;
         // The receivable is one account shared by every loan. A receipt credits it, so the account must still carry the amount: if a

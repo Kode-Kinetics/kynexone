@@ -562,6 +562,7 @@ builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmation
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.JournalExportService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.BankConfirmationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.PeriodHandoffReconciler>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.OpeningBalanceBackfillService>();
 // AM-22: enforces identity separation of duties on journal-export create (the controller takes it as an optional dependency).
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.IJournalExportSeparationOfDuties,
     Zayra.Api.Infrastructure.Finance.CostAccountingJournalExportSeparationOfDuties>();

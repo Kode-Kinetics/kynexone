@@ -69,6 +69,8 @@ interface BootOptions {
   otherFormatLive?: boolean;
   /** C-1: a payroll-run file holding some of the month's rows still awaits the ERP: the check names it, a create is refused (409). */
   liveOverlap?: boolean;
+  /** Opening-balance lines in the scope: the ERP already holds them, so the check reports them as not exported. */
+  openingBalances?: boolean;
 }
 
 const runFile = 'journal-SA01-run-f15b4846-SAR-generic-csv-FB8A0869.csv';
@@ -133,6 +135,10 @@ async function boot(page: Page, options: BootOptions = {}): Promise<State> {
       ...manifest(null, 'Full'),
       warnings: [overlapMessage],
       liveExportOverlaps: [{ exportId: 'exp-run', fileName: runFile, format: 'generic-csv', rows: 2, relation: 'other_scope', message: overlapMessage, messageAr: overlapMessageAr }],
+    }));
+    if (path === `${gl}/preview` && options.openingBalances) return reply(forViewer({
+      ...manifest(null, 'Full'),
+      openingBalanceExcluded: { count: 2, net: 4300, debits: 4800, credits: 500, message: 'not shown', messageAr: 'not shown' },
     }));
     if (path === `${gl}/preview`) return reply(forViewer(manifest(null, 'Supplementary')));
     if (path === gl && request.method() === 'POST') {
@@ -570,4 +576,34 @@ test('Arabic: the waiting-file notice and the refusal are in Arabic', async ({ p
   await expect(refusal).toContainText('إرسالها في ملف ثانٍ قد يجعل النظام يرحّلها مرتين');
   await expect(refusal).not.toContainText('ledger rows');
   expect(state.errors).toEqual([]);
+});
+
+test('opening-balance lines are named as not exported, because the ERP already holds them', async ({ page }) => {
+  const state = await boot(page, { openingBalances: true });
+  await chooseJuly(page);
+  await page.getByRole('button', { name: 'Check balances' }).click();
+  const note = page.getByTestId('journal-export-opening-balances');
+  await expect(note).toContainText('2 opening-balance ledger rows');
+  await expect(note).toContainText('not exported');
+  await expect(note).toContainText('4,300');
+  await expect(note).toContainText('4,800');
+  await expect(note).toContainText('500');
+  expect(state.errors).toEqual([]);
+});
+
+test('no opening-balance note when the scope holds none', async ({ page }) => {
+  await boot(page);
+  await chooseJuly(page);
+  await page.getByRole('button', { name: 'Check balances' }).click();
+  await expect(page.getByTestId('journal-export-manifest')).toBeVisible();
+  await expect(page.getByTestId('journal-export-opening-balances')).toHaveCount(0);
+});
+
+test('Arabic: the opening-balance note is in Arabic', async ({ page }) => {
+  await boot(page, { openingBalances: true, locale: 'ar' });
+  const accountingMonthAr = page.getByRole('group', { name: 'الشهر المحاسبي' });
+  await accountingMonthAr.getByLabel('السنة').selectOption('2026');
+  await accountingMonthAr.getByLabel('الشهر', { exact: true }).selectOption('7');
+  await page.getByRole('button', { name: 'التحقق من التوازن' }).click();
+  await expect(page.getByTestId('journal-export-opening-balances')).toContainText('قيود الأرصدة الافتتاحية');
 });

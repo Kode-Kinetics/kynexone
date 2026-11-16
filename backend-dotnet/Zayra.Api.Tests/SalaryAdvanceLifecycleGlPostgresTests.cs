@@ -527,6 +527,71 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         await AssertNotDeductedNextMonthAsync(w, advId);
     }
 
+    /// <summary>
+    /// A loan, like an advance, is recovered whole from a leaver's final pay whatever its repayment start date: the settlement plan
+    /// counts every open loan, so the run withholds it too and the two agree. (It used to skip a loan not yet due, so the plan
+    /// promised a recovery the run never made.)
+    /// </summary>
+    [Fact]
+    public async Task FinalSettlement_LoanNotYetDue_IsRecoveredFromTheFinalPay_LikeTheSettlementPlannedIt()
+    {
+        var w = await SeedAsync(costing: false);
+        var loanId = await SeedPayrollLoanAsync(w, 3_000m, firstDue: w.Month1.AddMonths(1));
+        var s = await SeedApprovedSettlementAsync(w, gross: 12_000m);
+        await using (var db = _fx.CreateDb())
+        {
+            var settlement = await db.EmployeeFinalSettlements.SingleAsync(x => x.Id == s.SettlementId);
+            settlement.PlannedLoanRecovery = 3_000m;
+            await db.SaveChangesAsync();
+        }
+
+        await ProcessAsync(w, s.RunId);
+
+        await using var verify = _fx.CreateDb();
+        var taken = await verify.PayrollDeductions.AsNoTracking()
+            .Where(d => d.PayrollRunId == s.RunId && d.ComponentCode == "LOAN_EMI").Select(d => d.Amount).ToListAsync();
+        taken.Sum().Should().Be(3_000m, "the whole loan the settlement planned is withheld from the final pay");
+        var loan = await verify.EmployeeLoans.AsNoTracking().SingleAsync(l => l.Id == loanId);
+        (loan.OutstandingBalance, loan.Status).Should().Be((0m, "Closed"));
+    }
+
+    /// <summary>
+    /// A leaver's final pay that recovers a loan and an advance in full, before their instalments are due, settles every one of
+    /// their remaining instalments, as a cash early settlement does: Paid, by this run, nothing left Pending on a closed debt.
+    /// A void of the run puts each instalment back exactly as it was.
+    /// </summary>
+    [Fact]
+    public async Task FinalSettlement_FullRecovery_SettlesEveryRemainingInstalment_OfTheLoanAndTheAdvance_AndAVoidRestoresThem()
+    {
+        var w = await SeedAsync(costing: false);
+        var next = w.Month1.AddMonths(1);
+        var advId = await RequestAsSelfAsync(w, 3_000m, 3, next);
+        await ApproveAndDisburseAsync(w, advId, 3_000m, 3, next);
+        var loanId = await SeedPayrollLoanAsync(w, 1_500m, firstDue: next);
+        var s = await SeedApprovedSettlementAsync(w, gross: 12_000m);
+
+        await ProcessAsync(w, s.RunId);
+
+        await AssertAdvanceAsync(advId, "Closed", outstanding: 0m, repaid: 3_000m);
+        (await AdvanceInstallmentsAsync(advId)).Should().HaveCount(3).And
+            .OnlyContain(i => i.Status == "Paid" && i.AmountPaid == i.AmountDue && i.PayrollRunId == s.RunId && i.PaidDate != null);
+        await using (var db = _fx.CreateDb())
+        {
+            var loan = await db.EmployeeLoans.AsNoTracking().SingleAsync(l => l.Id == loanId);
+            (loan.OutstandingBalance, loan.Status).Should().Be((0m, "Closed"));
+            (await db.LoanInstallments.AsNoTracking().Where(i => i.LoanId == loanId).ToListAsync()).Should().HaveCount(3).And
+                .OnlyContain(i => i.Status == "Paid" && i.AmountPaid == i.AmountDue && i.PayrollRunId == s.RunId && i.PaidDate != null);
+        }
+
+        await using (var db = _fx.CreateDb())
+            Ok<object>(await Payroll(db, w, w.Approver, "Admin").VoidRun(s.RunId, new PayrollDecisionRequest("wrong leaver processed"), Ct), "void");
+        await AssertAdvanceAsync(advId, "Active", outstanding: 3_000m, repaid: 0m);
+        (await AdvanceInstallmentsAsync(advId)).Should().OnlyContain(i => i.Status == "Pending" && i.AmountPaid == 0m && i.PayrollRunId == null && i.PaidDate == null);
+        await using (var db = _fx.CreateDb())
+            (await db.LoanInstallments.AsNoTracking().Where(i => i.LoanId == loanId).ToListAsync())
+                .Should().OnlyContain(i => i.Status == "Pending" && i.AmountPaid == 0m && i.PayrollRunId == null && i.PaidDate == null);
+    }
+
     [Fact]
     public async Task FinalSettlement_RecoversThePaidOutAdvance_AndLeavesAnApprovedAdvanceAwaitingPayoutAlone()
     {
@@ -584,10 +649,12 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         }
     }
 
-    [Fact(Skip = "OPEN (needs a decision): the only payslip of this settlement run is zero, so its payment batch carries no money and " +
-                 "SettlePaymentBatch refuses it as nothing_to_settle; the leaver's settlement then stays Disbursing and the 2,500 leftover " +
-                 "never reaches 1420. A zero-net leaver in a batch that pays others is now completed when that batch is settled " +
-                 "(SettlementAdvanceResidualTests); completing one with no paying batch is not done in this branch.")]
+    /// <summary>
+    /// The only payslip of this settlement run is zero, so no payment batch will ever pay it: Finance completes the settlement with
+    /// nothing to pay (POST final-settlements/{id}/complete-without-payment), and the leftover moves to 1420 exactly as it does
+    /// for a zero-net leaver inside a batch that pays others. Asking again changes nothing.
+    /// </summary>
+    [Fact]
     public async Task FinalSettlement_TooSmallToCoverTheAdvance_IsPaid_AndTheLeftoverMovesTo1420()
     {
         // The final pay (500) cannot cover the 3,000 advance: the run withholds all 500, the net is zero, and the 2,500
@@ -609,13 +676,261 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         Sides((await RunGlAsync(s.RunId)).Where(l => l.Amount != 0m).ToList())
             .Should().BeEquivalentTo(new[] { $"DR|{Settle2320}|500.00", $"CR|{Adv1410}|500.00" });
 
-        await PayBatchAsync(w, s.RunId);
-        (await SettlementAsync(s.SettlementId)).Status.Should().Be(FinalSettlementStatuses.Paid);
+        await CompleteWithoutPaymentAsync(w, s.SettlementId);
+        var settlement = await SettlementAsync(s.SettlementId);
+        settlement.Status.Should().Be(FinalSettlementStatuses.Paid);
+        settlement.PaymentBatchId.Should().BeNull("nothing was paid through a bank batch");
+        settlement.ResidualDebtReclassed.Should().Be(2_500m);
         await AssertAdvanceAsync(advId, "Closed", outstanding: 0m, repaid: 500m);
         var ledger = await LedgerAsync(w);
         Balance(ledger, Emp1420).Should().Be(2_500m);
         Debits(ledger).Should().Be(Credits(ledger));
         await AssertSubLedgerEqualsGlAsync(w, 0m);
+
+        await CompleteWithoutPaymentAsync(w, s.SettlementId);
+        Balance(await LedgerAsync(w), Emp1420).Should().Be(2_500m, "completing it again posts nothing");
+    }
+
+    /// <summary>
+    /// A completed settlement is voided and then completed again, by either path: with nothing to pay, or by a paid batch that
+    /// pays a colleague (the zero-net leaver is left out of it). At every step the leaver's debt on the books (1410 plus 1420) is
+    /// exactly what they owe (the advance's balance plus their open 1420 sub-ledger rows): 2,500 after the first completion,
+    /// 3,000 once the void gives back the 500 the final pay took, 2,500 after the second. The leftover moves to 1420 once: the
+    /// void leaves the first move standing and the advance holds only the 500 given back, which the second final pay recovers
+    /// in full, so the second completion has nothing left to move.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task VoidThenRecomplete_TheDebtOnTheBooksIsAlwaysWhatIsOwed_AndTheLeftoverMovesTo1420Once(bool paidBatch)
+    {
+        var w = await SeedAsync(costing: false, withColleague: paidBatch);
+        var advId = await RequestAsSelfAsync(w, 3_000m, 3, w.Start);
+        await ApproveAndDisburseAsync(w, advId, 3_000m, 3, w.Start);
+        var s = await SeedApprovedSettlementAsync(w, gross: 500m);
+        int? colleagueId = null;
+        if (paidBatch)
+        {
+            await using var db = _fx.CreateDb();
+            colleagueId = await db.Employees.Where(e => e.TenantId == w.TenantId && e.Id != w.EmployeeId).Select(e => e.Id).SingleAsync();
+            await SeedApprovedSettlementAsync(w, gross: 1_000m, employeeId: colleagueId, intoRunId: s.RunId);
+        }
+
+        await PayOrCompleteAsync(w, s.RunId, s.SettlementId, paidBatch);
+        await AssertDebtOnBooksAsync(w, advId, 2_500m);
+
+        await using (var db = _fx.CreateDb())
+            Ok<object>(paidBatch
+                ? await Payroll(db, w, w.Approver, "Admin").VoidRun(s.RunId, new PayrollDecisionRequest("wrong leaver processed"), Ct,
+                    settlementDisposition: "FundsRecalled", settlementReference: "RECALL-1")
+                : await Payroll(db, w, w.Approver, "Admin").VoidRun(s.RunId, new PayrollDecisionRequest("wrong leaver processed"), Ct), "void");
+        (await SettlementAsync(s.SettlementId)).Status.Should().Be(FinalSettlementStatuses.Approved);
+        await AssertDebtOnBooksAsync(w, advId, 3_000m);
+
+        Guid run2;
+        await using (var db = _fx.CreateDb())
+        {
+            var created = Ok<object>(await Payroll(db, w, w.RunCreator, "Payroll Manager").CreateFinalSettlementRun(s.SettlementId, Ct), "second settlement run");
+            run2 = JsonSerializer.SerializeToElement(created).GetProperty("runId").GetGuid();
+        }
+        if (colleagueId is int c)
+            await using (var db = _fx.CreateDb())
+                Ok<object>(await Payroll(db, w, w.RunCreator, "Payroll Manager").UpsertRunSelection(run2,
+                    new PayrollRunSelectionRequest(PayrollRunSelectionModes.Include, "Colleague's final settlement", new List<int> { c }), Ct), "add colleague");
+        await PayOrCompleteAsync(w, run2, s.SettlementId, paidBatch);
+
+        (await SettlementAsync(s.SettlementId)).Status.Should().Be(FinalSettlementStatuses.Paid);
+        await AssertDebtOnBooksAsync(w, advId, 2_500m);
+        await using (var db = _fx.CreateDb())
+        {
+            var moves = await db.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
+                .Where(g => g.TenantId == w.TenantId && g.SourceEntityId == s.SettlementId && g.EventType == GlEventTypes.SettlementResidualReclass)
+                .Select(g => g.Amount).ToListAsync();
+            moves.Should().Equal(new[] { 2_500m }, "the leftover is moved to 1420 once, never again on the second completion");
+        }
+    }
+
+    /// <summary>
+    /// When a settlement moves a leaver's leftover advance to 1420 and so closes the advance, its schedule is closed too: the part
+    /// of an instalment the final pay took stays as paid (the row is cut to what was taken), and the rest is Cancelled (nothing was
+    /// paid on it; the debt now lives in 1420). A void of the settlement run gives back only what the run took: the 1420 move
+    /// stays, so the Cancelled rows stay Cancelled, and the reopened schedule adds up to exactly the balance the void restores.
+    /// </summary>
+    [Fact]
+    public async Task FinalSettlement_LeftoverMovedTo1420_ClosesTheSchedule_AndAVoidReopensOnlyWhatTheRunTook()
+    {
+        var w = await SeedAsync(costing: false);
+        var advId = await RequestAsSelfAsync(w, 3_000m, 3, w.Start);
+        await ApproveAndDisburseAsync(w, advId, 3_000m, 3, w.Start);
+        var s = await SeedApprovedSettlementAsync(w, gross: 500m);
+
+        await PayOrCompleteAsync(w, s.RunId, s.SettlementId, paidBatch: false);
+
+        await AssertAdvanceAsync(advId, "Closed", outstanding: 0m, repaid: 500m);
+        var closed = (await AdvanceInstallmentsAsync(advId)).OrderBy(i => i.InstallmentNumber).ToList();
+        closed.Should().NotContain(i => i.Status == "Pending");
+        (closed[0].Status, closed[0].AmountDue, closed[0].AmountPaid).Should().Be(("Paid", 500m, 500m));
+        closed.Skip(1).Should().OnlyContain(i => i.Status == "Cancelled" && i.AmountPaid == 0m);
+
+        await using (var db = _fx.CreateDb())
+            Ok<object>(await Payroll(db, w, w.Approver, "Admin").VoidRun(s.RunId, new PayrollDecisionRequest("wrong leaver processed"), Ct), "void");
+        await AssertAdvanceAsync(advId, "Active", outstanding: 500m, repaid: 0m);
+        var reopened = (await AdvanceInstallmentsAsync(advId)).OrderBy(i => i.InstallmentNumber).ToList();
+        reopened.Skip(1).Should().OnlyContain(i => i.Status == "Cancelled", "the 1420 move stays after the void, so what it closed stays closed");
+        reopened.Where(i => i.Status == "Pending").Sum(i => i.AmountDue - i.AmountPaid).Should().Be(500m, "the reopened schedule is exactly the balance given back");
+    }
+
+    /// <summary>
+    /// The same for a loan: a 10,000 loan in ten instalments, the final pay takes 4,000 (four instalments, Paid by the run) and the
+    /// settlement moves the other 6,000 to 1420 (six instalments, Cancelled). After a void the loan owes 4,000 again and its open
+    /// schedule is the four instalments the run took, 4,000; the six the move closed stay closed.
+    /// </summary>
+    [Fact]
+    public async Task FinalSettlement_LoanPartlyRecovered_ThenMovedTo1420_AVoidReopensTheScheduleToTheRestoredBalance()
+    {
+        var w = await SeedAsync(costing: false);
+        var loanId = await SeedPayrollLoanAsync(w, 10_000m, firstDue: w.Month1, instalments: 10, booked: true);
+        var s = await SeedApprovedSettlementAsync(w, gross: 4_000m);
+        await using (var db = _fx.CreateDb())
+        {
+            var settlement = await db.EmployeeFinalSettlements.SingleAsync(x => x.Id == s.SettlementId);
+            settlement.PlannedLoanRecovery = 10_000m;
+            await db.SaveChangesAsync();
+        }
+
+        await PayOrCompleteAsync(w, s.RunId, s.SettlementId, paidBatch: false);
+
+        var loan = await LoanByIdAsync(loanId);
+        (loan.OutstandingBalance, loan.TotalRepaid, loan.Status).Should().Be((0m, 4_000m, "Closed"));
+        var rows = await LoanInstallmentsByIdAsync(loanId);
+        rows.Count(i => i.Status == "Paid" && i.PayrollRunId == s.RunId).Should().Be(4);
+        rows.Count(i => i.Status == "Cancelled").Should().Be(6);
+
+        await using (var db = _fx.CreateDb())
+            Ok<object>(await Payroll(db, w, w.Approver, "Admin").VoidRun(s.RunId, new PayrollDecisionRequest("wrong leaver processed"), Ct), "void");
+        loan = await LoanByIdAsync(loanId);
+        (loan.OutstandingBalance, loan.Status).Should().Be((4_000m, "Active"));
+        rows = await LoanInstallmentsByIdAsync(loanId);
+        rows.Count(i => i.Status == "Cancelled").Should().Be(6, "what the 1420 move closed stays closed");
+        rows.Where(i => i.Status == "Pending").Sum(i => i.AmountDue - i.AmountPaid).Should().Be(4_000m);
+    }
+
+    private async Task<EmployeeLoan> LoanByIdAsync(Guid id)
+    {
+        await using var db = _fx.CreateDb();
+        return await db.EmployeeLoans.AsNoTracking().SingleAsync(l => l.Id == id);
+    }
+
+    private async Task<List<LoanInstallment>> LoanInstallmentsByIdAsync(Guid id)
+    {
+        await using var db = _fx.CreateDb();
+        return await db.LoanInstallments.AsNoTracking().Where(i => i.LoanId == id).OrderBy(i => i.InstallmentNumber).ToListAsync();
+    }
+
+    private async Task PayOrCompleteAsync(World w, Guid runId, Guid settlementId, bool paidBatch)
+    {
+        await ProcessAsync(w, runId);
+        await OverrideHalfWageCapAsync(w, runId);
+        await ApproveAsync(w, runId, expectedOverridden: 1);
+        await LockAsync(w, runId);
+        if (paidBatch) await PayBatchAsync(w, runId);
+        else await CompleteWithoutPaymentAsync(w, settlementId);
+    }
+
+    /// <summary>The leaver's debt on the books (1410 + 1420; only the leaver has an advance or a 1420 row here) equals what they
+    /// owe (the advance's balance plus their open 1420 sub-ledger rows), and is <paramref name="expected"/>.</summary>
+    private async Task AssertDebtOnBooksAsync(World w, Guid advId, decimal expected)
+    {
+        var ledger = await LedgerAsync(w);
+        var onBooks = Balance(ledger, Adv1410) + Balance(ledger, Emp1420);
+        await using var db = _fx.CreateDb();
+        var advance = (await AdvanceAsync(advId)).OutstandingBalance;
+        var receivables = (await db.PayrollEmployeeReceivables.IgnoreQueryFilters().AsNoTracking()
+                .Where(r => r.TenantId == w.TenantId && r.EmployeeId == w.EmployeeId)
+                .Select(r => new { r.Amount, r.RecoveredAmount, r.Status }).ToListAsync())
+            .Where(r => r.Status == PayrollReceivableStatuses.Outstanding).Sum(r => r.Amount - r.RecoveredAmount);
+        (onBooks, advance + receivables).Should().Be((expected, expected), "1410 + 1420 on the ledger must be exactly what the leaver owes");
+        Debits(ledger).Should().Be(Credits(ledger));
+    }
+
+    /// <summary>An Active loan collected by payroll, its first instalment due on <paramref name="firstDue"/>.</summary>
+    private async Task<Guid> SeedPayrollLoanAsync(World w, decimal amount, DateOnly firstDue, int instalments = 3, bool booked = false)
+    {
+        await using var db = _fx.CreateDb();
+        var employee = await db.Employees.AsNoTracking().SingleAsync(e => e.Id == w.EmployeeId);
+        var type = new LoanType { TenantId = w.TenantId, Code = $"LT-{Guid.NewGuid():N}"[..10], NameEn = "Personal", IsActive = true, MaxAmount = 50_000m, MaxInstallments = 12 };
+        var loan = new EmployeeLoan
+        {
+            TenantId = w.TenantId, CompanyId = w.CompanyId, EmployeeIntId = employee.Id, EmployeeId = employee.PublicId, EmployeeName = employee.FullName,
+            LoanNumber = $"LN-{Guid.NewGuid():N}"[..14], LoanTypeId = type.Id, LoanTypeName = type.NameEn, RepaymentMethod = "PayrollDeduction",
+            Currency = "SAR", RequestedAmount = amount, ApprovedAmount = amount, RequestedInstallments = instalments, ApprovedInstallments = instalments,
+            InstallmentAmount = amount / instalments, RepaymentStartDate = firstDue, OutstandingBalance = amount, Status = "Active",
+            DisbursementDate = firstDue,
+        };
+        db.AddRange(type, loan);
+        for (var n = 1; n <= instalments; n++)
+            db.LoanInstallments.Add(new LoanInstallment
+            {
+                TenantId = w.TenantId, LoanId = loan.Id, InstallmentNumber = n, DueDate = firstDue.AddMonths(n - 1),
+                AmountDue = amount / instalments, Status = "Pending",
+            });
+        if (booked)
+        {
+            // The loan's disbursement journal (DR 1400 / CR 1000), so payroll relieves 1400 for it and a settlement can move its
+            // leftover to 1420.
+            var glCtx = await Zayra.Api.Infrastructure.Payroll.GlAccountResolver.LoadAsync(db, w.TenantId, w.CompanyId, Ct);
+            db.FinanceGlEntries.Add(new FinanceGlEntry
+            {
+                TenantId = w.TenantId, CompanyId = w.CompanyId, SourceModule = "Loan", SourceEntityId = loan.Id, SourceEntityRef = loan.LoanNumber,
+                EventType = "Disbursement",
+                DebitAccount = Zayra.Api.Infrastructure.Payroll.GlAccountResolver.AccountLabel(Zayra.Api.Infrastructure.Payroll.GlControlAccounts.LoanReceivableDriver, glCtx),
+                CreditAccount = Cash1000, Amount = amount, Currency = "SAR", EntryDate = firstDue, Period = $"{firstDue:yyyy-MM}",
+                Description = "Loan disbursement",
+            });
+        }
+        await db.SaveChangesAsync();
+        return loan.Id;
+    }
+
+    /// <summary>
+    /// A void of the settlement run after a zero-net settlement was completed without payment does exactly what it does after the
+    /// settlement was completed by a paid batch (PayrollVoidService): the void is allowed, the settlement goes back to the status
+    /// its witness recorded (Approved) with no run, batch or paid date, the advance gets back the instalment the run took, and the
+    /// leftover already moved to 1420 stays there (that journal belongs to the settlement, not the run, and is never contra'd by a
+    /// void, whichever way the settlement was completed). The only difference is that no cash left, so no cash election is asked.
+    /// </summary>
+    [Fact]
+    public async Task Void_AfterAZeroNetSettlementWasCompletedWithoutPayment_IsTreatedAsAfterAPaidBatch()
+    {
+        var w = await SeedAsync(costing: false);
+        var advId = await RequestAsSelfAsync(w, 3_000m, 3, w.Start);
+        await ApproveAndDisburseAsync(w, advId, 3_000m, 3, w.Start);
+        var s = await SeedApprovedSettlementAsync(w, gross: 500m);
+        await ProcessAsync(w, s.RunId);
+        await OverrideHalfWageCapAsync(w, s.RunId);
+        await ApproveAsync(w, s.RunId, expectedOverridden: 1);
+        await LockAsync(w, s.RunId);
+        await CompleteWithoutPaymentAsync(w, s.SettlementId);
+
+        await using (var db = _fx.CreateDb())
+            Ok<object>(await Payroll(db, w, w.Approver, "Admin").VoidRun(s.RunId, new PayrollDecisionRequest("wrong leaver processed"), Ct), "void");
+
+        var settlement = await SettlementAsync(s.SettlementId);
+        settlement.Status.Should().Be(FinalSettlementStatuses.Approved);
+        (settlement.PayrollRunId, settlement.PaymentBatchId, settlement.PaidAtUtc).Should().Be(((Guid?)null, (Guid?)null, (DateTime?)null));
+        settlement.ResidualDebtReclassed.Should().Be(2_500m, "the move to 1420 is the settlement's, and a void leaves it as after a paid batch");
+        await AssertAdvanceAsync(advId, "Active", outstanding: 500m, repaid: 0m);
+        var ledger = await LedgerAsync(w);
+        Balance(ledger, Emp1420).Should().Be(2_500m);
+        Debits(ledger).Should().Be(Credits(ledger));
+        await AssertSubLedgerEqualsGlAsync(w, 500m);
+    }
+
+    private async Task CompleteWithoutPaymentAsync(World w, Guid settlementId)
+    {
+        await using var db = _fx.CreateDb();
+        Ok<object>(await Payroll(db, w, w.Approver, "Admin").CompleteFinalSettlementWithoutPayment(settlementId,
+            new PayrollReasonRequest("The final pay was all recovered against the advance."), Ct), "complete without payment");
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════════════════
@@ -868,12 +1183,13 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
     /// advance, and a Draft off-cycle settlement run for this month that carries the leaver. Seeded as
     /// <see cref="SettlementDisbursementRacePostgresTests"/> seeds it.
     /// </summary>
-    private async Task<SettlementWorld> SeedApprovedSettlementAsync(World w, decimal gross)
+    private async Task<SettlementWorld> SeedApprovedSettlementAsync(World w, decimal gross, int? employeeId = null, Guid? intoRunId = null)
     {
         await using var db = _fx.CreateDb();
-        var employee = await db.Employees.SingleAsync(e => e.Id == w.EmployeeId);
+        var leaverId = employeeId ?? w.EmployeeId;
+        var employee = await db.Employees.SingleAsync(e => e.Id == leaverId);
         employee.Status = EmployeeStatuses.Offboarded;
-        var outstanding = await db.SalaryAdvances.Where(a => a.EmployeeIntId == w.EmployeeId && a.Status == "Active").SumAsync(a => a.OutstandingBalance);
+        var outstanding = await db.SalaryAdvances.Where(a => a.EmployeeIntId == leaverId && a.Status == "Active").SumAsync(a => a.OutstandingBalance);
         var lastDay = w.Month1.AddMonths(1).AddDays(-1);
         var offboarding = new EmployeeOffboarding
         {
@@ -898,7 +1214,8 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
             RunType = PayrollRunTypes.OffCycle, IncludesRecurringPay = false, SettlesFinalSettlements = true, CreatedByUserId = w.RunCreator,
             CreatedAtUtc = new DateTime(w.Month1.Year, w.Month1.Month, 1, 0, 0, 0, DateTimeKind.Utc),
         };
-        db.AddRange(offboarding, settlement, run);
+        if (intoRunId is Guid existingRun) { run.Id = existingRun; db.AddRange(offboarding, settlement); }
+        else db.AddRange(offboarding, settlement, run);
         db.FinalSettlementLines.Add(new FinalSettlementLine
         {
             TenantId = w.TenantId, SettlementId = settlement.Id, ComponentCode = FinalSettlementComponents.Gratuity,

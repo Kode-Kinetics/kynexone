@@ -245,6 +245,16 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
               {t('{count} ledger rows already posted in your ERP are left out, so nothing is posted twice.', { count: manifest.previouslyConfirmedExcluded.count })}
             </p>
           )}
+          {(manifest.openingBalanceExcluded?.count ?? 0) > 0 && (
+            <p className="text-xs text-sky-700 dark:text-sky-300" data-testid="journal-export-opening-balances">
+              {t('{count} opening-balance ledger rows are not exported (net {net}: {debits} added to receivables, {credits} reduced): your ERP already holds those balances from your previous system.', {
+                count: manifest.openingBalanceExcluded!.count,
+                net: f.money(manifest.openingBalanceExcluded!.net, currencyOf(manifest)),
+                debits: f.money(manifest.openingBalanceExcluded!.debits, currencyOf(manifest)),
+                credits: f.money(manifest.openingBalanceExcluded!.credits, currencyOf(manifest)),
+              })}
+            </p>
+          )}
           <p className="text-sm text-slate-700 dark:text-slate-200">
             {t('{journals} journals, debits {debits}, credits {credits}', {
               journals: manifest.journalCount,

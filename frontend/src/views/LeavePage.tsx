@@ -5,7 +5,7 @@ import {
   acknowledgementsFor, checksFromWarnings, isReasonRequired, openChecks, parseFloorWarnings, parseStoredAcks, readyToSave,
   type FloorCheck,
 } from '../lib/belowMinimum';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Modal as SharedModal } from '../components/Modal';
 import { TransliterateButton } from '../components/TransliterateButton';
 import { useAuth } from '../contexts/AuthContext';
@@ -34,7 +34,7 @@ import client, { apiErrorReason, notifyApiError } from '../api/client';
 import { companiesApi, branchesApi } from '../api/organization';
 import type { CompanyDto, BranchDto } from '../api/organization';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
-import { calendarDaysBetween, formatCalendarDate } from '../lib/calendarDate';
+import { calendarDaysBetween, formatCalendarDateForLocale } from '../lib/calendarDate';
 import { payrollApi } from '../api/payroll';
 import type { PayrollRun } from '../api/payroll';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
@@ -45,9 +45,11 @@ import { useAppToast } from '../components/ui/AppToast';
 import { usePagedList } from '../hooks/usePagedList';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { requestFailureReason } from '../lib/requestFailure';
+import { leaveRefusalText } from '../lib/leaveRefusal';
 import { essApi } from '../api/ess';
 import { employeesApi } from '../api/employees';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
+import { LeaveDocumentLink } from '../components/leave/LeaveDocumentLink';
 import { LeaveCancellationActions, LeaveCancellationDetail, useLeaveCancellationDecision } from '../components/leave/LeaveCancellationQueue';
 import { isSaudiStatutoryLeave, isCalendarSpanLeave, isDeclarableLeave } from '../lib/ksaStatutoryLeave';
 
@@ -93,8 +95,12 @@ const leaveRequestsImportExport = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // DateOnly values are calendar facts, not UTC instants: `new Date('2026-08-24')` parses as UTC
-// midnight and displays Aug 23 west of UTC. The shared helper builds the local calendar day instead.
-function fmtDate(s: string | null | undefined) { return formatCalendarDate(s, 'en-US'); }
+// midnight and displays Aug 23 west of UTC. The shared helper builds the local calendar day instead, and
+// writes it in the viewer's language (Arabic on the Arabic screen), not always en-US.
+function useFmtDate(): (s: string | null | undefined) => string {
+  const { locale } = useLocale();
+  return useCallback((s) => formatCalendarDateForLocale(s, locale), [locale]);
+}
 
 function fmtAmt(n: number) {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -254,6 +260,7 @@ function LoadFailure({ what, error }: { what: string; error: unknown }) {
 }
 
 function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab) => void; groupFilter?: GroupFilter }) {
+  const fmtDate = useFmtDate();
   const t = useT();
   const [dash, setDash] = useState<LeaveDashboard | null>(null);
   const [onLeave, setOnLeave] = useState<LeaveCalendarEntry[]>([]);
@@ -547,7 +554,7 @@ const LEAVE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 const LEAVE_ATTACHMENT_ACCEPT = '.pdf,.jpg,.jpeg,.png,.heic,application/pdf,image/jpeg,image/png,image/heic';
 
 function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?: number; isEmployee?: boolean }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const { user } = useAuth();
   const [attachment, setAttachment] = useState<File | null>(null);
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
@@ -644,8 +651,11 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
       setAttachment(null);
       setSuccess(true);
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? t('Failed to submit request.'));
+      const data = (e as { response?: { data?: { code?: unknown; message?: string } } })?.response?.data;
+      // A leave refusal carries a stable code the screen translates; anything else keeps the server's sentence.
+      setError(typeof data?.code === 'string' && data.code.startsWith('leave_')
+        ? leaveRefusalText(e, t, 'hr', locale)
+        : data?.message ?? t('Failed to submit request.'));
     }
     setSaving(false);
   };
@@ -796,6 +806,7 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
 // ── My Requests Tab ───────────────────────────────────────────────────────────
 
 function MyRequestsTab() {
+  const fmtDate = useFmtDate();
   const { t, locale } = useLocale();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const { run, isBusy } = useBusyKeys();
@@ -867,11 +878,12 @@ function MyRequestsTab() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.leaveTypeName}</p>
-                    {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-caption font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">EMERGENCY</span>}
+                    {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-caption font-semibold text-rose-600 uppercase dark:bg-rose-500/20 dark:text-rose-400">{t('Emergency')}</span>}
                   </div>
                   <p className="mt-0.5 text-xs text-slate-400">{fmtDate(r.startDate)} – {fmtDate(r.endDate)} · {t('{count, plural, one {# day} other {# days}}', { count: r.totalDays })}</p>
                   {r.rejectionReason && <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{t('Rejected: {rejectionReason}', { rejectionReason: r.rejectionReason })}</p>}
                   {r.reason && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 line-clamp-1">{r.reason}</p>}
+                  {r.attachmentPath && <div className="mt-2"><LeaveDocumentLink leaveId={r.id} available /></div>}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <StatusBadge status={r.status} />
@@ -916,6 +928,7 @@ function MyRequestsTab() {
  * Officers and Supervisors see leave without deciding it; deciders see what is waiting on someone else. No buttons.
  */
 function WaitingOnOthers({ groupFilter = {}, reloadKey = 0 }: { groupFilter?: GroupFilter; reloadKey?: number }) {
+  const fmtDate = useFmtDate();
   const { t, locale } = useLocale();
   const [rows, setRows] = useState<LeaveWaiting[]>([]);
   const [total, setTotal] = useState(0);
@@ -961,6 +974,7 @@ function WaitingOnOthers({ groupFilter = {}, reloadKey = 0 }: { groupFilter?: Gr
 }
 
 function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  const fmtDate = useFmtDate();
   // Approve and reject are `leave.approve` on the API (LeaveRequestsController). An HR Officer or a
   // Supervisor can see this queue but not decide it, so they get the queue without the buttons.
   const { hasPermission } = useAuth();
@@ -1038,12 +1052,13 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                     <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700 dark:bg-white/10 dark:text-slate-300">{r.leaveTypeName}</span>
                     <span className="text-xs text-slate-500">{fmtDate(r.startDate)} – {fmtDate(r.endDate)}</span>
                     <span className="text-xs font-semibold text-sapphire dark:text-cyanAccent">{t('{count, plural, one {# day} other {# days}}', { count: r.totalDays })}</span>
-                    {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-caption font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">EMERGENCY</span>}
+                    {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-caption font-semibold text-rose-600 uppercase dark:bg-rose-500/20 dark:text-rose-400">{t('Emergency')}</span>}
                   </div>
                   {r.kind === 'Cancellation'
                     ? <LeaveCancellationDetail item={r} />
                     : <>
                         {r.reason && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">"{r.reason}"</p>}
+                        {r.hasDocument && <div className="mt-2"><LeaveDocumentLink leaveId={r.id} available /></div>}
                         <StatutoryLeaveHistory context={history[r.id]} />
                       </>}
                 </div>
@@ -1768,6 +1783,7 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
   companyId?: string;
 } = {}) {
   const { t } = useLocale();
+  const fmtDate = useFmtDate();
   const toast = useAppToast();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [calendars, setCalendars] = useState<PublicHolidayCalendar[]>([]);
@@ -2278,6 +2294,7 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── Comp-Off Tab ──────────────────────────────────────────────────────────────
 
 function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  const fmtDate = useFmtDate();
   const t = useT();
   const [showCreate, setShowCreate] = useState(false);
   const [compOffPickedEmp, setCompOffPickedEmp] = useState<SelectedEmployee | null>(null);
@@ -2367,6 +2384,7 @@ function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── Absences Tab ──────────────────────────────────────────────────────────────
 
 function AbsencesTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  const fmtDate = useFmtDate();
   const t = useT();
   const [regModal, setRegModal] = useState<AbsenceRecord | null>(null);
   const [regReason, setRegReason] = useState('');
@@ -2435,6 +2453,7 @@ function AbsencesTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── Reports Tab ───────────────────────────────────────────────────────────────
 
 function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  const fmtDate = useFmtDate();
   const t = useT();
   const [view, setView] = useState<'onleave' | 'sick'>('onleave');
   const [onLeave, setOnLeave] = useState<LeaveRequest[]>([]);
@@ -2495,6 +2514,7 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── AI Insights Tab ───────────────────────────────────────────────────────────
 
 function AIInsightsTab() {
+  const fmtDate = useFmtDate();
   const t = useT();
   const [generating, setGenerating] = useState(false);
 

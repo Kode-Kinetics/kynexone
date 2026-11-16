@@ -22,11 +22,14 @@ import {
   type PayrollRunPopulation, type PayrollValidationOverrideReport, type AuditIntegrityReport,
 } from '../api/payroll';
 import { identityAuditApi } from '../api/identity';
-import { formatCalendarDate } from '../lib/calendarDate';
 import { requestFailureReason } from '../lib/requestFailure';
 import { commonPayrollCurrency, resolvePayrollRunCurrency, totalsByCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
 import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
-import { employeeLabelsFromRecords } from '../lib/employeeLabel';
+import { formatCalendarDate } from '../lib/calendarDate';
+import { dateLocale } from '../lib/format';
+import { employeeLabel, employeeLabelsFromRecords } from '../lib/employeeLabel';
+import { EmployeeLabelText } from '../components/payroll/EmployeeLabelText';
+import { useRunEmployeeLabels } from '../hooks/useRunEmployeeLabels';
 import { RunSelectOptions } from '../components/payroll/RunSelectOptions';
 import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisiteLabel, type PaymentPrerequisites, type PayrollReadinessWithPrerequisites } from '../lib/payrollPrerequisites';
 import client, { apiErrorReason, notifyApiError } from '../api/client';
@@ -59,9 +62,12 @@ import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
+import { BankFileSteps } from '../components/payroll/BankFileSteps';
+import { deriveBankSteps, suggestedBatchReference, type BankFlowProgress, type BankStepKey } from '../lib/bankFileSteps';
 import { AttendanceReconciliationPanel } from '../components/payroll/AttendanceReconciliationPanel';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
-import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
+import { LoadFailedNotice, LoadFailedRow } from '../components/ui/LoadFailedRow';
+import { SkeletonRows } from '../components/ui/Skeleton';
 import { employeeWorkspaceHref } from '../lib/peopleRoutes';
 import { RunPipeline } from '../components/payroll/RunPipeline';
 import { useLockWithSummary } from '../hooks/useLockWithSummary';
@@ -88,8 +94,14 @@ import { languageLabel } from '../lib/displayLabels';
 import { wpsStatusNote } from '../lib/payrollBatchDisplay';
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
-function fmtDate(s: string | null | undefined) {
-  return formatCalendarDate(s, 'en-US');
+function fmtDate(s: string | null | undefined, locale: string) {
+  return formatCalendarDate(s, locale);
+}
+
+/** A date or timestamp in the viewer's language (month names follow it; digits stay Latin). */
+function useFmtDate() {
+  const { locale } = useLocale();
+  return useCallback((s: string | null | undefined) => fmtDate(s, dateLocale(locale)), [locale]);
 }
 
 /** An amount with its currency in the viewer's language (Arabic shows the Arabic currency symbol and a bidi-safe order). */
@@ -177,6 +189,7 @@ const btn = {
 
 type Tab = 'dashboard' | 'salary-structures' | 'employee-salary' | 'runs' | 'validation' | 'approvals' | 'payslips' | 'bank-wps' | 'payment-tracking' | 'reports' | 'eosb' | 'ai-validation' | 'audit-integrity' | 'gl-journal' | 'reconciliation' | 'final-settlement';
 
+// The order is the order of the groups below: arrow keys move through the tabs in this order.
 const TABS: { key: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: 'dashboard',        label: msg('Dashboard'),          icon: BarChart2 },
   { key: 'salary-structures', label: msg('Grade Packages'),     icon: Layers3 },
@@ -188,12 +201,21 @@ const TABS: { key: Tab; label: string; icon: React.ComponentType<{ className?: s
   { key: 'bank-wps',         label: msg('Bank / WPS Files'),    icon: Landmark },
   { key: 'payment-tracking', label: msg('Payment Tracking'),    icon: TrendingUp },
   { key: 'reports',          label: msg('Reports'),             icon: BarChart2 },
-  { key: 'eosb',             label: msg('EOSB / Gratuity'),    icon: FileText },
   { key: 'gl-journal',       label: msg('GL Journal'),          icon: BookOpen },
   { key: 'reconciliation',   label: msg('Reconciliation'),      icon: RefreshCw },
+  { key: 'eosb',             label: msg('EOSB / Gratuity'),    icon: FileText },
   { key: 'final-settlement', label: msg('Final Settlement'),    icon: Calculator },
   { key: 'ai-validation',    label: msg('Anomaly Checks'),      icon: ShieldCheck },
   { key: 'audit-integrity',  label: msg('Audit Integrity'),     icon: Shield },
+];
+
+/** The sixteen tabs as five labelled groups, in the order a payroll month goes. */
+const TAB_GROUPS: { label: string; ids: Tab[] }[] = [
+  { label: msg('Set up'),             ids: ['dashboard', 'salary-structures', 'employee-salary'] },
+  { label: msg('Run payroll'),        ids: ['runs', 'validation', 'approvals', 'payslips'] },
+  { label: msg('Pay out'),            ids: ['bank-wps', 'payment-tracking'] },
+  { label: msg('Report and ledger'),  ids: ['reports', 'gl-journal', 'reconciliation'] },
+  { label: msg('Settle and check'),   ids: ['eosb', 'final-settlement', 'ai-validation', 'audit-integrity'] },
 ];
 
 // ── Payroll Setup Wizard ───────────────────────────────────────────────────────
@@ -1174,6 +1196,7 @@ function EmployeeSalaryTab() {
   const [showAssign, setShowAssign] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const t = useT();
+  const fmtDate = useFmtDate();
 
   const load = () => {
     setLoading(true);
@@ -1756,6 +1779,7 @@ function ChainVerifier({ title, description, allowedRoles, verify }: {
   verify: () => Promise<AuditIntegrityReport>;
 }) {
   const t = useT();
+  const fmtDate = useFmtDate();
   const [report, setReport] = useState<AuditIntegrityReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -1857,6 +1881,7 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
   const [error, setError] = useState('');
   const [overridableCodes, setOverridableCodes] = useState<string[]>([]);
   const [overriding, setOverriding] = useState<PayrollValidationResult | null>(null);
+  const names = useRunEmployeeLabels(runId);
 
   useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
@@ -1973,7 +1998,7 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
                 <div className="flex items-center gap-2">
                   <StatusBadge status={r.severity} />
                   <span className="font-mono text-xs text-slate-500">{r.code}</span>
-                  {r.employeeId && <span className="text-xs text-slate-400">{t('Emp #{employeeId}', { employeeId: r.employeeId })}</span>}
+                  {r.employeeId && <span className="text-xs text-slate-400"><EmployeeLabelText label={employeeLabel(r.employeeId, names, id => t('Emp #{employeeId}', { employeeId: id }))} /></span>}
                 </div>
                 <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{r.message}</p>
               </div>
@@ -2221,6 +2246,7 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
 }) {
   const { hasPermission } = useAuth();
   const t = useT();
+  const fmtDate = useFmtDate();
   const monthLabel = useMonthLabel();
   const [reconNotice, setReconNotice] = useState('');
   const [runs, setRuns] = useState<PayrollRun[]>([]);
@@ -2242,6 +2268,13 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
   const [ackExcluded, setAckExcluded] = useState(false);
   const [ackOverridden, setAckOverridden] = useState(false);
   const [ackOutside, setAckOutside] = useState(false);
+  // The cash/cheque list names the person (the run's population is already loaded for the gate) and falls back to the number.
+  const employeeName = (id: number, ibanOnFile: boolean) => {
+    const member = population ? [...population.included, ...population.excluded, ...population.notEligible].find(m => m.employeeId === id) : undefined;
+    const known = member?.name ? (member.code ? `${member.code} · ${member.name}` : member.name) : '';
+    if (known) return ibanOnFile ? t('{name} — a valid IBAN is on file', { name: known }) : known;
+    return ibanOnFile ? t('Employee #{id} — a valid IBAN is on file', { id }) : t('Employee #{id}', { id });
+  };
 
   const refreshRuns = () =>
     payrollApi.listAllRuns().then(setRuns).catch(() => {});
@@ -2452,13 +2485,13 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
                 <AcknowledgementPanel
                   tone="amber"
                   title={t('{outsideCount} employee(s) are paid by cash or cheque, outside the bank/WPS file', { outsideCount })}
-                  blurb={`They will be left out of the bank file and their wages must be paid and recorded separately. ${overrideReport.mudadNote ?? ''}`}
+                  blurb={`${t('They will be left out of the bank file and their wages must be paid and recorded separately.')} ${overrideReport.mudadNote ?? ''}`}
                   checked={ackOutside}
                   onChange={setAckOutside}
                   confirmLabel={t('I have reviewed the list and confirm exactly {outsideCount} employee(s) are paid outside the bank file.', { outsideCount })}
                   rows={outsideList.map(o => ({
                     key: String(o.employeeId),
-                    primary: o.code === 'PAID_OUTSIDE_BANK_FILE_WITH_IBAN' ? t('Employee #{id} — a valid IBAN is on file', { id: o.employeeId }) : t('Employee #{id}', { id: o.employeeId }),
+                    primary: employeeName(o.employeeId, o.code === 'PAID_OUTSIDE_BANK_FILE_WITH_IBAN'),
                     secondary: o.message,
                   }))}
                 />
@@ -2699,7 +2732,11 @@ function PayslipsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; o
 
 // ── Bank / WPS Files Tab ────────────────────────────────────────────────────────
 
-function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; onRunChange?: (id: string | null) => void }) {
+/** A read a tab makes: still loading, loaded, or failed (with the error, so a refusal is told from an outage). */
+type LoadStatus = { status: 'idle' } | { status: 'loading' } | { status: 'ready' } | { status: 'failed'; error: unknown };
+const isForbidden = (error: unknown) => (error as { response?: { status?: number } } | null)?.response?.status === 403;
+
+function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?: string; onRunChange?: (id: string | null) => void; onNavigate?: (tab: string) => void }) {
   const t = useT();
   // Creating a batch and generating the file need payroll.export (Admin) or payroll.payment_batch.manage. Without either the actions are shown off, with the reason.
   const { hasPermission } = useAuth();
@@ -2720,19 +2757,33 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
   const autoOpenedRef = useRef<string | null>(null);
   const currentRunRef = useRef(runId);
   currentRunRef.current = runId;
+  // A list that is still loading or failed to load is never shown as an empty one.
+  const [runsState, setRunsState] = useState<LoadStatus>({ status: 'loading' });
+  const [batchesState, setBatchesState] = useState<LoadStatus>({ status: 'idle' });
+  const [recordsState, setRecordsState] = useState<LoadStatus>({ status: 'idle' });
+  const [reloadKey, setReloadKey] = useState(0);
+  // Where the open batch is in check -> create -> download, reported by the bank-file gate and panel for the step strip above.
+  const [flow, setFlow] = useState<BankFlowProgress | null>(null);
+  const runNames = useRunEmployeeLabels(runId);
 
-  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
+  useEffect(() => {
+    setRunsState({ status: 'loading' });
+    payrollApi.listAllRuns().then(rows => { setRuns(rows); setRunsState({ status: 'ready' }); }).catch(error => setRunsState({ status: 'failed', error }));
+  }, [reloadKey]);
 
   useEffect(() => {
     let cancelled = false;
     openBatchIdRef.current = null;
     autoOpenedRef.current = null;
-    setBatches([]); setSelectedBatch(null); setRecords([]);
-    if (!runId) return;
+    setBatches([]); setSelectedBatch(null); setRecords([]); setRecordsState({ status: 'idle' });
+    if (!runId) { setBatchesState({ status: 'idle' }); return; }
     setError('');
-    payrollApi.listPaymentBatches(runId).then(rows => { if (!cancelled) setBatches(rows); }).catch(() => {});
+    setBatchesState({ status: 'loading' });
+    payrollApi.listPaymentBatches(runId)
+      .then(rows => { if (!cancelled) { setBatches(rows); setBatchesState({ status: 'ready' }); } })
+      .catch(error => { if (!cancelled) setBatchesState({ status: 'failed', error }); });
     return () => { cancelled = true; };
-  }, [runId]);
+  }, [runId, reloadKey]);
 
   const selectedRun = runs.find(r => r.id === runId);
   // Backend (C5 control) only allows payment batches for Locked runs — finance must lock first.
@@ -2741,9 +2792,10 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
 
   const openBatch = (batch: PayrollPaymentBatch) => {
     openBatchIdRef.current = batch.id;
-    setSelectedBatch(batch); setRecords([]);
+    setSelectedBatch(batch); setRecords([]); setRecordsState({ status: 'loading' }); setFlow(null);
     payrollApi.paymentRecords(batch.id)
-      .then(rows => { if (openBatchIdRef.current === batch.id) setRecords(rows); }).catch(() => {});
+      .then(rows => { if (openBatchIdRef.current === batch.id) { setRecords(rows); setRecordsState({ status: 'ready' }); } })
+      .catch(error => { if (openBatchIdRef.current === batch.id) setRecordsState({ status: 'failed', error }); });
   };
 
   useEffect(() => {
@@ -2752,6 +2804,18 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
     openBatch(batches[0]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batches, selectedBatch]);
+
+  const steps = deriveBankSteps({
+    hasBatch: !!selectedBatch,
+    runLocked: runIsLocked,
+    canCreateBatch: canExport,
+    isSaudi: selectedBatch?.isSaudi === true,
+    progress: flow,
+    wpsStatus: selectedBatch ? (batches.find(b => b.id === selectedBatch.id)?.effectiveWpsStatus || batches.find(b => b.id === selectedBatch.id)?.wpsStatus) : null,
+  });
+  // The flow is the Saudi bank-file flow: shown while no batch is open (what to do first) and for a Saudi batch; a WPS/SIF batch has its own button.
+  const showSteps = !!runId && (!selectedBatch || selectedBatch.isSaudi === true);
+  const jumpStep = (key: BankStepKey) => jumpTo(key === 'batch' ? 'bank-wps-batches' : key === 'download' && document.getElementById('bank-wps-generated-export') ? 'bank-wps-generated-export' : 'bank-wps-bank-file');
 
   const jumpTo = (id: string) => {
     const target = document.getElementById(id) ?? document.getElementById('bank-wps-bank-file');
@@ -2858,7 +2922,15 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
           <span>{error}</span>
         </div>
       )}
+      {runsState.status === 'failed' && (
+        <div role="alert" data-testid="bank-runs-failed" className="flex flex-wrap items-center gap-2 rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
+          <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>{t('The payroll runs could not be loaded.')}</span>
+          <button type="button" className={btn.link} onClick={() => setReloadKey(n => n + 1)}>{t('Retry')}</button>
+        </div>
+      )}
 
+      {showSteps && <BankFileSteps steps={steps} onJump={jumpStep} onOpenTracking={onNavigate ? () => onNavigate('payment-tracking') : undefined} />}
       {selectedBatch && (
         <nav aria-label={t('Jump to a section of this tab')} data-testid="bank-wps-jump" className="flex flex-wrap items-center gap-x-1 gap-y-1 rounded-lg bg-slate-50 px-3 py-1.5 text-xs dark:bg-white/5">
           <span className="text-slate-500 dark:text-slate-400">{t('Jump to')}</span>
@@ -2872,11 +2944,14 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
         </nav>
       )}
       <div className="grid gap-4 lg:grid-cols-3">
-        <div className="surface overflow-hidden">
+        <div id="bank-wps-batches" tabIndex={-1} className="surface overflow-hidden outline-none">
           <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
             <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Payment Batches')}</p>
           </div>
-          {batches.length === 0 ? <p className="p-5 text-sm text-slate-400">{t('No batches yet.')}</p> : (
+          {!runId ? <p className="p-5 text-sm text-fg-muted">{t('Choose a payroll run to see its payment batches.')}</p>
+            : batchesState.status === 'loading' ? <SkeletonRows rows={2} className="p-4" />
+            : batchesState.status === 'failed' ? <LoadFailedNotice error={batchesState.error} onRetry={() => setReloadKey(n => n + 1)} />
+            : batches.length === 0 ? <p className="p-5 text-sm text-slate-400">{t('No batches yet.')}</p> : (
             <div className="divide-y divide-slate-100 dark:divide-white/5">
               {batches.map(b => (
                 <div key={b.id} role="button" tabIndex={0} onClick={() => openBatch(b)}
@@ -2912,8 +2987,10 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
               <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
                 <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Records — {batchNumber}', { batchNumber: selectedBatch.batchNumber })}</p>
               </div>
-              <table className="w-full text-sm">
-                <thead>
+              {/* A long batch scrolls inside its own region (header stays in view) instead of making the whole tab tall. */}
+              <div role="region" aria-label={t('Payment records')} tabIndex={0} className="max-h-[22rem] overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-primary" data-testid="bank-records-scroll">
+              <table className="w-full min-w-[34rem] text-sm">
+                <thead className="sticky top-0 z-10 bg-surface">
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                     {[t('Employee'), t('Amount'), 'IBAN', t('WPS Reference'), t('Status')].map(h => (
                       <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
@@ -2921,13 +2998,17 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
-                  {records.length === 0 && <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-400">{t('No records.')}</td></tr>}
+                  {recordsState.status === 'loading' && <tr><td colSpan={5} className="p-4"><SkeletonRows rows={4} /></td></tr>}
+                  {recordsState.status === 'failed' && (isForbidden(recordsState.error)
+                    ? <tr><td colSpan={5} role="alert" data-testid="bank-records-forbidden" className="py-8 text-center text-sm text-fg-muted">{t('The payment records need the Payroll export permission. Ask an administrator to give it to your role.')}</td></tr>
+                    : <LoadFailedRow colSpan={5} error={recordsState.error} onRetry={() => openBatch(selectedBatch)} />)}
+                  {recordsState.status === 'ready' && records.length === 0 && <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-400">{t('No records.')}</td></tr>}
                   {records.map(r => (
                     <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                       <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">
                         {r.employeeName
-                          ? <>{r.employeeName}{r.employeeCode && <span className="ms-1.5 text-xs font-normal text-slate-400"><bdi>{r.employeeCode}</bdi></span>}</>
-                          : t('Emp #{id}', { id: r.employeeId })}
+                          ? <><bdi>{r.employeeName}</bdi>{r.employeeCode && <span className="ms-1.5 whitespace-nowrap text-xs font-normal text-slate-400"><bdi>{r.employeeCode}</bdi></span>}</>
+                          : runNames[r.employeeId] ? <EmployeeLabelText label={runNames[r.employeeId]} /> : t('Emp #{id}', { id: r.employeeId })}
                       </td>
                       <td className="px-4 py-2 font-semibold text-slate-700 dark:text-slate-300">{r.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
                       <td className="px-4 py-2 font-mono text-xs text-slate-500">{r.iban || <span className="text-rose-500">{t('Missing IBAN')}</span>}</td>
@@ -2937,6 +3018,7 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
                   ))}
                 </tbody>
               </table>
+              </div>
             </>
           )}
         </div>
@@ -2945,11 +3027,11 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
         <div className="flex items-start gap-2 rounded-lg bg-slate-50 px-4 py-2.5 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">
           <Landmark className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
-            {t('Saudi bank payroll file: the Payroll payment instruction file (bank format) — the ANB Connect instruction with WPS fields — is the file to send to the bank. It appears below. If it does not, you need the Payroll export permission, or the platform team has switched bank export off for your company. Mudad accepts only the WPS file your bank signs — keep the bank’s output file or a Mudad screenshot as evidence before marking the batch Accepted.')}
+            {t('Saudi bank payroll file: the Payroll payment instruction file (bank format) — the ANB Connect instruction with WPS fields — is the file to send to the bank. Mudad accepts only the WPS file your bank signs — keep the bank’s output file or a Mudad screenshot as evidence before marking the batch Accepted.')}
           </span>
         </div>
       )}
-      {selectedBatch && <div id="bank-wps-bank-file" tabIndex={-1} className="outline-none"><SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} employeeIds={records.map(r => r.employeeId)} employeeLabels={employeeLabelsFromRecords(records)} /></div>}
+      {selectedBatch && <div id="bank-wps-bank-file" tabIndex={-1} className="outline-none"><SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi={selectedBatch.isSaudi === true} onProgress={setFlow} suggestedReference={suggestedBatchReference(selectedBatch.batchNumber, selectedRun)} employeeIds={records.map(r => r.employeeId)} employeeLabels={{ ...runNames, ...employeeLabelsFromRecords(records) }} /></div>}
     </div>
   );
 }
@@ -2980,9 +3062,14 @@ function PaymentTrackingTab({ selectedRunId }: { selectedRunId?: string }) {
   // With a run selected on the page, this tab lists that run's batches (the same run the other tabs work on); "Show all runs" lifts that.
   const [showAllRuns, setShowAllRuns] = useState(false);
   const scopedRunId = !showAllRuns && selectedRunId ? selectedRunId : undefined;
+  // A failed read is not an empty register: the tab says it could not load and offers Retry.
+  const [loadError, setLoadError] = useState<unknown>(null);
   const loadBatches = () => {
     setLoading(true);
-    payrollApi.listPaymentBatches(scopedRunId).then(setBatches).catch(() => {}).finally(() => setLoading(false));
+    payrollApi.listPaymentBatches(scopedRunId)
+      .then(rows => { setBatches(rows); setLoadError(null); })
+      .catch(error => { setBatches([]); setLoadError(error ?? new Error('load failed')); })
+      .finally(() => setLoading(false));
   };
 
   useEffect(() => { loadBatches(); // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3070,9 +3157,47 @@ function PaymentTrackingTab({ selectedRunId }: { selectedRunId?: string }) {
       notifyApiError({ response: { data: { message: t('A reason is required for reversal.') } } });
       return;
     }
+    // Every action that posts to the general ledger says what will post before it does: the batch, the amount, the date and the journal.
+    // The accounts are not part of the data this tab holds (they come from the GL setup), so they are not listed.
+    const postingFacts = (rows: [string, string][]) => (
+      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-lg bg-slate-50 p-3 text-sm dark:bg-white/5" data-testid="gl-post-confirm">
+        {rows.map(([k, v]) => <React.Fragment key={k}><dt className="text-fg-muted">{k}</dt><dd className="font-medium text-fg"><bdi>{v}</bdi></dd></React.Fragment>)}
+      </dl>
+    );
+    const when = form.date ? fx.date(form.date) : t('Today');
+    const batchRow: [string, string] = [t('Payment batch'), batch.batchNumber];
+    const amountRow: [string, string] = [t('Amount'), fmtAmt(batch.totalAmount, batch.currency)];
+    const groupName = form.group === 'All' ? t('GOSI, tax and loan remittances') : form.group === 'GOSI' ? t('GOSI remittance') : form.group === 'TAX' ? t('Tax remittance') : t('Loan remittance');
+    if (action === 'settle' && !(await confirm({
+      title: t('Post the net pay settlement to the general ledger?'),
+      message: (
+        <div>
+          <p>{t('This posts a journal to the general ledger. It is reversed with a contra journal, not deleted.')}</p>
+          {postingFacts([batchRow, [t('Journal'), t('Net pay settlement')], amountRow, [t('Paid date'), when], ...(form.reference ? [[t('Reference'), form.reference] as [string, string]] : [])])}
+        </div>
+      ),
+      confirmLabel: t('Post settlement'),
+      tone: 'primary',
+    }))) return;
+    if (action === 'remit' && !(await confirm({
+      title: t('Post the statutory remittance to the general ledger?'),
+      message: (
+        <div>
+          <p>{t('This posts a journal to the general ledger. It is reversed with a contra journal, not deleted. The amounts come from the run and appear on the GL Journal tab once posted.')}</p>
+          {postingFacts([batchRow, [t('Journal'), groupName], [t('Remittance date'), when], ...(form.reference ? [[t('Reference'), form.reference] as [string, string]] : [])])}
+        </div>
+      ),
+      confirmLabel: t('Post remittance'),
+      tone: 'primary',
+    }))) return;
     if (action.startsWith('reverse') && !(await confirm({
       title: t('Post a contra journal?'),
-      message: t('Reversing posts a contra journal that offsets the original entry. The reason you entered is sent with the reversal.'),
+      message: (
+        <div>
+          <p>{t('Reversing posts a contra journal that offsets the original entry. The reason you entered is sent with the reversal.')}</p>
+          {postingFacts([batchRow, [t('Journal'), action === 'reverse-settle' ? t('Net pay settlement reversal') : groupName], ...(action === 'reverse-settle' ? [amountRow] : []), [t('Reason'), form.reason.trim()]])}
+        </div>
+      ),
       confirmLabel: t('Post contra journal'),
     }))) return;
     setFinanceSaving(`${batch.id}:${action}`);
@@ -3081,7 +3206,7 @@ function PaymentTrackingTab({ selectedRunId }: { selectedRunId?: string }) {
       if (action === 'reverse-settle') await payrollApi.reversePaymentSettlement(batch.id, form.reason);
       if (action === 'remit') await payrollApi.remitRun(batch.payrollRunId, { group: form.group, reference: form.reference || undefined, remitDate: form.date || undefined });
       if (action === 'reverse-remit') {
-        if (form.group === 'All') throw new Error('Choose GOSI, TAX, or LOAN before reversing a remittance.');
+        if (form.group === 'All') throw new Error(t('Choose GOSI, TAX, or LOAN before reversing a remittance.'));
         await payrollApi.reverseRemittance(batch.payrollRunId, { group: form.group, reason: form.reason });
       }
       loadBatches();
@@ -3117,7 +3242,9 @@ function PaymentTrackingTab({ selectedRunId }: { selectedRunId?: string }) {
           <KpiCard label={t('Total Amount')} value={totalLabel} sub={totalLabel === t('Mixed currencies') ? perCurrency(totals, fmtAmt, t) : undefined} icon={TrendingUp} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
         </div>
       )}
-      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : batches.length === 0 ? (
+      {loading ? <SkeletonRows rows={3} />
+        : loadError != null ? <div className="surface"><LoadFailedNotice error={loadError} onRetry={loadBatches} /></div>
+        : batches.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <TrendingUp className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No payment batches yet')}</p>
@@ -3456,6 +3583,7 @@ function AIValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: strin
   const [runId, setRunId] = useSharedRun(selectedRunId, onRunChange);
   const [result, setResult] = useState<{ advisoryOnly: boolean; warnings: PayrollValidationResult[]; summary: string } | null>(null);
   const [loading, setLoading] = useState(false);
+  const names = useRunEmployeeLabels(runId);
 
   useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
@@ -3514,7 +3642,7 @@ function AIValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: strin
                       <div className="flex items-center gap-2">
                         <StatusBadge status={w.severity} />
                         <span className="font-mono text-xs text-slate-500">{w.code}</span>
-                        {w.employeeId && <span className="text-xs text-slate-400">{t('Emp #{employeeId}', { employeeId: w.employeeId })}</span>}
+                        {w.employeeId && <span className="text-xs text-slate-400"><EmployeeLabelText label={employeeLabel(w.employeeId, names, id => t('Emp #{employeeId}', { employeeId: id }))} /></span>}
                       </div>
                       <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{w.message}</p>
                     </div>
@@ -3915,6 +4043,10 @@ function FinalSettlementTab() {
   const t = useT();
   const fmtAmt = useFmtAmt();
   const { confirm, dialog: confirmDialog } = useConfirm();
+  // Completing a zero-net settlement is a payment decision: the same keys as settling a payment batch (the server checks again).
+  const { hasPermission } = useAuth();
+  const { locale } = useLocale();
+  const maySettlePayments = paymentActionsAllowed(hasPermission, ['settle']);
   const [form, setForm] = useState({ employeeId: '', lastWorkingDay: new Date().toISOString().slice(0, 10), noticePeriodDaysShort: '0', terminationReason: '' });
   const [result, setResult] = useState<FinalSettlementResult | null>(null);
   const [settlements, setSettlements] = useState<FinalSettlementListRow[]>([]);
@@ -3965,6 +4097,23 @@ function FinalSettlementTab() {
       await loadSettlements();
     } catch (e: unknown) {
       setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? `${action} failed.`);
+    } finally { setActionSaving(null); }
+  };
+
+  const completeWithoutPayment = async (settlement: FinalSettlementListRow) => {
+    if (!(await confirm({
+      title: t('Complete this settlement with nothing to pay?'),
+      message: t("{employeeName}'s final pay was all recovered against their debts, so there is nothing to send to the bank. The settlement is marked paid with no payment, and any debt still owed moves to the employee receivable.", { employeeName: settlement.employeeName }),
+      confirmLabel: t('Complete — nothing to pay'),
+    }))) return;
+    setActionSaving(`${settlement.id}:complete`); setError('');
+    try {
+      await payrollApi.completeFinalSettlementWithoutPayment(settlement.id);
+      await loadSettlements();
+    } catch (e: unknown) {
+      // The server's refusal in the viewer's language (every refusal of this action carries messageAr).
+      const data = (e as { response?: { data?: { message?: string; messageAr?: string } } })?.response?.data;
+      setError((locale === 'ar' ? data?.messageAr || data?.message : data?.message) ?? t('Completing the settlement failed.'));
     } finally { setActionSaving(null); }
   };
 
@@ -4102,6 +4251,9 @@ function FinalSettlementTab() {
                       {(s.status === 'Draft' || s.status === 'PendingApproval') && <button type="button" className={btn.primary} onClick={() => transition(s, 'approve')} disabled={actionSaving !== null}>{t('Approve & Post GL')}</button>}
                       <button type="button" className={btn.danger} onClick={() => transition(s, 'cancel')} disabled={actionSaving !== null}>{t('Cancel')}</button>
                     </div>
+                  </div> : s.status === 'Disbursing' && s.completableWithoutPayment ? <div className="grid gap-2">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{t('Nothing to pay: the final pay was all recovered.')}</p>
+                    {maySettlePayments && <button type="button" className={btn.primary} onClick={() => void completeWithoutPayment(s)} disabled={actionSaving !== null}>{t('Complete — nothing to pay')}</button>}
                   </div> : <p className="text-xs text-slate-400">{s.status === 'Approved' ? t('Create an off-cycle settlement run to disburse.') : t('No direct action.')}</p>}
                 </td>
               </tr>;
@@ -4164,6 +4316,18 @@ export function PayrollPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, contextRunId]);
 
+  // Changing tab never moves the page when the tab strip is in view. When something else changed the tab (the pipeline's next-step
+  // button) and the strip has scrolled out of view, the strip is brought back to the top: the least movement that shows the new tab.
+  const tabsAnchor = useRef<HTMLDivElement>(null);
+  const firstTabRender = useRef(true);
+  useEffect(() => {
+    if (firstTabRender.current) { firstTabRender.current = false; return; }
+    const el = tabsAnchor.current;
+    if (!el) return;
+    const top = el.getBoundingClientRect().top;
+    if (top < 64 || top > window.innerHeight * 0.75) el.scrollIntoView({ block: 'start', behavior: 'auto' });
+  }, [activeTab]);
+
   const handleSelectRun = (run: PayrollRun, tab: Tab) => {
     setContextRunId(run.id);
     setActiveTab(tab);
@@ -4180,7 +4344,7 @@ export function PayrollPage() {
       case 'validation':      return <ValidationTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
       case 'approvals':       return <ApprovalsTab selectedRunId={contextRunId} onRunChange={selectRunId} isAdmin={isAdmin} isFinance={isFinance} isHROrPayroll={isHROrPayroll || isAdmin} onReconNotReviewed={reconNotReviewed} />;
       case 'payslips':        return <PayslipsTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
-      case 'bank-wps':        return <BankWpsTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
+      case 'bank-wps':        return <BankWpsTab selectedRunId={contextRunId} onRunChange={selectRunId} onNavigate={navigateTab} />;
       case 'payment-tracking': return <PaymentTrackingTab selectedRunId={contextRunId} />;
       case 'reports':         return <ReportsTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
       case 'eosb':            return <EOSBTab />;
@@ -4198,7 +4362,7 @@ export function PayrollPage() {
     : null;
 
   return (
-    <div className="space-y-5">
+    <div className="kx-scroll-tables space-y-5">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">{t('Payroll Management')}</h1>
@@ -4216,14 +4380,18 @@ export function PayrollPage() {
         reviewRequestKey={reviewRequest}
       />
 
-      <RovingTabList
-        items={visibleTabs.map(({ key, label, icon }) => ({ id: key, label: t(label), icon }))}
-        activeId={activeTab}
-        onChange={setActiveTab}
-        idPrefix="payroll"
-        label={t('Payroll workspace sections')}
-        compact
-      />
+      <div ref={tabsAnchor} data-testid="payroll-tabs-anchor">
+        <RovingTabList
+          items={visibleTabs.map(({ key, label, icon }) => ({ id: key, label: t(label), icon }))}
+          activeId={activeTab}
+          onChange={setActiveTab}
+          idPrefix="payroll"
+          label={t('Payroll workspace sections')}
+          compact
+          scrollCue
+          groups={TAB_GROUPS.map(g => ({ label: t(g.label), ids: g.ids }))}
+        />
+      </div>
 
       <TabPanel idPrefix="payroll" tabId={activeTab}>{renderTab()}</TabPanel>
     </div>

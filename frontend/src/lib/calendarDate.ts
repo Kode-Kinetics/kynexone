@@ -69,3 +69,8 @@ export function formatCalendarDate(
   const date = parseCalendarDate(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString(locale, options);
 }
+
+/** A calendar date in the viewer's language: Arabic with Western digits on the Arabic screen, the usual en-US form otherwise. */
+export function formatCalendarDateForLocale(value: string | null | undefined, locale: string): string {
+  return locale === 'ar' ? formatCalendarDate(value, 'ar-u-nu-latn') : formatCalendarDate(value);
+}

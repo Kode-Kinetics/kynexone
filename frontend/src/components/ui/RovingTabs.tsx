@@ -21,6 +21,12 @@ interface RovingTabListProps<T extends string> {
   compact?: boolean;
   /** Opt in: a chevron at each clipped edge of a strip wider than its container. Off by default, so no screen changes unless it asks. */
   scrollCue?: boolean;
+  /**
+   * Opt in: many tabs shown as a few labelled groups (the ids of a group are consecutive in `items`). From `md` up the groups wrap
+   * onto rows so no tab is hidden off-screen; below it the strip scrolls and the labels scroll with it. The tablist stays one
+   * list of tabs: arrow keys, Home and End move through all of them in order.
+   */
+  groups?: { label: string; ids: T[] }[];
 }
 
 /**
@@ -37,21 +43,30 @@ export function RovingTabList<T extends string>({
   variant = 'pill',
   compact = false,
   scrollCue = false,
+  groups,
 }: RovingTabListProps<T>) {
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
   const activeIndex = items.findIndex((item) => item.id === activeId);
 
+  // Keep the selected tab inside the strip by scrolling the STRIP only. scrollIntoView would also move the page to show the strip,
+  // which jumped the whole screen on every tab change (and on first load of a deep link).
+  const scrollerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    refs.current[activeIndex]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const strip = scrollerRef.current;
+    const tab = refs.current[activeIndex];
+    if (!strip || !tab) return;
+    const s = strip.getBoundingClientRect();
+    const r = tab.getBoundingClientRect();
+    if (r.left < s.left) strip.scrollLeft -= s.left - r.left;
+    else if (r.right > s.right) strip.scrollLeft += r.right - s.right;
   }, [activeId, activeIndex]);
 
   // Scroll cue: when the strip is wider than the screen, a chevron at each clipped edge says there is more.
   // Distances are measured from the inline start, so the same arithmetic holds in right-to-left.
-  const scroller = useRef<HTMLDivElement>(null);
   const [cue, setCue] = useState({ start: false, end: false, overflow: false });
   const tablist = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const el = scroller.current;
+    const el = scrollerRef.current;
     if (!scrollCue || !el) return;
     const measure = () => {
       const max = el.scrollWidth - el.clientWidth;
@@ -72,8 +87,12 @@ export function RovingTabList<T extends string>({
 
   const move = (index: number, event: React.KeyboardEvent<HTMLButtonElement>) => {
     let next = index;
-    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (index + 1) % items.length;
-    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (index - 1 + items.length) % items.length;
+    // In a right-to-left page the next tab is on the left: ArrowLeft goes forward, ArrowRight back.
+    const rtl = getComputedStyle(event.currentTarget).direction === 'rtl';
+    const forward = rtl ? 'ArrowLeft' : 'ArrowRight';
+    const back = rtl ? 'ArrowRight' : 'ArrowLeft';
+    if (event.key === forward || event.key === 'ArrowDown') next = (index + 1) % items.length;
+    else if (event.key === back || event.key === 'ArrowUp') next = (index - 1 + items.length) % items.length;
     else if (event.key === 'Home') next = 0;
     else if (event.key === 'End') next = items.length - 1;
     else return;
@@ -86,40 +105,51 @@ export function RovingTabList<T extends string>({
     ? 'kx-tabs-pill'
     : 'kx-tabs-underline';
 
+  const renderTab = (item: RovingTabItem<T>) => {
+    const index = items.indexOf(item);
+    const selected = item.id === activeId;
+    const Icon = item.icon;
+    const selectedClass = variant === 'pill'
+      ? 'bg-surface text-primary-fg shadow-e1'
+      : 'border-primary-fg text-primary-fg';
+    const idleClass = variant === 'pill'
+      ? 'text-fg-muted hover:text-fg'
+      : 'border-transparent text-fg-muted hover:text-fg';
+    return (
+      <button
+        key={item.id}
+        ref={(node) => { refs.current[index] = node; }}
+        id={`${idPrefix}-tab-${item.id}`}
+        data-testid={item.testId}
+        type="button"
+        role="tab"
+        aria-selected={selected}
+        aria-controls={`${idPrefix}-panel-${item.id}`}
+        tabIndex={selected ? 0 : -1}
+        onClick={() => onChange(item.id)}
+        onKeyDown={(event) => move(index, event)}
+        className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap font-semibold transition-colors ${
+          variant === 'underline' ? 'border-b-2 px-4 py-2.5' : `rounded-lg px-3 py-1.5 ${compact ? 'text-meta' : 'text-body'}`
+        } ${selected ? selectedClass : idleClass}`}
+      >
+        {Icon && <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+        {item.label}
+      </button>
+    );
+  };
+
+  const grouped = groups?.map((g) => ({ label: g.label, tabs: g.ids.flatMap((id) => items.filter((i) => i.id === id)) })).filter((g) => g.tabs.length > 0);
   const strip = (
-    <div ref={scroller} className="overflow-x-auto pb-1" data-roving-tabs={idPrefix}>
-      <div ref={tablist} className={`flex w-max min-w-full items-center gap-1 ${shell}`} role="tablist" aria-label={label}>
-        {items.map((item, index) => {
-          const selected = item.id === activeId;
-          const Icon = item.icon;
-          const selectedClass = variant === 'pill'
-            ? 'bg-surface text-primary-fg shadow-e1'
-            : 'border-primary-fg text-primary-fg';
-          const idleClass = variant === 'pill'
-            ? 'text-fg-muted hover:text-fg'
-            : 'border-transparent text-fg-muted hover:text-fg';
-          return (
-            <button
-              key={item.id}
-              ref={(node) => { refs.current[index] = node; }}
-              id={`${idPrefix}-tab-${item.id}`}
-              data-testid={item.testId}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              aria-controls={`${idPrefix}-panel-${item.id}`}
-              tabIndex={selected ? 0 : -1}
-              onClick={() => onChange(item.id)}
-              onKeyDown={(event) => move(index, event)}
-              className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap font-semibold transition-colors ${
-                variant === 'underline' ? 'border-b-2 px-4 py-2.5' : `rounded-lg px-3 py-1.5 ${compact ? 'text-meta' : 'text-body'}`
-              } ${selected ? selectedClass : idleClass}`}
-            >
-              {Icon && <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
-              {item.label}
-            </button>
-          );
-        })}
+    <div ref={scrollerRef} className={`overflow-x-auto pb-1 ${grouped ? 'md:overflow-visible md:pb-0' : ''}`} data-roving-tabs={idPrefix}>
+      <div ref={tablist} className={`flex w-max min-w-full items-center gap-1 ${shell} ${grouped ? 'md:w-auto md:flex-wrap md:gap-x-4 md:gap-y-1' : ''}`} role="tablist" aria-label={label}>
+        {grouped
+          ? grouped.map((g) => (
+            <div key={g.label} role="presentation" data-tab-group={g.label} className="flex shrink-0 items-center gap-1">
+              <span aria-hidden="true" className="me-1 shrink-0 whitespace-nowrap text-caption font-semibold text-fg-subtle">{g.label}</span>
+              {g.tabs.map(renderTab)}
+            </div>
+          ))
+          : items.map(renderTab)}
       </div>
     </div>
   );

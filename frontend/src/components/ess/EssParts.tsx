@@ -5,7 +5,7 @@ import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { essActionsApi } from '@/src/api/ess';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { useLocale } from '@/src/contexts/LocaleContext';
-import { formatCalendarDate } from '@/src/lib/calendarDate';
+import { formatCalendarDateForLocale } from '@/src/lib/calendarDate';
 import { requestFailureReason } from '@/src/lib/requestFailure';
 
 /** Shared pieces of the employee self-service pages (/ess/leave, /ess/overtime, /ess/requests, /ess/documents). */
@@ -18,7 +18,7 @@ import { requestFailureReason } from '@/src/lib/requestFailure';
 /** A calendar date in the viewer's language (Gregorian, Western digits in Arabic, as the rest of the app). */
 export function useEssDate(): (value: string | null | undefined) => string {
   const { locale } = useLocale();
-  return useCallback((value) => (locale === 'ar' ? formatCalendarDate(value, 'ar-u-nu-latn') : formatCalendarDate(value)), [locale]);
+  return useCallback((value) => formatCalendarDateForLocale(value, locale), [locale]);
 }
 
 /** Submitting needs ess.write; ess.read alone (an HR Assistant, for one) can look but not submit. */

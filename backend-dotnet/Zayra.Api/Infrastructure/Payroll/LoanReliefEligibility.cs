@@ -15,7 +15,8 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// 2107 clearing path. The account's own balance still caps the total (<see cref="GlControlAccounts"/>).</para>
 ///
 /// <para>The evidence is the run's per-loan consumption witness (Process writes one for every loan it takes an instalment from) and the
-/// loan's live disbursement journal debiting the receivable account. A loan with no witness or no journal is never relieved.</para>
+/// loan's live disbursement journal debiting the receivable account (or, for a loan carried in by the opening-balance import, its
+/// opening journal net of any restatement). A loan with no witness or no journal is never relieved.</para>
 /// </summary>
 public static class LoanReliefEligibility
 {
@@ -36,9 +37,12 @@ public static class LoanReliefEligibility
         var booked = await ScopedBypass.TenantWide(db.FinanceGlEntries, tenantId,
                 "Which loans have a live disbursement journal on the receivable; read-only, restricted to this run's loans.")
             .AsNoTracking()
-            .Where(x => x.SourceModule == "Loan" && x.EventType == "Disbursement" && loanIds.Contains(x.SourceEntityId)
-                     && !x.IsReversed && x.ReversalOfEntryId == null && x.DebitAccount == loanReceivableLabel)
-            .Select(x => new { x.SourceEntityId, x.Amount })
+            .Where(x => x.SourceModule == "Loan" && loanIds.Contains(x.SourceEntityId) && !x.IsReversed && x.ReversalOfEntryId == null
+                     && ((x.EventType == "Disbursement" && x.DebitAccount == loanReceivableLabel)
+                      // A loan carried in by the opening-balance import is booked by its opening journal instead (DR 1400 / CR 3900,
+                      // a restatement down crediting 1400), which is its own debit on the receivable just as a disbursement is.
+                      || (x.EventType == GlEventTypes.OpeningBalance && (x.DebitAccount == loanReceivableLabel || x.CreditAccount == loanReceivableLabel))))
+            .Select(x => new { x.SourceEntityId, Amount = x.DebitAccount == loanReceivableLabel ? x.Amount : -x.Amount })
             .ToListAsync(ct);
         var journalByLoan = booked.GroupBy(x => x.SourceEntityId).ToDictionary(g => g.Key, g => g.Sum(x => x.Amount));
 

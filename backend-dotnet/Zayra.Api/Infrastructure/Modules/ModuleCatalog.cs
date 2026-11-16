@@ -325,7 +325,7 @@ public static class ModuleCatalog
                 "/api/setup-assistant", "/api/company-setup", "/api/localization", "/api/geo", "/api/capabilities", "/api/help-text", "/api/help-texts",
                 "/api/country-packs", "/api/statutory-rules", "/api/migrations", "/api/pricing",
                 "/api/features", "/api/admin", "/api/company-tax-policies",
-                "/api/company-compliance-profiles", "/api/finance/gl", "/api/finance/rates",
+                "/api/company-compliance-profiles", "/api/finance/gl", "/api/finance/rates", "/api/finance/opening-balance-journals",
             ],
             NavPaths = ["/setup", "/tenant-admin", "/tax-policies", "/compliance-profiles", "/opening-balances"],
         },

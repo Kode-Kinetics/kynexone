@@ -1,5 +1,8 @@
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -653,13 +656,21 @@ public sealed partial class MigrationImportController
     private async Task<string> UpsertLoanOpeningBalanceAsync(
         Dictionary<string, string> row, Guid tenantId, CutoverContext cutover, SectionResult result, CancellationToken ct)
     {
+        RequireOpeningJournalRole();
         var plan = await PlanLoanAsync(row, tenantId, cutover, ct);
-
-        var loanType = await ResolveLoanTypeAsync(plan, tenantId, ct);
+        await RefuseOwnRecordAsync(plan.Employee, plan.LoanNumber, tenantId, ct);
 
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(
             x => x.TenantId == tenantId && x.LoanNumber == plan.LoanNumber && !x.IsDeleted, ct);
         var created = loan is null;
+        // Every refusal is decided BEFORE anything changes (the guards, then the opening journal's own checks), so a refused row
+        // leaves the loan, its schedule and the ledger exactly as they were.
+        if (loan is not null && await GuardLoanRestatementAsync(loan, plan, tenantId, ct)) return "skipped";
+        var journal = await PrepareLoanJournalAsync(plan, loan, tenantId, ct);
+        await RequireLoanTypeAsync(plan, tenantId, ct);
+
+        var loanType = await ResolveLoanTypeAsync(plan, tenantId, ct);
+
         loan ??= new EmployeeLoan
         {
             TenantId = tenantId,
@@ -692,9 +703,167 @@ public sealed partial class MigrationImportController
         else { loan.UpdatedAtUtc = DateTime.UtcNow; loan.UpdatedBy = UserId(); }
 
         await RebuildLoanScheduleAsync(loan, plan, ct);
+        // The receivable on the ledger, as for a carried-in advance: DR 1400 / CR 3900 on the cutover date, only the difference on
+        // a restatement and nothing on a repeat, inside the section's locked, retry-safe transaction. Never exported to the ERP.
+        Zayra.Api.Infrastructure.Finance.OpeningBalanceJournal.Apply(_db, journal, loan.Id, plan.Currency, UserId(), User.Identity?.Name ?? string.Empty);
         await StampOriginAsync(OpeningBalanceEntityTypes.Loan, loan.Id, plan.Employee, plan.CutoverDate,
             plan.OutstandingBalance, plan.Currency, plan.SourceSystem, plan.SourceRecordId, cutover, ct);
         return created ? "created" : "updated";
+    }
+
+    /// <summary>The permission that lets the finance roles import the opening-balance debt sections (loans, advances).</summary>
+    internal const string OpeningBalanceImportPermission = "finance.opening_balances.import";
+    private static readonly string[] DebtSections = { "loans", "advances" };
+
+    private bool HasPermissionClaim(string permission) =>
+        User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Who the import has always admitted for every section: Admin, a holder of employees.bulk_import, or an HR Manager
+    /// (who holds it in every seeded bundle) unless they reach the import only as a finance importer.</summary>
+    private bool IsImporter =>
+        User.IsInRole("Admin") || HasPermissionClaim("employees.bulk_import")
+        || (User.IsInRole("HR Manager") && !HasPermissionClaim(OpeningBalanceImportPermission));
+
+    /// <summary>A finance importer: a finance role, or the opening-balance import permission.</summary>
+    /// <summary>A finance importer holds finance.opening_balances.import. Decided by the permission, never the role name, so a per-user
+    /// Deny of the key takes the access away (Admin holds it through its bundle like any other key).</summary>
+    private bool IsFinanceImporter => HasPermissionClaim(OpeningBalanceImportPermission);
+
+    /// <summary>
+    /// The package gate. An importer imports any section. A finance importer who is not also an importer imports the opening-balance
+    /// debt sections only (loans, advances); a package of theirs naming any other section is refused whole, before anything is
+    /// read, in both languages. Anyone else is forbidden.
+    /// </summary>
+    private ActionResult? ImportAccessRefusal(MigrationPackageRequest request)
+    {
+        if (IsImporter) return null;
+        if (!IsFinanceImporter) return Forbid();
+        var others = (request.Sections?.Keys ?? Enumerable.Empty<string>()).Where(k => !DebtSections.Contains(k, StringComparer.Ordinal)).ToList();
+        if (others.Count == 0) return null;
+        return StatusCode(StatusCodes.Status403Forbidden, new
+        {
+            error = "import_section_not_permitted",
+            message = $"Finance imports only the opening-balance loans and advances. These sections are imported by HR: {string.Join(", ", others)}. Nothing was imported.",
+            messageAr = $"تستورد المالية قروض وسلف الأرصدة الافتتاحية فقط. هذه الأقسام تستوردها الموارد البشرية: {string.Join(", ", others)}. لم يُستورد شيء.",
+            sections = others,
+        });
+    }
+
+    private void RequireOpeningJournalRole()
+    {
+        if (IsFinanceImporter) return;
+        throw new InvalidOperationException(
+            "[opening_balance_needs_finance] Loan and advance rows post an opening balance to the general ledger, so Finance (or an Admin) imports them; HR imports the rest of the package. " +
+            "/ ترحّل صفوف القروض والسلف رصيدًا افتتاحيًا إلى دفتر الأستاذ العام، لذا تستوردها المالية (أو مسؤول النظام)؛ وتستورد الموارد البشرية بقية الحزمة.");
+    }
+
+    /// <summary>The subject never decides: nobody imports an opening balance onto their own employee record, whatever their role.</summary>
+    /// The caller is "the same person" through any of the three links the rest of the product checks (BenefitsController):
+    /// the token's employee_id, Employee.UserAccountId, or a live employee_user_accounts row.
+    private async Task RefuseOwnRecordAsync(Employee employee, string reference, Guid tenantId, CancellationToken ct)
+    {
+        var me = UserId();
+        var own = (me is Guid id && (employee.UserAccountId == id
+                      || await _db.EmployeeUserAccounts.AsNoTracking().AnyAsync(x =>
+                             x.TenantId == tenantId && x.EmployeeId == employee.Id && x.UserId == id && !x.IsDeleted, ct)))
+                  || await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct) == employee.Id;
+        if (own)
+            throw new InvalidOperationException(
+                $"[opening_balance_own_record] {reference} is a debt of your own employee record, so you cannot import it. Another Finance user or an Admin must. " +
+                $"/ {reference} دين على سجلك الوظيفي، فلا يمكنك استيراده. يجب أن يستورده مستخدم آخر من المالية أو مسؤول النظام.");
+    }
+
+    /// <summary>A restatement never re-points a debt: the row must name the employee and company the existing record already has.</summary>
+    private static void RefuseRepointing(int? existingEmployee, Guid? existingCompany, Employee employee, string reference)
+    {
+        if (existingEmployee != employee.Id || existingCompany != employee.CompanyId)
+            throw new InvalidOperationException(
+                $"[opening_balance_repoint_refused] {reference} already belongs to a different employee or company than this row names, so it is not restated. A debt is never moved to another person or company by an import. " +
+                $"/ {reference} يتبع موظفًا أو شركة غير ما يذكره هذا السطر، فلا يُعاد بيانه. لا يُنقل دين إلى شخص أو شركة أخرى عبر الاستيراد.");
+    }
+
+    /// <summary>Forgiving part of a carried-in debt (restating it lower) is an Admin's decision; Finance is asked to get one.</summary>
+    private void RequireAdminToReduce(decimal current, decimal restated, string reference)
+    {
+        if (restated < current && !User.IsInRole("Admin"))
+            throw new InvalidOperationException(
+                $"[opening_balance_reduction_needs_admin] Restating {reference} from {current:N2} down to {restated:N2} forgives part of the debt, which needs an Admin. Ask an Admin to import this row. " +
+                $"/ إعادة بيان {reference} من {current:N2} إلى {restated:N2} تُسقط جزءًا من الدين، وهذا يتطلب مسؤول النظام. اطلب من مسؤول النظام استيراد هذا السطر.");
+    }
+
+    /// <summary>A loan type a row names but the tenant does not have is created only by an importer with HR's reach (Admin or
+    /// employees.bulk_import); a finance-only importer is refused the row and told which type to set up first.</summary>
+    private async Task RequireLoanTypeAsync(LoanPlan plan, Guid tenantId, CancellationToken ct)
+    {
+        if (User.IsInRole("Admin") || HasPermissionClaim("employees.bulk_import")) return;
+        if (await _db.LoanTypes.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.Code == plan.LoanTypeCode && !x.IsDeleted, ct)) return;
+        throw new InvalidOperationException(
+            $"[loan_type_missing] Loan type {plan.LoanTypeCode} does not exist, and a Finance import does not create loan types. Ask HR or an Admin to set up loan type {plan.LoanTypeCode}, then import this row again. " +
+            $"/ نوع القرض {plan.LoanTypeCode} غير موجود، واستيراد المالية لا ينشئ أنواع القروض. اطلب من الموارد البشرية أو مسؤول النظام إعداد نوع القرض {plan.LoanTypeCode} ثم أعد استيراد هذا السطر.");
+    }
+
+    /// <summary>
+    /// Whether an existing loan named by a package row may be restated, mirroring the advance guards: the import must have carried it
+    /// in (a loan disbursed in this product is not an opening balance, and restating it would debit 1400 a second time), it must
+    /// still be open (a loan a final settlement closed by moving its leftover to 1420 must never be reopened), and nothing may
+    /// have been recovered from it. Returns true when the row is an unchanged repeat of a loan something was recovered from (a
+    /// no-op); throws a coded, bilingual refusal otherwise. Nothing is changed either way.
+    /// </summary>
+    private async Task<bool> GuardLoanRestatementAsync(EmployeeLoan loan, LoanPlan plan, Guid tenantId, CancellationToken ct)
+    {
+        var origin = await _db.OpeningBalanceOrigins.AsNoTracking()
+            .Where(o => o.TenantId == tenantId && o.EntityType == OpeningBalanceEntityTypes.Loan && o.EntityId == loan.Id)
+            .Select(o => new { o.CarriedAmount }).FirstOrDefaultAsync(ct);
+        if (origin is null)
+            throw new InvalidOperationException(
+                $"[loan_not_carried_in] Loan {plan.LoanNumber} already exists and was not carried in by an opening-balance import, so it is not restated. Use a different loan number, or correct the loan from the loan screen. " +
+                $"/ القرض {plan.LoanNumber} موجود بالفعل ولم يُرحَّل باستيراد أرصدة افتتاحية، فلا يُعاد بيانه. استخدم رقم قرض آخر، أو صحّح القرض من شاشة القرض.");
+        RefuseRepointing(loan.EmployeeIntId, loan.CompanyId, plan.Employee, plan.LoanNumber);
+        if (loan.Status is not ("Active" or "Overdue"))
+            throw new InvalidOperationException(
+                $"[loan_not_active] Loan {plan.LoanNumber} is {loan.Status}, so it is not restated or reopened. " +
+                $"/ القرض {plan.LoanNumber} حالته {loan.Status}، فلا يُعاد بيانه ولا يُعاد فتحه.");
+        if (!await RecoveredSinceImportAsync(loan, ct))
+        {
+            RequireAdminToReduce(loan.OutstandingBalance, plan.OutstandingBalance, plan.LoanNumber);
+            return false;
+        }
+        // Once anything has been recovered, the package no longer describes the loan: it states the world at cutover and the loan
+        // has moved on. The same figures again are a no-op; different figures are refused.
+        if (origin.CarriedAmount == plan.OutstandingBalance && loan.ApprovedAmount == plan.OriginalAmount
+            && loan.InstallmentAmount == plan.InstallmentAmount && loan.ApprovedInstallments == plan.TotalInstallments)
+            return true;
+        throw new InvalidOperationException(
+            $"[loan_collected_by_payroll] Loan {plan.LoanNumber}: payroll has already collected from this loan, so its opening balance is not restated; adjust it from the loan screen. " +
+            $"/ القرض {plan.LoanNumber}: سبق أن حصّلت الرواتب من هذا القرض، فلا يُعاد بيان رصيده الافتتاحي؛ عدّله من شاشة القرض.");
+    }
+
+    /// <summary>The loan's opening journal as it would be posted for this row, checked (closed period, remapped chart) before the
+    /// loan is touched.</summary>
+    private Task<Zayra.Api.Infrastructure.Finance.OpeningBalanceJournal.Prepared> PrepareLoanJournalAsync(
+        LoanPlan plan, EmployeeLoan? loan, Guid tenantId, CancellationToken ct) =>
+        Zayra.Api.Infrastructure.Finance.OpeningBalanceJournal.PrepareAsync(_db,
+            new Zayra.Api.Infrastructure.Finance.OpeningBalanceDebt(tenantId, plan.Employee.CompanyId, "Loan",
+                Zayra.Api.Infrastructure.Payroll.GlControlAccounts.LoanReceivableDriver, loan?.Id ?? Guid.Empty, plan.LoanNumber, "Loan", plan.OutstandingBalance),
+            plan.CutoverDate, plan.Currency, ct);
+
+    /// <summary>Whether anything has been recovered from <paramref name="loan"/> since it was carried in: an instalment a live
+    /// (non-voided) payroll run took, an instalment stamped by a payroll run, a repayment recorded against it and not reversed, or
+    /// a move to the 1420 employee receivable by a final settlement (the balance dropped with nothing repaid, so original −
+    /// repaid − outstanding is no longer zero).</summary>
+    private async Task<bool> RecoveredSinceImportAsync(EmployeeLoan loan, CancellationToken ct)
+    {
+        var tenantId = loan.TenantId;
+        if (Math.Abs(loan.ApprovedAmount - loan.TotalRepaid - loan.OutstandingBalance) > 0.005m) return true;
+        if (await (from c in _db.PayrollRunConsumptions.AsNoTracking()
+                   join r in _db.PayrollRuns.AsNoTracking() on c.PayrollRunId equals r.Id
+                   where c.TenantId == tenantId && c.ArtifactType == PayrollConsumptionArtifacts.Loan && c.ArtifactId == loan.Id
+                         && r.TenantId == tenantId && r.Status != "Voided"
+                   select c.Id).AnyAsync(ct))
+            return true;
+        if (await _db.LoanInstallments.AsNoTracking().AnyAsync(i => i.TenantId == tenantId && i.LoanId == loan.Id && i.PayrollRunId != null, ct))
+            return true;
+        return await _db.LoanRepayments.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.LoanId == loan.Id && !x.IsReversed, ct);
     }
 
     private async Task<LoanType> ResolveLoanTypeAsync(LoanPlan plan, Guid tenantId, CancellationToken ct)
@@ -768,9 +937,9 @@ public sealed partial class MigrationImportController
                 };
                 _db.LoanInstallments.Add(inst);
             }
-            // An instalment this product has ALREADY collected is never rewritten by a re-import. The
-            // package states the world as at cutover; payroll has moved on since, and re-running the
-            // same file must not un-pay a month someone was actually deducted for.
+            // An instalment this product has ALREADY collected is never rewritten. (A loan payroll has collected from is no
+            // longer restated at all: UpsertLoanOpeningBalanceAsync skips the same figures and refuses different ones. This
+            // stays as the belt to that brace.)
             else if (inst.Status == "Paid" && inst.PayrollRunId is not null)
             {
                 continue;
@@ -834,30 +1003,17 @@ public sealed partial class MigrationImportController
     private async Task<string> UpsertAdvanceOpeningBalanceAsync(
         Dictionary<string, string> row, Guid tenantId, CutoverContext cutover, SectionResult result, CancellationToken ct)
     {
+        RequireOpeningJournalRole();
         var plan = await PlanAdvanceAsync(row, tenantId, cutover, ct);
+        await RefuseOwnRecordAsync(plan.Employee, plan.AdvanceNumber, tenantId, ct);
 
         var advance = await _db.SalaryAdvances.FirstOrDefaultAsync(
             x => x.TenantId == tenantId && x.AdvanceNumber == plan.AdvanceNumber && !x.IsDeleted, ct);
         var created = advance is null;
-        // An existing advance is restated only when this import carried it in, payroll has not collected from it, and it is still
-        // Active. Anything else is someone's live money: a native advance (approved and paid here), one payroll has taken an
-        // instalment from (restating it would forget the instalment), or one already Closed, Settled or Rejected (which a
-        // restatement must never reopen). The row is refused with a code; nothing about the advance changes.
-        if (advance is not null)
-        {
-            var carriedIn = await _db.OpeningBalanceOrigins.AsNoTracking().AnyAsync(
-                o => o.TenantId == tenantId && o.EntityType == OpeningBalanceEntityTypes.Advance && o.EntityId == advance.Id, ct);
-            if (!carriedIn)
-                throw new InvalidOperationException(
-                    $"[advance_not_carried_in] Advance {plan.AdvanceNumber} already exists and was not carried in by an opening-balance import, so it is not restated. Use a different advance number, or correct the advance in Salary Advances.");
-            if (await _db.PayrollRunConsumptions.AsNoTracking().AnyAsync(
-                    c => c.TenantId == tenantId && c.ArtifactType == PayrollConsumptionArtifacts.Advance && c.ArtifactId == advance.Id, ct))
-                throw new InvalidOperationException(
-                    $"[advance_collected_by_payroll] Advance {plan.AdvanceNumber} has already had an instalment collected by payroll, so its opening balance can no longer be restated. Correct it in Salary Advances.");
-            if (advance.Status != "Active")
-                throw new InvalidOperationException(
-                    $"[advance_not_active] Advance {plan.AdvanceNumber} is {advance.Status}, so it is not restated or reopened.");
-        }
+        // Every refusal is decided BEFORE anything changes (the guards, then the opening journal's own checks), so a refused row
+        // leaves the advance, its schedule and the ledger exactly as they were.
+        if (advance is not null) await GuardAdvanceRestatementAsync(advance, plan, tenantId, ct);
+        var journal = await PrepareAdvanceJournalAsync(plan, advance, tenantId, ct);
         advance ??= new SalaryAdvance
         {
             TenantId = tenantId,
@@ -881,9 +1037,121 @@ public sealed partial class MigrationImportController
         if (created) _db.SalaryAdvances.Add(advance);
         else { advance.UpdatedAtUtc = DateTime.UtcNow; advance.UpdatedBy = UserId(); }
 
+        // The remaining instalments, so payroll keeps deducting where the previous system stopped, and the receivable on the
+        // ledger (DR 1410 / CR 3900 on the cutover date, only the difference on a restatement), so the instalments payroll
+        // credits to 1410 relieve a debit that exists. Both run inside the section's locked, retry-safe transaction.
+        await RebuildAdvanceScheduleAsync(advance, plan, ct);
+        Zayra.Api.Infrastructure.Finance.OpeningBalanceJournal.Apply(_db, journal, advance.Id, plan.Currency, UserId(), User.Identity?.Name ?? string.Empty);
+
         await StampOriginAsync(OpeningBalanceEntityTypes.Advance, advance.Id, plan.Employee, plan.CutoverDate,
             plan.OutstandingBalance, plan.Currency, plan.SourceSystem, plan.SourceRecordId, cutover, ct);
         return created ? "created" : "updated";
+    }
+
+    /// <summary>
+    /// An existing advance is restated only when this import carried it in, payroll has not collected from it, and it is still
+    /// Active. Anything else is someone's live money: a native advance (approved and paid here), one payroll has taken an
+    /// instalment from (restating it would forget the instalment), or one already Closed, Settled or Rejected (which a restatement
+    /// must never reopen). The row is refused with a code; nothing about the advance changes.
+    /// </summary>
+    private async Task GuardAdvanceRestatementAsync(SalaryAdvance advance, AdvancePlan plan, Guid tenantId, CancellationToken ct)
+    {
+        var carriedIn = await _db.OpeningBalanceOrigins.AsNoTracking().AnyAsync(
+            o => o.TenantId == tenantId && o.EntityType == OpeningBalanceEntityTypes.Advance && o.EntityId == advance.Id, ct);
+        if (!carriedIn)
+            throw new InvalidOperationException(
+                $"[advance_not_carried_in] Advance {plan.AdvanceNumber} already exists and was not carried in by an opening-balance import, so it is not restated. Use a different advance number, or correct the advance in Salary Advances.");
+        RefuseRepointing(advance.EmployeeIntId, advance.CompanyId, plan.Employee, plan.AdvanceNumber);
+        if (await _db.PayrollRunConsumptions.AsNoTracking().AnyAsync(
+                c => c.TenantId == tenantId && c.ArtifactType == PayrollConsumptionArtifacts.Advance && c.ArtifactId == advance.Id, ct))
+            throw new InvalidOperationException(
+                $"[advance_collected_by_payroll] Advance {plan.AdvanceNumber} has already had an instalment collected by payroll, so its opening balance can no longer be restated. Correct it in Salary Advances.");
+        if (advance.Status != "Active")
+            throw new InvalidOperationException(
+                $"[advance_not_active] Advance {plan.AdvanceNumber} is {advance.Status}, so it is not restated or reopened.");
+        // A final settlement moved (part of) it to the 1420 employee receivable: the balance dropped with nothing repaid, and the
+        // move is on the advance's own trail. Restating it would put the debt back on the advance while 1420 still carries it.
+        if (Math.Abs(advance.ApprovedAmount - advance.TotalRepaid - advance.OutstandingBalance) > 0.005m
+            || await _db.AdvanceAuditLogs.AsNoTracking().AnyAsync(
+                l => l.TenantId == tenantId && l.AdvanceId == advance.Id && l.Action == Zayra.Api.Infrastructure.Payroll.AdvanceResidualAudit.Action, ct))
+            throw new InvalidOperationException(
+                $"[advance_moved_to_employee_receivable] Advance {plan.AdvanceNumber} has been moved (in part) to the 1420 employee receivable by a final settlement, so its opening balance is not restated. Correct it in Salary Advances. " +
+                $"/ نُقلت السلفة {plan.AdvanceNumber} (جزئيًا) إلى ذمم الموظفين المدينة 1420 بتسوية نهائية، فلا يُعاد بيان رصيدها الافتتاحي. صحّحها من شاشة السلف.");
+        RequireAdminToReduce(advance.OutstandingBalance, plan.OutstandingBalance, plan.AdvanceNumber);
+    }
+
+    private Task<Zayra.Api.Infrastructure.Finance.OpeningBalanceJournal.Prepared> PrepareAdvanceJournalAsync(
+        AdvancePlan plan, SalaryAdvance? advance, Guid tenantId, CancellationToken ct) =>
+        Zayra.Api.Infrastructure.Finance.OpeningBalanceJournal.PrepareAsync(_db,
+            new Zayra.Api.Infrastructure.Finance.OpeningBalanceDebt(tenantId, plan.Employee.CompanyId, "Advance",
+                Zayra.Api.Infrastructure.Payroll.GlControlAccounts.AdvanceReceivableDriver, advance?.Id ?? Guid.Empty, plan.AdvanceNumber, "Advance", plan.OutstandingBalance),
+            plan.CutoverDate, plan.Currency, ct);
+
+    /// <summary>
+    /// The advance's schedule, instalment 1 to N, exactly as <see cref="RebuildLoanScheduleAsync"/> builds a loan's: the first
+    /// <c>InstallmentsPaid</c> settled in the previous system (Paid, no payroll run), the rest Pending from the first unpaid due
+    /// date, the last absorbing the rounding so the Pending rows sum to the carried outstanding balance. A restatement rewrites
+    /// the rows in place (it is only allowed before payroll has collected anything) and drops rows beyond a shorter schedule.
+    /// </summary>
+    private async Task RebuildAdvanceScheduleAsync(SalaryAdvance advance, AdvancePlan plan, CancellationToken ct)
+    {
+        var existing = await _db.AdvanceInstallments
+            .Where(x => x.TenantId == advance.TenantId && x.AdvanceId == advance.Id)
+            .ToListAsync(ct);
+        var byNumber = existing.ToDictionary(x => x.InstallmentNumber);
+
+        // Both halves sum to the cent and no row is zero: the instalments already repaid share TotalRepaid (each rounded down to
+        // the cent, the last taking the remainder: 700 over three is 233.33, 233.33, 233.34, never 699.99), and the instalments still
+        // to pay are the instalment amount with the last taking the remainder; when that would leave the last row at zero or
+        // below (200 over three at 100), the outstanding balance is shared the same way as the repaid part (66.66, 66.66, 66.68).
+        var paidAmounts = SplitToTheCent(plan.TotalRepaid, plan.InstallmentsPaid);
+        var unpaidCount = plan.TotalInstallments - plan.InstallmentsPaid;
+        var unpaidAmounts = Enumerable.Repeat(plan.InstallmentAmount, unpaidCount).ToArray();
+        if (unpaidCount > 0)
+        {
+            unpaidAmounts[unpaidCount - 1] = plan.OutstandingBalance - (unpaidCount - 1) * plan.InstallmentAmount;
+            if (unpaidAmounts[unpaidCount - 1] <= 0m) unpaidAmounts = SplitToTheCent(plan.OutstandingBalance, unpaidCount);
+        }
+
+        for (var n = 1; n <= plan.TotalInstallments; n++)
+        {
+            var isPaid = n <= plan.InstallmentsPaid;
+            var unpaidIndex = n - plan.InstallmentsPaid - 1; // 0-based position among unpaid rows
+            var dueDate = plan.FirstUnpaidDueDate.AddMonths(unpaidIndex);
+            var amountDue = isPaid ? paidAmounts[n - 1] : unpaidAmounts[unpaidIndex];
+
+            if (!byNumber.TryGetValue(n, out var inst))
+            {
+                inst = new AdvanceInstallment { TenantId = advance.TenantId, AdvanceId = advance.Id, InstallmentNumber = n };
+                _db.AdvanceInstallments.Add(inst);
+            }
+            // Never rewrite an instalment this product collected (the restatement guard already refuses such an advance).
+            else if (inst.Status == "Paid" && inst.PayrollRunId is not null)
+            {
+                continue;
+            }
+
+            inst.DueDate = dueDate;
+            inst.AmountDue = amountDue;
+            inst.AmountPaid = isPaid ? amountDue : 0m;
+            inst.Status = isPaid ? "Paid" : "Pending";
+            inst.PaidDate = isPaid ? dueDate : null;
+            inst.PayrollRunId = null;
+        }
+
+        foreach (var surplus in existing.Where(x => x.InstallmentNumber > plan.TotalInstallments && x.PayrollRunId is null))
+            _db.AdvanceInstallments.Remove(surplus);
+    }
+
+    /// <summary><paramref name="total"/> over <paramref name="count"/> rows, each rounded down to the cent, the last taking the
+    /// remainder, so the rows sum exactly to the total.</summary>
+    private static decimal[] SplitToTheCent(decimal total, int count)
+    {
+        if (count <= 0) return Array.Empty<decimal>();
+        var each = Math.Floor(total / count * 100m) / 100m;
+        var rows = Enumerable.Repeat(each, count).ToArray();
+        rows[count - 1] = total - each * (count - 1);
+        return rows;
     }
 
     // ── eosbOpeningProvision ────────────────────────────────────────────────────────────────────────

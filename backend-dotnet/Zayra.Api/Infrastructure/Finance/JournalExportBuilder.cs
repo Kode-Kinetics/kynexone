@@ -49,6 +49,16 @@ public sealed class JournalExportSelection
     public int PreviouslyConfirmedExcludedCount { get; init; }
     public decimal PreviouslyConfirmedExcludedTotal { get; init; }
     public IReadOnlyList<Guid> PreviouslyConfirmedExportIds { get; init; } = Array.Empty<Guid>();
+    /// <summary>Opening-balance rows (<see cref="GlEventTypes.OpeningBalance"/>: balances carried in from the client's previous
+    /// system) left out of every ERP export, because the client's ERP already holds those balances. Reported, never silent.</summary>
+    public int OpeningBalanceExcludedCount { get; init; }
+    /// <summary>What the excluded opening lines put on the receivables: increases (the receivable debited, opening balance equity
+    /// credited) less reductions (a restatement down). Never the gross sum of the lines, which would count a restatement twice.</summary>
+    public decimal OpeningBalanceExcludedNet { get; init; }
+    /// <summary>The excluded opening lines that debit a receivable (opening balances carried in, restatements up).</summary>
+    public decimal OpeningBalanceExcludedDebits { get; init; }
+    /// <summary>The excluded opening lines that credit a receivable (restatements down).</summary>
+    public decimal OpeningBalanceExcludedCredits { get; init; }
 }
 
 /// <summary>Which ERP-confirmed rows the selection must leave out. <see cref="ExceptExportId"/> is the one
@@ -250,6 +260,28 @@ public static class JournalExportBuilder
         if (!string.IsNullOrWhiteSpace(filter.Currency))
             scoped = scoped.Where(e => string.Equals(e.Currency, filter.Currency, StringComparison.OrdinalIgnoreCase)).ToList();
 
+        // OPENING BALANCES NEVER GO TO THE ERP. A balance carried in from the client's previous system (the opening journal of an
+        // imported loan or advance, against 3900 Opening Balance Equity) is already in the client's ERP, which ran alongside
+        // that system: sending it would book the receivable twice. The ledger keeps the line (the receivable tie-outs need it);
+        // the export leaves it out and says how many and how much. The provision catch-up booked to 3900 is not affected: it is
+        // part of the Lock journal (EosbProvisionAccrual / LeaveProvisionAccrual) and is this product's own accrual.
+        var openingBalances = scoped.Where(e => e.EventType == GlEventTypes.OpeningBalance).ToList();
+        decimal openingDebits = 0m, openingCredits = 0m;
+        if (openingBalances.Count > 0)
+        {
+            scoped = scoped.Where(e => e.EventType != GlEventTypes.OpeningBalance).ToList();
+            // A line increases the receivable when opening balance equity is on its credit side, and reduces it when equity is on
+            // its debit side (OpeningBalanceJournal posts only those two shapes), resolved per company as the writer resolved it.
+            foreach (var company in openingBalances.GroupBy(e => e.CompanyId))
+            {
+                var glCtx = await Payroll.GlAccountResolver.LoadAsync(db, tenantId, company.Key, ct);
+                var equity = Payroll.GlAccountResolver.AccountLabel(Payroll.ProvisionCatchUpRoute.EquityDriverKey, glCtx);
+                foreach (var line in company)
+                    if (line.DebitAccount == equity) openingCredits += line.Amount;
+                    else openingDebits += line.Amount;
+            }
+        }
+
         // THE DOUBLE-POST GUARD. A row an ERP has already confirmed is in the client's books; sending it
         // again in a re-export of the month (taken because one late loan posted) books it twice. Applied
         // BEFORE reversal-pair suppression so a confirmed original whose contra arrived later is never
@@ -313,6 +345,10 @@ public static class JournalExportBuilder
             PreviouslyConfirmedExcludedCount = confirmedExcluded.Count,
             PreviouslyConfirmedExcludedTotal = confirmedExcluded.Sum(e => e.Amount),
             PreviouslyConfirmedExportIds = confirmedExportIds,
+            OpeningBalanceExcludedCount = openingBalances.Count,
+            OpeningBalanceExcludedNet = openingDebits - openingCredits,
+            OpeningBalanceExcludedDebits = openingDebits,
+            OpeningBalanceExcludedCredits = openingCredits,
         };
     }
 

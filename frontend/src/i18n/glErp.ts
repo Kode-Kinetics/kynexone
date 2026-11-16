@@ -31,6 +31,8 @@ const ar: Record<string, string> = {
   'Check only: nothing has been saved yet.': 'تحقق فقط: لم يُحفظ أي شيء بعد.',
   '{count} ledger rows already posted in your ERP are left out, so nothing is posted twice.':
     'تم استبعاد {count} من قيود الأستاذ المرحّلة مسبقًا في نظامك، حتى لا يُرحّل شيء مرتين.',
+  '{count} opening-balance ledger rows are not exported (net {net}: {debits} added to receivables, {credits} reduced): your ERP already holds those balances from your previous system.':
+    'لم يُصدَّر {count} من قيود الأرصدة الافتتاحية (الصافي {net}: {debits} إضافة إلى الذمم المدينة، {credits} تخفيض): نظامك المحاسبي يحتفظ بهذه الأرصدة بالفعل من نظامك السابق.',
   '{journals} journals, debits {debits}, credits {credits}': '{journals} قيود، المدين {debits}، الدائن {credits}',
   'Download file': 'تنزيل الملف',
   'Export history for this month': 'سجل التصدير لهذا الشهر',

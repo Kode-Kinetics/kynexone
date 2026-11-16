@@ -51,14 +51,16 @@ type Mock = {
   records?: unknown[];
 };
 
-async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'dark'; locale?: 'en' | 'ar' } = {}) {
+async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'dark'; locale?: 'en' | 'ar'; stages?: 'open' | 'folded' | 'default' } = {}) {
   let processingCalls = 0;
-  await page.addInitScript(([th, locale]) => {
+  await page.addInitScript(([th, locale, stages]) => {
     localStorage.setItem('zayra_access_token', 'fixture-token');
     localStorage.setItem('zayra_refresh_token', 'fixture-refresh');
     localStorage.setItem('kynexone.theme', th);
     if (locale) localStorage.setItem('kynexone-locale-choice-v2', locale);
-  }, [opts.theme ?? 'light', opts.locale ?? ''] as const);
+    // The stage cards start folded once a run is chosen; the stage assertions below read them, so they open them (the folded default has its own tests).
+    if (stages !== 'default') localStorage.setItem('kynexone-payroll-pipeline-stages', stages);
+  }, [opts.theme ?? 'light', opts.locale ?? '', opts.stages ?? 'open'] as const);
   await page.route('**/api/**', (route: Route) => {
     const req = route.request();
     const p = new URL(req.url()).pathname;
@@ -201,6 +203,8 @@ test.describe('payroll run pipeline', () => {
     await expect(summary.getByTestId('lock-summary-excluded')).toContainText('2');
     await expect(summary.getByTestId('lock-summary-overrides')).toContainText('1');
     await expect(summary.getByTestId('lock-summary-currency')).toContainText('SAR');
+    // Locking publishes the payslips to the employees, and the dialog says so before it happens.
+    await expect(summary.getByTestId('lock-summary-payslips')).toContainText('Locking also publishes the payslips to the employees');
 
     await dialog.getByRole('button', { name: 'Cancel' }).click();
     await expect(dialog).toHaveCount(0);
@@ -209,6 +213,15 @@ test.describe('payroll run pipeline', () => {
     await page.getByTestId('pipeline-next-action').click();
     await page.getByRole('dialog').getByRole('button', { name: 'Lock run' }).click();
     await expect.poll(() => locked).toBe(1);
+  });
+
+  test('[ar] the Lock dialog says in Arabic that locking publishes the payslips to the employees', async ({ page }) => {
+    await open(page, `/payroll?tab=runs&run=${RUN_APPROVED}`, { locale: 'ar' });
+    await page.getByTestId('pipeline-next-action').click();
+    const note = page.getByRole('dialog').getByTestId('lock-summary-payslips');
+    await expect(note).toBeVisible();
+    await expect(note).toContainText('قسائم الرواتب للموظفين');
+    await expect(note).not.toContainText(/Locking|Self-Service/);
   });
 
   test('Lock is withheld, with a reason, when the company currency cannot be confirmed', async ({ page }) => {
@@ -386,6 +399,58 @@ test.describe('Paid / Exported names the file that exists (a company whose bank 
       await expect(paidStage(page)).toContainText(WORDS[locale].bankFile);
       await expect(page.getByTestId('stage-reason-paid')).toHaveCount(0);
       await shot(page, `pipeline-bank-file-${locale}`);
+    });
+  }
+});
+
+test.describe('Paid / Exported waits for the bank to confirm the payments', () => {
+  // RUN_PREV is Locked and its bank file exists, but the bank has spoken about 2 of the 5 payments.
+  const BATCH = {
+    id: 'b3333333-3333-4333-8333-333333333333', payrollRunId: RUN_PREV, batchNumber: 'PB-2026-09-0003', paymentMethod: 'WPS',
+    totalAmount: 90000, currency: 'SAR', status: 'Created', wpsStatus: 'Generated', effectiveWpsStatus: 'Generated',
+    wpsStatusLabel: 'Generated (file ready for the bank)', wpsStatusChangedAtUtc: '2026-09-30T08:00:00Z',
+    wpsSubmissionReference: null, wpsRejectionReason: null, createdAtUtc: '2026-09-29T08:00:00Z', isSaudi: true,
+    bankFileAvailable: true, bankFileGenerated: true,
+    unconfirmedPayments: { count: 3, total: 54000 }, confirmationCoverage: 0.4,
+  };
+  const WORDS = {
+    en: {
+      waiting: 'Bank file ready — waiting for bank confirmation (2 of 5)',
+      title: 'Confirm payments with the bank',
+      action: 'Open Payment Tracking',
+      done: 'Done',
+      complete: 'All stages are complete.',
+    },
+    ar: {
+      waiting: 'الملف البنكي جاهز — بانتظار تأكيد البنك (2 من 5)',
+      title: 'تأكيد المدفوعات مع البنك',
+      action: 'فتح تتبع المدفوعات',
+      done: 'مكتمل',
+      complete: 'اكتملت كل المراحل.',
+    },
+  } as const;
+  const paidStage = (page: Page) => page.getByTestId('pipeline-stages').locator('> li[data-stage="paid"]');
+
+  for (const locale of ['en', 'ar'] as const) {
+    test(`[${locale}] a bank file the bank has not fully confirmed is Current, not Done, and points at Payment Tracking`, async ({ page }) => {
+      await open(page, `/payroll?tab=runs&run=${RUN_PREV}`, { batches: [BATCH], locale });
+      await expect(paidStage(page)).toHaveAttribute('data-state', 'current');
+      await expect(page.getByTestId('stage-reason-paid')).toHaveText(WORDS[locale].waiting);
+      await expect(paidStage(page)).not.toContainText(WORDS[locale].done);
+      await expect(page.getByTestId('pipeline-next-title')).toHaveText(WORDS[locale].title);
+      await expect(page.getByTestId('pipeline-next-title')).not.toHaveText(WORDS[locale].complete);
+      await expect(page.getByTestId('pipeline-next-reason')).toHaveText(WORDS[locale].waiting);
+      await expect(page.getByTestId('pipeline-next-action')).toHaveText(WORDS[locale].action);
+      await page.getByTestId('pipeline-next-action').click();
+      await expect(page).toHaveURL(/tab=payment-tracking/);
+    });
+
+    test(`[${locale}] the stage is Done once every payment is confirmed`, async ({ page }) => {
+      await open(page, `/payroll?tab=runs&run=${RUN_PREV}`, { batches: [{ ...BATCH, unconfirmedPayments: { count: 0, total: 0 }, confirmationCoverage: 1 }], locale });
+      await expect(paidStage(page)).toHaveAttribute('data-state', 'done');
+      await expect(paidStage(page)).toContainText(WORDS[locale].done);
+      await expect(page.getByTestId('stage-reason-paid')).toHaveCount(0);
+      await expect(page.getByTestId('pipeline-next-title')).toHaveText(WORDS[locale].complete);
     });
   }
 });
