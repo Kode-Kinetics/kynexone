@@ -81,7 +81,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         var accessFilter = Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.ParseFilter(access);
         // "Access stopped" also lists former employees whose access ended (EmployeeAccessStates.IncludesFormerEmployees).
         var includeFormer = Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.IncludesFormerEmployees(accessFilter);
-        var query = _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted && (includeFormer || !ExitEmployeeStatuses.Exit.Contains(x.Status)));
+        var query = _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted && (includeFormer || !ExitEmployeeStatuses.ExitLower.Contains(x.Status.ToLower())));
         query = EmployeeSearch.Apply(query, _db.Branches, search, includeSensitive);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(x => x.Department == department);
@@ -91,7 +91,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         query = await Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId, accessFilter, cancellationToken);
 
         var total = await query.CountAsync(cancellationToken);
-        var items = await query.OrderBy(x => x.EmployeeCode).Skip((page - 1) * pageSize).Take(pageSize)
+        var items = await query.OrderBy(x => x.EmployeeCode).Skip(Paging.Skip(page, pageSize)).Take(pageSize)
             .Select(x => new EmployeeListItemDto(x.Id, x.EmployeeCode, x.FullName, x.ArabicName, x.Department, x.Designation, string.IsNullOrEmpty(x.Branch) ? (_db.Branches.Where(b => b.Id == x.BranchId).Select(b => b.NameEn).FirstOrDefault() ?? string.Empty) : x.Branch, x.ManagerEmployeeId, x.Status, x.ProfileCompletenessScore, x.VisaExpiryDate, x.PassportExpiryDate, x.ReadinessState, x.ActivationBlockersCount, x.PublicId))
             .ToListAsync(cancellationToken);
         items = await Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.DecorateAsync(_db, tenantId, items, cancellationToken);
@@ -564,6 +564,13 @@ public class EmployeeManagementService : IEmployeeManagementService
             && await SettledServicePeriod.LatestSettledLastWorkingDayAsync(
                    _db, tenantId, id, DateOnly.FromDateTime(employee.JoiningDate), ct) is DateOnly settledThrough)
             throw new SettledServiceReactivationException(settledThrough);
+        // PLAN LIMIT: a change INTO a status the plan counts, from one it does not, adds a person to the head count the same way creating
+        // one does, so it meets the same limit (EmployeeSeatLimit, one list for both). A change between two counted statuses adds nobody.
+        // Checked before the readiness gate (a cheap refusal that needs no snapshot) and under a lock on the plan row, so two changes
+        // queue instead of both passing the same count.
+        if (EmployeeSeatLimit.IsCounted(request.Status) && !EmployeeSeatLimit.IsCounted(oldStatus)
+            && await EmployeeSeatLimit.ReachedAsync(_db, tenantId, ct, lockSubscription: true) is { } limitReached)
+            throw new EmployeeLimitReachedException(limitReached.Count, limitReached.Max);
         // READINESS GATE (§5.2/§5.3): fire ONLY when becoming Active from a NON-occupying status —
         // first-time activations and rehires (Draft/Invited/Terminated/…→Active). Runs BEFORE any
         // mutation so a block leaves the record untouched (the guard is a pure read; it throws
@@ -616,7 +623,10 @@ public class EmployeeManagementService : IEmployeeManagementService
             or EmployeeStatuses.Inactive
             or EmployeeStatuses.Terminated
             or EmployeeStatuses.Archived
-            or EmployeeStatuses.Exited;
+            or EmployeeStatuses.Exited
+            // Retired and Deceased end employment as surely as Terminated does: the login and its tokens close with the status.
+            or "Retired"
+            or "Deceased";
         var invalidatedLinks = 0;
         var invalidatedUsers = 0;
         var invalidatedPasswordResets = 0;
@@ -664,7 +674,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // Normalised ONCE, here, so the row we persist and the audit evidence we write are the same
         // string. Serialising request.SeparationType instead logged "ARTICLE80" against a stored
         // "Article80" — the evidence line for a gratuity-determining fact not matching the fact.
-        var separationType = NormalizeSeparationType(request.SeparationType);
+        var separationType = NormalizeSeparationType(SeparationTypeImpliedByStatus(request.Status) ?? request.SeparationType);
         var cancelledSeparationIds = new List<Guid>();
         // Deliberately NOT conditioned on oldStatus. An earlier revision also required the PREVIOUS
         // status to be non-exit, which quietly excluded the exact population this fix exists for:
@@ -739,7 +749,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 // that /final-settlement rejects as not_a_leaver while the live lookup makes the corrected
                 // retry a no-op. Refused rather than persisted.
                 if (request.EffectiveDate < DateOnly.FromDateTime(employee.JoiningDate))
-                    throw new InvalidOperationException(
+                    throw new EmployeeStatusChangeRefusedException(
                         $"The effective date {request.EffectiveDate:yyyy-MM-dd} precedes this employee's "
                         + $"joining date {employee.JoiningDate:yyyy-MM-dd}. It becomes the last working day "
                         + "and decides the end-of-service award, so it is refused rather than persisted.");
@@ -826,7 +836,7 @@ public class EmployeeManagementService : IEmployeeManagementService
             // through the flow that owns it.
             var blockedOpen = open.Where(o => liveSettlementOffboardingIds.Contains(o.Id)).ToList();
             if (blockedOpen.Count > 0)
-                throw new InvalidOperationException(
+                throw new EmployeeStatusChangeRefusedException(
                     "This employee has an open separation with a live final settlement against it "
                     + $"(offboarding {blockedOpen[0].Id}). Cancelling it here would strand that settlement, "
                     + "and leaving it open would let the next termination settle a NEW service period "
@@ -1394,6 +1404,16 @@ public class EmployeeManagementService : IEmployeeManagementService
             return false;
         }
     }
+
+    /// <summary>
+    /// The separation type a STATUS already states. A retirement is a Retirement and a death is a Death, whatever the caller sent
+    /// (the status PATCH route sends none), instead of defaulting to Termination. These are existing members of
+    /// <see cref="AllowedSeparationTypes"/>. Any other status states nothing and the request's own value (or the default) applies.
+    /// </summary>
+    private static string? SeparationTypeImpliedByStatus(string status) =>
+        string.Equals(status, "Retired", StringComparison.OrdinalIgnoreCase) ? "Retirement"
+        : string.Equals(status, "Deceased", StringComparison.OrdinalIgnoreCase) ? "Death"
+        : null;
 
     public static string NormalizeSeparationType(string? requested)
     {

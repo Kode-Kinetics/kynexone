@@ -9,20 +9,24 @@ namespace Zayra.Api.Infrastructure.Entitlements;
 
 /// <summary>
 /// Who could confirm a cash allowance that is waiting for Finance (G-011). It asks the SAME three questions the confirm endpoint asks of its caller
-/// (<c>POST /api/entitlements/components/{code}/confirm</c>): does the login hold <c>payroll.approve</c>, does it have access to every company (the
-/// definition is for the whole group), and is it a different person from the one who added the allowance (maker is not checker). A login that
-/// cannot sign in (inactive, suspended, deleted) is not told. Read-only: it grants nothing and changes no decision of the endpoint.
+/// (<c>POST /api/entitlements/components/{code}/confirm</c>): does the login hold <c>payroll.approve</c>, does it have access to every company (a group
+/// allowance) or to the one company a company's own allowance belongs to (<c>companyId</c>; a sister company's Finance is never told it exists), and is it
+/// a different person from whoever added the allowance or changed it since Finance last confirmed it (maker is not checker). A login that cannot sign in (inactive, suspended, deleted) is not told.
+/// Read-only: it grants nothing and changes no decision of the endpoint.
 /// </summary>
 public static class CashAllowanceFinanceRecipients
 {
     /// <summary>The permission that makes someone "Finance" for cash allowances (the confirm endpoint's own).</summary>
     public const string ConfirmPermission = "payroll.approve";
 
-    public static async Task<IReadOnlyList<Guid>> ResolveAsync(ZayraDbContext db, Guid tenantId, Guid? makerUserId, CancellationToken ct)
+    /// <param name="cannotConfirm">Everyone else the confirm endpoint refuses for this allowance: whoever added it or changed it since Finance last confirmed it.</param>
+    public static async Task<IReadOnlyList<Guid>> ResolveAsync(ZayraDbContext db, Guid tenantId, Guid? makerUserId, CancellationToken ct, Guid? companyId = null,
+        IReadOnlyCollection<Guid>? cannotConfirm = null)
     {
         const string why = "Cash allowance Finance notice: find the logins that hold the confirm permission with group scope, whatever the adder's company scope.";
+        var excluded = (cannotConfirm ?? []).Concat(makerUserId is Guid maker ? [maker] : []).Distinct().ToList();
         var users = await ScopedBypass.TenantWide(db.Users, tenantId, why).AsNoTracking()
-            .Where(u => !u.IsDeleted && u.IsActive && u.Status == "Active" && (makerUserId == null || u.Id != makerUserId))
+            .Where(u => !u.IsDeleted && u.IsActive && u.Status == "Active" && !excluded.Contains(u.Id))
             .Include(u => u.UserRoles).ThenInclude(r => r.Role).ThenInclude(r => r!.RolePermissions).ThenInclude(p => p.Permission)
             .Include(u => u.PermissionOverrides).Include(u => u.EntityAccesses).Include(u => u.EmployeeUserAccounts)
             .AsSplitQuery().ToListAsync(ct);
@@ -36,7 +40,9 @@ public static class CashAllowanceFinanceRecipients
             if (!AuthService.GetPermissions(user).Contains(ConfirmPermission, StringComparer.OrdinalIgnoreCase)) continue;
             var scope = EntityScopeClaims.Resolve(user.IsGroupScope,
                 user.EntityAccesses.Where(g => g.IsActive).Select(g => new EntityAccessGrant(g.CompanyId, g.Role, g.GrantMode)).ToArray(), companies);
-            if (scope.Mode != EntityScopeModes.Group) continue;
+            var reaches = scope.Mode == EntityScopeModes.Group
+                || (companyId is Guid owner && scope.Mode == EntityScopeModes.Companies && scope.CompanyIds.Contains(owner));
+            if (!reaches) continue;
             recipients.Add(user.Id);
         }
         return recipients;

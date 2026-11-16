@@ -106,7 +106,9 @@ test('control heights are 28 / 36 / 40, and 44 on coarse pointers', () => {
 test('type scale has no size under 11px and weights stop at semibold', () => {
   const theme = tailwind.theme as { fontWeight: Record<string, string>; extend: { fontSize: Record<string, [string, unknown]> } };
   for (const [name, [size]] of Object.entries(theme.extend.fontSize)) {
-    const px = parseFloat(size) * (size.endsWith('rem') ? 16 : 1);
+    // A fluid size, clamp(min, preferred, max), is held to its smallest value.
+    const smallest = size.startsWith('clamp(') ? size.slice(6).split(',')[0].trim() : size;
+    const px = parseFloat(smallest) * (smallest.endsWith('rem') ? 16 : 1);
     expect(px, `${name}`).toBeGreaterThanOrEqual(11);
   }
   expect(Math.max(...Object.values(theme.fontWeight).map(Number))).toBeLessThanOrEqual(600);

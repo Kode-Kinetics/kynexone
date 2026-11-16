@@ -87,7 +87,8 @@ public static class SalaryAllowanceLines
     /// something on this basic.
     /// </summary>
     public static async Task<(List<ResolvedAllowanceLine> Lines, AllowanceProblem? Problem)> ValidateAsync(
-        ZayraDbContext db, Guid tenantId, IReadOnlyList<SalaryAllowanceLine>? proposed, decimal basic, CancellationToken ct, decimal slotsGross = 0m)
+        ZayraDbContext db, Guid tenantId, IReadOnlyList<SalaryAllowanceLine>? proposed, decimal basic, CancellationToken ct, decimal slotsGross = 0m,
+        Guid? companyId = null)
     {
         var resolved = new List<ResolvedAllowanceLine>();
         if (proposed is null || proposed.Count == 0) return (resolved, null);
@@ -130,7 +131,8 @@ public static class SalaryAllowanceLines
             }
         }
 
-        var faults = await DefinitionFaultsAsync(db, tenantId, seen.ToList(), ct);
+        // The employee's company decides which definitions exist for it: the group's, and that company's own (a sister company's own is no definition).
+        var faults = await DefinitionFaultsAsync(db, tenantId, seen.ToList(), ct, companyId);
         foreach (var line in resolved)
             if (faults.TryGetValue(line.Code, out var fault))
                 return (resolved, FaultProblem(line.Code, fault));
@@ -151,11 +153,11 @@ public static class SalaryAllowanceLines
     /// effect today or later; a definition Finance has not confirmed; or one with no GL driver. A salary line is only ever put on a CONFIRMED definition.
     /// </summary>
     public static async Task<Dictionary<string, AllowanceDefinitionFault>> DefinitionFaultsAsync(
-        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct)
+        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct, Guid? companyId = null)
     {
         var result = new Dictionary<string, AllowanceDefinitionFault>(StringComparer.Ordinal);
         if (codes.Count == 0) return result;
-        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct);
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, companyId: companyId);
         var today = Today();
         foreach (var code in codes)
             if (CashAllowanceDefinitions.SalaryLineFault(versions[code], today) is { } fault) result[code] = fault;
@@ -172,9 +174,10 @@ public static class SalaryAllowanceLines
     };
 
     /// <summary>The codes among <paramref name="codes"/> that can go on a salary today: a live, Finance-confirmed tenant-wide cash allowance definition.</summary>
-    public static async Task<HashSet<string>> LiveDefinitionCodesAsync(ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct)
+    public static async Task<HashSet<string>> LiveDefinitionCodesAsync(ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct,
+        Guid? companyId = null)
     {
-        var faults = await DefinitionFaultsAsync(db, tenantId, codes, ct);
+        var faults = await DefinitionFaultsAsync(db, tenantId, codes, ct, companyId);
         return codes.Where(c => !faults.ContainsKey(c)).ToHashSet(StringComparer.Ordinal);
     }
 
@@ -200,7 +203,9 @@ public static class SalaryAllowanceLines
             lines = current.Lines.Select(l => new SalaryAllowanceLine(l.Code, l.Basis, l.Rate, l.Basis == AllowanceBases.Amount ? l.Amount : null)).ToList();
         }
         if (lines.Count == 0) return new AllowanceResolution([], carried, null);
-        var (resolved, problem) = await ValidateAsync(db, tenantId, lines, basic, ct, slotsGross);
+        // The employee's company: a company's own allowance can be on its own employees' salaries only. The caller has authorised the employee.
+        var companyId = await db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && e.Id == employeeId).Select(e => e.CompanyId).FirstOrDefaultAsync(ct);
+        var (resolved, problem) = await ValidateAsync(db, tenantId, lines, basic, ct, slotsGross, companyId);
         if (problem is not null && carried)
             problem = problem with { Message = "This employee's current salary carries an allowance that cannot be carried over. " + problem.Message };
         return new AllowanceResolution(resolved, carried, problem);
@@ -419,7 +424,9 @@ public static class SalaryAllowanceLines
         if (codes.Count == 0) return result;
         // The version a screen shows is the one in effect today (else the latest): names are the same in every version, the GL driver and the
         // end-of-service answer are the current ones. A removed definition still names its lines.
-        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, includeRemoved: true);
+        // Every company's own definitions too: these lines are already on salary records the caller may read, and only a line validated for the
+        // employee's company is ever written (a sister company's own allowance never reaches one).
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, includeRemoved: true, anyCompany: true);
         var today = Today();
         var rows = codes.Select(code => CashAllowanceDefinitions.Current(versions[code], today)).Where(c => c is not null).Select(c => c!).ToList();
         var driverKeys = rows.Where(r => !string.IsNullOrWhiteSpace(r.GlDriverKey)).Select(r => r.GlDriverKey!).Distinct().ToList();
@@ -469,7 +476,8 @@ public static class SalaryAllowanceLines
     }
 
     /// <summary>The lines of each salary record whose definition counts in the end-of-service wage, by record, on the definition version in effect on
-    /// <paramref name="asOf"/> (a Finance correction can change the answer from a month on). A line with no definition version in effect on that date is NOT left
+    /// <paramref name="asOf"/> (a Finance correction can change the answer from a month on). Only definitions the employee's current company can see count:
+    /// the group's and that company's own (a line of a company they moved from is no wage here). A line with no definition version in effect on that date is NOT left
     /// out — that would silently understate the wage; it throws <see cref="CashAllowanceDefinitionMissingException"/> (answered 422), naming the line.</summary>
     public static async Task<Dictionary<Guid, List<EosbCashAllowance>>> EosbIncludedAsync(
         ZayraDbContext db, Guid tenantId, IReadOnlyCollection<Guid> salaryIds, DateOnly asOf, CancellationToken ct)
@@ -478,21 +486,31 @@ public static class SalaryAllowanceLines
         var rows = await LoadAsync(db, tenantId, salaryIds, ct);
         var codes = rows.SelectMany(g => g).Select(r => r.Code).Distinct().ToList();
         if (codes.Count == 0) return result;
-        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct);
-        var counted = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var code in codes)
-        {
-            var version = versions[code].Where(v => v.IsInEffect(asOf)).OrderByDescending(v => v.EffectiveFrom ?? DateOnly.MinValue).FirstOrDefault();
-            if (version is null)
-                throw new CashAllowanceDefinitionMissingException(code,
-                    $"the monthly allowance {code} is on a salary record but has no definition in effect on {asOf:yyyy-MM-dd}, so it cannot be known whether it counts in the end-of-service wage. " +
-                    "Restore the allowance in Benefits by grade or remove the line from the salary, then try again.");
-            if (version.EosbIncluded) counted.Add(code);
-        }
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, anyCompany: true);
+        // The company each record's employee works for NOW: a company's own allowance counts only for its own company's employees. One left on the salary of
+        // someone who moved to a sister company (never stripped on transfer) is no wage there — exactly as that company's payroll run treats it; the
+        // readiness names the line and the fix.
+        var recordIds = rows.Select(g => g.Key).ToList();
+        var companyOf = await (from s in db.EmployeeSalaryStructures.AsNoTracking()
+                               join e in db.Employees.AsNoTracking() on s.EmployeeId equals e.Id
+                               where s.TenantId == tenantId && e.TenantId == tenantId && recordIds.Contains(s.Id)
+                               select new { s.Id, e.CompanyId }).ToDictionaryAsync(x => x.Id, x => x.CompanyId, ct);
         foreach (var group in rows)
         {
-            var lines = group.Where(r => counted.Contains(r.Code)).OrderBy(r => r.Code, StringComparer.Ordinal)
-                .Select(r => new EosbCashAllowance(r.Code, r.Amount)).ToList();
+            var known = companyOf.TryGetValue(group.Key, out var companyId);
+            var lines = new List<EosbCashAllowance>();
+            foreach (var r in group.OrderBy(r => r.Code, StringComparer.Ordinal))
+            {
+                var all = versions[r.Code].ToList();
+                var visible = known ? all.Where(v => v.CompanyId == null || v.CompanyId == companyId).ToList() : all;
+                if (visible.Count == 0 && all.Count > 0) continue;
+                var version = visible.Where(v => v.IsInEffect(asOf)).OrderByDescending(v => v.EffectiveFrom ?? DateOnly.MinValue).FirstOrDefault();
+                if (version is null)
+                    throw new CashAllowanceDefinitionMissingException(r.Code,
+                        $"the monthly allowance {r.Code} is on a salary record but has no definition in effect on {asOf:yyyy-MM-dd}, so it cannot be known whether it counts in the end-of-service wage. " +
+                        "Restore the allowance in Benefits by grade or remove the line from the salary, then try again.");
+                if (version.EosbIncluded) lines.Add(new EosbCashAllowance(r.Code, r.Amount));
+            }
             if (lines.Count > 0) result[group.Key] = lines;
         }
         return result;

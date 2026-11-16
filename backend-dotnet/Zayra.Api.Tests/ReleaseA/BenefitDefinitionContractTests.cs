@@ -78,7 +78,10 @@ public class BenefitDefinitionContractTests
     {
         typeof(MatrixComponentDto).GetProperty(nameof(MatrixComponentDto.Definition))!.PropertyType.Should().Be(typeof(BenefitDefinitionDto));
         typeof(EntitlementMatrixDto).GetProperty(nameof(EntitlementMatrixDto.Capabilities))!.PropertyType.Should().Be(typeof(MatrixCapabilitiesDto));
-        JsonSerializer.Serialize(new MatrixCapabilitiesDto(true), Web).Should().Be("""{"benefitDefinition":true}""");
+        JsonSerializer.Serialize(new MatrixCapabilitiesDto(true), Web).Should().Be("""{"benefitDefinition":true,"companyBenefits":false}""");
+        // A company's own benefits: the screen offers Add benefit in a company's view only when the API says it can (an older one would add for every company).
+        JsonSerializer.Serialize(new MatrixCapabilitiesDto(false, CompanyBenefits: true), Web).Should().Be("""{"benefitDefinition":false,"companyBenefits":true}""");
+        typeof(MatrixComponentDto).GetProperty(nameof(MatrixComponentDto.OwnerCompanyId))!.PropertyType.Should().Be(typeof(Guid?));
         typeof(BenefitDefinitionDto).GetProperties().Select(p => p.Name).Should().BeEquivalentTo(
             "Delivery", "Category", "PolicyClass", "EffectiveFrom", "EffectiveTo", "IsActive", "RequiresEnrolment", "OfferedCompanyIds", "Version", "SourcePlanId", "CodeLocked");
     }

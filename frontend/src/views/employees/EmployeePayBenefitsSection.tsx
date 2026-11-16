@@ -29,13 +29,13 @@ export function EmployeePayBenefitsSection({ employee, panel, canWrite, returnTo
   const { catalog } = useCashAllowanceCatalog({ enabled: canSeeSensitive && unnamed });
   const allowanceNames = useMemo(() => new Map(catalog.status === 'ready'
     ? catalog.matrix.components.map(c => [c.code.toUpperCase(), { nameEn: c.nameEn, nameAr: c.nameAr }] as const) : []), [catalog]);
-  const knownPanels = new Set(['payroll', 'benefits', 'package', 'deductions']);
+  const knownPanels = new Set(['payroll', 'salary', 'benefits', 'package', 'deductions']);
   if (panel && !knownPanels.has(panel)) return <section className="surface p-5"><h2 className="text-2xl font-semibold">Pay &amp; Benefits</h2><p className="mt-3 text-sm text-slate-500">This panel is not available. The pay and benefits overview is shown instead.</p></section>;
 
   if (panel === 'benefits' && !releaseA && canReadBenefits) return <EmployeeBenefitsPanel key={employee.id} employeeId={employee.id} employeeName={employee.fullName} companyId={employee.companyId ?? null} gradeId={employee.gradeId} />;
   if (panel === 'package' && releaseA) return <EmployeePackagePanel key={employee.id} employee={employee} />;
   if (panel === 'deductions' && releaseA) return <EmployeeDeductionsPanel key={employee.id} employee={employee} />;
-  if (panel && panel !== 'payroll') return <section className="surface p-5"><h2 className="text-2xl font-semibold">Pay &amp; Benefits</h2><p className="mt-3 text-sm text-slate-500">This panel is not available for your current access.</p><Link href={employeeWorkspaceHref(employee.id, { section: 'pay-benefits', returnTo })} className="mt-4 inline-flex font-semibold text-sapphire hover:underline">View pay and benefits overview</Link></section>;
+  if (panel && panel !== 'payroll' && panel !== 'salary') return <section className="surface p-5"><h2 className="text-2xl font-semibold">Pay &amp; Benefits</h2><p className="mt-3 text-sm text-slate-500">This panel is not available for your current access.</p><Link href={employeeWorkspaceHref(employee.id, { section: 'pay-benefits', returnTo })} className="mt-4 inline-flex font-semibold text-sapphire hover:underline">View pay and benefits overview</Link></section>;
 
   return <section className="surface overflow-hidden">
     <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-5 dark:border-white/10"><div><h2 className="text-2xl font-semibold text-slate-950 dark:text-white">Pay &amp; Benefits</h2><p className="mt-1 text-sm text-slate-500">Payroll identity, banking, salary package, allowances, deductions, and benefits.</p></div>{canWrite && canSeeSensitive && <Link href={employeeWorkspaceHref(employee.id, { edit: true, section: 'pay-benefits', panel: panel || 'payroll', returnTo })} className="btn-secondary">Edit pay details</Link>}</header>

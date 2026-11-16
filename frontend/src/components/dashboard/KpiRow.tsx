@@ -10,7 +10,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import type { DashboardFull } from '../../api/dashboard';
 import { todayAttendance } from './dashboardModel';
-import { Gauge } from './charts/Visuals';
+import { DotMatrix, Gauge } from './charts/Visuals';
 import { useT } from '../../hooks/useT';
 import { useFormat } from '../../hooks/useFormat';
 import { EnumLabel } from '../EnumLabel';
@@ -18,7 +18,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { nitaqatApi, type NitaqatStandingResponse } from '../../api/nitaqat';
 import { nitaqatTileBand } from '../../lib/nitaqatTile';
 
-const TILE = 'wg-card wg-press flex w-[84%] shrink-0 min-w-0 flex-col sm:w-auto gap-2 p-5 [.kx-dense_&]:gap-1.5 [.kx-dense_&]:p-4 outline-none hover:border-[color:var(--wg-line-strong)] focus-visible:ring-2 focus-visible:ring-sapphire';
+const TILE = 'wg-card wg-press flex w-[84%] shrink-0 min-w-0 flex-col sm:w-auto gap-2 p-5 [.kx-dense_&]:gap-1.5 [.kx-dense_&]:p-4 [.kx-tight_&]:gap-1 [.kx-tight_&]:p-3 outline-none hover:border-[color:var(--wg-line-strong)] focus-visible:ring-2 focus-visible:ring-sapphire';
 
 function Legend({ items }: { items: Array<{ label: string; value: string; color: string }> }) {
   return (
@@ -34,7 +34,8 @@ function Legend({ items }: { items: Array<{ label: string; value: string; color:
   );
 }
 
-export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFull; hour: number; asOf: string | null; dense?: boolean }) {
+/** Stage: `columns` sets the tile grid; `tight` drops the explanatory lines and shrinks the visuals so a 2 x 2 grid fits a short window. */
+export function KpiRow({ data, hour, asOf, dense = false, columns = 2, tight = false, stage = false }: { data: DashboardFull; hour: number; asOf: string | null; dense?: boolean; columns?: 2 | 4; tight?: boolean; stage?: boolean }) {
   const t = useT();
   const f = useFormat();
   const s = data.summary;
@@ -56,13 +57,38 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
   }, [snapshotBand, canSeeStanding]);
   const tileBand = canSeeStanding ? nitaqatTileBand(snapshotBand, live) : ({ state: 'none' } as const);
 
-  // 1 · Attendance today
+  // 1 · Attendance today. Roomy stage tiles show one dot per person while the headcount is small enough to read.
+  const notIn = today.kind === 'counted' ? Math.max(0, today.expected - today.present - s.absent) : 0;
+  const dotParts = today.kind === 'counted' ? [
+    { label: t('Present'), value: today.present, color: 'var(--viz-1)' },
+    { label: t('Not in yet'), value: notIn, color: '#94A3B8' },
+    { label: t('Absent'), value: s.absent, color: '#EF4444' },
+    { label: t('On leave'), value: s.onLeave, color: '#0EA5E9' },
+  ] : [];
+  const dots = stage && !tight && dotParts.reduce((n, p) => n + p.value, 0) <= 300;
   const att = (
     <Link href="/attendance" className={TILE}>
       <span className="flex items-baseline justify-between gap-2">
         <span className="text-sm font-semibold text-slate-900 dark:text-white">{t('Attendance today')}</span>
         <span className="text-xs tabular-nums text-slate-600 dark:text-slate-400">{asOf ?? ''}</span>
       </span>
+      {today.kind === 'counted' && dots ? (
+        <span className="flex flex-col gap-2">
+          <span className="flex items-baseline gap-2">
+            <span className="text-kpi font-semibold leading-none tabular-nums text-slate-900 dark:text-white">{f.percent(today.rate)}</span>
+            <span className="text-xs text-slate-600 dark:text-slate-400">{t('Present')}</span>
+          </span>
+          <DotMatrix label={t('{rate} of expected staff present today', { rate: f.percent(today.rate) })} parts={dotParts} />
+          <ul className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-700 dark:text-slate-300">
+            {dotParts.map((p) => (
+              <li key={p.label} className="flex items-center gap-1.5 whitespace-nowrap">
+                <span aria-hidden className="h-2 w-2 shrink-0 rounded-full" ref={(n) => { if (n) n.style.background = p.color; }} />
+                {p.label}<b className="ms-auto ps-1 font-semibold tabular-nums text-slate-900 dark:text-white">{f.integer(p.value)}</b>
+              </li>
+            ))}
+          </ul>
+        </span>
+      ) : (
       <span className="flex items-center gap-3">
         {today.kind === 'counted' ? (
           <Gauge pct={today.rate / 100} center={f.percent(today.rate)} sub={t('Present')} label={t('{rate} of expected staff present today', { rate: f.percent(today.rate) })} />
@@ -84,7 +110,8 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
           </span>
         )}
       </span>
-      <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:line-clamp-1">
+      )}
+      <span className={`text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:line-clamp-1 ${today.kind === 'counted' ? '[.kx-tight_&]:hidden' : ''}`}>
         {today.kind === 'counted' ? t('Of {count} expected today.', { count: today.expected })
           : today.kind === 'pre-shift' ? t('The working day has not started. Nothing is late yet.')
           : today.kind === 'not-captured' ? t('No punches recorded today. Check the attendance devices.')
@@ -117,7 +144,7 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
             ))}
             {lu.entitlementDays ? <span className="h-full flex-1 bg-[color:var(--viz-track)]" /> : null}
           </span>
-          <ul className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-700 dark:text-slate-300 [.kx-dense_&]:flex [.kx-dense_&]:flex-wrap [.kx-dense_&]:gap-x-3">
+          <ul className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-700 dark:text-slate-300 [.kx-dense_&]:flex [.kx-dense_&]:flex-wrap [.kx-dense_&]:gap-x-3 [.kx-tight_&]:flex-nowrap [.kx-tight_&]:overflow-hidden [.kx-tight_&]:[&>li:nth-child(n+3)]:hidden">
             {parts.map((p, i) => (
               <li key={p.label} className="flex items-center gap-1.5 truncate">
                 <span aria-hidden className="h-2 w-2 shrink-0 rounded" ref={(n) => { if (n) n.style.background = leaveColors[i]; }} />
@@ -155,10 +182,10 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
         : t('{month}: {count, plural, one {# hour} other {# hours}}', { month: f.period(p.m), count: Math.round(p.v) })).join(', ')}>
         {ot.map((p) => (
           <span key={p.m} className="flex flex-1 flex-col items-center gap-1">
-            <span className="flex h-[64px] items-end [.kx-dense_&]:h-[36px]">
+            <span className="flex h-[64px] items-end [.kx-dense_&]:h-[36px] [.kx-tight_&]:h-[26px]">
               {p.v == null
-                ? <span className="block h-[64px] w-[16px] [.kx-dense_&]:h-[36px] rounded border border-dashed border-slate-300 dark:border-white/15" />
-                : <span className="wg-bar wg-col3d block w-[16px] rounded-t rounded-b" ref={(n) => { if (n) { n.style.height = `${Math.max(3, ((p.v as number) / otMax) * (n.closest('.kx-dense') ? 36 : 64))}px`; n.style.background = p.m === current ? 'var(--viz-1)' : 'var(--viz-recede)'; } }} />}
+                ? <span className="block h-[64px] w-[16px] [.kx-dense_&]:h-[36px] [.kx-tight_&]:h-[26px] rounded border border-dashed border-slate-300 dark:border-white/15" />
+                : <span className="wg-bar block w-[16px] rounded-t rounded-b" ref={(n) => { if (n) { n.style.height = `${Math.max(3, ((p.v as number) / otMax) * (n.closest('.kx-tight') ? 26 : n.closest('.kx-dense') ? 36 : 64))}px`; n.style.background = p.m === current ? 'var(--viz-1)' : 'var(--viz-recede)'; } }} />}
             </span>
             <span className={`text-caption ${p.m === current ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-400'}`}>{f.period(p.m, 'short')}</span>
           </span>
@@ -191,7 +218,7 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
           <span key={i} className="wg-hbar h-full" ref={(el) => { if (el) { el.style.flexGrow = String(x.v); el.style.background = x.c; } }} />
         ))}
       </span>
-      <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:line-clamp-1">
+      <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:line-clamp-1 [.kx-tight_&]:hidden">
         {n.unknown > 0 ? t('{count, plural, one {# employee has no nationality recorded.} other {# employees have no nationality recorded.}}', { count: n.unknown }) : t('Share of active employees who are Saudi nationals.')}
       </span>
     </Link>
@@ -204,7 +231,7 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
   );
 
   return (
-    <section aria-label={t('Key metrics')} className={`wg-snap-x -mx-4 min-w-0 gap-3 px-4 pb-1 sm:mx-0 sm:grid sm:grid-cols-2 sm:gap-4 sm:overflow-visible sm:px-0 ${dense ? 'sm:auto-rows-fr' : 'min-[1380px]:grid-cols-4'} ${dense ? 'kx-dense' : ''}`}>
+    <section aria-label={t('Key metrics')} className={`wg-snap-x -mx-4 min-w-0 gap-3 px-4 pb-1 sm:mx-0 sm:grid sm:grid-cols-2 sm:gap-4 sm:overflow-visible sm:px-0 ${dense ? 'sm:auto-rows-fr' : 'min-[1380px]:grid-cols-4'} ${dense ? 'kx-dense' : ''} ${tight ? 'kx-tight' : ''} ${columns === 4 ? 'sm:grid-cols-4' : ''}`}>
       {att}{leave}{overtime}{saudi}
     </section>
   );

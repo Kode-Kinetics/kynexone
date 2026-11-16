@@ -97,6 +97,15 @@ const ENTITY_LABEL: Record<string, string> = {
   HR: msg('HR request'),
 };
 
+/**
+ * Whether a queue row is a plain leave request, which the dashboard can decide inline. Decided by
+ * the row's entity type (`module`), never by the words in its title: "Leave Encashment" and
+ * "Leave Cancellation" rows read like leave but are different requests with their own rules.
+ */
+export function opensLeaveDrawer(module: string): boolean {
+  return module.toLowerCase() === 'leaverequest';
+}
+
 export function entityLabel(module: string): string {
   return ENTITY_LABEL[module] ?? splitPascal(module);
 }

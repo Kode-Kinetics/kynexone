@@ -60,11 +60,7 @@ public class OrphanEntityRatchetTests
     {
         // ── AI / analytics: modelled, migrated, never built ──────────────────────────────────
         "AIModelConfig",
-        "AIRecommendation",
-        "BurnoutRiskSignal",
         "CandidateAIScore",
-        "EmployeeChurnPrediction",
-        "EmployeeSentimentPulse",
         "ResumeParseResult",
 
         // ── Attendance: two of these are actively misleading ─────────────────────────────────
@@ -79,7 +75,6 @@ public class OrphanEntityRatchetTests
         // engine.
         "AttendanceRule",
         "OvertimeRule",
-        "OvertimeAdjustment",
 
         // ── Leave: the year-end engine's data model, with no engine ──────────────────────────
         // LeaveAccrualRule carries AccrualFrequency, AccrualDays, CarryForwardMaxDays,
@@ -89,14 +84,10 @@ public class OrphanEntityRatchetTests
         // decision: it is the only entry here with a future.
         "LeaveAccrualRule",
         "LeaveAttachment",
-        "LeaveModificationRequest",
         "LeaveRequestDate",
 
         // ── Payroll / finance ────────────────────────────────────────────────────────────────
-        // BankTransferFile now has a real consumer: SaudiBankExportService. Remove the orphan allowance.
-        "PayrollAllowance",
         "PayrollCycle",
-        "PayrollException",
 
         // ── Recruitment / performance: product decision needed before deletion ───────────────
         "CandidateDocument",
@@ -106,14 +97,8 @@ public class OrphanEntityRatchetTests
         // EmployeeDependent left this list in Release A R2: the package resolver counts the dependants
         // a medical, ticket or education entitlement covers (PackageRules.DependantsCovered).
 
-        // ── Retired by F1 ────────────────────────────────────────────────────────────────────
-        // The frozen ApprovalPolicy model. The live approval path uses ApprovalWorkflowStep, a
-        // different entity. ApprovalPoliciesController answers 410 on every verb and reads
-        // nothing; the table is deliberately kept so the migrated data survives.
-        "ApprovalPolicyStep",
-
-        // ── Other ────────────────────────────────────────────────────────────────────────────
-        "ESSDashboardPreference",
+        // ApprovalPolicyStep (retired by F1) and the other entities the employee-merge registry reads left this list: the
+        // merge counts the rows each holds for the duplicate (Infrastructure/Employees/EmployeeMergeBlockers.cs), which is a real reader.
 
         // DataProtectionKey left this list when field encryption added DataProtectionKeyRingRewrite, which reads the
         // key ring rows by name. The framework also reaches it through IDataProtectionKeyContext, so it must never be

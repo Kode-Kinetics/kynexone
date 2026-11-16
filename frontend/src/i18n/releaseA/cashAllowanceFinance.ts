@@ -53,6 +53,9 @@ const pairs: Array<[string, string]> = [
   ['Only someone who can reach every company can do this.', 'لا يستطيع القيام بذلك إلا من يملك صلاحية الوصول إلى كل الشركات.'],
   ['Only Finance can do this.', 'لا تستطيع القيام بذلك إلا المالية.'],
   ['You added this allowance, so someone else in Finance must confirm it.', 'أنت من أضاف هذا البدل، لذلك يجب أن يؤكده شخص آخر في المالية.'],
+  ['You changed this allowance since Finance last confirmed it, so someone else in Finance must confirm it.', 'أنت من غيّر هذا البدل منذ آخر تأكيد من المالية، لذلك يجب أن يؤكده شخص آخر في المالية.'],
+  ['You added or changed this allowance, so someone else in Finance must confirm it.', 'أنت من أضاف هذا البدل أو غيّره، لذلك يجب أن يؤكده شخص آخر في المالية.'],
+  ['Another Finance user must confirm the change before it is used.', 'يجب أن يؤكد مستخدم آخر في المالية هذا التغيير قبل استخدامه.'],
   ['This benefit is not a monthly cash allowance.', 'هذه الميزة ليست بدلاً نقدياً شهرياً.'],
   ['Finance has already confirmed this allowance.', 'أكدت المالية هذا البدل بالفعل.'],
   ['This allowance has not been confirmed yet. Confirm it first.', 'لم يُؤكَّد هذا البدل بعد. أكّده أولاً.'],
@@ -96,6 +99,7 @@ const pairs: Array<[string, string]> = [
   ['Payroll is not ready to process until each one is fixed.', 'الرواتب ليست جاهزة للمعالجة حتى يُصلَح كل بند منها.'],
   ['The allowance {name} on this salary is no longer set up in Benefits by grade. Remove it from the salary, or set it up again.', 'البدل {name} على هذا الراتب لم يعد معرّفاً في «المزايا حسب الدرجة». أزله من الراتب، أو عرّفه من جديد.'],
   ['The allowance {name} is waiting for Finance to confirm it in Benefits by grade.', 'البدل {name} بانتظار أن تؤكده المالية في «المزايا حسب الدرجة».'],
+  ['{employee} moved from another company. The allowance {name} on their salary belongs to that company and is not paid here. Remove it from their salary.', 'انتقل {employee} من شركة أخرى. البدل {name} على راتبه يخص تلك الشركة ولا يُصرف هنا. أزله من راتبه.'],
   ['The allowance {name} has no GL account yet. Finance sets it in Benefits by grade.', 'البدل {name} ليس له حساب أستاذ عام بعد. تحدده المالية في «المزايا حسب الدرجة».'],
   ['{count} more are not listed. Fix these and refresh to see them.', 'هناك {count} أخرى غير مدرجة. أصلح هذه ثم حدّث الصفحة لرؤيتها.'],
 ];

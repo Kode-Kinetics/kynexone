@@ -95,6 +95,14 @@ internal sealed class Bd : IAsyncDisposable
     public Task<IActionResult> Add(CreateBenefitRequest req, Guid? user = null, bool finance = false) =>
         As(user ?? Hr, finance).AddBenefit(Service, req, default);
 
+    /// <summary>A cash allowance HR added and another Finance user (<see cref="FinanceA"/>) confirmed (nobody confirms what they made), as the grid shows it now.</summary>
+    public async Task<MatrixComponentDto> AddConfirmed(CreateBenefitRequest req)
+    {
+        var added = Component(await Add(req));
+        Component(await As(FinanceA, finance: true).ConfirmBenefit(Service, added.Code, null, default));
+        return (await Read()).Components.Single(c => c.Code == added.Code);
+    }
+
     public Task<IActionResult> Put(string code, UpdateBenefitRequest req, Guid? user = null, bool finance = false) =>
         As(user ?? Hr, finance).UpdateBenefit(Service, code, req, default);
 
@@ -155,10 +163,12 @@ internal sealed class CreateBenefitRequestBuilder(string nameEn)
     public bool? IsActive, RequiresEnrolment;
     public BenefitScopeInput? Scope;
     public Guid? RequestId;
+    public Guid? CompanyId;
 
     public CreateBenefitRequest Build() => new(nameEn, NameAr, Kind, GlDriverKey, EosbIncluded, EosbExclusionReason, EosbExclusionCategory)
     {
         Code = Code, Delivery = Delivery, Frequency = Frequency, Category = Category, PolicyClass = PolicyClass, EffectiveFrom = EffectiveFrom,
         EffectiveTo = EffectiveTo, IsActive = IsActive, RequiresEnrolment = RequiresEnrolment, Scope = Scope, RequestId = RequestId,
+        CompanyId = CompanyId,
     };
 }

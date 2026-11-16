@@ -66,9 +66,10 @@ export function addBenefitProblems(f: AddBenefitForm): AddBenefitProblems {
   return { ...out, ...eosbProblems(f) };
 }
 
-/** The request to send. A contract benefit carries nothing about pay; a cash allowance carries its GL account and end of service choice. */
-export function addBenefitRequest(f: AddBenefitForm): CreateBenefitBody {
-  const base = { nameEn: f.nameEn.trim() || null, nameAr: f.nameAr.trim() || null };
+/** The request to send. A contract benefit carries nothing about pay; a cash allowance carries its GL account and end of service choice.
+ *  From a company's view (`companyId`) it is that company's own benefit; the group view sends no company. */
+export function addBenefitRequest(f: AddBenefitForm, companyId?: string | null): CreateBenefitBody {
+  const base = { nameEn: f.nameEn.trim() || null, nameAr: f.nameAr.trim() || null, ...(companyId ? { companyId } : {}) };
   if (f.kind !== 'Cash') return { ...base, kind: 'Contract' };
   return { ...base, kind: 'Cash', glDriverKey: f.glDriverKey.trim(), ...eosbRequest(f) };
 }
@@ -236,7 +237,7 @@ export interface FinanceProblem {
   /** An i18n key for a refusal we know; otherwise the server's own sentence in `message`. */
   key?: string;
   message?: string;
-  /** The person who added the allowance cannot also confirm it: the Confirm action is withdrawn for them. */
+  /** The person who added the allowance, or changed it since Finance last confirmed it, cannot also confirm it: the Confirm action is withdrawn for them. */
   makerBlocked?: boolean;
   /** `already_confirmed` / `not_confirmed` / `not_a_cash_allowance`: the screen is out of date; reload it. */
   stale?: boolean;
@@ -258,6 +259,7 @@ const financeCodes: Record<string, Omit<FinanceProblem, 'message'> & { useServer
   group_scope_required: { field: 'general', key: 'Only someone who can reach every company can do this.' },
   finance_required: { field: 'general', key: 'Only Finance can do this.' },
   maker_cannot_confirm: { field: 'general', key: 'You added this allowance, so someone else in Finance must confirm it.', makerBlocked: true },
+  changer_cannot_confirm: { field: 'general', key: 'You changed this allowance since Finance last confirmed it, so someone else in Finance must confirm it.', makerBlocked: true },
   not_a_cash_allowance: { field: 'general', key: 'This benefit is not a monthly cash allowance.', stale: true },
   already_confirmed: { field: 'general', key: 'Finance has already confirmed this allowance.', stale: true },
   not_confirmed: { field: 'general', key: 'This allowance has not been confirmed yet. Confirm it first.', stale: true },

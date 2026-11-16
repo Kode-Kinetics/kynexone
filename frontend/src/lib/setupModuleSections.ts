@@ -79,7 +79,7 @@ export const SETUP_MODULE_SECTIONS: readonly SetupModuleSection[] = [
 
   // Jobs & headcount. A grade is the employee's master pay package: what each grade gets sits directly under Grades. The same
   // grid opens from the Finance & Talent menu (/benefits/by-grade); there is one screen, with two ways in.
-  { id: 'gradeBenefits', group: 'jobsHeadcount', label: msg('Benefits by grade'), description: msg('What each grade gets: allowances, contract benefits and facilities, for every company.'), permissions: ['entitlements.read'], modulePath: '/benefits/by-grade', featureKey: 'release_a' },
+  { id: 'gradeBenefits', group: 'jobsHeadcount', label: msg('Benefits by grade'), description: msg('What each grade gets: allowances, contract benefits and facilities, for the group and for each company.'), permissions: ['entitlements.read'], modulePath: '/benefits/by-grade', featureKey: 'release_a' },
 
   // Pay & benefits. Benefit plans are retired for a Release A tenant: its benefits are set in Benefits by grade.
   { id: 'benefitPlans', group: 'payBenefits', label: msg('Benefit plans'), description: msg('The benefits on offer and their eligibility rules.'), permissions: ['employees.write'], roles: ['Admin', 'HR Manager', 'HR Officer', 'Finance', 'Auditor'], modulePath: '/benefits', hiddenWhenFeatureKey: 'release_a' },

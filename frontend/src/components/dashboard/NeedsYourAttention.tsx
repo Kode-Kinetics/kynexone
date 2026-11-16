@@ -12,22 +12,23 @@ import { useT } from '../../hooks/useT';
 import { Badge } from '../ui/Badge';
 import type { DashboardTask } from './taskList';
 
-export function NeedsYourAttention({ tasks, payrollUnavailable }: { tasks: DashboardTask[]; payrollUnavailable?: boolean }) {
+/** `compact` is the one-screen stage: a card inside a column, the explanatory line left to the tooltip. */
+export function NeedsYourAttention({ tasks, payrollUnavailable, compact = false }: { tasks: DashboardTask[]; payrollUnavailable?: boolean; compact?: boolean }) {
   const t = useT();
   if (tasks.length === 0 && !payrollUnavailable) return null;
   return (
-    <section aria-labelledby="your-tasks-heading" data-testid="your-tasks" className="surface p-4">
+    <section aria-labelledby="your-tasks-heading" data-testid="your-tasks" className={compact ? 'wg-card shrink-0 p-4' : 'surface p-4'}>
       <h2 id="your-tasks-heading" className="text-sm font-semibold text-slate-900 dark:text-white">{t('Needs your attention')}</h2>
       {tasks.length > 0 && (
         <ul className="mt-2 divide-y divide-slate-200 dark:divide-white/10">
           {tasks.map((task) => (
             <li key={task.id}>
-              <Link href={task.to} data-task={task.id}
-                className="group flex items-center gap-3 py-2.5 outline-none focus-visible:ring-2 focus-visible:ring-sapphire">
+              <Link href={task.to} data-task={task.id} title={compact ? t(task.detail) : undefined}
+                className={`group flex items-center gap-3 outline-none focus-visible:ring-2 focus-visible:ring-sapphire ${compact ? 'py-2' : 'py-2.5'}`}>
                 <Badge tone={task.tone === 'critical' ? 'danger' : 'warning'}>{task.tone === 'critical' ? t('Critical') : t('To review')}</Badge>
                 <span className="min-w-0 flex-1">
                   <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-sm font-medium text-slate-900 dark:text-white">{t(task.title, { count: task.count })}</span>
-                  <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-xs text-slate-600 dark:text-slate-400">{t(task.detail)}</span>
+                  {!compact && <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-xs text-slate-600 dark:text-slate-400">{t(task.detail)}</span>}
                 </span>
                 <span className="inline-flex shrink-0 items-center gap-1 text-sm font-semibold text-sapphire group-hover:underline dark:text-blue-300">
                   {t(task.cta)} <ArrowRight className="h-3.5 w-3.5 rtl:-scale-x-100" aria-hidden="true" />

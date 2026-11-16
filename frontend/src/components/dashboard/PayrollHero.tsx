@@ -11,6 +11,8 @@
  *   - no headcount history -> the side panel states joiners instead of drawing a flat line.
  */
 
+import { useLayoutEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 import type { DashboardFull } from '../../api/dashboard';
@@ -26,10 +28,24 @@ import { enumLabel } from '../EnumLabel';
 export const RUN_STEPS = [msg('Draft'), msg('Processed'), msg('Review'), msg('Approved'), msg('Locked')];
 const STATUS_INDEX: Record<string, number> = { draft: 0, processed: 1, pendingfinancereview: 2, approved: 3, locked: 4 };
 
-function stepIndex(status: string): number {
+export function stepIndex(status: string): number {
   return STATUS_INDEX[status.replace(/[\s_-]/g, '').toLowerCase()] ?? -1;
 }
 
+
+/** Gives the chart exactly the height its slot has (the stage's hero stretches), never less than `min`. */
+export function FillChart({ min = 90, children }: { min?: number; children: (height: number) => ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [h, setH] = useState(min);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([e]) => setH(Math.max(min, Math.floor(e.contentRect.height))));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [min]);
+  return <div ref={ref} className="min-h-[90px] flex-1 overflow-hidden">{children(h)}</div>;
+}
 
 /**
  * `currency` is the latest run's company currency and `trendCurrency` the one currency every run on the
@@ -37,8 +53,12 @@ function stepIndex(status: string): number {
  * currencies. Amounts are never labelled with a guessed currency, and runs in two currencies are never
  * drawn on one line or compared as a percentage.
  */
-export function PayrollHero({ data, payrollEnabled, dense = false, currency = null, trendCurrency = null, currencyNote = null }: {
+export function PayrollHero({ data, payrollEnabled, dense = false, chartHeight, fill = false, compactSteps = false, currency = null, trendCurrency = null, currencyNote = null }: {
   data: DashboardFull; payrollEnabled: boolean; dense?: boolean;
+  /** Trend height in px; the one-screen stage sets it from the room the viewport leaves. */
+  chartHeight?: number;
+  /** Stage: take the height the column gives (the chart sits at the foot), and name only the current run step when narrow. */
+  fill?: boolean; compactSteps?: boolean;
   currency?: string | null; trendCurrency?: string | null; currencyNote?: string | null;
 }) {
   const t = useT();
@@ -100,8 +120,8 @@ export function PayrollHero({ data, payrollEnabled, dense = false, currency = nu
   }
 
   return (
-    <section aria-labelledby="hero-heading" className={`wg-hero relative overflow-hidden rounded-[22px] text-white ${dense ? 'p-5' : 'p-6 sm:p-7'}`}>
-      <div className={`grid lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)] ${dense ? 'gap-5' : 'gap-7'}`}>
+    <section aria-labelledby="hero-heading" className={`wg-hero relative overflow-hidden rounded-[22px] text-white ${dense ? 'p-5' : 'p-6 sm:p-7'} ${fill ? 'flex h-full flex-col' : ''}`}>
+      <div className={`grid lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)] ${dense ? 'gap-5' : 'gap-7'} ${fill ? 'min-h-0 flex-1' : ''}`}>
         <div className={`flex min-w-0 flex-col ${dense ? 'gap-2' : 'gap-3'}`}>
           <div className="flex flex-wrap items-center gap-2.5">
             <h2 id="hero-heading" className="text-[13px] font-semibold text-white">{t('Payroll, {period}', { period: f.period(run.periodLabel) })}</h2>
@@ -138,7 +158,9 @@ export function PayrollHero({ data, payrollEnabled, dense = false, currency = nu
             </dl>
           </div>
           {ran.length >= 2 && trendCurrency ? (
-            <HeroTrend points={series.map((p) => ({ ...p, label: f.period(p.label, 'short') }))} format={(v) => f.moneyCompact(v, null)} unit={trendCurrency} label={t('Net payroll by month, {currency}', { currency: trendCurrency })} height={dense ? 172 : 190} />
+            fill
+              ? <FillChart>{(h) => <HeroTrend points={series.map((p) => ({ ...p, label: f.period(p.label, 'short') }))} format={(v) => f.moneyCompact(v, null)} unit={trendCurrency} label={t('Net payroll by month, {currency}', { currency: trendCurrency })} height={h} />}</FillChart>
+              : <HeroTrend points={series.map((p) => ({ ...p, label: f.period(p.label, 'short') }))} format={(v) => f.moneyCompact(v, null)} unit={trendCurrency} label={t('Net payroll by month, {currency}', { currency: trendCurrency })} height={chartHeight ?? (dense ? 172 : 190)} />
           ) : (
             <div className="flex flex-col gap-2 pt-1">
               <GrossSplit net={run.totalNet} deductions={run.totalDeductions} employer={run.employerContributions ?? null} format={money} />
@@ -153,7 +175,7 @@ export function PayrollHero({ data, payrollEnabled, dense = false, currency = nu
         <div className={`flex flex-col border-white/15 lg:border-s ${dense ? 'gap-4 lg:ps-5' : 'gap-5 lg:ps-7'}`}>
           <div className="flex flex-col gap-3">
             <span className="text-[13px] font-medium text-white/85">{t('Run progress')}</span>
-            {step >= 0 ? <Stepper steps={RUN_STEPS} current={done ? RUN_STEPS.length : step} /> : <span className="text-[13px] text-white/85">{t('Status: {status}', { status: statusLabel(run.status) })}</span>}
+            {step >= 0 ? <Stepper steps={RUN_STEPS} current={done ? RUN_STEPS.length : step} labels={compactSteps ? 'current' : 'all'} /> : <span className="text-[13px] text-white/85">{t('Status: {status}', { status: statusLabel(run.status) })}</span>}
             <Link href="/payroll" className="wg-press inline-flex w-fit items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-[13px] font-semibold text-blue-900 hover:bg-blue-50">
               {done ? t('Open payroll run') : step === 3 ? t('Review and lock run') : t('Review payroll run')} <ArrowRight className="h-4 w-4" aria-hidden />
             </Link>

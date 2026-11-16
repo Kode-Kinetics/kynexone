@@ -17,7 +17,8 @@ import { monthStarts } from '../../lib/entitlementMatrix';
 export type GlState = { status: 'idle' | 'loading' } | { status: 'ready'; choices: GlChoice[] } | { status: 'error'; forbidden: boolean };
 
 /** Reads the cash GL list while `enabled`; `retry` reads it again after a failure. */
-export function useCashGlChoices(enabled: boolean): { gl: GlState; retry: () => void } {
+/** `companyId`: a company's own allowance — that company's GL accounts (its own drivers win), judged in that company alone. */
+export function useCashGlChoices(enabled: boolean, companyId?: string | null): { gl: GlState; retry: () => void } {
   const { locale } = useLocale();
   const [gl, setGl] = useState<GlState>({ status: 'idle' });
   const [attempt, setAttempt] = useState(0);
@@ -25,7 +26,7 @@ export function useCashGlChoices(enabled: boolean): { gl: GlState; retry: () => 
     if (!enabled) return;
     let live = true;
     setGl({ status: 'loading' });
-    entitlementsApi.cashGlDrivers().then(rows => {
+    entitlementsApi.cashGlDrivers(companyId).then(rows => {
       if (!live) return;
       setGl(Array.isArray(rows) ? { status: 'ready', choices: cashGlChoices(rows, locale) } : { status: 'error', forbidden: false });
     }, (err: unknown) => {
@@ -33,7 +34,7 @@ export function useCashGlChoices(enabled: boolean): { gl: GlState; retry: () => 
       setGl({ status: 'error', forbidden: (err as { response?: { status?: number } })?.response?.status === 403 });
     });
     return () => { live = false; };
-  }, [enabled, attempt, locale]);
+  }, [enabled, attempt, locale, companyId]);
   return { gl, retry: () => setAttempt(n => n + 1) };
 }
 
@@ -138,7 +139,7 @@ export function FinanceAllowancePanel({ mode, component, name, today, onClose, o
   const [problems, setProblems] = useState<CorrectProblems>({});
   const [server, setServer] = useState<FinanceProblem | null>(null);
   const [busy, setBusy] = useState(false);
-  const { gl, retry } = useCashGlChoices(true);
+  const { gl, retry } = useCashGlChoices(true, component.ownerCompanyId);
   const [focus, setFocus] = useState<{ field: PanelField; n: number } | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const panelRef = useRef<HTMLFormElement>(null);

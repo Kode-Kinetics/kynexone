@@ -1,5 +1,6 @@
 'use client';
 
+import { useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { loanTypesApi } from '../../api/loans';
 import type { LoanType } from '../../api/loans';
@@ -13,6 +14,11 @@ import { LoanPoliciesTab } from './LoanPoliciesTab';
  */
 export function LoanPoliciesPanel() {
   const { companyVersion } = useCompany();
+  // Benefits by grade links here with `?loanType=` and `&companyId=`: Limits by grade opens on that loan type and company. Only the
+  // address says so (Setup's remembered company scope does not), and one that does not exist for this viewer is ignored.
+  const searchParams = useSearchParams();
+  const focusLoanTypeId = searchParams?.get('loanType') ?? undefined;
+  const focusCompanyId = searchParams?.get('companyId');
   const [loanTypes, setLoanTypes] = useState<LoanType[] | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
 
@@ -32,6 +38,8 @@ export function LoanPoliciesPanel() {
     <LoanPoliciesTab
       key={companyVersion}
       loanTypes={loanTypes}
+      focusLoanTypeId={focusLoanTypeId}
+      focusCompanyId={focusCompanyId}
       onGradeLimitedChanged={(id, gradeLimited) => setLoanTypes(list => (list ?? []).map(type => (type.id === id ? { ...type, gradeLimited } : type)))}
     />
   );

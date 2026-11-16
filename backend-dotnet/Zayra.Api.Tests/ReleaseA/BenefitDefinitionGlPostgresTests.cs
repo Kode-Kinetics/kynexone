@@ -38,7 +38,7 @@ public sealed class BenefitDefinitionGlPostgresTests(PostgresFixture fixture)
     public async Task AConfirmedAllowance_PostsItsAmountToTheAccountOfTheChosenDriver_NotTheFallback_AndTheJournalBalances()
     {
         var w = await SeedAsync();
-        await CreateAllowanceAsync(w, finance: true);
+        await CreateAllowanceAsync(w);
         await PublishGradeValueAsync(w);
         await GiveEmployeeTheGradeValueAsync(w);
 
@@ -64,7 +64,7 @@ public sealed class BenefitDefinitionGlPostgresTests(PostgresFixture fixture)
     public async Task Control_AnAllowanceOnTheCatchAllDriver_ShowsUpIn5099_NotIn5210()
     {
         var w = await SeedAsync();
-        await CreateAllowanceAsync(w, finance: true);
+        await CreateAllowanceAsync(w);
         await PublishGradeValueAsync(w);
         await using (var db = fixture.CreateDb())
             await db.PayComponents.Where(c => c.TenantId == w.TenantId && c.Code == Code).ExecuteUpdateAsync(s => s.SetProperty(c => c.GlDriverKey, "EARN:OTHER"));
@@ -83,7 +83,7 @@ public sealed class BenefitDefinitionGlPostgresTests(PostgresFixture fixture)
     public async Task AnAllowance_OutsideItsEffectiveWindow_IsRefusedByThePayrollRun_AndPostsNothing()
     {
         var w = await SeedAsync();
-        await CreateAllowanceAsync(w, finance: true, effectiveTo: new DateOnly(2026, 11, 30));
+        await CreateAllowanceAsync(w, effectiveTo: new DateOnly(2026, 11, 30));
         await PublishGradeValueAsync(w);
         await GiveEmployeeTheGradeValueAsync(w);
 
@@ -105,7 +105,7 @@ public sealed class BenefitDefinitionGlPostgresTests(PostgresFixture fixture)
     public async Task AnAllowance_SwitchedOff_IsRefusedByThePayrollRun_AndPostsNothing_WhileTheMonthBeforeStillPosted()
     {
         var w = await SeedAsync();
-        var created = await CreateAllowanceAsync(w, finance: true);
+        var created = await CreateAllowanceAsync(w);
         await PublishGradeValueAsync(w);
         await GiveEmployeeTheGradeValueAsync(w);
         var november = await ProcessAsync(w, await NewRunAsync(w, 11));          // control: processed while on (not locked, so December may still change)
@@ -150,7 +150,7 @@ public sealed class BenefitDefinitionGlPostgresTests(PostgresFixture fixture)
     public async Task ChangingTheDriverOfAConfirmedAllowance_ByANonFinanceEditor_IsRefused_AndTheNextJournalIsUnchanged()
     {
         var w = await SeedAsync();
-        var created = await CreateAllowanceAsync(w, finance: true);
+        var created = await CreateAllowanceAsync(w);
         await PublishGradeValueAsync(w);
         await GiveEmployeeTheGradeValueAsync(w);
         var first = await ProcessAndLockAsync(w, 11);
@@ -278,19 +278,23 @@ public sealed class BenefitDefinitionGlPostgresTests(PostgresFixture fixture)
         return await As(w, finance).UpdateBenefit(new EntitlementMatrixService(db, new FixedClock(Today)), Code, req, default);
     }
 
-    /// <summary>The allowance as the real create door writes it: ALW_CAR, salary allowance, monthly, on the chosen earning driver; confirmed when a Finance user creates it.</summary>
-    private async Task<IActionResult> CreateAllowanceAsync(World w, bool finance, DateOnly? effectiveTo = null)
+    /// <summary>The allowance as the real create door writes it: ALW_CAR, salary allowance, monthly, on the chosen earning driver; added by HR and confirmed
+    /// by Finance (nobody confirms what they made). Returns the allowance as the grid shows it after the confirmation (its current version).</summary>
+    private async Task<IActionResult> CreateAllowanceAsync(World w, DateOnly? effectiveTo = null)
     {
-        var created = await AddAsync(w, finance, Request("Car allowance", b =>
+        var created = await AddAsync(w, finance: false, Request("Car allowance", b =>
         {
             b.Code = "CAR"; b.Delivery = "SalaryAllowance"; b.Frequency = "Monthly"; b.GlDriverKey = CarDriver; b.Category = "Vehicle"; b.PolicyClass = "Contractual";
             b.EffectiveFrom = Nov1; b.EffectiveTo = effectiveTo;
         }));
         Outcome(created).Status.Should().Be(200, JsonSerializer.Serialize(((ObjectResult)created).Value, Web));
         await using var db = fixture.CreateDb();
+        var service = new EntitlementMatrixService(db, new FixedClock(Today));
+        var confirmed = await As(w, finance: true).ConfirmBenefit(service, Code, null, default);
+        Outcome(confirmed).Status.Should().Be(200, JsonSerializer.Serialize(((ObjectResult)confirmed).Value, Web));
         (await db.PayComponents.AsNoTracking().SingleAsync(c => c.TenantId == w.TenantId && c.Code == Code && c.CompanyId == null))
             .Should().Match<PayComponent>(c => c.GlDriverKey == CarDriver && c.FinanceConfirmedAtUtc != null && c.CalcMethod == PayComponentCalcMethods.GradePackage);
-        return created;
+        return new OkObjectResult((await service.ReadAsync(w.TenantId, null, Today, default)).Components.Single(c => c.Code == Code));
     }
 
     private static UpdateBenefitRequest Edit(IActionResult created, string name, Action<EditBuilder> change)

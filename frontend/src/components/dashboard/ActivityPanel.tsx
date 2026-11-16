@@ -71,3 +71,60 @@ export function ActivityPanel({ feed }: { feed: ActivityFeedItem[] }) {
     </section>
   );
 }
+
+/**
+ * Stage layout: the four shortcuts as a slim dock along the foot of the screen (the floating
+ * assistant button sits in the gap this leaves on the inline-end side), so they are one click
+ * from every view instead of a card that has to be scrolled to.
+ */
+export function QuickActions() {
+  const t = useT();
+  return (
+    <nav aria-label={t('Quick actions')} className="flex h-12 shrink-0 items-center pe-[220px]">
+      {/* One glass bar, not four buttons: the floating chrome material, quiet single-colour icons. */}
+      <div className="wg-glass flex h-12 items-center gap-1 rounded-2xl border p-1.5">
+        {SHORTCUTS.map(({ label, to, icon: Icon }) => (
+          <Link key={to} href={to}
+            className="wg-press group inline-flex h-9 items-center gap-2 rounded-xl px-3 text-body-sm font-semibold text-slate-800 outline-none transition-colors duration-fast ease-standard hover:bg-[color:var(--wg-surface-2)] hover:text-sapphire focus-visible:ring-2 focus-visible:ring-sapphire dark:text-slate-100 dark:hover:text-blue-300">
+            <Icon className="h-4 w-4 text-slate-500 group-hover:text-sapphire dark:text-slate-400" aria-hidden />
+            {t(label)}
+          </Link>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+/** Stage layout: the audit-log feed on its own, filling the card it is given. */
+export function RecentActivityCard({ feed, limit = 8, columns = 1, headingId = 'activity-heading' }: { feed: ActivityFeedItem[]; limit?: number; columns?: 1 | 2; headingId?: string }) {
+  const t = useT();
+  const f = useFormat();
+  const now = Date.now();
+  const items = feed.slice(0, limit);
+  return (
+    <section aria-labelledby={headingId} className="wg-card flex h-full min-h-0 min-w-0 flex-col gap-3 overflow-hidden p-5">
+      <div className="flex items-center justify-between gap-2">
+        <h2 id={headingId} className="text-body font-semibold text-slate-900 dark:text-white">{t('Recent activity')}</h2>
+        <span className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400">
+          <span aria-hidden className="h-2 w-2 rounded-full bg-emerald-600" />
+          {t('From the audit log')}
+        </span>
+      </div>
+      {items.length === 0 ? (
+        <p className="text-body-sm text-slate-700 dark:text-slate-300">{t('No recent activity recorded.')}</p>
+      ) : (
+        <ol className={`min-h-0 flex-1 content-start overflow-y-auto ${columns === 2 ? 'grid grid-cols-2 gap-x-10 gap-y-4' : 'flex flex-col gap-3'}`}>
+          {items.map((it, i) => (
+            <li key={`${it.occurredAt}-${i}`} className="flex min-w-0 items-start gap-3">
+              <span aria-hidden className={`mt-1.5 h-[9px] w-[9px] shrink-0 rounded-full ring-2 ring-[color:var(--wg-surface)] ${DOT[it.module] ?? 'bg-slate-500'}`} />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-body-sm font-medium text-slate-900 dark:text-white">{auditActionLabel(t, it.action)}</span>
+                <span className="text-xs text-slate-600 dark:text-slate-400">{t(it.module)} · {it.actor} · <time dateTime={it.occurredAt}>{f.relative(it.occurredAt, now)}</time></span>
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}

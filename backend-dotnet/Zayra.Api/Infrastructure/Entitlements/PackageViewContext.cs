@@ -63,9 +63,13 @@ public sealed record PackageViewContext(
         var loanTypes = await db.LoanTypes.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.EntitlementComponentCode != null && codes.Contains(x.EntitlementComponentCode))
             .Select(x => new { Code = x.EntitlementComponentCode!, x.NameEn, x.NameAr }).ToListAsync(ct);
-        var components = await ScopedBypass.TenantWide(db.PayComponents, tenantId, "Component names are one identity across the tenant.")
-            .AsNoTracking().Where(x => codes.Contains(x.Code) && !x.IsDeleted && x.CompanyId == null)
-            .Select(x => new { x.Code, x.NameEn, x.NameAr }).ToListAsync(ct);
+        // The group's rows, and a company's own benefit definition (its offered company row): a code on this employee's package is the group's or their
+        // own company's, never a sister company's (its code carries that company's tag), so reading its name here tells nobody anything new.
+        var components = (await ScopedBypass.TenantWide(db.PayComponents, tenantId, "Component names are one identity across the tenant.")
+            .AsNoTracking().Where(x => codes.Contains(x.Code) && !x.IsDeleted
+                && (x.CompanyId == null || (x.IsOffered && (x.Code.StartsWith(EntitlementComponentRules.CustomPrefix) || x.Code.StartsWith(EntitlementComponentRules.AllowancePrefix)))))
+            .Select(x => new { x.Code, x.NameEn, x.NameAr, x.CompanyId }).ToListAsync(ct))
+            .OrderBy(x => x.CompanyId.HasValue).ToList();
         foreach (var code in codes)
         {
             var rule = EntitlementComponentRules.For(code);

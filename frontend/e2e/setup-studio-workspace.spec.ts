@@ -409,6 +409,11 @@ test('same_scope_company_refresh_keeps_newest_response', async ({ page }) => {
   const heldBeforeSecond = held.length;
   await page.evaluate(() => window.dispatchEvent(new Event('kynexone:companies-changed')));
   await expect.poll(() => held.length).toBeGreaterThan(heldBeforeSecond);
+  // The API client opens each read a moment after the refresh asked for it, so a read held "after" the second event can still
+  // belong to the first one, with the second one's read arriving a few tens of ms later (seen in CI and on origin/main under
+  // the dev server). The newest read is only known once the reads have stopped arriving.
+  let quietSince = Date.now(); let seen = held.length;
+  await expect.poll(() => { if (held.length !== seen) { seen = held.length; quietSince = Date.now(); } return Date.now() - quietSince; }, { intervals: [100] }).toBeGreaterThanOrEqual(500);
   const newest = held[held.length - 1];
   const older = held.slice(0, -1);
   const company = (name: string) => ({ items: [{ id: 'fixture-company', legalNameEn: name, countryCode: 'SAU', defaultCurrency: 'SAR', isActive: true }], total: 1 });

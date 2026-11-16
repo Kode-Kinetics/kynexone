@@ -79,7 +79,11 @@ public class DataScopeService : IDataScopeService
 
         var set = new HashSet<int>(inCompany);
         if (scope.CallerEmployeeId is int self) set.Add(self); // own record always reachable
-        return new DataScope { Level = scope.Level, CallerEmployeeId = scope.CallerEmployeeId, AllowedEmployeeIds = set.ToList() };
+        return new DataScope
+        {
+            Level = scope.Level, CallerEmployeeId = scope.CallerEmployeeId, AllowedEmployeeIds = set.ToList(),
+            OrganizationCompanyIds = scope.Level == DataScopeLevel.Organization ? companyIds : null,
+        };
     }
 
     private async Task<DataScope> ResolvePermissionScopeAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct)

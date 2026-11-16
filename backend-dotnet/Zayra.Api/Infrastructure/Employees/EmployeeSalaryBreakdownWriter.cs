@@ -117,7 +117,7 @@ public static class EmployeeSalaryBreakdownWriter
             if (Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.NamesAny(request.Allowances))
                 await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.LockForStagingAsync(db, employee.TenantId.Value, cancellationToken);
             var (resolvedLines, problem) = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ValidateAsync(
-                db, employee.TenantId.Value, request.Allowances, salary.BasicSalary ?? 0m, cancellationToken, GrossSalary(salary));
+                db, employee.TenantId.Value, request.Allowances, salary.BasicSalary ?? 0m, cancellationToken, GrossSalary(salary), employee.CompanyId);
             if (problem is not null) throw new InvalidOperationException(problem.Message);
             allowancesJson = Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Serialize(resolvedLines);
         }
@@ -158,7 +158,7 @@ public static class EmployeeSalaryBreakdownWriter
             if (Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.NamesAny(asStated))
                 await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.LockForStagingAsync(db, employee.TenantId.Value, cancellationToken);
             var (keptLines, keptProblem) = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ValidateAsync(
-                db, employee.TenantId.Value, asStated, change.BasicSalary, cancellationToken, GrossSalary(salary));
+                db, employee.TenantId.Value, asStated, change.BasicSalary, cancellationToken, GrossSalary(salary), employee.CompanyId);
             if (keptProblem is not null) throw new InvalidOperationException(keptProblem.Message);
             change.AllowancesJson = Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Serialize(keptLines);
         }

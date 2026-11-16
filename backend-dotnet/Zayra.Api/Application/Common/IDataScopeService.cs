@@ -13,6 +13,14 @@ public sealed class DataScope
     public bool IsUnrestricted => AllowedEmployeeIds is null;
 
     /// <summary>
+    /// Set only when an organisation-wide caller was bounded to the companies they may act in (the company boundary turned
+    /// "everyone" into <see cref="AllowedEmployeeIds"/>, which holds live employees only). Consumers that must also reach
+    /// soft-deleted employees (the Ex-Employees archive) apply this company set instead of the id list; everyone else keeps using
+    /// <see cref="AllowedEmployeeIds"/>. Null for group-level, team, department and own scopes.
+    /// </summary>
+    public IReadOnlyCollection<Guid>? OrganizationCompanyIds { get; init; }
+
+    /// <summary>
     /// True when the caller is allowed to see the given employee's records under this scope.
     /// Use this to authorize by-id ("detail") reads, which cannot be protected by <see cref="Constrain"/>
     /// (that method silently falls back to the caller's own id for a filtered LIST; a detail read must

@@ -232,6 +232,26 @@ export interface PayrollRunPopulation {
   /** Deliberate hold-outs. The approver must state this count to approve the run. */
   excluded: PayrollPopulationMember[];
   notEligible: PayrollPopulationMember[];
+  /** Everyone in the run's company scope the run does NOT pay, each with a reason code (never capped). */
+  leftOut?: PayrollPopulationEntry[];
+  /** Count per reason code of `leftOut`. */
+  leftOutCounts?: Record<string, number>;
+  /** People the run pays with a warning, and people it does not pay although their status says employed
+   *  (WARN_EMPLOYED_STATUS_NOT_PAID). The approver must state this count to approve the run. */
+  payWarnings?: PayrollPopulationEntry[];
+  payWarningCount?: number;
+}
+
+/** One person the run leaves out, or pays with a warning. `reasonCode` is a stable server code (PayPopulationReasons). */
+export interface PayrollPopulationEntry {
+  employeeId: number;
+  code: string;
+  name: string;
+  status: string;
+  reasonCode: string;
+  /** The date behind the reason (a last working day), ISO yyyy-mm-dd. */
+  date?: string | null;
+  message: string;
 }
 
 /** A blocking compliance error a human consciously cleared, with the reason they gave. */
@@ -689,11 +709,14 @@ export interface PayrollReadiness {
   cashAllowanceIssues?: CashAllowanceIssue[];
 }
 
-export type CashAllowanceProblem = 'no_definition' | 'not_confirmed' | 'no_gl_driver';
+/** `other_company`: the line is the own allowance of a company the employee no longer works for (moved); it is never stripped automatically. */
+export type CashAllowanceProblem = 'no_definition' | 'not_confirmed' | 'no_gl_driver' | 'other_company';
 
 export interface CashAllowanceIssue {
   employeeId: number; employeeCode: string; employeeName: string; companyId: string | null; code: string;
   problem: CashAllowanceProblem; message: string;
+  /** The server's sentence in Arabic, when it has one. Absent from an older API. */
+  messageAr?: string | null;
   /** The allowance's own name (the code alone told nobody which one it was), and where to fix it. Absent from an older API. */
   allowanceNameEn?: string | null; allowanceNameAr?: string | null; href?: string | null;
 }
@@ -813,7 +836,7 @@ export const payrollApi = {
   // cash count, so a client that silently echoes the server's number back would be no control.
   approveRun: (
     id: string,
-    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null; expectedOutsideBankCount?: number | null; expectedUncostedCount?: number | null } = {},
+    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null; expectedOutsideBankCount?: number | null; expectedUncostedCount?: number | null; expectedPayWarningCount?: number | null } = {},
   ) =>
     client
       .post<PayrollRun>(`/api/payroll/runs/${id}/approve`, {
@@ -821,6 +844,8 @@ export const payrollApi = {
         expectedExcludedCount: body.expectedExcludedCount ?? null,
         expectedOverriddenCount: body.expectedOverriddenCount ?? null,
         expectedOutsideBankCount: body.expectedOutsideBankCount ?? null,
+        // People paid with a warning (no last working day, "On leave" with no leave, deleted but owed).
+        expectedPayWarningCount: body.expectedPayWarningCount ?? null,
         // S-048: the uncosted-Optional count the approver affirmed (costing on only).
         expectedUncostedCount: body.expectedUncostedCount ?? null,
       })

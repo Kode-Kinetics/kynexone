@@ -20,7 +20,11 @@ namespace Zayra.Api.Infrastructure.Entitlements;
 /// <para><b>Nothing is stored and ignored.</b> A delivery the Release A engine cannot execute (reimbursement, payroll deduction, an annual or one-time
 /// allowance), a per-benefit enrolment, a mandatory class, and any JSON field this contract does not know are refused with a plain code.</para>
 ///
-/// <para><b>Money.</b> A cash allowance stays all-companies, monthly, Finance-confirmed (maker is not checker). Its GL driver and end-of-service setting
+/// <para><b>Whose.</b> A definition is the group's (company_id NULL) or one company's own (that company's row, offered): see <c>CreateBenefitAsync</c>. A company's
+/// own is edited by anyone who reaches that company and is invisible (404) to everyone else; only group HR widens it to more companies, and from then on it is
+/// the group's (its rows move to company_id NULL, the companies left out get a "not offered" switch) and needs access to every company like any group benefit.</para>
+///
+/// <para><b>Money.</b> A group cash allowance stays all-companies, monthly, Finance-confirmed (maker is not checker); a company's own is paid by its own company only. Its GL driver and end-of-service setting
 /// of a <i>confirmed</i> allowance change only through Finance's effective-dated correction; its dates and active switch change here (the policy class is only a label), and
 /// when someone without the Finance permission changes them the allowance is pending Finance again, with that person as its maker.</para>
 /// </summary>
@@ -121,7 +125,7 @@ public sealed partial class EntitlementMatrixService
 
     /// <summary>The code the customer typed, without its prefix: ASCII letters, digits and underscores starting with a letter; never a reserved prefix;
     /// the finished code within the length limit. Null part = nothing typed.</summary>
-    private static (MatrixResult? Problem, string? Part) CheckCode(string? raw, string prefix)
+    private static (MatrixResult? Problem, string? Part) CheckCode(string? raw, string prefix, int reserve = 0)
     {
         var typed = Blank(raw);
         if (typed is null) return (null, null);
@@ -138,8 +142,8 @@ public sealed partial class EntitlementMatrixService
         if (ReservedCodePrefixes.Any(r => upper.StartsWith(r, StringComparison.Ordinal)))
             return (Bad("code_reserved", "This code is reserved for statutory components and loans. Choose another."), null);
         var max = prefix == EntitlementComponentRules.AllowancePrefix ? EntitlementComponentRules.AllowanceCodeMaxLength : EntitlementComponentRules.CustomCodeMaxLength;
-        if (prefix.Length + upper.Length > max)
-            return (Bad("code_too_long", $"The code, with its {prefix} prefix, can be at most {max} characters."), null);
+        if (prefix.Length + upper.Length + reserve > max)
+            return (Bad("code_too_long", $"The code, with its {prefix} prefix, can be at most {max - reserve} characters."), null);
         return (null, upper);
     }
 
@@ -183,10 +187,11 @@ public sealed partial class EntitlementMatrixService
         return false;
     }
 
-    private async Task<MatrixResult?> WindowChangeLockProblemAsync(Guid tid, Window old, Window next, bool openPastCounts, CancellationToken ct)
+    /// <param name="companyId">The company a company's own benefit belongs to: only its runs and closes bound it (the pay component precedent). Null = every company's.</param>
+    private async Task<MatrixResult?> WindowChangeLockProblemAsync(Guid tid, Window old, Window next, bool openPastCounts, CancellationToken ct, Guid? companyId = null)
     {
         if (old == next) return null;
-        if (await PayComponentPolicy.LatestCommittedPeriodAsync(db, tid, null, ct) is not DateOnly committed) return null;
+        if (await PayComponentPolicy.LatestCommittedPeriodAsync(db, tid, companyId, ct) is not DateOnly committed) return null;
         if (!ChangeReachesCommitted(committed, old, next, openPastCounts)) return null;
         return new MatrixResult(StatusCodes.Status409Conflict, new
         {
@@ -220,7 +225,7 @@ public sealed partial class EntitlementMatrixService
         return (null, excluded);
     }
 
-    private static void FillSkipMarker(PayComponent marker, PayComponent template, DateOnly from, Guid? userId)
+    private static void FillSkipMarker(PayComponent marker, PayComponent template, DateOnly? from, Guid? userId)
     {
         marker.NameEn = template.NameEn; marker.NameAr = template.NameAr; marker.ComponentType = template.ComponentType;
         marker.CalcMethod = template.CalcMethod; marker.Value = null; marker.DisplayOrder = template.DisplayOrder;
@@ -262,7 +267,10 @@ public sealed partial class EntitlementMatrixService
     private static BenefitDefinitionDto DefinitionOf(PayComponent shown, IReadOnlyCollection<PayComponent> versions, DefinitionContext ctx, DateOnly today)
     {
         var cash = EntitlementComponentRules.IsAllowance(shown.Code);
-        var offered = cash
+        // A company's own benefit is offered to its own company alone.
+        var offered = shown.CompanyId is Guid owner
+            ? ctx.ActiveCompanyIds.Where(id => id == owner).ToList()
+            : cash
             ? ctx.ActiveCompanyIds
             : ctx.ActiveCompanyIds.Where(id => !ctx.Markers[shown.Code].Any(m => m.CompanyId == id && (m.EffectiveTo is null || m.EffectiveTo >= today))).ToList();
         return new BenefitDefinitionDto(
@@ -270,12 +278,13 @@ public sealed partial class EntitlementMatrixService
             shown.RequiresEnrolment ?? false, offered, VersionOf(versions), shown.SourceBenefitPlanId, ctx.UsedCodes.Contains(shown.Code));
     }
 
-    /// <summary>The finished component (rule, cash state, definition) of one customer-added code as it stands now, inactive ones included. Null when there is none.</summary>
+    /// <summary>The finished component (rule, cash state, definition, owner) of one customer-added code as it stands now, inactive ones included. Null when there is
+    /// none. The caller decides whether the person asking may see it (<c>CanSee</c>).</summary>
     private async Task<MatrixComponentDto?> ComponentDtoAsync(Guid tid, string code, IReadOnlyList<AllowanceWarningDto>? warnings, CancellationToken ct)
     {
         var cash = EntitlementComponentRules.IsAllowance(code);
-        var query = ScopedBypass.TenantWide(db.PayComponents, tid, "The tenant-wide definition rows of one customer-added benefit.")
-            .AsNoTracking().Where(x => x.CompanyId == null && x.Code == code && !x.IsDeleted);
+        var query = ScopedBypass.TenantWide(db.PayComponents, tid, "The definition rows of one customer-added benefit: the group's, or the one company's own.")
+            .AsNoTracking().Where(x => (x.CompanyId == null || x.IsOffered) && x.Code == code && !x.IsDeleted);
         query = cash
             ? query.Where(x => x.ComponentType == PayComponentTypes.Earning && x.CalcMethod == PayComponentCalcMethods.GradePackage)
             : query.Where(x => x.ComponentType == PayComponentTypes.Benefit);
@@ -285,8 +294,8 @@ public sealed partial class EntitlementMatrixService
         var shown = CashAllowanceDefinitions.Current(versions, today) ?? versions[0];
         var ctx = await DefinitionContextAsync(tid, [code], ct);
         var rule = EntitlementComponentRules.CustomRuleFor(code, shown.NameEn, shown.NameAr);
-        return ToDto(rule, cash ? InfoOf(shown) : null, cash ? warnings ?? CashAllowanceDefinitions.Warnings(shown.NameEn, shown.NameAr, shown.EosbIncluded, shown.EosbExclusionCategory, atCreation: false) : null,
-            DefinitionOf(shown, versions, ctx, today));
+        return ToDto(rule, cash ? InfoOf(shown, versions) : null, cash ? warnings ?? CashAllowanceDefinitions.Warnings(shown.NameEn, shown.NameAr, shown.EosbIncluded, shown.EosbExclusionCategory, atCreation: false) : null,
+            DefinitionOf(shown, versions, ctx, today), shown.CompanyId);
     }
 
     // ── Replay ───────────────────────────────────────────────────────────────────────────────────
@@ -321,21 +330,33 @@ public sealed partial class EntitlementMatrixService
         string? Category, string? PolicyClass, DateOnly? From, DateOnly? To, bool IsActive, string? UserCode, List<Guid>? ExcludedCompanies);
 
     private async Task<(MatrixResult? Problem, CreateDefinition? Input)> ParseCreateDefinitionAsync(
-        MatrixActor actor, CreateBenefitRequest req, bool cash, CancellationToken ct)
+        MatrixActor actor, CreateBenefitRequest req, bool cash, Guid? owner, CancellationToken ct)
     {
         var (categoryProblem, category) = CheckCategory(req.Category);
         if (categoryProblem is not null) return (categoryProblem, null);
         var (classProblem, policyClass) = CheckPolicyClass(req.PolicyClass);
         if (classProblem is not null) return (classProblem, null);
         var prefix = cash ? EntitlementComponentRules.AllowancePrefix : EntitlementComponentRules.CustomPrefix;
-        var (codeProblem, part) = CheckCode(req.Code, prefix);
+        var (codeProblem, part) = CheckCode(req.Code, prefix, owner is null ? 0 : 1 + EntitlementMatrixService.CompanyTagLength);
         if (codeProblem is not null) return (codeProblem, null);
         var (shapeProblem, _) = CheckWindowShape(req.EffectiveFrom, req.EffectiveTo);
         if (shapeProblem is not null) return (shapeProblem, null);
-        var (scopeProblem, excluded) = await ExcludedCompaniesAsync(actor.TenantId, req.Scope, cash, req.EffectiveFrom, ct);
-        if (scopeProblem is not null) return (scopeProblem, null);
+        List<Guid>? excluded = null;
+        if (owner is Guid company)
+        {
+            // A company's own benefit is offered to that company alone: a scope may restate it, never name another company (only group HR widens a benefit).
+            if (req.Scope?.Unrecognised is { Count: > 0 } extra) return (UnrecognisedField(extra.Keys), null);
+            if (req.Scope?.CompanyIds is { } ids && (ids.Count == 0 || ids.Any(id => id != company)))
+                return (Bad("scope_not_company", "A benefit added for one company is offered to that company only. Group HR can offer it to more companies later."), null);
+        }
+        else
+        {
+            var (scopeProblem, subset) = await ExcludedCompaniesAsync(actor.TenantId, req.Scope, cash, req.EffectiveFrom, ct);
+            if (scopeProblem is not null) return (scopeProblem, null);
+            excluded = subset;
+        }
         // A new definition has no earlier window: every month it covers changes. A new cash allowance open to the past would be in effect for paid months.
-        if (await WindowChangeLockProblemAsync(actor.TenantId, new Window(false, null, null), new Window(req.IsActive ?? true, req.EffectiveFrom, req.EffectiveTo), openPastCounts: cash, ct) is { } locked)
+        if (await WindowChangeLockProblemAsync(actor.TenantId, new Window(false, null, null), new Window(req.IsActive ?? true, req.EffectiveFrom, req.EffectiveTo), openPastCounts: cash, ct, owner) is { } locked)
             return (locked, null);
         return (null, new CreateDefinition(category, policyClass, req.EffectiveFrom, req.EffectiveTo, req.IsActive ?? true, part, excluded));
     }
@@ -360,15 +381,14 @@ public sealed partial class EntitlementMatrixService
 
     /// <summary>
     /// Edits the definition of a benefit or cash allowance the customer added (PUT /api/entitlements/components/{code}). Needs the feature (read inside the
-    /// lock), access to every company and the version the screen read (<see cref="UpdateBenefitRequest.ExpectedVersion"/>); serialised with every other matrix
-    /// write, one save with its audit row. The kind and delivery never change; the code only while nothing uses it (contract benefits); the company scope is
-    /// switched in the offerings. A cash allowance: see the class remarks.
+    /// lock), access to every company for a group benefit or to its company for a company's own (to anyone else that one does not exist: 404), and the
+    /// version the screen read (<see cref="UpdateBenefitRequest.ExpectedVersion"/>); serialised with every other matrix write, one save with its audit row.
+    /// The kind and delivery never change; the code only while nothing uses it (contract benefits); a group benefit's company scope is switched in the
+    /// offerings. A company's own benefit is widened to more companies here (<c>scope</c>), by group HR only, and is then the group's. A cash allowance:
+    /// see the class remarks.
     /// </summary>
-    public async Task<MatrixResult> UpdateBenefitAsync(MatrixActor actor, string code, UpdateBenefitRequest req, CancellationToken ct)
-    {
-        if (!actor.Scope.IsGroupLevel) return GroupScopeRequired();
-        return await FinanceDecisionSerializer.SerializeAsync(db, LockScope, actor.TenantId, actor.TenantId, () => UpdateBenefitCoreAsync(actor, code, req, ct), ct);
-    }
+    public async Task<MatrixResult> UpdateBenefitAsync(MatrixActor actor, string code, UpdateBenefitRequest req, CancellationToken ct) =>
+        await FinanceDecisionSerializer.SerializeAsync(db, LockScope, actor.TenantId, actor.TenantId, () => UpdateBenefitCoreAsync(actor, code, req, ct), ct);
 
     private async Task<MatrixResult> UpdateBenefitCoreAsync(MatrixActor actor, string code, UpdateBenefitRequest req, CancellationToken ct)
     {
@@ -391,21 +411,24 @@ public sealed partial class EntitlementMatrixService
             var was = replay.TryGetProperty("componentCode", out var c0) ? c0.GetString() : null;
             var movedTo = replay.TryGetProperty("newCode", out var c1) ? c1.GetString() : was;
             if (!SameRequest(replay, fingerprint) || (code != was && code != movedTo)) return RequestIdReused();
-            return await CurrentAsync(tid, movedTo ?? code, ct);
+            return await CurrentAsync(actor, movedTo ?? code, ct);
         }
 
         if (!EntitlementComponentRules.IsCustom(code))
-            return Conflict("built_in_benefit", "Only a benefit you added yourself can be edited.");
+            return actor.Scope.IsGroupLevel ? Conflict("built_in_benefit", "Only a benefit you added yourself can be edited.") : GroupScopeRequired();
         var cash = EntitlementComponentRules.IsAllowance(code);
 
-        // Every live version of the definition (tracked), tenant-wide only. A code of another tenant is simply not here: 404, like a missing one.
-        var rowsQuery = ScopedBypass.TenantWide(db.PayComponents, tid, "The tenant's own definition rows of one customer-added benefit, to edit.")
-            .Where(x => x.CompanyId == null && x.Code == code && !x.IsDeleted);
+        // Every live version of the definition (tracked): the group's rows, or one company's own. A code of another tenant is simply not here, and a sister
+        // company's own benefit is not there for the caller: 404 for both, like a missing one. A group benefit needs access to every company.
+        var rowsQuery = ScopedBypass.TenantWide(db.PayComponents, tid, "The definition rows of one customer-added benefit, to edit: the group's, or one company's own (access checked below).")
+            .Where(x => (x.CompanyId == null || x.IsOffered) && x.Code == code && !x.IsDeleted);
         rowsQuery = cash
             ? rowsQuery.Where(x => x.ComponentType == PayComponentTypes.Earning && x.CalcMethod == PayComponentCalcMethods.GradePackage)
             : rowsQuery.Where(x => x.ComponentType == PayComponentTypes.Benefit);
         var versions = (await rowsQuery.ToListAsync(ct)).OrderBy(x => x.EffectiveFrom ?? DateOnly.MinValue).ToList();
-        if (versions.Count == 0) return NotFound();
+        if (versions.Count == 0 || !CanSee(actor, versions[0].CompanyId)) { db.ChangeTracker.Clear(); return NotFound(); }
+        var owner = versions[0].CompanyId;
+        if (owner is null && !actor.Scope.IsGroupLevel) { db.ChangeTracker.Clear(); return GroupScopeRequired(); }
 
         if (string.IsNullOrWhiteSpace(req.ExpectedVersion))
             return Bad("expected_version_required", "Send the version of the benefit you were looking at, so a change someone else made isn't overwritten.");
@@ -444,8 +467,14 @@ public sealed partial class EntitlementMatrixService
         if ((nameEn != head.NameEn && CashAllowanceDefinitions.HasInvisibleOrDirectionCharacters(nameEn))
             || (nameAr != head.NameAr && CashAllowanceDefinitions.HasInvisibleOrDirectionCharacters(nameAr)))
             return Bad("name_invalid", "A name can't contain control, invisible or text-direction characters.");
-        var others = await ScopedBypass.TenantWide(db.PayComponents, tid, "The other benefits the customer added, removed ones excluded, to keep names unique.")
-            .AsNoTracking().Where(IsCustomRow()).Where(x => !x.IsDeleted && x.Code != code).ToListAsync(ct);
+        // Unique among the benefits it sits beside: a company's own beside the group's and its company's own (never a sister company's: no oracle); a group
+        // benefit — or a company's own being widened to the group — beside every one.
+        var widening = owner is Guid ownerCompany && req.Scope is { } asked
+            && !(asked.CompanyIds is { Count: > 0 } askedIds && askedIds.All(id => id == ownerCompany));
+        var nameScope = widening ? null : owner;
+        var others = await ScopedBypass.TenantWide(db.PayComponents, tid, "The other benefits the customer added, removed ones excluded, to keep names unique among those it sits beside.")
+            .AsNoTracking().Where(IsCustomShape()).Where(IsDefinitionScope())
+            .Where(x => !x.IsDeleted && x.Code != code && (nameScope == null || x.CompanyId == null || x.CompanyId == nameScope)).ToListAsync(ct);
         bool Same(string a, string b) => string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);
         if (others.Any(x => Same(x.NameEn, nameEn) || Same(x.NameAr, nameAr) || Same(x.NameEn, nameAr) || Same(x.NameAr, nameEn)))
             return Conflict("benefit_exists", $"A benefit called \"{nameEn}\" already exists. Choose a different name.");
@@ -472,8 +501,30 @@ public sealed partial class EntitlementMatrixService
 
         var ctx = await DefinitionContextAsync(tid, [code], ct);
 
-        // The scope is the offerings' business; restating the current one is fine.
-        if (req.Scope is not null)
+        // A company's own benefit: its scope is that company; restating it is fine. Offering it to more companies makes it the group's — group HR only, never
+        // without its own company, and a cash allowance to every company or none (a group allowance is never skipped per company).
+        var widen = false;
+        List<Guid>? widenExcluded = null;
+        if (owner is Guid company && req.Scope is not null)
+        {
+            if (req.Scope.Unrecognised is { Count: > 0 } extra) return UnrecognisedField(extra.Keys);
+            var requested = req.Scope.CompanyIds is { } ids ? ids.Distinct().ToList() : ctx.ActiveCompanyIds;
+            if (!(requested.Count == 1 && requested[0] == company))
+            {
+                if (!actor.Scope.IsGroupLevel) return GroupScopeRequired();
+                if (!requested.Contains(company))
+                    return Bad("scope_must_include_owner", "A company's own benefit stays offered to its company. Add companies to the ones it is offered to; switch a company off in the offerings afterwards.");
+                var (scopeProblem, excluded) = await ExcludedCompaniesAsync(tid, req.Scope, cash, head.EffectiveFrom ?? today, ct);
+                if (scopeProblem is not null) return scopeProblem;
+                // A group allowance posts in every company: its GL driver must post in each one, not just in the company that added it.
+                if (cash && await PayComponentPolicy.ValidateGlDriverAsync(db, tid, null, PayComponentTypes.Earning, head.GlDriverKey ?? string.Empty, ct) is { } glProblem)
+                    return Bad("gl_driver_invalid", glProblem);
+                widen = true;
+                widenExcluded = excluded;
+            }
+        }
+        // A group benefit: the scope is the offerings' business; restating the current one is fine.
+        else if (req.Scope is not null)
         {
             var (scopeProblem, excluded) = await ExcludedCompaniesAsync(tid, req.Scope, cash, today, ct);
             if (scopeProblem is not null) return scopeProblem;
@@ -483,11 +534,12 @@ public sealed partial class EntitlementMatrixService
                 return Conflict("scope_change_uses_offerings", "Switch a company on or off for this benefit in the company offerings; the scope isn't changed here.");
         }
 
-        // The code: only a contract benefit nothing uses can be renamed.
+        // The code: only a contract benefit nothing uses can be renamed. A company's own keeps its company's tag (it stays out of every sister company's way).
         var prefix = cash ? EntitlementComponentRules.AllowancePrefix : EntitlementComponentRules.CustomPrefix;
-        var (codeProblem, part) = CheckCode(req.Code, prefix);
+        var suffix = owner is Guid tagged && !widen ? "_" + CompanyTag(tagged) : string.Empty;
+        var (codeProblem, part) = CheckCode(req.Code, prefix, suffix.Length);
         if (codeProblem is not null) return codeProblem;
-        var newCode = part is null ? code : prefix + part;
+        var newCode = part is null ? code : prefix + part + suffix;
         var renaming = newCode != code;
         if (renaming)
         {
@@ -509,11 +561,11 @@ public sealed partial class EntitlementMatrixService
         {
             if (versions.Count > 1)
                 return Conflict("dates_locked_by_versions", "Finance has corrected this allowance's terms over time, so its dates and active switch can't be changed here.");
-            if (await WindowChangeLockProblemAsync(tid, new Window(head.IsActive, head.EffectiveFrom, head.EffectiveTo), new Window(newActive, newFrom, newTo), openPastCounts: true, ct) is { } locked)
+            if (await WindowChangeLockProblemAsync(tid, new Window(head.IsActive, head.EffectiveFrom, head.EffectiveTo), new Window(newActive, newFrom, newTo), openPastCounts: true, ct, owner) is { } locked)
                 return locked;
             if (newFrom != head.EffectiveFrom
                 && await ScopedBypass.TenantWide(db.PayComponents, tid, "The unique key counts removed rows: a start date another version of the code already holds is taken.")
-                    .AsNoTracking().AnyAsync(x => x.CompanyId == null && x.Code == code && x.ComponentType == head.ComponentType && x.Id != head.Id && x.EffectiveFrom == newFrom, ct))
+                    .AsNoTracking().AnyAsync(x => x.CompanyId == owner && x.Code == code && x.ComponentType == head.ComponentType && x.Id != head.Id && x.EffectiveFrom == newFrom, ct))
                 return Conflict("effective_from_taken", "A version of this benefit already starts on that date.");
         }
 
@@ -537,18 +589,22 @@ public sealed partial class EntitlementMatrixService
         // Is this a change at all?
         var nameChanged = nameEn != head.NameEn || nameAr != head.NameAr;
         var categoryChanged = category != head.BenefitCategory;
-        if (!nameChanged && !categoryChanged && !classChanged && !datesChanged && !activeChanged && !renaming && newTerms is null)
-            return await CurrentAsync(tid, code, ct);
+        if (!nameChanged && !categoryChanged && !classChanged && !datesChanged && !activeChanged && !renaming && newTerms is null && !widen)
+            return await CurrentAsync(actor, code, ct);
 
-        // A cash allowance's money terms (dates, active, GL/EOSB) — and a name that changes its end-of-service cautions — changed by someone
-        // without the Finance permission put it back to pending Finance, and the editor is then its maker, who can never confirm it. A pending one stays
-        // pending with the editor as its maker. A Finance editor keeps it confirmed and the original maker.
+        // A cash allowance's money terms (dates, active, GL/EOSB) — and a name that changes its end-of-service cautions — changed by ANYONE, a Finance
+        // editor included, put it back to pending Finance, and the editor is then its maker, who can never confirm it (owner rule: nobody confirms what they
+        // made or changed). A pending one stays pending with the editor as its maker. The original maker and every editor since the last confirmation stay
+        // barred too (read from the audit trail at confirm time), so makership is never handed on.
         var cautionsChanged = cash && nameChanged
             && !CashAllowanceDefinitions.Warnings(head.NameEn, head.NameAr, head.EosbIncluded, head.EosbExclusionCategory, atCreation: false).Select(w => w.Code).Order()
                 .SequenceEqual(CashAllowanceDefinitions.Warnings(nameEn, nameAr, head.EosbIncluded, head.EosbExclusionCategory, atCreation: false).Select(w => w.Code).Order());
-        // (The policy class is a descriptive label payroll never reads, so it is not a money term.)
-        var moneyChanged = cash && (datesChanged || activeChanged || newTerms is not null || cautionsChanged);
-        var repended = moneyChanged && head.FinanceConfirmedAtUtc is not null && !actor.IsFinance;
+        // (The policy class is a descriptive label payroll never reads, so it is not a money term.) Widening a company's own allowance to the group is one:
+        // Finance confirmed it for one company, and every company's payroll will pay it now — whatever permission the widener holds.
+        var moneyChanged = cash && (datesChanged || activeChanged || newTerms is not null || cautionsChanged || widen);
+        var repended = moneyChanged && head.FinanceConfirmedAtUtc is not null;
+        // Everyone who could confirm it again is told (read before the last look below, so nothing awaits after it): after a widening, the group's Finance.
+        var toTell = repended ? await FinanceRecipientsAsync(tid, await CannotConfirmAfterAsync(actor, versions, ct), widen ? null : owner, ct) : [];
         var before = new { name = head.NameEn, nameAr = head.NameAr, category = head.BenefitCategory, policyClass = head.PolicyClass, effectiveFrom = head.EffectiveFrom, effectiveTo = head.EffectiveTo, isActive = head.IsActive, code };
         var renamedRows = renaming
             ? await ScopedBypass.TenantWide(db.PayComponents, tid, "A renamed code moves with its company switches, removed ones too (the unique key counts them).")
@@ -557,7 +613,7 @@ public sealed partial class EntitlementMatrixService
         // The last look before anything is changed (nothing below awaits until the save): a payroll approval that landed since the first check is caught.
         if (BeforeDefinitionSaveHook is { } beforeSave) await beforeSave();
         if ((datesChanged || activeChanged)
-            && await WindowChangeLockProblemAsync(tid, new Window(head.IsActive, head.EffectiveFrom, head.EffectiveTo), new Window(newActive, newFrom, newTo), openPastCounts: true, ct) is { } lateLock)
+            && await WindowChangeLockProblemAsync(tid, new Window(head.IsActive, head.EffectiveFrom, head.EffectiveTo), new Window(newActive, newFrom, newTo), openPastCounts: true, ct, owner) is { } lateLock)
         {
             db.ChangeTracker.Clear();
             return lateLock;
@@ -580,13 +636,37 @@ public sealed partial class EntitlementMatrixService
         if (repended) { head.FinanceConfirmedAtUtc = null; head.FinanceConfirmedByUserId = null; }
         if (moneyChanged && head.FinanceConfirmedAtUtc is null) head.CreatedBy = actor.UserId;
         foreach (var row in renamedRows) { row.Code = newCode; row.UpdatedAtUtc = now; row.UpdatedBy = actor.UserId; }
+        if (widen)
+        {
+            // The group's now: every version moves to the group, and each company left out gets the "not offered" switch from the benefit's own start (it never
+            // had the benefit, so no month changes for it). The same switch rows the offerings write.
+            foreach (var version in versions) version.CompanyId = null;
+            if (!cash && widenExcluded is { Count: > 0 })
+            {
+                var oldMarkers = await ScopedBypass.TenantWide(db.PayComponents, tid, "Earlier company switches on this code, removed ones too: the unique key counts them.")
+                    .Where(x => x.CompanyId != null && !x.IsOffered && x.Code == newCode && x.ComponentType == PayComponentTypes.Benefit).ToListAsync(ct);
+                foreach (var companyId in widenExcluded)
+                {
+                    var marker = oldMarkers.FirstOrDefault(x => x.CompanyId == companyId && x.EffectiveFrom == head.EffectiveFrom);
+                    if (marker is null)
+                    {
+                        marker = new PayComponent { TenantId = tid, CompanyId = companyId, Code = newCode, CreatedBy = actor.UserId };
+                        db.PayComponents.Add(marker);
+                    }
+                    FillSkipMarker(marker, head, head.EffectiveFrom, actor.UserId);
+                    db.AuditLogs.Add(Audit(actor, companyId, AuditSkipped, marker.Id, new { componentCode = newCode, CompanyId = companyId, EffectiveFrom = head.EffectiveFrom, withWidening = true }));
+                }
+            }
+        }
         var after = new { name = head.NameEn, nameAr = head.NameAr, category = head.BenefitCategory, policyClass = head.PolicyClass, effectiveFrom = head.EffectiveFrom, effectiveTo = head.EffectiveTo, isActive = head.IsActive, code = newCode };
-        db.AuditLogs.Add(Audit(actor, null, AuditBenefitUpdated, head.Id, new
+        db.AuditLogs.Add(Audit(actor, owner, AuditBenefitUpdated, head.Id, new
         {
             componentCode = code, newCode, before, after, repended, financeTermsChanged = newTerms is not null, requestId = req.RequestId, requestHash = fingerprint,
+            ownerCompanyId = widen ? null : owner, widenedFrom = widen ? owner : null, offeredTo = widen ? ctx.ActiveCompanyIds.Where(id => widenExcluded?.Contains(id) != true).ToList() : null,
         }));
+        AddFinanceWaitingNotices(tid, toTell, head, changed: true);
         await db.SaveChangesAsync(ct);
-        return await CurrentAsync(tid, newCode, ct);
+        return await CurrentAsync(actor, newCode, ct);
     }
 
     /// <summary>Whether Finance has ever confirmed this allowance: some version is confirmed now, or its audit history shows a confirmation, a Finance
@@ -613,7 +693,8 @@ public sealed partial class EntitlementMatrixService
         return false;
     }
 
-    /// <summary>200 with the benefit as it stands now, or 404 when it is not there.</summary>
-    private async Task<MatrixResult> CurrentAsync(Guid tid, string code, CancellationToken ct) =>
-        await ComponentDtoAsync(tid, code, null, ct) is { } dto ? Ok(dto) : NotFound();
+    /// <summary>200 with the benefit as it stands now, or 404 when it is not there — or not there for the caller (a company's own benefit of a company they
+    /// do not reach).</summary>
+    private async Task<MatrixResult> CurrentAsync(MatrixActor actor, string code, CancellationToken ct) =>
+        await ComponentDtoAsync(actor.TenantId, code, null, ct) is { } dto && CanSee(actor, dto.OwnerCompanyId) ? Ok(dto) : NotFound();
 }

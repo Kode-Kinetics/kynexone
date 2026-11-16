@@ -3,7 +3,8 @@ import client from './client';
 /** Release A slice R1 — benefits by grade. Mirrors backend Infrastructure/Entitlements/EntitlementMatrixModels.cs. */
 
 export type ComponentGroup = 'Wage' | 'Contract' | 'Facility';
-export type OfferingMode = 'Group' | 'Adopted' | 'Tailored' | 'Skipped';
+/** `Own`: a company's own benefit, in that company's view (offered to it alone). */
+export type OfferingMode = 'Group' | 'Adopted' | 'Tailored' | 'Skipped' | 'Own';
 export type MatrixValueType =
   | 'Amount' | 'PercentOfBasic' | 'MultipleOfBasic' | 'MultipleOfGross' | 'MultipleOfHousing'
   | 'InKind' | 'CoverageTier' | 'Quantity' | 'EligibilityOnly';
@@ -29,6 +30,8 @@ export interface MatrixComponent {
   cashAllowance?: CashAllowanceInfo | null;
   /** Non-blocking cautions the server raises when an allowance is created, confirmed or corrected. */
   warnings?: AllowanceWarning[] | null;
+  /** Set on a company's own benefit: the one company it belongs to (and is offered to). Null for a group benefit. */
+  ownerCompanyId?: string | null;
 }
 
 /** Why a cash allowance is left out of end of service pay. `Other` needs a note. */
@@ -62,6 +65,8 @@ export interface MatrixGap { gradeId: string; componentCode: string; scheduledFr
 export interface EntitlementMatrix {
   asOf: string; today: string; companyId: string | null; currency: string | null;
   grades: MatrixGrade[]; components: MatrixComponent[]; cells: MatrixCell[]; offerings: MatrixOffering[]; gaps: MatrixGap[];
+  /** What this API can do. `companyBenefits`: a benefit can be added for one company from its view. Absent on an older API. */
+  capabilities?: { benefitDefinition?: boolean; companyBenefits?: boolean } | null;
 }
 
 /** One cell to publish. `useGroupDefault` (company view only) drops the company's own value. */
@@ -109,6 +114,8 @@ export interface CreateBenefitBody {
   glDriverKey?: string | null; eosbIncluded?: boolean; eosbExclusionReason?: string | null;
   /** Why it is left out of end of service pay (when `eosbIncluded` is false). `Other` needs `eosbExclusionReason`. */
   eosbExclusionCategory?: EosbExclusionCategory | null;
+  /** The company the benefit is for, from that company's view: only that company is offered it. Absent: a group benefit. */
+  companyId?: string | null;
 }
 
 /** POST .../components/{code}/confirm: every field optional; left out, the allowance is confirmed as it was entered. */
@@ -128,11 +135,12 @@ export const entitlementsApi = {
     client.get<EntitlementMatrix>('/api/entitlements/matrix', { params, signal }).then(r => r.data),
   publish: (body: { companyId: string | null; effectiveFrom: string; cells: MatrixCellInput[] }, dryRun = false) =>
     client.put<PublishMatrixResult>('/api/entitlements/matrix', body, { params: dryRun ? { dryRun: true } : undefined }).then(r => r.data),
-  /** Adds a benefit of the customer's own (needs access to every company). Returns it as a grid row. */
   /** The earning GL accounts a cash allowance may post to, each judged by the same rule the add applies. Needs only entitlements.manage:
-   *  key, label and the verdict, never account numbers. */
-  cashGlDrivers: () =>
-    client.get<CashGlDriver[]>('/api/entitlements/components/cash-gl-drivers').then(r => r.data),
+   *  key, label and the verdict, never account numbers. With a company: that company's accounts (its own GL drivers win). */
+  cashGlDrivers: (companyId?: string | null) =>
+    client.get<CashGlDriver[]>('/api/entitlements/components/cash-gl-drivers', { params: companyId ? { companyId } : undefined }).then(r => r.data),
+  /** Adds a benefit of the customer's own: for the whole group (needs access to every company), or with `companyId` for that company only.
+   *  Returns it as a grid row. */
   addBenefit: (body: CreateBenefitBody) =>
     client.post<MatrixComponent>('/api/entitlements/components', body).then(r => r.data),
   /** Removes a benefit the customer added and nobody has used yet (409 benefit_in_use otherwise). */

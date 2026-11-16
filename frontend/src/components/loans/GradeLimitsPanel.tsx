@@ -25,10 +25,12 @@ const basisKeys: Record<GradeLimitBasis, string> = {
  * decides the rules; the strictest of policy and grade applies. Publishing never edits a limit in
  * place — it closes the current one the day before the new effective date and starts the new one.
  */
-export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGradeLimitedChanged }: {
+export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, initialCompanyId, onGradeLimitedChanged }: {
   loanTypes: LoanType[];
   companies: { id: string; name: string }[];
   initialLoanTypeId?: string;
+  /** Opens on this company's grid when the viewer can see it; otherwise the usual one. */
+  initialCompanyId?: string | null;
   onGradeLimitedChanged: (loanTypeId: string, gradeLimited: boolean) => void;
 }) {
   const { t, locale } = useLocale();
@@ -36,7 +38,7 @@ export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGr
   const { isGroupScope, selectedCompanyId } = useCompany();
   const [loanTypeId, setLoanTypeId] = useState(initialLoanTypeId || loanTypes[0]?.id || '');
   // '' = the group-wide grid; only group-scope admins may publish it.
-  const [companyId, setCompanyId] = useState(isGroupScope ? '' : (selectedCompanyId ?? companies[0]?.id ?? ''));
+  const [companyId, setCompanyId] = useState(companies.find(c => c.id === initialCompanyId)?.id ?? (isGroupScope ? '' : (selectedCompanyId ?? companies[0]?.id ?? '')));
   const [drafts, setDrafts] = useState<GradeLimitDraft[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');

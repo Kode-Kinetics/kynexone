@@ -224,7 +224,7 @@ test('CD58: an inbox item without document ids offers no download and says why',
   const item = page.getByTestId('inbox-item');
   await item.getByRole('button', { name: 'Review' }).click();
   await expect(item.getByText('letter.pdf')).toBeVisible();
-  await expect(item.getByRole('link', { name: 'Download' })).toHaveCount(0);
+  await expect(item.getByRole('button', { name: 'Download' })).toHaveCount(0);
   await expect(item.getByTestId('attachment-hidden')).toContainText('You need the sensitive-data permission to download this file.');
 });
 
@@ -240,14 +240,14 @@ test('CD66: scan states in the review inbox: trusted source is labelled, quarant
   await card.getByRole('button', { name: 'Review' }).click();
   const row = (name: string) => card.locator('li', { hasText: name });
   await expect(row('clean.pdf')).toContainText('Checked');
-  await expect(row('clean.pdf').getByRole('link', { name: 'Download' })).toBeVisible();
+  await expect(row('clean.pdf').getByRole('button', { name: 'Download' })).toBeVisible();
   await expect(row('trusted.pdf')).toContainText('Not virus-scanned (trusted source)');
   await expect(row('trusted.pdf')).not.toContainText('Checked');
-  await expect(row('trusted.pdf').getByRole('link', { name: 'Download' })).toBeVisible();
+  await expect(row('trusted.pdf').getByRole('button', { name: 'Download' })).toBeVisible();
   await expect(row('quarantined.pdf')).toContainText('Blocked by the security scan. It cannot be downloaded.');
-  await expect(row('quarantined.pdf').getByRole('link', { name: 'Download' })).toHaveCount(0);
+  await expect(row('quarantined.pdf').getByRole('button', { name: 'Download' })).toHaveCount(0);
   await expect(row('pending.pdf')).toContainText('Waiting for the security scan.');
-  await expect(row('pending.pdf').getByRole('link', { name: 'Download' })).toHaveCount(0);
+  await expect(row('pending.pdf').getByRole('button', { name: 'Download' })).toHaveCount(0);
 });
 
 test('screenshots: privacy notice and review with scan states, English at 1440 px', async ({ page }, info) => {

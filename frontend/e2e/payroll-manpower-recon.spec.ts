@@ -53,13 +53,14 @@ interface State {
   signoffError?: { status: number; body: unknown };
   approveError?: { status: number; body: unknown };
   approveCalls: number;
+  approveBodies: any[];
   exports: string[];
 }
 
-async function boot(page: Page, opts: { recon?: string; permissions?: string[]; theme?: 'light' | 'dark'; locale?: 'en' | 'ar'; url?: string; failFirstRecon?: boolean; mutate?: (dto: any) => void } = {}) {
+async function boot(page: Page, opts: { population?: unknown; recon?: string; permissions?: string[]; theme?: 'light' | 'dark'; locale?: 'en' | 'ar'; url?: string; failFirstRecon?: boolean; mutate?: (dto: any) => void } = {}) {
   const s: State = {
     recon: fixture(opts.recon ?? 'recon-full.json'), reconStatus: 200, reconCalls: 0, failFirstRecon: opts.failFirstRecon,
-    employeeQueries: [], flaggedTotal: 3, signoffBodies: [], approveCalls: 0, exports: [],
+    employeeQueries: [], flaggedTotal: 3, signoffBodies: [], approveCalls: 0, approveBodies: [], exports: [],
   };
   opts.mutate?.(s.recon);
   await page.addInitScript(([th, lang]) => {
@@ -113,12 +114,14 @@ async function boot(page: Page, opts: { recon?: string; permissions?: string[]; 
       }
       if (tail === 'approve' && req.method() === 'POST') {
         s.approveCalls++;
+        s.approveBodies.push(req.postDataJSON());
         if (s.approveError) return json(s.approveError.body, s.approveError.status);
         return json({ ...RUNS[0], status: 'Approved' });
       }
       if (tail === 'validate' && req.method() === 'GET') return json([]);
       if (tail === 'validation-overrides') return json({ runId: id, overrides: [], overridableCodes: [], nonOverridableCodes: [] });
       if (tail === 'approvals') return json([]);
+      if (tail === 'population' && opts.population) return json(opts.population);
       if (tail === 'population') return json({ runId: id, includedCount: 42, excludedCount: 0, notEligibleCount: 0, included: [], excluded: [], notEligible: [] });
       if (tail === 'attendance-reconciliation') return json({ runId: id, from: '', to: '', consumesAttendance: true, stale: { code: 'X', employeeCount: 0, dayCount: 0, days: [] }, held: { code: 'Y', employeeCount: 0, dayCount: 0, lateMinutes: 0, earlyExitMinutes: 0, days: [] } });
       if (tail === 'processing') return json({ runId: id, jobId: null, status: 'Idle', processedEmployees: null, totalEmployees: null, startedAtUtc: null, finishedAtUtc: null, errorCode: null, errorMessage: null });
@@ -574,4 +577,50 @@ test.describe('screenshots', () => {
       await shot('sign-off');
     });
   }
+});
+
+// ── Pay population at Approve: nobody is left unpaid without a reason, and warned pay is acknowledged ──
+const POPULATION = {
+  runId: RUN, includedCount: 41, excludedCount: 0, notEligibleCount: 0, included: [], excluded: [], notEligible: [],
+  leftOut: [
+    { employeeId: 301, code: 'E-301', name: 'Huda Al-Otaibi', status: 'Suspended', reasonCode: 'SUSPENDED_PAY_HOLD', date: null, message: '' },
+    { employeeId: 302, code: 'E-302', name: 'Faisal Al-Shehri', status: 'Resigned', reasonCode: 'LEFT_BEFORE_PERIOD', date: '2026-10-15', message: '' },
+    { employeeId: 303, code: 'E-303', name: 'Reem Al-Zahrani', status: 'Invited', reasonCode: 'NOT_YET_EMPLOYED', date: null, message: '' },
+  ],
+  leftOutCounts: { SUSPENDED_PAY_HOLD: 1, LEFT_BEFORE_PERIOD: 1, NOT_YET_EMPLOYED: 1 },
+  payWarnings: [
+    { employeeId: 304, code: 'E-304', name: 'Majed Al-Qahtani', status: 'Resigned', reasonCode: 'WARN_NO_LAST_WORKING_DAY', date: null, message: '' },
+    { employeeId: 305, code: 'E-305', name: 'Nora Al-Harbi', status: 'Active', reasonCode: 'WARN_EMPLOYED_STATUS_NOT_PAID', date: '2025-06-30', message: '' },
+  ],
+  payWarningCount: 2,
+};
+
+test.describe('pay population at Approve', () => {
+  test('people paid with a warning or employed but unpaid are acknowledged by count, and everyone left out is listed with a reason', async ({ page }) => {
+    const s = await boot(page, { recon: 'recon-signed.json', url: `/payroll?tab=approvals&run=${RUN}`, population: POPULATION });
+    await expect(page.getByTestId('pipeline-next-title')).toHaveText('Approve the run');
+    const leftOut = page.getByTestId('payroll-left-out');
+    await expect(leftOut).toContainText('3 employee(s) in this company are not paid by this run');
+    await expect(leftOut).toContainText('Suspended — not paid (pay hold)');
+    await expect(leftOut).toContainText('Left before this period');
+    await expect(page.getByText('Majed Al-Qahtani', { exact: false })).toBeVisible();
+    // Not paid although the status says employed: counted in the same acknowledgement, never shown as routine.
+    await expect(page.getByText('Nora Al-Harbi', { exact: false })).toBeVisible();
+    await expect(page.getByText('Status says employed, but not paid by this run')).toBeVisible();
+    const approve = page.getByRole('button', { name: 'Approve — Final' });
+    await expect(approve).toBeDisabled();
+    await page.getByLabel('I have reviewed the list and confirm exactly 2 employee(s) need a check.').check();
+    await expect(approve).toBeEnabled();
+    await approve.click();
+    await expect.poll(() => s.approveBodies.at(-1)?.expectedPayWarningCount).toBe(2);
+  });
+
+  test('in Arabic the reasons read in Arabic, right to left', async ({ page }) => {
+    await boot(page, { recon: 'recon-signed.json', url: `/payroll?tab=approvals&run=${RUN}`, population: POPULATION, locale: 'ar' });
+    await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+    const leftOut = page.getByTestId('payroll-left-out');
+    await expect(leftOut).toContainText('موقوف — لا يُصرف له (إيقاف الصرف)');
+    await expect(page.getByText('مستقيل أو في فترة الإشعار دون آخر يوم عمل — يُصرف له كاملًا')).toBeVisible();
+    await expect(page.getByText('حالته تفيد أنه على رأس العمل، لكن هذا المسير لا يصرف له')).toBeVisible();
+  });
 });

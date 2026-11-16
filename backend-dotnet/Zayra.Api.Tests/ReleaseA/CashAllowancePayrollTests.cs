@@ -673,7 +673,7 @@ public class CashAllowancePayrollTests
             });
         await h.Db.SaveChangesAsync();
 
-        var response = await new EntitlementMatrixController { ControllerContext = h.Context() }.CashGlDrivers(h.Service, default);
+        var response = await new EntitlementMatrixController { ControllerContext = h.Context() }.CashGlDrivers(h.Service, null, default);
 
         var list = JsonSerializer.SerializeToElement(((OkObjectResult)response).Value, new JsonSerializerOptions(JsonSerializerDefaults.Web)).EnumerateArray().ToList();
         string[] Keys(bool usable) => list.Where(d => d.GetProperty("usable").GetBoolean() == usable).Select(d => d.GetProperty("key").GetString()!).ToArray();
@@ -847,7 +847,7 @@ public class CashAllowancePayrollTests
             var claims = new List<Claim>
             {
                 new("tenant_id", Tid.ToString()), new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()), new(ClaimTypes.Role, "HR Director"),
-                // Holds the Finance permission, so a cash allowance these tests add is confirmed at creation (the pending-Finance path has its own tests).
+                // Holds the Finance permission; each call is a different person, so Add can have another Finance user confirm what it added.
                 new("permission", "payroll.approve"),
             };
             if (companyScope != null)
@@ -857,7 +857,15 @@ public class CashAllowancePayrollTests
 
         private EntitlementMatrixController Controller() => new() { ControllerContext = Context() };
 
-        public Task<IActionResult> Add(CreateBenefitRequest req) => Controller().AddBenefit(Service, req, default);
+        /// <summary>Adds a benefit; a cash allowance is then confirmed by ANOTHER Finance user (nobody confirms what they made; the pending-Finance path has
+        /// its own tests). Returns the add's own answer.</summary>
+        public async Task<IActionResult> Add(CreateBenefitRequest req)
+        {
+            var added = await Controller().AddBenefit(Service, req, default);
+            if (added is ObjectResult { StatusCode: 200, Value: MatrixComponentDto { CashAllowance.FinancePending: true } pending })
+                await Controller().ConfirmBenefit(Service, pending.Code, null, default);
+            return added;
+        }
 
         public Task<IActionResult> AddCash(string? nameEn, string? driver, string? nameAr = null, bool eosb = true, string? reason = null) =>
             Add(new CreateBenefitRequest(nameEn, nameAr, BenefitKinds.Cash, driver, eosb, reason));

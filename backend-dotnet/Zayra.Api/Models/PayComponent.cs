@@ -155,13 +155,15 @@ public class PayComponent : ITenantOwned, ICompanyScoped
 
     /// <summary>
     /// Release A per-company skip: a company row with <c>false</c> means "this company does not offer this
-    /// benefit". Read only by the entitlement resolver; payroll ignores non-paying rows. A statutory-floor
+    /// benefit". Read only by the entitlement resolver; payroll ignores non-paying rows. A company row of a customer-added
+    /// benefit (BEN_*/ALW_*) with <c>true</c> is that company's OWN benefit's definition (offered to it alone; see
+    /// docs/COMPANY_OWN_BENEFITS_DESIGN.md) — switches are only ever written <c>false</c>, so the two never meet. A statutory-floor
     /// component (Housing, Transport, Medical, Art40) can never be skipped
     /// (CHECK ck_pay_components__floor_always_offered). Loans keep <c>loan_policies.is_offered</c>.
     /// </summary>
     public bool IsOffered { get; set; } = true;
 
-    // ── Customer-defined benefit definition (feature benefit_definition_v1). Set only on a tenant-wide BEN_*/ALW_* row (CHECK
+    // ── Customer-defined benefit definition (feature benefit_definition_v1). Set only on a BEN_*/ALW_* definition row, the group's or one company's own (CHECK
     // ck_pay_components__benefit_fields_custom_only); NULL on every other row and on every row written before the feature. No payroll effect. ──
 
     /// <summary>A descriptive label for the grid ("Insurance", "Housing"). Free text, at most 120 characters; never read by payroll.</summary>

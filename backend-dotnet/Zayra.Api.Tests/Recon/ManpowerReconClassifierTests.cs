@@ -77,6 +77,8 @@ public class ManpowerReconClassifierTests
     [InlineData("Terminated")]
     [InlineData("Exited")]
     [InlineData("Archived")]
+    [InlineData("Retired")]
+    [InlineData("Deceased")]
     public void ASeparatedStatus_IsALeaver(string status) =>
         Classify(Out() with { Status = status }).Should().Be(ReconCategory.Leaver);
 

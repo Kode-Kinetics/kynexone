@@ -661,14 +661,14 @@ public class EmployeeDuplicateDetectionTests
         var t = await SeedTenant(db);
         var survivor = await SeedEmployee(db, t, "SURV-1", "Real Person");
         var (_, dupId) = await SeedImportedDup(db, t, "DUP-1", "Real Person");
-        // A pending approval for the duplicate + an active payroll footprint.
+        // A pending approval for the duplicate + a payroll profile that is WPS-eligible but carries no bank or insurance value (a
+        // duplicate that owns a salary structure or bank details is refused: see EmployeeMergeOwnedRecordsPostgresTests).
         db.ApprovalRequests.Add(new ApprovalRequest
         {
             TenantId = t, Status = "Pending", RequestedForEmployeeId = dupId, EntityName = "Employee",
             EntityId = dupId.ToString(), SlaHours = 24,
         });
         db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = t, EmployeeId = dupId, WpsEligible = true });
-        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure { TenantId = t, EmployeeId = dupId, IsActive = true, EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow) });
         await db.SaveChangesAsync();
         var ctrl = BuildController(db, t);
 
@@ -682,7 +682,6 @@ public class EmployeeDuplicateDetectionTests
         Assert.False(await db.EmployeeImportGaps.AnyAsync(g => g.EmployeeId == dupId && g.ResolvedAtUtc == null));
         Assert.All(await db.ApprovalRequests.Where(a => a.RequestedForEmployeeId == dupId).ToListAsync(), a => Assert.Equal("Cancelled", a.Status));
         Assert.All(await db.EmployeePayrollProfiles.Where(p => p.EmployeeId == dupId).ToListAsync(), p => Assert.False(p.WpsEligible));
-        Assert.All(await db.EmployeeSalaryStructures.Where(s => s.EmployeeId == dupId).ToListAsync(), s => Assert.False(s.IsActive));
         Assert.True(await db.AuditLogs.AnyAsync(a => a.Action == "employee.merged_into_existing"));
     }
 
@@ -706,14 +705,26 @@ public class EmployeeDuplicateDetectionTests
         var t = await SeedTenant(db);
         var survivor = await SeedEmployee(db, t, "SURV-1", "Real Person");
         var (_, dupId) = await SeedImportedDup(db, t, "DUP-1", "Real Person");
-        db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = t, EmployeeId = dupId, WpsEligible = true });
-        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure { TenantId = t, EmployeeId = dupId, IsActive = true, EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow) });
+        // A merge now refuses a duplicate that owns a salary structure, so put the record into the merged state directly (as a merge made
+        // before that refusal existed would have left it): soft-deleted, linked, payroll profile ineligible, structure deactivated.
+        db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = t, EmployeeId = dupId, WpsEligible = false });
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure { TenantId = t, EmployeeId = dupId, IsActive = false, EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow) });
+        db.AuditLogs.Add(new AuditLog
+        {
+            TenantId = t, Action = "employee.merged_into_existing", EntityName = "Employee", EntityId = dupId.ToString(),
+            Metadata = "{\"reason\":\"same person\",\"previousStatus\":\"Confirmed\"}", CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10),
+        });
+        db.AuditLogs.Add(new AuditLog
+        {
+            TenantId = t, Action = "employee.payroll_footprint_deactivated", EntityName = "Employee", EntityId = dupId.ToString(),
+            Metadata = JsonSerializer.Serialize(new { reason = "merged_duplicate", salaryDeactivated = 1, profileDeactivated = 1 }),
+            CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10).AddSeconds(1),
+        });
+        var mergedRow = await db.Employees.SingleAsync(e => e.Id == dupId);
+        mergedRow.IsDeleted = true;
+        mergedRow.DuplicateOfEmployeeId = survivor.Id;
         await db.SaveChangesAsync();
         var ctrl = BuildController(db, t);
-
-        await ctrl.ResolveDuplicate(dupId, new ResolveDuplicateRequest("merge", survivor.Id, "merge"), CancellationToken.None);
-        var afterMerge = await db.Employees.IgnoreQueryFilters().SingleAsync(e => e.Id == dupId); // soft-deleted → bypass filter
-        Assert.True(afterMerge.IsDeleted);
 
         var result = await ctrl.ResolveDuplicate(dupId, new ResolveDuplicateRequest("unmerge", null, "wrong — twins"), CancellationToken.None);
 
@@ -722,6 +733,7 @@ public class EmployeeDuplicateDetectionTests
         Assert.False(restored.IsDeleted);
         Assert.Null(restored.DuplicateOfEmployeeId);
         Assert.All(await db.EmployeePayrollProfiles.Where(p => p.EmployeeId == dupId).ToListAsync(), p => Assert.True(p.WpsEligible));
+        Assert.All(await db.EmployeeSalaryStructures.Where(s => s.EmployeeId == dupId).ToListAsync(), s => Assert.True(s.IsActive));
         Assert.True(await db.AuditLogs.AnyAsync(a => a.Action == "employee.duplicate_merge_reversed"));
     }
 

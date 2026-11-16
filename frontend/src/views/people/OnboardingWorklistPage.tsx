@@ -6,12 +6,14 @@ import { OWNER_ROLES, onboardingTemplatesApi, type WorklistItem } from '@/src/ap
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { onboardingProblemKey } from '@/src/lib/onboardingProblem';
 import { formatIsoDate } from '@/src/lib/hire/dates';
+import { employeeWorkspaceHref } from '@/src/lib/peopleRoutes';
 import { ConfirmDialog, type ConfirmState } from '@/src/components/ui/ConfirmDialog';
 import { LoadFailedNotice } from '@/src/components/ui/LoadFailedRow';
 import { StatusChip } from '@/src/components/StatusChip';
 import { SkipTaskDialog } from './SkipTaskDialog';
 
 const input = 'rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sapphire focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white';
+const ONBOARDING_TASKS_ROUTE = '/people/onboarding-tasks';
 const PAGE_SIZE = 100;
 /** Below 768 px a table cannot show seven columns without clipping, so each task becomes a stacked card. */
 const NARROW = '(max-width: 767px)';
@@ -101,7 +103,7 @@ export function OnboardingWorklistPage() {
                   </div>
                   <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
                     <dt className="text-slate-500">{t('Employee')}</dt>
-                    <dd className="min-w-0 break-words"><Link className="text-sapphire underline" href={`/people/${i.employee.id}`}>{i.employee.name}</Link> <span className="text-xs text-slate-500" dir="ltr">{i.employee.code}</span></dd>
+                    <dd className="min-w-0 break-words"><Link className="text-sapphire underline" href={employeeWorkspaceHref(i.employee.id, { returnTo: ONBOARDING_TASKS_ROUTE })}>{i.employee.name}</Link> <span className="text-xs text-slate-500" dir="ltr">{i.employee.code}</span></dd>
                     <dt className="text-slate-500">{t('Who does it')}</dt><dd>{t(`onboarding.owner.${i.ownerRole}`)}</dd>
                     <dt className="text-slate-500">{t('Due')}</dt>
                     <dd>{i.dueDate ? formatIsoDate(i.dueDate, locale) : <span className="text-slate-500">{t('Due when the start date is set')}</span>}{i.overdue && <span className="ms-2"><StatusChip label={t('Overdue')} tone="rose" /></span>}</dd>
@@ -128,7 +130,7 @@ export function OnboardingWorklistPage() {
                   <tr key={i.taskId} className="border-b border-slate-100 align-top dark:border-white/5" data-testid={`worklist-row-${i.taskId}`}>
                     <td className="p-2"><input type="checkbox" aria-label={t('Select {task}', { task: ar && i.titleAr ? i.titleAr : i.title })} checked={selected.has(i.taskId)} onChange={() => toggle(i.taskId)} /></td>
                     <td className="p-2"><span className="font-medium">{ar && i.titleAr ? i.titleAr : i.title}</span>{i.blocksActivation && <span className="ms-2"><StatusChip label={t('Blocks activation')} tone="amber" /></span>}</td>
-                    <td className="p-2"><Link className="text-sapphire underline" href={`/people/${i.employee.id}`}>{i.employee.name}</Link><span className="block text-xs text-slate-500" dir="ltr">{i.employee.code}</span></td>
+                    <td className="p-2"><Link className="text-sapphire underline" href={employeeWorkspaceHref(i.employee.id, { returnTo: ONBOARDING_TASKS_ROUTE })}>{i.employee.name}</Link><span className="block text-xs text-slate-500" dir="ltr">{i.employee.code}</span></td>
                     <td className="p-2">{t(`onboarding.owner.${i.ownerRole}`)}</td>
                     <td className="p-2">{i.dueDate ? formatIsoDate(i.dueDate, locale) : <span className="text-slate-500">{t('Due when the start date is set')}</span>}{i.overdue && <span className="ms-2"><StatusChip label={t('Overdue')} tone="rose" /></span>}</td>
                     <td className="p-2">{t(`onboarding.status.${i.status}`)}</td>

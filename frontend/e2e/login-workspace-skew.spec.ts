@@ -211,7 +211,9 @@ test.describe('device language', () => {
       localStorage.setItem('kynexone-tenant-locale', 'en');
     });
     await page.goto('/ess');
-    await expect(page.getByRole('heading', { level: 1, name: /Noah/ })).toBeVisible({ timeout: 60_000 });
+    // The employee home is "My day" (c2619bd25): its title is the page's one h1 and the greeting by name sits in the hero below it.
+    await expect(page.getByRole('heading', { level: 1, name: 'My day', exact: true })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole('heading', { name: /Noah/ })).toBeVisible();
     await expect(page.locator('html')).toHaveAttribute('lang', 'en');
     await expect(page.locator('html')).toHaveAttribute('dir', 'ltr');
   });

@@ -20639,6 +20639,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("processed_at_utc");
 
+                    b.Property<DateOnly?>("SliceFrom")
+                        .HasColumnType("date")
+                        .HasColumnName("slice_from");
+
+                    b.Property<DateOnly?>("SliceTo")
+                        .HasColumnType("date")
+                        .HasColumnName("slice_to");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("text")

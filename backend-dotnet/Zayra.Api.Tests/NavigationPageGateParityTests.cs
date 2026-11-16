@@ -105,12 +105,18 @@ public class NavigationPageGateParityTests
         var target = Regex.Match(lib, @"ESS_PAYSLIPS_PATH\s*=\s*'(?<path>/[^']+)'").Groups["path"].Value;
         target.Should().NotBeNullOrEmpty();
 
+        // "My day" keeps its links as data (`href: ESS_X_PATH`) that the myday components render, so the
+        // payslip offers are counted at their sources: the page's quick action, and the hero's fallback
+        // call-to-action in lib/myDay.ts (shown to a read-only employee who cannot request leave).
         var ess = File.ReadAllText(Locate("frontend/src/views/EmployeeSelfServicePage.tsx"));
-        Regex.Matches(ess, @"href=\{ESS_PAYSLIPS_PATH\}").Count.Should().Be(2, "the View Payslip button and the Last Payslip tile");
+        var myDay = File.ReadAllText(Locate("frontend/src/lib/myDay.ts"));
+        Regex.Matches(ess, @"key:\s*'payslip'[^\n]*href:\s*ESS_PAYSLIPS_PATH\b").Count.Should().Be(1, "the View Payslip quick action");
+        Regex.Matches(myDay, @"href:\s*ESS_PAYSLIPS_PATH\b").Count.Should().Be(1, "the hero's Open my payslips call-to-action");
         // The Pay tab inside the Self-Service workspace (the sidebar keeps one Self-Service entry).
         File.ReadAllText(Locate("frontend/src/routes/essSections.ts"))
             .Should().Contain("label: 'My Payslips', tab: 'Payslips', path: '/ess/payslips'");
-        Regex.IsMatch(ess, @"['""]/payroll['""]").Should().BeFalse("self-service must never link to the payroll team's screen");
+        foreach (var source in SelfServiceLinkSources())
+            Regex.IsMatch(File.ReadAllText(source), @"['""]/payroll['""]").Should().BeFalse($"{Path.GetFileName(source)}: self-service must never link to the payroll team's screen");
 
         var page = Path.Combine(Locate("frontend/app"), "(dashboard)", target.TrimStart('/').Replace('/', Path.DirectorySeparatorChar), "page.tsx");
         File.Exists(page).Should().BeTrue($"{target} must be a real route");
@@ -146,15 +152,42 @@ public class NavigationPageGateParityTests
             ? m.Groups["literal"].Value
             : constants.TryGetValue(m.Groups["constant"].Value, out var path) ? path : $"<unknown constant {m.Groups["constant"].Value}>";
 
-        // The overview: href={ESS_X_PATH}, href: ESS_X_PATH, `${ESS_X_PATH}?…`, and literal hrefs (also inside a condition).
-        var ess = File.ReadAllText(Locate("frontend/src/views/EmployeeSelfServicePage.tsx"));
-        var linkPattern = @"href=\{(?<constant>ESS_[A-Z_]+_PATH)\}|href:\s*(?<constant>ESS_[A-Z_]+_PATH)\b|\$\{(?<constant>ESS_[A-Z_]+_PATH)\}|href=\{(?:[^{}]*\?\s*)?'(?<literal>/[^']*)'";
-        var overview = Regex.Matches(ess, linkPattern).Select(Resolve).ToList();
-        // Any other href on the overview must be one of the known pass-throughs (a tile's or an action's own href),
-        // or a link would escape this check.
-        Regex.Matches(ess, @"href=\{(?!ESS_[A-Z_]+_PATH\}|`\$\{ESS_[A-Z_]+_PATH\}|a\.href\}|item\.action\.href\}|href\}|[^{}]*\?\s*'/)").Should().BeEmpty(
-            "every self-service link must name its target literally or through an ESS_*_PATH constant");
-        ess.Should().NotContain("router.push(", "the overview navigates with links, each checked here");
+        // "My day" produces its links in the page (quick actions, coming up, loansHref), in lib/myDay.ts (tracker
+        // actions, the hero's next step) and in the myday components. Every one of those files is scanned.
+        var sources = SelfServiceLinkSources();
+        sources.Select(Path.GetFileName).Should().Contain(new[] { "EmployeeSelfServicePage.tsx", "myDay.ts", "MyDayHero.tsx", "MyDayTracker.tsx", "MyDayCards.tsx", "MyDayRecords.tsx" },
+            "the scan must cover the page, the link-building library and the myday components");
+        var overview = new List<string>();
+        var escapes = new List<string>();
+        // A pass-through is allowed only where its value is produced, and checked, elsewhere in these files:
+        // a card or tracker action's own href, the hero's next.cta.href (built in lib/myDay.ts), loansHref.
+        var passThrough = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "next.cta.href", "lead.action.href", "action.href", "a.href", "e.href", "link.href", "loansHref", "loansPath", "string",
+        };
+        var checkedForm = new Regex(@"^(?:[^?]*\?\s*)?(?:ESS_[A-Z_]+_PATH|'/[^']*'|`\$\{ESS_[A-Z_]+_PATH\}[^`]*`)\s*(?::\s*(?:undefined|null))?$", RegexOptions.Compiled);
+        foreach (var file in sources)
+        {
+            var text = File.ReadAllText(file);
+            // Every constant and every route literal anywhere in a source (imports aside) is a link target.
+            var body = Regex.Replace(text, @"^\s*import .*$", "", RegexOptions.Multiline);
+            body = Regex.Replace(body, @"^\s*export const ESS_[A-Z_]+_PATH\b.*$", "", RegexOptions.Multiline);
+            foreach (Match m in Regex.Matches(body, @"(?<constant>\bESS_[A-Z_]+_PATH\b)|['""](?<literal>/[a-z][^'""\s]*)['""]"))
+                overview.Add(Resolve(m));
+            // Every href must be a checked form or a known pass-through; anything else would escape the check.
+            foreach (Match h in Regex.Matches(body, @"\bhref(?:=\{|:\s*)(?<expr>`[^`]*`|[^,}\n]+)"))
+            {
+                var expr = Regex.Replace(h.Groups["expr"].Value.Split(';')[0].Trim(), @"\s*\?\?\s*undefined$", "");
+                if (!passThrough.Contains(expr) && !checkedForm.IsMatch(expr))
+                    escapes.Add($"{Path.GetFileName(file)}: href {expr}");
+            }
+            // A quoted href attribute (href="/x") is a literal the scan above already resolves; a bare string
+            // that is not a route (href="https://…") is not allowed on this screen.
+            Regex.IsMatch(body, @"\bhref=""(?!/)").Should().BeFalse($"{Path.GetFileName(file)}: self-service links stay inside the app");
+        }
+        escapes.Should().BeEmpty("every self-service link must name its target literally or through an ESS_*_PATH constant, or pass on a value that is itself resolved here");
+        foreach (var file in sources.Where(f => f.EndsWith("EmployeeSelfServicePage.tsx", StringComparison.Ordinal)))
+            File.ReadAllText(file).Should().NotContain("router.push(", "the overview navigates with links, each checked here");
 
         // The workspace tabs (routes/essSections.ts): every page an employee can be offered.
         var sections = File.ReadAllText(Locate("frontend/src/routes/essSections.ts"));
@@ -163,8 +196,8 @@ public class NavigationPageGateParityTests
             "the parser must still see the workspace's tabs");
 
         var targets = overview.Concat(tabs).Select(p => p.Split('?')[0]).Distinct().ToList();
-        targets.Should().Contain(new[] { "/ess/payslips", "/ess/leave", "/ess/overtime", "/ess/requests" },
-            "the parser must still see the self-service buttons and quick links");
+        targets.Should().Contain(new[] { "/ess/payslips", "/ess/leave", "/ess/overtime", "/ess/requests", "/ess/documents", "/ess/loans", "/loans", "/ess/onboarding" },
+            "the parser must still see the quick actions, tracker actions, loans and onboarding links");
 
         var appRoot = Path.Combine(Locate("frontend/app"), "(dashboard)");
         var denied = new List<string>();
@@ -172,13 +205,31 @@ public class NavigationPageGateParityTests
         {
             var page = Path.Combine(appRoot, target.TrimStart('/').Replace('/', Path.DirectorySeparatorChar), "page.tsx");
             if (!File.Exists(page)) { denied.Add($"{target}: no such page"); continue; }
-            var gate = Gate.Match(File.ReadAllText(page));
-            if (!gate.Success) { denied.Add($"{target}: the page declares no PermissionGate"); continue; }
-            var gatePerms = Parse(gate.Groups["perms"].Value);
-            if (!gatePerms.Overlaps(employeePerms))
-                denied.Add($"{target}: the page admits [{string.Join(", ", gatePerms)}], none of which the Employee role holds");
+            // A page may nest gates (/ess/loans: ess.read, then loans.self); the employee must pass every one.
+            // /loans?mine=true is offered only to a user holding a loans.* permission (mayOpenLoans); /loans admits
+            // loans.self, which the Employee role holds, so it is held to the same rule as every other target.
+            var gates = Gate.Matches(File.ReadAllText(page));
+            if (gates.Count == 0) { denied.Add($"{target}: the page declares no PermissionGate"); continue; }
+            foreach (Match gate in gates)
+            {
+                var gatePerms = Parse(gate.Groups["perms"].Value);
+                if (!gatePerms.Overlaps(employeePerms))
+                    denied.Add($"{target}: the page admits [{string.Join(", ", gatePerms)}], none of which the Employee role holds");
+            }
         }
         denied.Should().BeEmpty("every self-service link and workspace tab must open for an ordinary employee");
+    }
+
+    /// <summary>The files that produce a link target on the Self-Service overview ("My day").</summary>
+    private static List<string> SelfServiceLinkSources()
+    {
+        var files = new List<string>
+        {
+            Locate("frontend/src/views/EmployeeSelfServicePage.tsx"),
+            Locate("frontend/src/lib/myDay.ts"),
+        };
+        files.AddRange(Directory.GetFiles(Locate("frontend/src/components/ess/myday"), "*.tsx").OrderBy(f => f, StringComparer.Ordinal));
+        return files;
     }
 
     private static HashSet<string> Parse(string list) =>

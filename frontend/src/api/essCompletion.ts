@@ -97,5 +97,6 @@ export const hrCompletionApi = {
   accept: (id: string, notes: string, overrideReason?: string) => client.post<{ outcome?: string; changeRequestId?: string }>(`/api/ess/profile-change-requests/${id}/approve`, { notes, overrideReason }).then(r => r.data),
   requestChanges: (id: string, notes: string) => client.post(`/api/ess/profile-change-requests/${id}/reject`, { notes }),
   rescan: (id: string) => client.post<{ id: string; scanStatus: string }>(`/api/hr/profile-completion/documents/${id}/rescan`, undefined, noRefresh).then(r => r.data),
-  documentUrl: (id: string) => `/api/hr/profile-completion/documents/${id}/download`,
+  /** The file as a blob through the authenticated client: a plain link carries no bearer token and would answer 401. */
+  downloadDocument: (id: string) => client.get<Blob>(`/api/hr/profile-completion/documents/${id}/download`, { responseType: 'blob' }).then(r => r.data),
 };

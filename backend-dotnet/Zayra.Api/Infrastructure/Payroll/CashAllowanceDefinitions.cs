@@ -25,16 +25,23 @@ public enum AllowanceDefinitionFault
 /// </summary>
 public static class CashAllowanceDefinitions
 {
-    /// <summary>All non-removed versions of the given codes (tenant-wide rows only), oldest first.</summary>
+    /// <summary>All non-removed versions of the given codes, oldest first: the tenant-wide (group) definitions, plus — with <paramref name="companyId"/> —
+    /// that company's own (a definition row whose company is set and which is offered, written by Benefits by grade for one company only). Without a company
+    /// only group definitions are read, so a reader that does not say whose salary or run it is about never sees a company's own allowance (it fails closed:
+    /// "no definition"). <paramref name="anyCompany"/> reads every company's own too, for a caller that checks access itself or only shows a line that is
+    /// already on a salary record.</summary>
     public static async Task<ILookup<string, PayComponent>> VersionsAsync(
-        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct, bool includeRemoved = false, bool tracked = false)
+        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct, bool includeRemoved = false, bool tracked = false,
+        Guid? companyId = null, bool anyCompany = false)
     {
         if (codes.Count == 0) return Enumerable.Empty<PayComponent>().ToLookup(x => x.Code);
         var query = ScopedBypass.TenantWide(db.PayComponents, tenantId,
                 "A cash allowance definition is a tenant-wide row; its effective-dated versions are read together to pick the one in effect.");
         if (!tracked) query = query.AsNoTracking();
-        query = query.Where(c => c.CompanyId == null && c.ComponentType == PayComponentTypes.Earning
-                              && c.CalcMethod == PayComponentCalcMethods.GradePackage && codes.Contains(c.Code));
+        query = query.Where(c => c.ComponentType == PayComponentTypes.Earning && c.CalcMethod == PayComponentCalcMethods.GradePackage && codes.Contains(c.Code));
+        query = anyCompany ? query.Where(c => c.CompanyId == null || c.IsOffered)
+            : companyId is Guid company ? query.Where(c => c.CompanyId == null || (c.CompanyId == company && c.IsOffered))
+            : query.Where(c => c.CompanyId == null);
         if (!includeRemoved) query = query.Where(c => !c.IsDeleted);
         return (await query.ToListAsync(ct)).OrderBy(c => c.EffectiveFrom ?? DateOnly.MinValue).ToLookup(c => c.Code, StringComparer.Ordinal);
     }
@@ -94,9 +101,9 @@ public static class CashAllowanceDefinitions
     // ── Pre-run readiness ───────────────────────────────────────────────────────────────────────
 
     /// <summary>One employee whose salary carries a cash allowance line the payroll run could not pay: a stable <c>Problem</c> code
-    /// (<c>no_definition</c>, <c>not_confirmed</c>, <c>no_gl_driver</c>) and the words for it. No amounts.</summary>
+    /// (<c>no_definition</c>, <c>not_confirmed</c>, <c>no_gl_driver</c>, <c>other_company</c>) and the words for it. No amounts.</summary>
     public sealed record ReadinessIssue(int EmployeeId, string EmployeeCode, string EmployeeName, Guid? CompanyId, string Code, string Problem, string Message,
-        string? AllowanceNameEn = null, string? AllowanceNameAr = null, string? Href = null);
+        string? AllowanceNameEn = null, string? AllowanceNameAr = null, string? Href = null, string? MessageAr = null);
 
     /// <summary>Where Finance confirms an allowance that is waiting for it (the list on Benefits by grade).</summary>
     public const string WaitingForFinanceLink = "/benefits/by-grade#waiting-for-finance";
@@ -126,15 +133,28 @@ public static class CashAllowanceDefinitions
             .ToLookup(x => x.SalaryStructureId);
         var codes = lines.SelectMany(g => g).Select(x => x.Code).Distinct().ToList();
         if (codes.Count == 0) return issues;
-        var versions = await VersionsAsync(db, tenantId, codes, ct);
+        // Every company's own allowances are read once; each employee then sees the group's and their own company's only (a company's own allowance is
+        // no definition at all for a sister company's employee, exactly as its run will treat it).
+        var allVersions = await VersionsAsync(db, tenantId, codes, ct, anyCompany: true);
         foreach (var employee in employees.OrderBy(e => e.Code, StringComparer.Ordinal))
         {
             if (!records.TryGetValue(employee.Id, out var recordId)) continue;
             foreach (var line in lines[recordId].OrderBy(l => l.Code, StringComparer.Ordinal))
             {
-                if (PeriodFault(versions[line.Code], periodStart) is not { } fault) continue;
+                var versions = allVersions[line.Code].Where(v => v.CompanyId == null || v.CompanyId == employee.CompanyId).ToList();
+                if (versions.Count == 0 && allVersions[line.Code].Any())
+                {
+                    // Another company's own allowance, left on the salary of someone who moved here (never stripped on transfer): it is not paid here and is no
+                    // end-of-service wage here. Named by its code only — a sister company's own allowance is never named to another company.
+                    issues.Add(new ReadinessIssue(employee.Id, employee.Code, employee.Name, employee.CompanyId, line.Code, "other_company",
+                        $"{employee.Name} moved from another company. The allowance {line.Code} on their salary belongs to that company and is not paid here. "
+                            + $"Remove it from {employee.Name}'s salary.",
+                        MessageAr: $"انتقل {employee.Name} من شركة أخرى. البدل {line.Code} على راتبه يخص تلك الشركة ولا يُصرف هنا. أزله من راتب {employee.Name}."));
+                    continue;
+                }
+                if (PeriodFault(versions, periodStart) is not { } fault) continue;
                 // The allowance's own name (the version in effect, else the latest one on file), so the line says WHICH allowance, not just its code.
-                var named = InEffect(versions[line.Code], periodStart) ?? Current(versions[line.Code], periodStart);
+                var named = InEffect(versions, periodStart) ?? Current(versions, periodStart);
                 var shown = named is null ? line.Code : $"{named.NameEn} ({line.Code})";
                 var (problem, message, href) = fault switch
                 {

@@ -19,7 +19,7 @@ import {
   type PayrollGLJournal, type PayrollReconciliation, type FinalSettlementResult, type FinalSettlementListRow,
   type PayrollCompany, type PayrollOverview, type PayrollReadiness,
   type PayrollCompanySummary, type AIInsight,
-  type PayrollRunPopulation, type PayrollValidationOverrideReport, type AuditIntegrityReport,
+  type PayrollRunPopulation, type PayrollPopulationEntry, type PayrollValidationOverrideReport, type AuditIntegrityReport,
 } from '../api/payroll';
 import { identityAuditApi } from '../api/identity';
 import { requestFailureReason } from '../lib/requestFailure';
@@ -92,6 +92,7 @@ import { msg } from '../i18n/translations';
 import { insightDetail, insightTitle } from '../lib/insightText';
 import { languageLabel } from '../lib/displayLabels';
 import { wpsStatusNote } from '../lib/payrollBatchDisplay';
+import { leftOutGroups, payPopulationReasonLabel } from '../lib/payPopulation';
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
 function fmtDate(s: string | null | undefined, locale: string) {
@@ -2127,9 +2128,11 @@ function OverrideValidationModal({ runId, result, onClose, onDone }: {
  * the count is never pre-ticked.
  */
 function AcknowledgementPanel({
-  tone, title, blurb, rows, checked, onChange, confirmLabel,
+  tone, title, blurb, rows, checked, onChange, confirmLabel, ackId,
 }: {
   tone: 'amber' | 'rose';
+  /** Unique checkbox id when more than one panel of a tone is on screen. */
+  ackId?: string;
   title: string;
   blurb: string;
   rows: { key: string; primary: string; secondary: string }[];
@@ -2146,7 +2149,7 @@ function AcknowledgementPanel({
   const body = tone === 'amber'
     ? 'text-amber-700 dark:text-amber-400'
     : 'text-rose-700 dark:text-rose-400';
-  const inputId = `ack-${tone}`;
+  const inputId = ackId ?? `ack-${tone}`;
 
   return (
     <div className={`rounded-lg border p-3 ${shell}`}>
@@ -2177,6 +2180,49 @@ function AcknowledgementPanel({
           </label>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Everyone in the company the run does NOT pay, by reason. Read-only: a left-out person is a decision already
+ * recorded elsewhere (a status, an offboarding, a selection), so it is shown, counted and never hidden — the old
+ * report stopped at 25 names and skipped most statuses.
+ */
+function LeftOutPanel({ entries }: { entries: PayrollPopulationEntry[] }) {
+  const t = useT();
+  const fmtDate = useFmtDate();
+  const groups = leftOutGroups(entries);
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-white/5" data-testid="payroll-left-out">
+      <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+        {t('{leftOutCount} employee(s) in this company are not paid by this run', { leftOutCount: entries.length })}
+      </p>
+      <p className="mt-0.5 text-xs leading-5 text-slate-600 dark:text-slate-400">
+        {t('Everyone the run leaves out is listed with the reason. Nobody is dropped without one.')}
+      </p>
+      <ul className="mt-2 space-y-1">
+        {groups.map(g => (
+          <li key={g.reasonCode} className="text-xs text-slate-700 dark:text-slate-300">
+            <details>
+              <summary className="cursor-pointer">
+                <span className="font-semibold">{payPopulationReasonLabel(t, g.reasonCode)}</span>
+                <span className="ms-1 tabular-nums">({g.entries.length})</span>
+              </summary>
+              <ul className="mt-1 max-h-40 space-y-0.5 overflow-y-auto ps-4">
+                {g.entries.map(e => (
+                  <li key={`${e.employeeId}-${e.reasonCode}`}>
+                    {`${e.code} — ${e.name}`}
+                    <span className="ms-1 opacity-70">
+                      {e.date ? t('Last working day {date}', { date: fmtDate(e.date) }) : t('Status: {status}', { status: t(e.status) })}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -2268,6 +2314,7 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
   const [ackExcluded, setAckExcluded] = useState(false);
   const [ackOverridden, setAckOverridden] = useState(false);
   const [ackOutside, setAckOutside] = useState(false);
+  const [ackPayWarnings, setAckPayWarnings] = useState(false);
   // The cash/cheque list names the person (the run's population is already loaded for the gate) and falls back to the number.
   const employeeName = (id: number, ibanOnFile: boolean) => {
     const member = population ? [...population.included, ...population.excluded, ...population.notEligible].find(m => m.employeeId === id) : undefined;
@@ -2303,6 +2350,7 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
     setAckExcluded(false);
     setAckOverridden(false);
     setAckOutside(false);
+    setAckPayWarnings(false);
     refreshGate(runId);
   }, [runId, refreshGate]);
 
@@ -2318,11 +2366,17 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
   const outsideList = overrideReport?.paidOutsideBankFile ?? [];
   const outsideCount = outsideList.length;
   const needsOutsideAck = outsideCount > 0;
+  // People the run pays although their record says something that may mean they are not owed a full month, and people
+  // it does not pay although their status says employed: one count the approver states.
+  const payWarnings = population?.payWarnings ?? [];
+  const payWarningCount = population?.payWarningCount ?? 0;
+  const needsPayWarningAck = payWarningCount > 0;
+  const leftOut = population?.leftOut ?? [];
   // S-048: the final approval seals the journal, so with costing on the approver states how many employees post uncosted.
   const sealsJournal = hasPermission('payroll.approve') && (isFinance || isAdmin) && (selectedRun?.status === 'Processed' || selectedRun?.status === 'PendingFinanceReview');
   const uncosted = useUncostedAck(runId, sealsJournal);
   const gateSatisfied =
-    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && (!needsOutsideAck || ackOutside) && (!uncosted.needed || uncosted.affirmed) && !gateLoading && !gateError && currencyConfirmed;
+    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && (!needsOutsideAck || ackOutside) && (!needsPayWarningAck || ackPayWarnings) && (!uncosted.needed || uncosted.affirmed) && !gateLoading && !gateError && currencyConfirmed;
 
   const handleApprove = async () => {
     if (!runId) return;
@@ -2335,6 +2389,7 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
         expectedExcludedCount: needsExcludedAck && ackExcluded ? excludedCount : null,
         expectedOverriddenCount: needsOverriddenAck && ackOverridden ? overriddenCount : null,
         expectedOutsideBankCount: needsOutsideAck && ackOutside ? outsideCount : null,
+        expectedPayWarningCount: needsPayWarningAck && ackPayWarnings ? payWarningCount : null,
         expectedUncostedCount: uncosted.expected(),
       });
       await refreshRuns();
@@ -2344,6 +2399,7 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
       setAckExcluded(false);
       setAckOverridden(false);
       setAckOutside(false);
+      setAckPayWarnings(false);
       refreshGate(runId);
     } catch (e: unknown) {
       const data = (e as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
@@ -2364,9 +2420,10 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
       // acknowledges the truth rather than a stale number.
       if (data?.error === 'uncosted_not_acknowledged') void uncosted.refresh();
       if (data?.error === 'excluded_employees_not_acknowledged' || data?.error === 'overridden_errors_not_acknowledged'
-          || data?.error === 'outside_bank_payments_not_acknowledged') {
+          || data?.error === 'outside_bank_payments_not_acknowledged' || data?.error === 'pay_warnings_not_acknowledged') {
         setAckExcluded(false);
         setAckOutside(false);
+        setAckPayWarnings(false);
         setAckOverridden(false);
         refreshGate(runId);
       }
@@ -2496,6 +2553,25 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
                   }))}
                 />
               )}
+
+              {needsPayWarningAck && population && (
+                <AcknowledgementPanel
+                  tone="amber"
+                  ackId="ack-pay-warnings"
+                  title={t('{payWarningCount} employee(s) need a check before approval', { payWarningCount })}
+                  blurb={t('Some are paid although their record suggests they may not be owed a full month; others are not paid although their status says they are employed. Check each one before approving.')}
+                  checked={ackPayWarnings}
+                  onChange={setAckPayWarnings}
+                  confirmLabel={t('I have reviewed the list and confirm exactly {payWarningCount} employee(s) need a check.', { payWarningCount })}
+                  rows={payWarnings.map(w => ({
+                    key: `${w.employeeId}-${w.reasonCode}`,
+                    primary: `${w.code} — ${w.name}`,
+                    secondary: payPopulationReasonLabel(t, w.reasonCode),
+                  }))}
+                />
+              )}
+
+              {leftOut.length > 0 && <LeftOutPanel entries={leftOut} />}
 
               {needsOverriddenAck && overrideReport && (
                 <AcknowledgementPanel

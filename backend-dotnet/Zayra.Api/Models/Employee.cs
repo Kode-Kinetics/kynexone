@@ -21,6 +21,24 @@ public static class EmployeeStatuses
     public const string Inactive   = "Inactive";
     public const string Terminated = "Terminated";
     public const string Exited     = "Exited";
+
+    /// <summary>
+    /// Every status a direct status change (PATCH /api/employees/{id}/status) may set: the backend's own constants above, the
+    /// labels the People screen's status selector offers (frontend/src/views/EmployeesPage.tsx, <c>statusOptions</c>), and
+    /// "Deceased", which the exit and notification rules already treat as a status. Anything else is a typo or an invented
+    /// label and would drop the person out of every status filter and report, so it is refused with 400.
+    /// This is a vocabulary only: WHO may set WHICH of these is decided by the route's permission, not here.
+    /// </summary>
+    public static readonly string[] Assignable =
+    {
+        Draft, Invited, Active, Suspended, Offboarded, Archived, Inactive, Terminated, Exited,
+        "Pre-boarding", "Probation", "Confirmed", "On leave", "Resigned", "Notice period", "Retired", "Absconded", "Blacklisted", "Deceased",
+    };
+
+    /// <summary>The canonical spelling of <paramref name="status"/> (a case-insensitive match against <see cref="Assignable"/>),
+    /// or null when it is not a status. The lifecycle rules compare statuses ordinally, so a lower-case copy must never be stored.</summary>
+    public static string? Canonical(string? status) =>
+        status is null ? null : Array.Find(Assignable, s => string.Equals(s, status, StringComparison.OrdinalIgnoreCase));
 }
 
 public class Employee : INullableTenantOwned, ICompanyScopedOperational

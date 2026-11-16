@@ -401,6 +401,20 @@ test.describe('Payroll readiness: monthly allowance lines the run cannot use', (
       await expect(rows.nth(0).getByRole('link', { name: say(locale, 'Open Benefits by grade') })).toHaveAttribute('href', '/benefits/by-grade#waiting-for-finance');
       await expect(rows.nth(2).getByRole('link', { name: say(locale, 'Open Benefits by grade') })).toHaveCount(0);
     });
+
+    test(`a line of the company the employee moved from names the employee and says to remove it (${locale})`, async ({ page }) => {
+      await bootPayroll(page, locale, { openSalaryTab: false, readiness: {
+        year: 2026, month: 11, companyId: null, completionPercent: 100, isReadyForProcessing: false, totalActiveEmployees: 1, employeesWithSalary: 1, salaryCoveragePercent: 100,
+        validationErrors: 0, payrollRunStatus: null, steps: [],
+        cashAllowanceIssues: [issue({ code: 'ALW_CAR_ABC234', problem: 'other_company', allowanceNameEn: null, allowanceNameAr: null, href: null })],
+      } });
+      const row = page.getByTestId('cash-allowance-issues').getByTestId('cash-allowance-issue');
+      await expect(row).toHaveCount(1, { timeout: 30_000 });
+      await expect(row).toContainText(say(locale, '{employee} moved from another company. The allowance {name} on their salary belongs to that company and is not paid here. Remove it from their salary.',
+        { employee: 'Layla Test', name: 'ALW_CAR_ABC234' }));
+      await expect(row.getByRole('link').first()).toHaveAttribute('href', /\/people\/901\?section=pay-benefits&panel=salary/);
+      await expect(row.getByRole('link', { name: say(locale, 'Open Benefits by grade') })).toHaveCount(0);
+    });
   }
 });
 

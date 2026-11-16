@@ -204,6 +204,29 @@ test('HR Director sees every loan policy edit control, enabled', async ({ page }
   expect(errors).toEqual([]);
 });
 
+// The link Benefits by grade gives a loan row lands here, on that loan type and that company, not on the Loans list.
+test('a link from Benefits by grade opens Limits by grade on that loan type and company', async ({ page }) => {
+  const groupMe = { ...hrDirectorMe, isGroupScope: true, companies: [...hrDirectorMe.companies, { id: 'company-2', name: 'Acme Logistics', code: 'ACL', countryCode: 'SA', isActive: true }] };
+  const errors = await boot(page, 'HR Director', path => {
+    if (path === '/api/auth/me') return groupMe;
+    if (path.endsWith('/policies')) return [];
+    if (path === '/api/finance/loans/grade-limits') return [gradeRow];
+  });
+  await page.goto('/setup?tab=loanPolicies&loanType=type-1&companyId=company-2');
+  const grid = page.getByRole('region', { name: 'Limits by grade' });
+  await expect(grid.getByRole('combobox', { name: 'Loan type' })).toHaveValue('type-1');
+  await expect(grid.getByRole('combobox', { name: 'Applies to' })).toHaveValue('company-2');
+  // Without the link's parameters it opens as it always did: the first loan type, the group grid (Setup remembers the company
+  // it was last scoped to, but that is not a link to a company's limits).
+  await page.goto('/setup?tab=loanPolicies');
+  await expect(page.getByRole('region', { name: 'Limits by grade' }).getByRole('combobox', { name: 'Loan type' })).toHaveValue('type-0');
+  await expect(page.getByRole('region', { name: 'Limits by grade' }).getByRole('combobox', { name: 'Applies to' })).toHaveValue('');
+  // A loan type that does not exist falls back the same way; it never selects nothing.
+  await page.goto('/setup?tab=loanPolicies&loanType=no-such-type');
+  await expect(page.getByRole('region', { name: 'Limits by grade' }).getByRole('combobox', { name: 'Loan type' })).toHaveValue('type-0');
+  expect(errors).toEqual([]);
+});
+
 for (const role of ['Finance', 'Finance Approver']) {
   test(`${role} gets no loan policy edit controls`, async ({ page }) => {
     const errors = await boot(page, role, () => undefined);

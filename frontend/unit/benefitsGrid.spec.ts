@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { MatrixComponent, MatrixGrade } from '../src/api/entitlements';
 import { blankDraft, cellKey, type CellDraft } from '../src/lib/entitlementMatrix';
 import {
-  cellView, gradeWindow, monthlyFixedTotals, needsValueCodes, rowChip, statusSummary,
+  benefitPowers, cellView, gradeWindow, monthlyFixedTotals, needsValueCodes, rowChip, statusSummary,
 } from '../src/lib/benefitsGrid';
 
 // Benefits by grade: the pure rules behind the grid's layout (what a cell shows, which chip a row carries, which grades are
@@ -111,4 +111,32 @@ test('the monthly total adds only fixed monthly amounts of wage benefits, is lef
   expect(monthlyFixedTotals([transport, phone], grades, {
     [cellKey('g1', 'TRANSPORT')]: offeredAmount(transport, 'g1', 'abc'), [cellKey('g1', 'ALW_PHONE')]: offeredAmount(phone, 'g1', '100'),
   })).toBeNull();
+});
+
+// A company's own benefit, in its company's view: one chip that says it is this company's alone, ahead of New and Added by you.
+test('a company’s own benefit carries the "This company only" chip in its company view', () => {
+  const row = { pending: false, companyView: true, isNew: false, isCustom: true };
+  expect(rowChip({ ...row, mode: 'Own' })).toMatchObject({ key: 'This company only', title: 'Added for this company, which alone offers it', tone: 'info' });
+  expect(rowChip({ ...row, mode: 'Own', isNew: true })).toMatchObject({ key: 'This company only' });
+  expect(rowChip({ ...row, mode: 'Own', pending: true })).toMatchObject({ key: 'Waiting for Finance' });
+});
+
+test('who may add and remove a customer-added benefit here: the group view needs every company; a company view needs the server to support it', () => {
+  const base = { canManage: true, isGroupScope: true, companyId: '', companyBenefits: true };
+  expect(benefitPowers(base).canAdd).toBe(true);
+  expect(benefitPowers({ ...base, isGroupScope: false }).canAdd).toBe(false);
+  expect(benefitPowers({ ...base, companyId: 'c1' }).canAdd).toBe(true);
+  expect(benefitPowers({ ...base, companyId: 'c1', isGroupScope: false }).canAdd).toBe(true);
+  expect(benefitPowers({ ...base, companyId: 'c1', companyBenefits: false }).canAdd).toBe(false); // an older server would add it for every company
+  expect(benefitPowers({ ...base, canManage: false, companyId: 'c1' }).canAdd).toBe(false);
+
+  // Remove: a group benefit from the group view only; a company's own from that company's view.
+  const group = { ownerCompanyId: null };
+  const own = { ownerCompanyId: 'c1' };
+  expect(benefitPowers(base).canRemove(group)).toBe(true);
+  expect(benefitPowers(base).canRemove(own)).toBe(false);
+  expect(benefitPowers({ ...base, companyId: 'c1', isGroupScope: false }).canRemove(own)).toBe(true);
+  expect(benefitPowers({ ...base, companyId: 'c1', isGroupScope: false }).canRemove(group)).toBe(false);
+  expect(benefitPowers({ ...base, companyId: 'c2', isGroupScope: false }).canRemove(own)).toBe(false);
+  expect(benefitPowers({ ...base, companyId: 'c1', canManage: false }).canRemove(own)).toBe(false);
 });

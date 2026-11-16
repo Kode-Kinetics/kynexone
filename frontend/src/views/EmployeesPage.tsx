@@ -30,7 +30,7 @@ import { useSuccessionAccess } from '../components/succession/SuccessionParts';
 import { SUCCESSION_FLAG } from '../lib/succession';
 import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
-import { buildPeopleReturnTo, employeeWorkspaceHref } from '../lib/peopleRoutes';
+import { buildPeopleCreateHref, buildPeopleReturnTo, employeeWorkspaceHref } from '../lib/peopleRoutes';
 import { usePeopleDirectoryQuery } from '../hooks/usePeopleDirectoryQuery';
 import { costCentreErrorKind, costCentreOptions, costCentreRefusalKey, createCostCentreFields, createNeedsReason, resolveCostCentre } from '../lib/employeeCostCentre';
 import { useCompanyCostCentres } from '../hooks/useCompanyCostCentres';
@@ -106,6 +106,7 @@ import { PlanLimitNote } from '../components/ui/PlanLimitNote';
 import { useNavigationGuard } from '../contexts/NavigationGuardContext';
 import { setFlashResult } from '../lib/flashResult';
 import { refusalFromError } from '../lib/refusal';
+import { mergeRefusal } from '../lib/duplicateMerge';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
 type DetailTab = 'personal' | 'employment' | 'payroll' | 'benefits' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers' | 'development';
@@ -159,10 +160,11 @@ function safeRegExp(pattern: string): RegExp | null {
 }
 
 const statusOptions: StatusFilter[] = ['', 'Draft', 'Pre-boarding', 'Active', 'Probation', 'Confirmed', 'On leave', 'Suspended', 'Resigned', 'Notice period', 'Terminated', 'Retired', 'Absconded', 'Inactive', 'Blacklisted'];
-// Filter dropdown for the ACTIVE People list: drop 'Terminated' — the backend now excludes former
-// employees from this list, so filtering by it would always return empty. (Former staff live in the
-// Ex-Employees tab.) The full statusOptions list is still used by the status-change selector.
-const activeStatusFilterOptions: StatusFilter[] = statusOptions.filter((s) => s !== 'Terminated');
+// Filter dropdown for the ACTIVE People list: drop 'Terminated' and 'Retired' — the backend excludes them (and Deceased) from this
+// list, so filtering by them would always return empty; they live in the Ex-Employees tab. 'Resigned' STAYS: a resigned employee
+// is still employed through the notice period and is still on the active list. The full statusOptions list is still used by the
+// status-change selector.
+const activeStatusFilterOptions: StatusFilter[] = statusOptions.filter((s) => s !== 'Terminated' && s !== 'Retired');
 // Human labels for the typed import gaps the results view can deep-link the People list into.
 const GAP_FILTER_LABELS: Record<string, string> = {
   'link:manager': 'Managers unresolved',
@@ -749,6 +751,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const canBulkActivate = hasPermission('employees.approve');
   const canBulkDeactivate = hasPermission('employees.write');
   const canBulkDelete = hasPermission('employees.delete');
+  // Merging (and undoing a merge) needs Edit employees, the same as every other way of resolving a duplicate.
+  const canMergeDuplicates = hasPermission('employees.write');
   // Same audience as the API's people export: employees.write.
   const canBulkExport = hasPermission('employees.write');
   // Create and edit are `employees.write`, import is `employees.bulk_import` (EmployeesController).
@@ -844,11 +848,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const welcome = useWelcomeCodes(useCallback(() => {
     setAccessRefresh((n) => n + 1);
     if (createOnly && welcomeReturnEmployeeId) {
-      navigation.push(employeeWorkspaceHref(welcomeReturnEmployeeId, { section: 'access-onboarding' }));
+      navigation.push(employeeWorkspaceHref(welcomeReturnEmployeeId, { section: 'access-onboarding', returnTo: buildPeopleReturnTo(directoryQuery.state) }));
       return;
     }
     void load();
-  }, [createOnly, load, navigation, welcomeReturnEmployeeId]));
+  }, [createOnly, directoryQuery.state, load, navigation, welcomeReturnEmployeeId]));
 
   /** Every employee matching the current filter, page by page (for "all matching" selections). */
   const resolveAllMatching = async (): Promise<EmployeeListItem[]> => {
@@ -1598,9 +1602,9 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
           setFlashResult(window.sessionStorage, {
             changed: t('{name} was saved as a draft.', { name }),
             where: t('You are on the draft record, at the step where you stopped.'),
-            next: { label: t('Back to the People list'), href: '/people' },
+            next: { label: t('Back to the People list'), href: buildPeopleReturnTo(directoryQuery.state) },
           }, `/people/${created.id}/edit`);
-          navigation.push(`/people/${created.id}/edit?section=${section}&returnTo=%2Fpeople`);
+          navigation.push(employeeWorkspaceHref(created.id, { edit: true, section, returnTo: buildPeopleReturnTo(directoryQuery.state) }));
           return;
         }
         await load();
@@ -1774,7 +1778,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   // workflow-destructive (pending approvals cancelled, payroll footprint deactivated), so it is
   // gated behind an explicit confirm and offered only for STRONG (near-certain) matches.
   const mergeInto = async (intoEmployeeId: number, targetLabel: string) => {
-    if (!selectedId) return;
+    if (!selectedId || !canMergeDuplicates) return;
     if (!(await confirm({
       title: t('Merge this record into {target}?', { target: targetLabel }),
       message: t('This record is closed as a duplicate: its pending approvals are cancelled and its payroll footprint is deactivated. History is kept and linked for audit.'),
@@ -1788,7 +1792,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       await load();
       await openDetail(intoEmployeeId);
     } catch (e: unknown) {
-      setDupNotice((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not merge. Try again.');
+      setDupNotice(mergeRefusal(e, t, locale));
     } finally {
       setDupResolving(false);
     }
@@ -1894,7 +1898,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     setFormOpen(false);
     setFormError('');
     if (createOnly) {
-      navigation.push(id ? employeeWorkspaceHref(id, { section: 'overview' }) : '/people');
+      navigation.push(id ? employeeWorkspaceHref(id, { section: 'overview', returnTo: buildPeopleReturnTo(directoryQuery.state) }) : buildPeopleReturnTo(directoryQuery.state));
       return;
     }
     if (thenOpen && id) void openDetail(id);
@@ -1928,7 +1932,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     setFormOpen(false);
     setFormError('');
     setDuplicateWarning([]);
-    if (createOnly) navigation.push('/people');
+    if (createOnly) navigation.push(buildPeopleReturnTo(directoryQuery.state));
   };
 
   // ── Duplicate warning actions (create path — no new record exists yet) ──
@@ -1940,7 +1944,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     setFormOpen(false);
     setFormError('');
     if (createOnly) {
-      navigation.push(employeeWorkspaceHref(employeeId, { section: 'overview' }));
+      navigation.push(employeeWorkspaceHref(employeeId, { section: 'overview', returnTo: buildPeopleReturnTo(directoryQuery.state) }));
       return;
     }
     openDetail(employeeId);
@@ -1950,7 +1954,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     setDuplicateWarning([]);
     setFormOpen(false);
     if (createOnly) {
-      navigation.push(`/people/${employeeId}/edit?section=personal`);
+      navigation.push(employeeWorkspaceHref(employeeId, { edit: true, section: 'personal', returnTo: buildPeopleReturnTo(directoryQuery.state) }));
       return;
     }
     setFormError('');
@@ -2299,7 +2303,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               {canWriteEmployees && <div className="flex flex-col items-start gap-1">
                 <button
                   type="button"
-                  onClick={() => { if (!atEmployeeLimit) navigation.push('/people/new'); }}
+                  onClick={() => { if (!atEmployeeLimit) navigation.push(buildPeopleCreateHref(directoryQuery.state)); }}
                   disabled={atEmployeeLimit}
                   aria-describedby={atEmployeeLimit && usage ? 'employee-limit-reason' : undefined}
                   className="btn-primary disabled:cursor-not-allowed disabled:opacity-50"
@@ -2476,9 +2480,15 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
           )}
 
           <div className="surface overflow-hidden">
-            <div className="overflow-x-auto">
+            <div
+              className="relative scroll-pt-12 overflow-auto md:max-h-[max(20rem,calc(100dvh-24rem))] md:overscroll-contain"
+              tabIndex={0}
+              role="region"
+              aria-label={t('Employee list')}
+              data-testid="employee-list-scroll"
+            >
               <table className="w-full min-w-[960px] text-sm">
-                <thead>
+                <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_0_rgb(241_245_249)] dark:bg-slate-900 dark:shadow-[0_1px_0_0_rgb(255_255_255/0.07)]">
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                     <th className="w-10 px-4 py-3 text-start">
                       <input
@@ -2546,7 +2556,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                         <div className="flex items-center gap-3">
                           <Avatar name={employee.fullName} size="sm" />
                           <div>
-                            <a
+                            <Link
                               id={`employee-${employee.id}`}
                               href={employeeWorkspaceHref(employee.id, {
                                 returnTo: buildPeopleReturnTo({ ...directoryQuery.state, anchor: `employee-${employee.id}` }),
@@ -2554,7 +2564,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                               className="rounded text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
                             >
                               {employee.fullName}
-                            </a>
+                            </Link>
                             <p className="text-xs text-slate-400">{employee.employeeCode}</p>
                           </div>
                         </div>
@@ -2578,7 +2588,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           state={employee.readinessState}
                           blockersCount={employee.activationBlockersCount}
                           expiring={hasExpiringId([employee.visaExpiryDate, employee.passportExpiryDate])}
-                          onClick={() => openDetail(employee.id)}
+                          onClick={() => navigation.push(employeeWorkspaceHref(employee.id, { section: 'overview', returnTo: buildPeopleReturnTo({ ...directoryQuery.state, anchor: `employee-${employee.id}` }) }))}
                           title={`Profile ${employee.profileCompletenessScore.toFixed(0)}% complete — open the activation checklist`}
                         />
                       </td>
@@ -2848,8 +2858,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           <p className="mt-0.5 text-slate-500 dark:text-slate-400">{[m.branch, m.status, m.signals.join(', ')].filter(Boolean).join(' · ')}</p>
                         </div>
                         <div className="flex shrink-0 gap-1.5">
-                          <button type="button" disabled={saving} onClick={() => viewExistingFromCreate(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">View existing</button>
-                          <button type="button" disabled={saving} onClick={() => mergeFromCreate(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">Merge</button>
+                          <button type="button" disabled={saving} onClick={() => viewExistingFromCreate(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">{t('View existing')}</button>
+                          <button type="button" disabled={saving} onClick={() => mergeFromCreate(m.employeeId)} className="btn-secondary h-7 px-2 text-xs">{t('Merge')}</button>
                         </div>
                       </div>
                     ) : (

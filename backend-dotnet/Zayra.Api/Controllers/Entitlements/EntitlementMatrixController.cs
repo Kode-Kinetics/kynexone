@@ -88,8 +88,9 @@ public sealed class EntitlementMatrixController : ControllerBase
         this.GetTenantId() is null ? Unauthorized() : (IActionResult)Result(await matrix.SetOfferingAsync(Actor(), req, ct));
 
     /// <summary>
-    /// POST /api/entitlements/components — adds a benefit of the customer's own to the grid (a non-paying contract benefit, set per
-    /// grade like the rest). Needs access to every company: a new benefit is a row for the whole group.
+    /// POST /api/entitlements/components — adds a benefit of the customer's own to the grid (a contract benefit or a monthly cash allowance, set per
+    /// grade like the rest). Without <c>companyId</c> it is for the whole group and needs access to every company; with <c>companyId</c> it is that
+    /// company's own, needs access to that company, and no other company ever sees it.
     /// </summary>
     [HttpPost("components")]
     [HasPermission("entitlements.manage")]
@@ -121,11 +122,16 @@ public sealed class EntitlementMatrixController : ControllerBase
     /// a plain reason), judged by exactly the rule <c>POST /components</c> applies to a cash benefit. It exists so the person adding the benefit
     /// (HR, who holds <c>entitlements.manage</c> but not the finance GL permissions) can choose a driver without being handed the chart of accounts:
     /// key, label and the verdict only; no account numbers, no balances. Shape: <c>[{ key, label, labelAr, usable, reasonCode, reason }]</c>.
+    /// <c>?companyId=</c> (a company's own allowance, needs access to that company): that company's drivers, its own winning, judged in it alone.
     /// </summary>
     [HttpGet("components/cash-gl-drivers")]
     [HasPermission("entitlements.manage")]
-    public async Task<IActionResult> CashGlDrivers([FromServices] EntitlementMatrixService matrix, CancellationToken ct) =>
-        this.GetTenantId() is not Guid tid ? Unauthorized() : Ok(await matrix.CashGlDriversAsync(tid, ct));
+    public async Task<IActionResult> CashGlDrivers([FromServices] EntitlementMatrixService matrix, [FromQuery] Guid? companyId, CancellationToken ct)
+    {
+        if (this.GetTenantId() is not Guid tid) return Unauthorized();
+        if (companyId.HasValue && !this.GetEntityScope().CanAccessCompany(companyId)) return Forbid();
+        return Ok(await matrix.CashGlDriversAsync(tid, ct, companyId));
+    }
 
     /// <summary>
     /// POST /api/entitlements/components/{code}/confirm — Finance confirms a monthly cash allowance that someone without the Finance permission added
@@ -151,7 +157,8 @@ public sealed class EntitlementMatrixController : ControllerBase
         CancellationToken ct) =>
         this.GetTenantId() is null ? Unauthorized() : (IActionResult)Result(await matrix.CorrectBenefitAsync(Actor(), code, req, ct));
 
-    /// <summary>POST /api/entitlements/components/{code}/remove — removes a benefit the customer added and nobody has used yet.</summary>
+    /// <summary>POST /api/entitlements/components/{code}/remove — removes a benefit the customer added and nobody has used yet: a group benefit by someone
+    /// with access to every company, a company's own by someone with access to that company (404 to anyone else).</summary>
     [HttpPost("components/{code}/remove")]
     [HasPermission("entitlements.manage")]
     public async Task<IActionResult> RemoveBenefit([FromServices] EntitlementMatrixService matrix, string code, CancellationToken ct) =>

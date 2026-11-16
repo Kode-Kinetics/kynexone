@@ -35,7 +35,7 @@ public class BenefitDefinitionRecheckTests
     public async Task AnAllowanceThatWasEverConfirmed_NeverHasItsGlOrEosbRewrittenByAPlainEdit_NotEvenAfterAnEditSentItBackToPending(string term)
     {
         await using var h = await Bd.Create();
-        var created = Component(await h.Add(CashRequest("Car"), user: h.FinanceA, finance: true));
+        var created = await h.AddConfirmed(CashRequest("Car"));
         // Step 1: HR changes the dates, which sends the confirmed allowance back to pending Finance.
         var step1 = Component(await h.Put("ALW_CAR", CashEdit(created.Definition!.Version, from: Bd.Nov1)));
         step1.CashAllowance!.FinancePending.Should().BeTrue();
@@ -67,13 +67,13 @@ public class BenefitDefinitionRecheckTests
     public async Task ChangingOnlyThePolicyClass_OfAConfirmedAllowance_ByHr_DoesNotSendItBackToPending()
     {
         await using var h = await Bd.Create();
-        var created = Component(await h.Add(CashRequest("Car"), user: h.FinanceA, finance: true));
+        var created = await h.AddConfirmed(CashRequest("Car"));
 
         var edited = Component(await h.Put("ALW_CAR", CashEdit(created.Definition!.Version, policyClass: "Discretionary")));
 
         edited.CashAllowance!.FinancePending.Should().BeFalse();
         var row = (await h.Rows("ALW_CAR")).Single();
-        (row.PolicyClass, row.CreatedBy, row.FinanceConfirmedByUserId).Should().Be(("Discretionary", (Guid?)h.FinanceA, (Guid?)h.FinanceA));
+        (row.PolicyClass, row.CreatedBy, row.FinanceConfirmedByUserId).Should().Be(("Discretionary", (Guid?)h.Hr, (Guid?)h.FinanceA));
     }
 
     // ══ C. the committed periods are looked at once more right before the save ═════════════════

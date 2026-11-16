@@ -221,6 +221,8 @@ test('each refusal of confirm and correct belongs to a field, and the maker is t
   expect(field('group_scope_required', 403)).toMatchObject({ field: 'general' });
   // The person who added it cannot confirm it: the grid withdraws Confirm for them.
   expect(field('maker_cannot_confirm', 403)).toMatchObject({ field: 'general', makerBlocked: true, key: 'You added this allowance, so someone else in Finance must confirm it.' });
+  expect(field('changer_cannot_confirm', 403)).toMatchObject({ field: 'general', makerBlocked: true,
+    key: 'You changed this allowance since Finance last confirmed it, so someone else in Finance must confirm it.' });
   // A screen that is out of date is told to reload.
   for (const code of ['already_confirmed', 'not_confirmed', 'not_a_cash_allowance']) expect(field(code, 409)).toMatchObject({ field: 'general', stale: true });
   expect(field('later_version_exists', 409)).toMatchObject({ field: 'effectiveFrom' });
@@ -268,7 +270,7 @@ test('every sentence of the Finance confirm and correct panels, the end of servi
   }
   // Every key a refusal can resolve to is in the dictionary.
   const refusals = ['gl_driver_required', 'eosb_category_invalid', 'eosb_reason_required', 'eosb_reason_too_long', 'effective_from_required', 'effective_from_not_month_start',
-    'reason_required', 'reason_too_long', 'nothing_to_change', 'group_scope_required', 'finance_required', 'maker_cannot_confirm', 'not_a_cash_allowance',
+    'reason_required', 'reason_too_long', 'nothing_to_change', 'group_scope_required', 'finance_required', 'maker_cannot_confirm', 'changer_cannot_confirm', 'not_a_cash_allowance',
     'already_confirmed', 'not_confirmed', 'later_version_exists', 'period_committed'];
   for (const code of refusals) {
     const key = financeServerProblem(refusedWith(400, { error: code })).key;
@@ -305,4 +307,14 @@ test('a payroll readiness line is named by the allowance, in the reader’s lang
   // Only an in-app path is ever followed.
   expect(readinessIssueHref({ code: 'x', href: 'https://evil.example/' })).toBe('/benefits/by-grade');
   expect(readinessIssueHref({ code: 'x', href: '//evil.example/' })).toBe('/benefits/by-grade');
+});
+
+// A company's own benefit: added from that company's view, the request names the company (the server checks the caller may reach it).
+
+test('from a company view the request names the company; from the group view it never carries one', () => {
+  const form = { ...blankAddBenefit, nameEn: 'Parking' };
+  expect(addBenefitRequest(form, 'company-1')).toEqual({ nameEn: 'Parking', nameAr: null, kind: 'Contract', companyId: 'company-1' });
+  expect(addBenefitRequest(cash(), 'company-1')).toMatchObject({ kind: 'Cash', glDriverKey: 'EARN:PHONE', companyId: 'company-1' });
+  expect(addBenefitRequest(form, null)).not.toHaveProperty('companyId');
+  expect(addBenefitRequest(form)).not.toHaveProperty('companyId');
 });

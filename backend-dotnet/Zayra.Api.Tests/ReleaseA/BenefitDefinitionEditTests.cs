@@ -362,7 +362,7 @@ public class BenefitDefinitionEditTests
     public async Task AConfirmedAllowance_RefusesGlAndEndOfServiceEdits_ForEveryone_PointingToFinanceCorrection()
     {
         await using var h = await Bd.Create();
-        var created = Component(await h.Add(CashRequest("Car"), user: h.FinanceA, finance: true));
+        var created = await h.AddConfirmed(CashRequest("Car"));
         var version = created.Definition!.Version;
 
         var byHr = await h.Put("ALW_CAR", Edit(version, b => { b.GlDriverKey = "EARN:CAR2"; b.EffectiveFrom = null; b.EffectiveTo = null; }));
@@ -378,7 +378,7 @@ public class BenefitDefinitionEditTests
     public async Task ChangingTheDatesOrPolicyClassOfAConfirmedAllowance_AsHr_RependsIt_AndMakesHrTheMaker()
     {
         await using var h = await Bd.Create();
-        var created = Component(await h.Add(CashRequest("Car"), user: h.FinanceA, finance: true));
+        var created = await h.AddConfirmed(CashRequest("Car"));
 
         var edited = Component(await h.Put("ALW_CAR", Edit(created.Definition!.Version, b =>
         {
@@ -395,27 +395,29 @@ public class BenefitDefinitionEditTests
     }
 
     [Fact]
-    public async Task ChangingTheDates_AsFinance_KeepsTheAllowanceConfirmed()
+    public async Task ChangingTheDates_AsFinance_SendsItBackToPending_ForAnotherFinanceUser()
     {
         await using var h = await Bd.Create();
-        var created = Component(await h.Add(CashRequest("Car"), user: h.FinanceA, finance: true));
+        var created = await h.AddConfirmed(CashRequest("Car"));
 
         var edited = Component(await h.Put("ALW_CAR", Edit(created.Definition!.Version, b =>
         {
             b.GlDriverKey = CarDriver; b.PolicyClass = "Contractual"; b.EffectiveFrom = Bd.Nov1; b.EffectiveTo = Bd.Oct31Next; b.Category = "Allowance";
         }), user: h.FinanceB, finance: true));
 
-        edited.CashAllowance!.FinancePending.Should().BeFalse();
+        edited.CashAllowance!.FinancePending.Should().BeTrue("nobody confirms what they changed, Finance included");
         var row = (await h.Rows("ALW_CAR")).Single();
         row.EffectiveFrom.Should().Be(Bd.Nov1);
-        row.CreatedBy.Should().Be(h.FinanceA, "a Finance edit of a confirmed allowance keeps its original maker");
+        row.CreatedBy.Should().Be(h.FinanceB, "the editor is the maker of the change");
+        Error(await h.As(h.FinanceB, finance: true).ConfirmBenefit(h.Service, "ALW_CAR", null, default)).Should().Be("maker_cannot_confirm");
+        Error(await h.As(h.FinanceA, finance: true).ConfirmBenefit(h.Service, "ALW_CAR", null, default)).Should().BeNull();
     }
 
     [Fact]
     public async Task OnlyNamesAndCategory_OfAConfirmedAllowance_AreEditableByHr_WithoutRepending()
     {
         await using var h = await Bd.Create();
-        var created = Component(await h.Add(CashRequest("Car"), user: h.FinanceA, finance: true));
+        var created = await h.AddConfirmed(CashRequest("Car"));
 
         var edited = Component(await h.Put("ALW_CAR", Edit(created.Definition!.Version, b =>
         {
@@ -431,11 +433,12 @@ public class BenefitDefinitionEditTests
     public async Task AFinanceCorrection_CarriesTheDefinitionToTheNewVersion_AndTheMatrixStillShowsIt()
     {
         await using var h = await Bd.Create();
-        Component(await h.Add(CashRequest("Car"), user: h.FinanceA, finance: true));
+        await h.AddConfirmed(CashRequest("Car"));
 
         var corrected = await h.As(h.FinanceB, finance: true).CorrectBenefit(h.Service, "ALW_CAR", new CorrectAllowanceRequest(Dec1, "Re-route the expense", GlDriverKey: "EARN:CAR2"), default);
 
         Status(corrected).Should().Be(200, Describe(corrected));
+        Status(await h.As(h.FinanceA, finance: true).ConfirmBenefit(h.Service, "ALW_CAR", null, default)).Should().Be(200, "another Finance user confirms the correction");
         var versions = await h.Rows("ALW_CAR", tenantWideOnly: true);
         versions.Should().HaveCount(2);
         versions.Should().OnlyContain(v => v.BenefitCategory == "Allowance" && v.PolicyClass == "Contractual" && v.RequiresEnrolment == false);
