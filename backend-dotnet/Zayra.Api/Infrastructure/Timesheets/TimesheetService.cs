@@ -314,7 +314,7 @@ public sealed class TimesheetService : ITimesheetService
     /// </summary>
     public async Task<IReadOnlyList<TimesheetVarianceRowDto>> GetAttendanceVarianceAsync(
         Guid tenantId, DateOnly from, DateOnly to, int? employeeId, bool overAllocatedOnly, CancellationToken ct,
-        IReadOnlyCollection<int>? allowedEmployeeIds = null)
+        IReadOnlyCollection<int>? allowedEmployeeIds)
     {
         var q = _db.TimesheetDayReconciliations.AsNoTracking()
             .Where(r => r.TenantId == tenantId && r.WorkDate >= from && r.WorkDate <= to);

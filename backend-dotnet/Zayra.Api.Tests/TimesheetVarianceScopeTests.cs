@@ -95,4 +95,13 @@ public class TimesheetVarianceScopeTests
         EmployeesIn(await Controller(db, tenant, org).AttendanceVariance(Monday, Monday.AddDays(6), null, false, default)).Should().Equal(1, 2, 3);
         EmployeesIn(await Controller(db, tenant, org).AttendanceVariance(Monday, Monday.AddDays(6), 3, false, default)).Should().Equal(3);
     }
+
+    [Fact]
+    public void TheServiceRequiresTheEmployeeScopeArgument_SoACallerThatForgetsItCannotReadEveryone()
+    {
+        var parameter = typeof(Zayra.Api.Application.Timesheets.ITimesheetService).GetMethod("GetAttendanceVarianceAsync")!
+            .GetParameters().Single(p => p.Name == "allowedEmployeeIds");
+
+        parameter.IsOptional.Should().BeFalse("an omitted scope must be a compile error, not an unrestricted read");
+    }
 }

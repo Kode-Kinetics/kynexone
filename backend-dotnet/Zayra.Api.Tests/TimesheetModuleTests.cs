@@ -315,7 +315,7 @@ public sealed class TimesheetModuleTests
 
         // ── And the report HR actually opens serves those rows. ──
         var report = await service.GetAttendanceVarianceAsync(
-            s.TenantId, s.PeriodStart, s.PeriodStart.AddDays(6), s.EmployeeId, overAllocatedOnly: false, default);
+            s.TenantId, s.PeriodStart, s.PeriodStart.AddDays(6), s.EmployeeId, overAllocatedOnly: false, default, allowedEmployeeIds: null);
         report.Should().HaveCount(7);
         report.Sum(r => r.LoggedMinutes).Should().Be(1140);
         report.Single(r => r.WorkDate == tuesday).VarianceMinutes.Should().Be(-60);
@@ -389,11 +389,11 @@ public sealed class TimesheetModuleTests
         await ApproveAsync(db, s, submitted.ApprovalRequestId!.Value, null);
 
         var all = await service.GetAttendanceVarianceAsync(
-            s.TenantId, s.PeriodStart, s.PeriodStart.AddDays(6), s.EmployeeId, overAllocatedOnly: false, default);
+            s.TenantId, s.PeriodStart, s.PeriodStart.AddDays(6), s.EmployeeId, overAllocatedOnly: false, default, allowedEmployeeIds: null);
         all.Should().HaveCount(7);
 
         var flagged = await service.GetAttendanceVarianceAsync(
-            s.TenantId, s.PeriodStart, s.PeriodStart.AddDays(6), s.EmployeeId, overAllocatedOnly: true, default);
+            s.TenantId, s.PeriodStart, s.PeriodStart.AddDays(6), s.EmployeeId, overAllocatedOnly: true, default, allowedEmployeeIds: null);
         flagged.Should().ContainSingle().Which.Should().Match<TimesheetVarianceRowDto>(r =>
             r.WorkDate == monday && r.LoggedMinutes == 600 && r.AttendanceMinutes == 420 && r.VarianceMinutes == 180);
     }
@@ -530,7 +530,7 @@ public sealed class TimesheetModuleTests
         }
 
         var report = await service.GetAttendanceVarianceAsync(
-            a.TenantId, a.PeriodStart, a.PeriodStart.AddDays(6), employeeId: null, overAllocatedOnly: false, default);
+            a.TenantId, a.PeriodStart, a.PeriodStart.AddDays(6), employeeId: null, overAllocatedOnly: false, default, allowedEmployeeIds: null);
 
         report.Should().NotBeEmpty("an empty report would make every assertion below vacuous");
         report.Should().OnlyContain(r => r.EmployeeId == a.EmployeeId);
