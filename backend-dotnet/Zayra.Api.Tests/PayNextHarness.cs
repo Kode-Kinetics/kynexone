@@ -161,7 +161,7 @@ internal static class PayNext
         (await Earnings(db, runId, employeeId)).Where(d => d.ComponentCode == code).Sum(d => d.Amount);
 
     public static JsonElement Json(IActionResult result) =>
-        JsonDocument.Parse(JsonSerializer.Serialize((result as ObjectResult)!.Value)).RootElement;
+        JsonDocument.Parse(JsonSerializer.Serialize((result as ObjectResult)!.Value, new JsonSerializerOptions(JsonSerializerDefaults.Web))).RootElement;
 
     public static int Status(IActionResult result) => (result as ObjectResult)?.StatusCode ?? (result is OkResult ? 200 : 0);
 

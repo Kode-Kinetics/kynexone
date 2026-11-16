@@ -75,7 +75,8 @@ public class PayLeaveCancelRefundTests
         line.ComponentName.Should().Be("Leave deduction reversal (2026-01)");
         (await DeductionSum(db, feb.Id, f.Employee.Id, "LEAVE")).Should().Be(0m);
         (await Slip(db, feb.Id, f.Employee.Id))!.GrossSalary.Should().Be(Basic + Housing + janDeducted, "net over both months is zero");
-        (await db.PayrollSlips.AsNoTracking().CountAsync(s => s.RunId == jan.Id)).Should().Be(1, "January's run is not touched");
+        (await DeductionSum(db, jan.Id, f.Employee.Id, "LEAVE")).Should().Be(janDeducted, "January's run is not touched");
+        (await Earnings(db, jan.Id, f.Employee.Id)).Should().NotContain(l => l.ComponentCode == LeaveArrears.ReversalCode);
     }
 
     [Fact]

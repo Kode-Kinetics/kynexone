@@ -116,7 +116,7 @@ public class PayLeaveArrearsTests
         await Process(db, co, apr.Id);
         var aprTaken = (await ArrearsLines(db, apr.Id, e.Id)).Sum(l => l.Amount);
         aprTaken.Should().Be(room);
-        (await db.LeavePayrollImpacts.AsNoTracking().Where(i => i.LeaveRequestId == leave.Id && i.Status == "Pending").SumAsync(i => i.Amount))
+        (await db.LeavePayrollImpacts.AsNoTracking().Where(i => i.LeaveRequestId == leave.Id && i.Status == "Pending").ToListAsync()).Sum(i => i.Amount)
             .Should().Be(2_000m - marTaken - aprTaken);
     }
 
