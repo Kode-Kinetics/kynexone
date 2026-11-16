@@ -8,6 +8,7 @@ import { bankFileProductionAllowed } from '../../lib/payrollPaymentAccess';
 import { requestFailureReason } from '../../lib/requestFailure';
 import { Skeleton } from '../ui/Skeleton';
 import type { BankFlowProgress } from '../../lib/bankFileSteps';
+import type { PayrollPaymentBatch } from '../../api/payroll';
 import type { GuideSlots } from './BankFileGuide';
 
 // The server allow-list, not a browser flag, owns activation. Old APIs, denied requests and failed probes keep this additive feature
@@ -43,7 +44,11 @@ function GateReason({ testId, title, children, action }: { testId: string; title
   );
 }
 
-export function SaudiBankExportGate({ batchId, employeeIds, employeeLabels, isSaudi = false, onProgress, suggestedReference, renderGuide }: {
+export function SaudiBankExportGate({ batchId, employeeIds, employeeLabels, isSaudi = false, onProgress, suggestedReference, renderGuide, batch, recordsCount, onOpenRecords }: {
+  /** Passed to the panel: the open batch, its record count, and the records drawer. */
+  batch?: PayrollPaymentBatch | null;
+  recordsCount?: number | null;
+  onOpenRecords?: () => void;
   /** Draws the guided flow; the gate says why the bank file is not there in step 2 of it, and the panel fills the steps when it is. */
   renderGuide: (slots: GuideSlots) => React.ReactNode;
   batchId: string;
@@ -78,14 +83,15 @@ export function SaudiBankExportGate({ batchId, employeeIds, employeeLabels, isSa
 
   if (gate === 'ready') {
     return (
-      <Suspense fallback={<>{renderGuide({ steps: { check: { body: <GateSkeleton /> } } })}</>}>
-        <Panel key={batchId} batchId={batchId} employeeIds={employeeIds} employeeLabels={employeeLabels} onProgress={onProgress} suggestedReference={suggestedReference} renderGuide={renderGuide} />
+      <Suspense fallback={<>{renderGuide({ panels: { check: { body: <GateSkeleton /> } } })}</>}>
+        <Panel key={batchId} batchId={batchId} employeeIds={employeeIds} employeeLabels={employeeLabels} onProgress={onProgress} suggestedReference={suggestedReference} renderGuide={renderGuide}
+          batch={batch} recordsCount={recordsCount} onOpenRecords={onOpenRecords} />
       </Suspense>
     );
   }
   if (!isSaudi) return null;
   // Step 2 is where the bank file is prepared, so it is where its absence is explained.
-  const inStep = (body: React.ReactNode) => <>{renderGuide({ steps: { check: { body } } })}</>;
+  const inStep = (body: React.ReactNode) => <>{renderGuide({ panels: { check: { body } } })}</>;
   if (gate === 'checking') return inStep(<GateSkeleton />);
   if (gate === 'no_permission') {
     return inStep(

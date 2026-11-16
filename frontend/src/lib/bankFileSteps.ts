@@ -22,6 +22,12 @@ export interface BankFlowProgress {
    * step 2. Absent means "not reported" and is read as complete (the gate and older callers never say).
    */
   setup?: 'complete' | 'incomplete';
+  /** The last "Create bank file" was refused (a conflict, field errors on the date or the reference). */
+  createRefused?: boolean;
+  /** The file was downloaded in this session. */
+  downloaded?: boolean;
+  /** How many employees the last check covered. */
+  checked?: number;
 }
 
 export interface BankStep { key: BankStepKey; state: BankStepState; reason?: BankStepReason }

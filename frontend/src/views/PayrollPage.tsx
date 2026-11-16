@@ -60,19 +60,23 @@ import { useLocale } from '../contexts/LocaleContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
-import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
+import { SectionNav } from '../components/ui/SectionNav';
+import { PayrollSectionHeader, PAYROLL_SECTION_HEADING_ID } from '../components/payroll/PayrollSectionHeader';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
-import { BankFileGuide, useBankHandOver, type GuideSlots } from '../components/payroll/BankFileGuide';
+import { BankFileGuide, useBankHandOver, type BankPanelData, type GuideSlots } from '../components/payroll/BankFileGuide';
+import { BankFileFacts } from '../components/payroll/BankFileFacts';
+import { RecordSubmittedDialog } from '../components/payroll/RecordSubmittedDialog';
+import { derivePayOut, pickPayOutBatch, type PayOutStepKey } from '../lib/payOut';
+import { EmptyState } from '../components/ui/EmptyState';
 import { Modal as SideDrawer } from '../components/Modal';
-import { deriveBankSteps, suggestedBatchReference, type BankFlowProgress } from '../lib/bankFileSteps';
-import { deriveBankStage } from '../lib/bankFileGuide';
-import { awaitingBankConfirmation } from '../lib/payrollPipeline';
+import { suggestedBatchReference, type BankFlowProgress } from '../lib/bankFileSteps';
+import type { PipelineBatch } from '../lib/payrollPipeline';
 import { AttendanceReconciliationPanel } from '../components/payroll/AttendanceReconciliationPanel';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
 import { LoadFailedNotice, LoadFailedRow } from '../components/ui/LoadFailedRow';
 import { SkeletonRows } from '../components/ui/Skeleton';
 import { employeeWorkspaceHref } from '../lib/peopleRoutes';
-import { RunPipeline } from '../components/payroll/RunPipeline';
+import { RunPipeline, type PayOutContext } from '../components/payroll/RunPipeline';
 import { useLockWithSummary } from '../hooks/useLockWithSummary';
 import { startRunProcessing } from '../api/payrollProcessing';
 import { parseDeepLink, withDeepLink } from '../lib/payrollPipeline';
@@ -214,14 +218,18 @@ const TABS: { key: Tab; label: string; icon: React.ComponentType<{ className?: s
   { key: 'audit-integrity',  label: msg('Audit Integrity'),     icon: Shield },
 ];
 
-/** The sixteen tabs as five labelled groups, in the order a payroll month goes. */
-const TAB_GROUPS: { label: string; ids: Tab[] }[] = [
-  { label: msg('Set up'),             ids: ['dashboard', 'salary-structures', 'employee-salary'] },
-  { label: msg('Run payroll'),        ids: ['runs', 'validation', 'approvals', 'payslips'] },
-  { label: msg('Pay out'),            ids: ['bank-wps', 'payment-tracking'] },
-  { label: msg('Report and ledger'),  ids: ['reports', 'gl-journal', 'reconciliation'] },
-  { label: msg('Settle and check'),   ids: ['eosb', 'final-settlement', 'ai-validation', 'audit-integrity'] },
+/**
+ * The sixteen sections as five labelled groups, in the order a payroll month goes (the Payroll section nav). Each group has one purpose
+ * sentence its sections use under their heading until they have their own (Bank / WPS Files has its own).
+ */
+const TAB_GROUPS: { id: string; label: string; purpose: string; ids: Tab[] }[] = [
+  { id: 'set-up',  label: msg('Set up'),            purpose: msg('Set up the grade packages and salaries every payroll run uses.'), ids: ['dashboard', 'salary-structures', 'employee-salary'] },
+  { id: 'run',     label: msg('Run payroll'),       purpose: msg('Process, check and approve the month’s payroll run, then lock it.'), ids: ['runs', 'validation', 'approvals', 'payslips'] },
+  { id: 'pay-out', label: msg('Pay out'),           purpose: msg('Record what the bank confirms or returns for each payment, then settle the payments.'), ids: ['bank-wps', 'payment-tracking'] },
+  { id: 'ledger',  label: msg('Report and ledger'), purpose: msg('See the run’s reports and post its journal to the general ledger.'), ids: ['reports', 'gl-journal', 'reconciliation'] },
+  { id: 'settle',  label: msg('Settle and check'),  purpose: msg('Settle end-of-service and final pay, and check the payroll for anomalies.'), ids: ['eosb', 'final-settlement', 'ai-validation', 'audit-integrity'] },
 ];
+const groupOf = (tab: Tab) => TAB_GROUPS.find(g => g.ids.includes(tab)) ?? TAB_GROUPS[0];
 
 // ── Payroll Setup Wizard ───────────────────────────────────────────────────────
 
@@ -2818,17 +2826,16 @@ function PayslipsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; o
 type LoadStatus = { status: 'idle' } | { status: 'loading' } | { status: 'ready' } | { status: 'failed'; error: unknown };
 const isForbidden = (error: unknown) => (error as { response?: { status?: number } } | null)?.response?.status === 403;
 
-function BankWpsTab({ selectedRunId, onRunChange, onNavigate, onRunsChanged }: { selectedRunId?: string; onRunChange?: (id: string | null) => void; onNavigate?: (tab: string) => void; onRunsChanged?: () => void }) {
+function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext }: { selectedRunId?: string; onRunChange?: (id: string | null) => void; onNavigate?: (tab: string) => void; onRunsChanged?: () => void; onPayOutContext?: (ctx: PayOutContext | null) => void }) {
   const t = useT();
   // Creating a batch and generating the file need payroll.export (Admin) or payroll.payment_batch.manage. Without either the actions are shown off, with the reason.
   const { hasPermission } = useAuth();
   const canExport = paymentActionsAllowed(hasPermission, ['create']);
   const fmtAmt = useFmtAmt();
-  const monthLabel = useMonthLabel();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
-  // The run the page is showing (the pipeline's "Open Bank / WPS", or ?tab=bank-wps&run=) is the run this tab opens on.
-  const [runId, setRunId] = useSharedRun(selectedRunId, onRunChange);
+  // The run is the page's: the run bar's picker is the only run control (clearing it empties this tab too).
+  const runId = selectedRunId ?? '';
   const [batches, setBatches] = useState<PayrollPaymentBatch[]>([]);
   const [selectedBatch, setSelectedBatch] = useState<PayrollPaymentBatch | null>(null);
   const [records, setRecords] = useState<PayrollPaymentRecord[]>([]);
@@ -2851,6 +2858,11 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate, onRunsChanged }: {
   const [flow, setFlow] = useState<BankFlowProgress | null>(null);
   const [recordsOpen, setRecordsOpen] = useState(false);
   const runNames = useRunEmployeeLabels(runId);
+  const fx = useFormat();
+  // Several live batches and none open: the one the user picked in step 1, before "Open batch".
+  const [chosenBatchId, setChosenBatchId] = useState<string | null>(null);
+  const [submitOpen, setSubmitOpen] = useState(false);
+  const panelMenu = useRef<GuideSlots['menu'] | null>(null);
 
   useEffect(() => {
     setRunsState({ status: 'loading' });
@@ -2861,7 +2873,7 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate, onRunsChanged }: {
     let cancelled = false;
     openBatchIdRef.current = null;
     autoOpenedRef.current = null;
-    setBatches([]); setSelectedBatch(null); setRecords([]); setRecordsState({ status: 'idle' }); setRecordsOpen(false);
+    setBatches([]); setSelectedBatch(null); setRecords([]); setRecordsState({ status: 'idle' }); setRecordsOpen(false); setChosenBatchId(null); setSubmitOpen(false);
     if (!runId) { setBatchesState({ status: 'idle' }); return; }
     setError('');
     setBatchesState({ status: 'loading' });
@@ -2872,8 +2884,6 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate, onRunsChanged }: {
   }, [runId, reloadKey]);
 
   const selectedRun = runs.find(r => r.id === runId);
-  // Backend (C5 control) only allows payment batches for Locked runs — finance must lock first.
-  const runIsLocked = selectedRun?.status === 'Locked';
   const hasExistingBatch = batches.some(b => b.wpsStatus !== 'Voided');
 
   const openBatch = (batch: PayrollPaymentBatch) => {
@@ -2884,27 +2894,78 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate, onRunsChanged }: {
       .catch(error => { if (openBatchIdRef.current === batch.id) setRecordsState({ status: 'failed', error }); });
   };
 
+  // The batch opens by itself when there is nothing to choose: the run's only live batch, or the one that has gone furthest (lib/payOut.ts).
   useEffect(() => {
-    if (batches.length !== 1 || selectedBatch || autoOpenedRef.current === batches[0].id) return;
-    autoOpenedRef.current = batches[0].id;
-    openBatch(batches[0]);
+    if (selectedBatch) return;
+    const pick = pickPayOutBatch(batches as PipelineBatch[], null);
+    if (!pick || autoOpenedRef.current === pick.id) return;
+    autoOpenedRef.current = pick.id;
+    openBatch(pick as PayrollPaymentBatch);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batches, selectedBatch]);
 
-  const steps = deriveBankSteps({
-    hasBatch: !!selectedBatch,
-    runLocked: runIsLocked,
-    canCreateBatch: canExport,
-    isSaudi: selectedBatch?.isSaudi === true,
-    progress: flow,
-    wpsStatus: selectedBatch ? (batches.find(b => b.id === selectedBatch.id)?.effectiveWpsStatus || batches.find(b => b.id === selectedBatch.id)?.wpsStatus) : null,
+  // ── One stage for the whole page (lib/payOut.ts): this tab's strip, panel and button, and the run bar's chip and run option.
+  const can = {
+    create: canExport, wps: paymentActionsAllowed(hasPermission, ['wps']),
+    settle: paymentActionsAllowed(hasPermission, ['settle']), setup: hasPermission('payroll.structure_manage'),
+  };
+  // Someone who can neither prepare, submit nor settle the file has nothing to do here (Finance's settle still sees the flow, read-only).
+  const restricted = !paymentActionsAllowed(hasPermission, ['create', 'wps', 'settle']);
+  const exportFacts = useMemo(() => (flow ? {
+    gate: flow.gate, setup: flow.setup, validation: flow.validation, fileExists: flow.generated, createRefused: !!flow.createRefused,
+  } : null), [flow?.gate, flow?.setup, flow?.validation, flow?.generated, flow?.createRefused]); // eslint-disable-line react-hooks/exhaustive-deps
+  const recordsRead = recordsState.status === 'ready' ? records : null;
+  const payOut = derivePayOut({
+    run: selectedRun ?? null, batches: batchesState.status === 'ready' ? batches as PipelineBatch[] : null, openBatchId: selectedBatch?.id ?? null,
+    can, exportFacts, downloaded: !!flow?.downloaded, records: recordsRead,
   });
-  // The one stage the screen speaks from: the header, the step list, the primary button and the status chip all read it (lib/bankFileGuide.ts).
-  const stage = deriveBankStage(steps, flow);
   const loadingGuide = runsState.status === 'loading' || batchesState.status === 'loading' || batchesState.status === 'idle';
-  const handOver = useBankHandOver(stage, loadingGuide);
-  // The bank file was made on this screen: the page's pipeline and run list read the batch list, so they are told to read it again and
-  // cannot go on saying "waiting for the bank file" while this tab says it is ready.
+
+  // The run bar reads the same facts (its chip and the run option cannot disagree with this tab).
+  const payOutContext = useMemo<PayOutContext | null>(() => (runId && batchesState.status === 'ready' ? {
+    runId, batches: batches as PipelineBatch[], openBatchId: selectedBatch?.id ?? null, exportFacts, downloaded: !!flow?.downloaded, records: recordsRead,
+  } : null), [runId, batches, batchesState.status, selectedBatch?.id, exportFacts, flow?.downloaded, recordsRead]);
+  useEffect(() => { onPayOutContext?.(payOutContext); }, [payOutContext, onPayOutContext]);
+  useEffect(() => () => onPayOutContext?.(null), [onPayOutContext]);
+
+  // What the panel last handed the flow (the bank's name, the file), for the facts strip, step 5 and the confirmations.
+  const panelData = useRef<BankPanelData | null>(null);
+  const submittedRef = useRef<string>('');
+  // The batch was created here (not picked from the list): the hand-over says so.
+  const batchCreatedRef = useRef(false);
+  const handOver = useBankHandOver(payOut.stage, loadingGuide, (from) => {
+    const data = panelData.current;
+    switch (from) {
+      case 'batch': return !selectedBatch ? '' : batchCreatedRef.current ? t('Payment batch {number} created.', { number: selectedBatch.batchNumber }) : t('Payment batch chosen.');
+      case 'setup': return t('Bank setup saved.');
+      case 'check': return t('Checked {n} employees — no blockers.', { n: flow?.checked ?? records.length });
+      case 'create': return data?.file ? t('Bank file created: {count} employees, {amount}.', { count: data.file.employeeCount, amount: fmtAmt(data.file.totalAmount, selectedBatch?.currency) }) : t('Bank file created.');
+      case 'send': return data?.bankName ? t('Recorded as submitted to {bank}, reference {ref}.', { bank: data.bankName, ref: submittedRef.current }) : t('Recorded as submitted, reference {ref}.', { ref: submittedRef.current });
+      default: return '';
+    }
+  });
+
+  // A done step opened read-only (?step= in the address, so it can be shared); a new stage starts clean.
+  const searchParams = useSearchParams();
+  const [viewing, setViewingState] = useState<PayOutStepKey | null>(() => {
+    const s = searchParams?.get('step');
+    return s === 'batch' || s === 'check' || s === 'create' || s === 'send' ? s : null;
+  });
+  const setViewing = (k: PayOutStepKey | null) => {
+    setViewingState(k);
+    try {
+      const u = new URL(window.location.href);
+      if (k) u.searchParams.set('step', k); else u.searchParams.delete('step');
+      window.history.replaceState(window.history.state, '', u.toString());
+    } catch { /* the address just does not follow */ }
+  };
+  const lastStage = useRef(payOut.stage);
+  useEffect(() => {
+    if (lastStage.current !== payOut.stage && !loadingGuide) { lastStage.current = payOut.stage; if (viewing) setViewing(null); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payOut.stage, loadingGuide]);
+
+  // The bank file was made on this screen: the page's pipeline and run list read the batch list, so they are told to read it again.
   useEffect(() => {
     if (!selectedBatch || !flow || flow.gate !== 'ready') return;
     if (fileMadeRef.current === false && flow.generated) {
@@ -2947,8 +3008,10 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate, onRunsChanged }: {
         batch = await payrollApi.createPaymentBatch(runId, paymentMethod, undefined, data.outsideBankCount);
       }
       if (currentRunRef.current !== runId) return;
+      batchCreatedRef.current = true;
       setBatches(b => [batch, ...b]);
       openBatch(batch);
+      onRunsChanged?.();
     } catch (e) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
       // A 403 is a missing permission, never "lock the run first" (the run may well be locked).
@@ -2971,18 +3034,7 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate, onRunsChanged }: {
     payrollApi.listPaymentBatches(runId).then(setBatches).catch(() => {});
   };
 
-  // ── The run and its toolbar: a labelled run selector (the page's one more place to change run), nothing else.
-  const runSelect = (
-    <div className="flex flex-wrap items-center gap-2">
-      <label htmlFor="bank-wps-run" className="text-body-sm font-medium text-fg-muted">{t('Payroll run')}</label>
-      <select id="bank-wps-run" aria-label={t('Select payroll run')} className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
-        <option value="">{t('Select payroll run…')}</option>
-        <RunSelectOptions runs={runs} />
-      </select>
-    </div>
-  );
-
-  // ── The payment batches of the run: one list, used by step 1 and by a WPS/SIF batch's own layout.
+  // ── The payment batches of the run (a WPS/SIF batch's own layout).
   const batchList = (
     <div id="bank-wps-batches" tabIndex={-1} className="outline-none" data-testid="bank-batch-list">
       {!runId ? <p className="p-5 text-sm text-fg-muted">{t('Choose a payroll run to see its payment batches.')}</p>
@@ -3070,19 +3122,34 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate, onRunsChanged }: {
     </>
   );
 
+  const header = (menu?: GuideSlots['menu']) => (
+    <PayrollSectionHeader
+      group={t('Pay out')}
+      title={t('Bank / WPS Files')}
+      purpose={t('Prepare this run’s bank salary file, hand it to your bank, and follow the bank’s confirmation.')}
+      actions={selectedBatch?.isSaudi === true || menu ? (
+        <MoreMenu items={[
+          menu?.setup && { label: t('Bank setup'), onSelect: menu.setup },
+          menu?.employeeBank && { label: t('Employee bank details'), onSelect: menu.employeeBank },
+          selectedBatch && recordsState.status === 'ready' && { label: t('Payment records'), onSelect: () => setRecordsOpen(true) },
+          menu?.formats && { label: t('Bank file formats'), onSelect: menu.formats },
+          menu?.about && { label: t('About this file'), onSelect: menu.about },
+        ]} />
+      ) : undefined}
+    />
+  );
+
   // A WPS/SIF batch (not the Saudi bank-file flow) keeps its own layout: the batch list, its records and the batch's own file button.
   if (runId && selectedBatch && selectedBatch.isSaudi !== true) {
     return (
       <div className="space-y-4">
         {confirmDialog}
-        <div className="flex flex-wrap items-center gap-3">
-          {runSelect}
-          {hasExistingBatch && currentBatch && (
-            <p role="status" data-testid="bank-batch-status" className="text-sm font-medium text-slate-700 dark:text-slate-200">
-              {t(batchFileGenerated ? 'Payment batch {number} created; bank file generated.' : 'Payment batch {number} created; bank file not generated yet.', { number: currentBatch.batchNumber })}
-            </p>
-          )}
-        </div>
+        {header()}
+        {hasExistingBatch && currentBatch && (
+          <p role="status" data-testid="bank-batch-status" className="text-sm font-medium text-slate-700 dark:text-slate-200">
+            {t(batchFileGenerated ? 'Payment batch {number} created; bank file generated.' : 'Payment batch {number} created; bank file not generated yet.', { number: currentBatch.batchNumber })}
+          </p>
+        )}
         {failureBanners}
         <div className="grid gap-4 lg:grid-cols-3">
           <div className="surface overflow-hidden">
@@ -3099,7 +3166,7 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate, onRunsChanged }: {
           </div>
         </div>
         <SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi={false} onProgress={setFlow} suggestedReference={suggestedBatchReference(selectedBatch.batchNumber, selectedRun)}
-          employeeIds={records.map(r => r.employeeId)} employeeLabels={{ ...runNames, ...employeeLabelsFromRecords(records) }} renderGuide={slots => <>{slots.steps?.check?.body ?? null}</>} />
+          employeeIds={records.map(r => r.employeeId)} employeeLabels={{ ...runNames, ...employeeLabelsFromRecords(records) }} renderGuide={slots => <>{slots.panels?.check?.body ?? null}</>} />
       </div>
     );
   }
@@ -3108,122 +3175,315 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate, onRunsChanged }: {
     return (
       <div className="space-y-4">
         {confirmDialog}
-        {runSelect}
+        {header()}
         {failureBanners}
-        <div className="surface flex flex-col items-center justify-center py-16 text-center" data-testid="bank-no-run">
-          <Landmark className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" aria-hidden="true" />
-          <p className="text-sm text-fg-muted">{t('Choose a payroll run to prepare its bank file.')}</p>
+        <div className="surface" data-testid="bank-no-run">
+          <EmptyState kind="first-use" icon={Landmark} title={t('Choose a payroll run')} description={t('The bank file is prepared for one run at a time.')}
+            action={{ label: t('Choose a run'), onClick: () => document.getElementById('pipeline-run-picker')?.focus() }} />
         </div>
       </div>
     );
   }
 
-  // ── The guided flow: what the tab itself puts in the steps (the batch, its records, Payment Tracking)
-  const batchFacts = selectedBatch ? (
-    <>
-      <bdi>{selectedBatch.batchNumber}</bdi>
-      {recordsState.status === 'ready' && <> · {t('{count, plural, one {# employee} other {# employees}}', { count: records.length })}</>}
-      {' '}· {fmtAmt(selectedBatch.totalAmount, selectedBatch.currency)}
-    </>
-  ) : null;
+  // The batch list could not be read: say so (never "create one" over a list that failed to load).
+  if (batchesState.status === 'failed') {
+    return (
+      <div className="space-y-4">
+        {confirmDialog}
+        {header()}
+        {failureBanners}
+        <LoadFailedNotice error={batchesState.error} onRetry={() => setReloadKey(n => n + 1)} />
+      </div>
+    );
+  }
 
-  const batchBody = (
-    <>
-      {!hasExistingBatch && batchesState.status === 'ready' && (
-        <div className="flex flex-wrap items-center gap-2">
-          <label htmlFor="bank-wps-method" className="text-body-sm font-medium text-fg-muted">{t('Payment method')}</label>
-          <select id="bank-wps-method" className={`${sel} w-40`} value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
+  if (restricted) {
+    return (
+      <div className="space-y-4">
+        {header()}
+        <div className="surface" data-testid="bank-restricted">
+          <EmptyState kind="restricted" icon={Landmark} title={t('You can’t prepare bank files')}
+            description={t('Bank files need the payment batch or Payroll export permission. Your HR administrator can give it.')} />
+        </div>
+      </div>
+    );
+  }
+
+  // ── What the tab itself puts in the flow: step 1 (the batch) and step 5 (the bank's response)
+  const liveBatches = batches.filter(b => b.wpsStatus !== 'Voided');
+  const runFacts = selectedRun && (
+    <dl className="grid grid-cols-2 gap-3 text-body-sm">
+      <div className="rounded-xl border border-line p-3"><dt className="text-meta text-fg-muted">{t('Employees')}</dt><dd className="mt-1 text-h4 font-semibold tabular-nums text-fg">{selectedRun.employeeCount}</dd></div>
+      <div className="rounded-xl border border-line p-3"><dt className="text-meta text-fg-muted">{t('Run net pay')}</dt><dd className="mt-1 text-h4 font-semibold tabular-nums text-fg"><bdi dir="ltr">{fmtAmt(selectedRun.totalNetSalary, liveBatches[0]?.currency)}</bdi></dd></div>
+    </dl>
+  );
+  const batchBody = payOut.steps[0].reason === 'run_not_locked' ? (
+    <div className="space-y-3">
+      <p className="text-body text-fg">{t('Run status')}: <strong><EnumLabel enum="PayrollRunStatus" value={selectedRun?.status} /></strong></p>
+      {onNavigate && <button type="button" className="btn-secondary btn-sm" onClick={() => onNavigate('approvals')}>{t('Open Approvals')}</button>}
+    </div>
+  ) : liveBatches.length > 1 ? (
+    <fieldset className="space-y-2">
+      <legend className="sr-only">{t('Payment batches of this run')}</legend>
+      {liveBatches.map(b => (
+        <label key={b.id} className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 ${chosenBatchId === b.id ? 'border-primary bg-primary-soft' : 'border-line hover:bg-surface-sunken'}`}>
+          <input type="radio" name="bank-batch-choice" value={b.id} checked={chosenBatchId === b.id} onChange={() => setChosenBatchId(b.id)} />
+          <span className="min-w-0 flex-1">
+            <span className="block font-mono text-body font-semibold text-fg"><bdi>{b.batchNumber}</bdi></span>
+            <span className="block text-meta text-fg-muted">{b.paymentMethod} · <bdi dir="ltr">{fmtAmt(b.totalAmount, b.currency)}</bdi></span>
+          </span>
+          <StatusBadge status={b.effectiveWpsStatus || b.wpsStatus || b.status} />
+        </label>
+      ))}
+    </fieldset>
+  ) : (
+    <div className="space-y-4">
+      {batchesState.status === 'ready' && (
+        <Field label={t('Payment method')} info={t('How this batch pays employees. WPS and bank transfer go in the bank file; cash and cheque are paid outside it.')} size="md">
+          <select id="bank-wps-method" className="select w-full max-w-xs" value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)} disabled={!canExport}>
             {['WPS', 'BankTransfer', 'Cash'].map(m => <option key={m} value={m}>{m === 'BankTransfer' ? t('Bank transfer') : m === 'Cash' ? t('Cash') : m}</option>)}
           </select>
-        </div>
+        </Field>
       )}
-      {batchList}
-    </>
+      {runFacts}
+    </div>
   );
-
-  const recordsRow = selectedBatch && (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-body-sm" data-testid="bank-records-row">
-      {recordsState.status === 'loading' && <div className="w-full max-w-xs"><SkeletonRows rows={1} /></div>}
-      {recordsState.status === 'failed' && (isForbidden(recordsState.error)
-        ? <p role="alert" data-testid="bank-records-forbidden" className="text-fg-muted">{t('The payment records need the Payroll export permission. Ask an administrator to give it to your role.')}</p>
-        : <div className="w-full"><LoadFailedNotice error={recordsState.error} onRetry={() => openBatch(selectedBatch)} /></div>)}
-      {recordsState.status === 'ready' && (
-        <button type="button" className={btn.link} onClick={() => setRecordsOpen(true)} data-testid="bank-records-open">
-          {t('View payment records ({count})', { count: records.length })}
-        </button>
-      )}
+  const batchView = selectedBatch && (
+    <div className="space-y-3">
+      <dl className="grid grid-cols-2 gap-3 text-body-sm">
+        <div><dt className="text-fg-muted">{t('Payment batch')}</dt><dd className="font-mono font-semibold text-fg"><bdi>{selectedBatch.batchNumber}</bdi></dd></div>
+        <div><dt className="text-fg-muted">{t('Payment method')}</dt><dd className="font-medium text-fg">{selectedBatch.paymentMethod}</dd></div>
+        <div><dt className="text-fg-muted">{t('Amount')}</dt><dd className="font-medium tabular-nums text-fg"><bdi dir="ltr">{fmtAmt(selectedBatch.totalAmount, selectedBatch.currency)}</bdi></dd></div>
+        <div><dt className="text-fg-muted">{t('Run status')}</dt><dd className="font-medium text-fg"><EnumLabel enum="PayrollRunStatus" value={selectedRun?.status} /></dd></div>
+      </dl>
+      {liveBatches.length > 1 && batchList}
     </div>
   );
 
-  const trackingButton = onNavigate ? (
-    <button type="button" className="btn-secondary btn-sm" onClick={() => onNavigate('payment-tracking')}>{t('Open Payment Tracking')}</button>
-  ) : null;
-
-  const runStatusText = enumLabel(t, 'PayrollRunStatus', selectedRun?.status);
-  const batchSentence = stage.key === 'batch' && stage.reason === 'run_not_locked'
-    ? t('This run is {status}. A payment batch can only be created once the run is Locked — finalise it on the Approvals tab (Lock Run) first.', { status: runStatusText })
-    : undefined;
-  // The end state: submitted, and where the bank's confirmation stands (the same facts the page's pipeline reads).
-  const batchRow = selectedBatch ? batches.find(b => b.id === selectedBatch.id) : undefined;
-  const waitingOnBank = batchRow ? awaitingBankConfirmation(batchRow) : null;
-  const finishedText = waitingOnBank
-    ? (waitingOnBank.confirmed !== undefined && waitingOnBank.total !== undefined
-      ? t('Bank file submitted — waiting for the bank’s confirmation ({confirmed} of {total})', { confirmed: waitingOnBank.confirmed, total: waitingOnBank.total })
-      : t('Bank file submitted — waiting for the bank’s confirmation'))
-    : (batchRow?.effectiveWpsStatus || batchRow?.wpsStatus) === 'Submitted' ? t('Bank file submitted — waiting for the bank’s confirmation') : undefined;
-
-  const guide = (panel: GuideSlots) => (
-    <BankFileGuide
-      period={selectedRun ? monthLabel(selectedRun.month, selectedRun.year) : '—'}
-      stage={stage}
-      steps={steps}
-      hasBatches={hasExistingBatch}
-      loading={loadingGuide}
-      sentenceOverride={batchSentence}
-      finishedText={finishedText}
-      confirmation={handOver.confirmation}
-      onUserAction={handOver.onUserAction}
-      slots={{
-        ...panel,
-        steps: {
-          ...panel.steps,
-          batch: { summary: batchFacts, body: batchBody, reopen: 'change' },
-          check: { ...panel.steps?.check, body: <>{recordsRow}{panel.steps?.check?.body}</> },
-          download: { ...panel.steps?.download, body: <>{panel.steps?.download?.body}{trackingButton}</> },
-        },
-        actions: {
-          ...panel.actions,
-          batch: hasExistingBatch ? undefined : {
-            label: creating ? t('Creating…') : t('Create Payment Batch'), onClick: createBatch, busy: creating,
-            disabled: creating || !runIsLocked || !canExport || batchesState.status !== 'ready',
-          },
-          finished: trackingButton ? { label: t('Open Payment Tracking'), onClick: () => onNavigate?.('payment-tracking') } : undefined,
-        },
-        live: <>{error && <div role="alert" className="flex items-start gap-2 rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" /><span>{error}</span></div>}{panel.live}</>,
-        overlays: (
-          <>
-            {panel.overlays}
-            <SideDrawer isOpen={recordsOpen && !!selectedBatch} title={t('Records — {batchNumber}', { batchNumber: selectedBatch?.batchNumber ?? '' })} size="xl" placement="end" onClose={() => setRecordsOpen(false)} closeLabel={t('Close')}>
-              {recordsTable}
-            </SideDrawer>
-          </>
-        ),
-      }}
-    />
+  const batchRow = selectedBatch ? (batches.find(b => b.id === selectedBatch.id) ?? selectedBatch) : null;
+  const wps = batchRow ? (batchRow.effectiveWpsStatus || batchRow.wpsStatus) : '';
+  const responseBody = (data: BankPanelData | null | undefined) => {
+    const split = payOut.split;
+    const total = payOut.total;
+    const answered = payOut.answered;
+    const pct = total ? Math.round(((answered ?? 0) / total) * 100) : 0;
+    const file = data?.file;
+    return (
+      <div className="space-y-5">
+        {total !== undefined && answered !== undefined && (
+          <div className="rounded-xl border border-line p-4" data-testid="bank-response-tracker">
+            <p className="text-body font-semibold text-fg">{t('The bank has answered for {answered} of {total} payments', { answered, total })}</p>
+            <div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={answered} aria-label={t('Bank response')} className="mt-3 h-2 overflow-hidden rounded-full bg-line" data-essential-motion="">
+              <div className="h-full rounded-full bg-success transition-[width] duration-base ease-standard" style={{ width: `${pct}%` }} data-essential-motion="" />
+            </div>
+            <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-body-sm text-fg">
+              {split ? (
+                <>
+                  <li className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-2.5 rounded bg-success" />{t('{count} confirmed paid', { count: split.paid })}</li>
+                  <li className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-2.5 rounded bg-danger" />{t('{count} returned', { count: split.returned })}</li>
+                  <li className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-2.5 rounded bg-line" />{t('{count} waiting', { count: split.waiting })} · <bdi dir="ltr">{fmtAmt(split.waitingAmount, batchRow?.currency)}</bdi></li>
+                </>
+              ) : (
+                // Without the payment records, only what the batch list says: answered and waiting (never a guessed split).
+                <li className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-2.5 rounded bg-line" />{t('{count} waiting', { count: total - answered })}</li>
+              )}
+            </ul>
+          </div>
+        )}
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-body-sm sm:grid-cols-3">
+          {wps === 'Submitted' && batchRow?.wpsStatusChangedAtUtc && <div><dt className="text-fg-muted">{t('Recorded as submitted on')}</dt><dd className="font-medium text-fg">{fx.dateTime(batchRow.wpsStatusChangedAtUtc)}</dd></div>}
+          {batchRow?.wpsSubmissionReference && <div><dt className="text-fg-muted">{t('Bank reference')}</dt><dd className="font-mono font-medium text-fg"><bdi dir="ltr">{batchRow.wpsSubmissionReference}</bdi></dd></div>}
+          {file && <div><dt className="text-fg-muted">{t('File reference')}</dt><dd className="font-mono font-medium text-fg"><bdi dir="ltr">{file.reference}</bdi></dd></div>}
+          {file?.paymentDate && <div><dt className="text-fg-muted">{t('Credit date')}</dt><dd className="font-medium text-fg">{fx.gregorian(file.paymentDate, 'weekdayDate')}</dd></div>}
+          {file && file.files.length > 0 && (
+            <div className="col-span-2 sm:col-span-2"><dt className="text-fg-muted">{t('File fingerprint (SHA-256)')}</dt>
+              <dd><details><summary className="cursor-pointer font-medium text-primary">{t('Show')}</summary><ul className="mt-1 space-y-0.5">{file.files.map(f => <li key={f.name} dir="ltr" className="break-all font-mono text-meta text-fg-muted">{f.name}: {f.sha256}</li>)}</ul></details></dd>
+            </div>
+          )}
+        </dl>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-body-sm">
+          {panelMenu.current?.download && (
+            <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" aria-describedby="bank-download-again-warning" onClick={panelMenu.current.download}>{t('Download the file again (audit copy)')}</button>
+          )}
+          {recordsState.status === 'ready' && <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => setRecordsOpen(true)} data-testid="bank-records-open">{t('View payment records ({count})', { count: records.length })}</button>}
+        </div>
+        {panelMenu.current?.download && (
+          <p id="bank-download-again-warning" className="text-meta text-warning-fg">
+            {wps === 'Submitted' && batchRow?.wpsStatusChangedAtUtc
+              ? t('This file was recorded as submitted on {date}. Uploading it again can pay employees twice.', { date: fx.date(batchRow.wpsStatusChangedAtUtc) })
+              : t('This file was recorded as submitted. Uploading it again can pay employees twice.')}
+          </p>
+        )}
+      </div>
+    );
+  };
+  const responseAside = (
+    <div className="space-y-3">
+      <p className="text-body font-semibold text-fg">{t('What happens next')}</p>
+      <ol className="space-y-3">
+        {[
+          [t('The bank pays and answers for each payment'), null],
+          [t('Record the bank’s response'), t('Record the bank’s response in Payment Tracking: confirmed, returned or rejected. A returned payment is paid again from there.')],
+          [t('Finance settles the payments'), t('Settling posts the net-pay settlement to the ledger. It needs the payment settlement permission.')],
+        ].map(([title, body], i) => (
+          <li key={i} className="flex gap-3">
+            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-line-strong text-caption font-semibold tabular-nums text-fg-muted">{i + 1}</span>
+            <span><span className="block font-medium text-fg">{title}</span>{body && <span className="block text-meta">{body}</span>}</span>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
+  const responsePurpose = (data: BankPanelData | null | undefined) => {
+    switch (payOut.status) {
+      case 'rejected': return batchRow?.wpsRejectionReason ? t('The bank rejected this file: {reason}. No one in it was paid.', { reason: batchRow.wpsRejectionReason }) : t('The bank rejected this file. No one in it was paid.');
+      case 'confirmed': return (payOut.split?.returned ?? 0) > 0 ? t('The bank answered every payment. Pay the returned ones again from Payment Tracking.') : t('The bank confirmed every payment.');
+      case 'settled': return t('Paid and settled.');
+      default: return data?.bankName
+        ? t('Submitted to {bank} — waiting for the bank’s confirmation. Record what the bank confirms or returns in Payment Tracking.', { bank: data.bankName })
+        : t('Submitted to the bank — waiting for the bank’s confirmation. Record what the bank confirms or returns in Payment Tracking.');
+    }
+  };
+
+  const submitSummary = (data: BankPanelData | null | undefined) => {
+    const f = data?.file;
+    return t('{count} employees · {amount} · credit date {date} · file {ref}. Record this only after the bank has the file.', {
+      count: f?.employeeCount ?? records.length, amount: fmtAmt(f?.totalAmount ?? selectedBatch?.totalAmount ?? 0, selectedBatch?.currency),
+      date: f?.paymentDate ? fx.gregorian(f.paymentDate, 'weekdayDate') : '—', ref: f?.reference ?? '—',
+    });
+  };
+
+  const guide = (panel: GuideSlots) => {
+    panelData.current = panel.data ?? panelData.current;
+    panelMenu.current = panel.menu ?? null;
+    const data = panel.data ?? panelData.current;
+    const response = { purpose: responsePurpose(data), body: responseBody(data), aside: responseAside };
+    return (
+      <div className="space-y-3">
+        {header(panel.menu)}
+        <BankFileGuide
+          payOut={payOut}
+          loading={loadingGuide}
+          confirmation={handOver.confirmation}
+          onUserAction={handOver.onUserAction}
+          viewing={viewing}
+          onView={setViewing}
+          facts={selectedBatch && !loadingGuide ? (
+            <BankFileFacts batch={batchRow ?? selectedBatch} run={selectedRun} employeesInFile={recordsState.status === 'ready' ? records.length : null}
+              bankName={data?.bankName} accountTail={data?.accountTail}
+              onShowLeftOut={payOut.steps[1].state === 'done' ? () => setViewing('check') : undefined} />
+          ) : null}
+          rail={selectedBatch && !loadingGuide ? (
+            <BankFileFacts variant="rail" batch={batchRow ?? selectedBatch} run={selectedRun} employeesInFile={recordsState.status === 'ready' ? records.length : null}
+              bankName={data?.bankName} accountTail={data?.accountTail} file={data?.file ?? null} />
+          ) : null}
+          slots={{
+            ...panel,
+            panels: {
+              ...panel.panels,
+              batch: {
+                purpose: payOut.steps[0].reason === 'run_not_locked' ? t('Lock the run first: a payment batch can only be created once the run is Locked.')
+                  : liveBatches.length > 1 ? t('Choose the payment batch you want to prepare.') : t('Create the payment batch for this run. It lists who is paid and how much.'),
+                body: batchBody, view: batchView,
+              },
+              response, finished: response,
+            },
+            actions: {
+              ...panel.actions,
+              create_batch: { label: creating ? t('Creating…') : t('Create payment batch'), onClick: createBatch, busy: creating, disabled: creating || batchesState.status !== 'ready' },
+              open_batch: { label: t('Open batch'), onClick: () => { const b = liveBatches.find(x => x.id === chosenBatchId); if (b) openBatch(b); }, disabled: !chosenBatchId, reason: chosenBatchId ? null : t('Choose the payment batch, then open it.') },
+              record_submitted: { label: t('Record as submitted'), onClick: () => setSubmitOpen(true) },
+              record_response: { label: t('Record the bank’s response'), onClick: () => onNavigate?.('payment-tracking') },
+              prepare_corrected: { label: t('Prepare a corrected file'), onClick: () => onNavigate?.('payment-tracking') },
+              settle: { label: t('Settle payments'), onClick: () => onNavigate?.('payment-tracking') },
+            },
+            live: (
+              <>
+                {error && <div role="alert" className="flex items-start gap-2 rounded-lg bg-danger-soft px-4 py-2.5 text-body-sm text-danger-fg"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" /><span>{error}</span></div>}
+                {/* Payment records that could not be read are never "no records". */}
+                {selectedBatch && recordsState.status === 'failed' && (isForbidden(recordsState.error)
+                  ? <p role="alert" data-testid="bank-records-forbidden" className="text-body-sm text-fg-muted">{t('The payment records need the Payroll export permission. Ask an administrator to give it to your role.')}</p>
+                  : <LoadFailedNotice error={recordsState.error} onRetry={() => openBatch(selectedBatch)} />)}
+                {panel.live}
+              </>
+            ),
+            overlays: (
+              <>
+                {panel.overlays}
+                <SideDrawer isOpen={recordsOpen && !!selectedBatch} title={t('Records — {batchNumber}', { batchNumber: selectedBatch?.batchNumber ?? '' })} size="xl" placement="end" onClose={() => setRecordsOpen(false)} closeLabel={t('Close')}>
+                  {recordsTable}
+                </SideDrawer>
+                {selectedBatch && (
+                  <RecordSubmittedDialog open={submitOpen} batchId={selectedBatch.id} bankName={data?.bankName ?? null} summary={submitSummary(data)}
+                    onClose={() => setSubmitOpen(false)}
+                    onRecorded={ref => {
+                      submittedRef.current = ref;
+                      setSubmitOpen(false);
+                      handOver.onUserAction();
+                      onRunsChanged?.();
+                      payrollApi.listPaymentBatches(runId).then(rows => { if (currentRunRef.current === runId) setBatches(rows); }).catch(() => {});
+                    }} />
+                )}
+              </>
+            ),
+          }}
+        />
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-4">
       {confirmDialog}
-      {runSelect}
-      {runsState.status === 'failed' && failureBanners}
+      {runsState.status === 'failed' && <>{header()}{failureBanners}</>}
       {runsState.status !== 'failed' && (
-        <>
-          {selectedBatch
-            ? <SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi onProgress={setFlow} suggestedReference={suggestedBatchReference(selectedBatch.batchNumber, selectedRun)}
-                employeeIds={records.map(r => r.employeeId)} employeeLabels={{ ...runNames, ...employeeLabelsFromRecords(records) }} renderGuide={guide} />
-            : guide({})}
-        </>
+        selectedBatch
+          ? <SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi onProgress={setFlow} suggestedReference={suggestedBatchReference(selectedBatch.batchNumber, selectedRun)}
+              employeeIds={records.map(r => r.employeeId)} employeeLabels={{ ...runNames, ...employeeLabelsFromRecords(records) }} renderGuide={guide}
+              batch={batchRow} recordsCount={recordsState.status === 'ready' ? records.length : null} onOpenRecords={() => setRecordsOpen(true)} />
+          : guide({})
+      )}
+    </div>
+  );
+}
+
+/** "More ⌄": the section's secondary tools (drawers and dialogs). A menu button: arrows move, Escape closes and returns focus. */
+function MoreMenu({ items }: { items: (false | null | undefined | { label: string; onSelect: () => void })[] }) {
+  const t = useT();
+  const list = items.filter((x): x is { label: string; onSelect: () => void } => !!x);
+  const [open, setOpen] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    menu.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    const onDoc = (e: MouseEvent) => { if (!menu.current?.contains(e.target as Node) && !button.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  if (list.length === 0) return null;
+  return (
+    <div className="relative">
+      <button ref={button} type="button" className="btn-secondary btn-sm" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(v => !v)} data-testid="bank-more">
+        {t('More')}<ChevronDown className={`h-4 w-4 transition-transform motion-reduce:transition-none ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
+      </button>
+      {open && (
+        <ul ref={menu} role="menu" className="surface absolute end-0 top-full z-30 mt-1 min-w-[14rem] p-1 shadow-e3"
+          onKeyDown={e => {
+            if (e.key === 'Escape') { e.preventDefault(); setOpen(false); button.current?.focus(); }
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              const all = Array.from(menu.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+              const at = all.indexOf(document.activeElement as HTMLElement);
+              all[(at + (e.key === 'ArrowDown' ? 1 : all.length - 1)) % all.length]?.focus();
+            }
+          }}>
+          {list.map(item => (
+            <li key={item.label} role="none">
+              <button type="button" role="menuitem" className="flex min-h-9 w-full items-center rounded-lg px-3 text-start text-body text-fg hover:bg-surface-sunken" onClick={() => { setOpen(false); button.current?.focus(); item.onSelect(); }}>{item.label}</button>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
@@ -4519,6 +4779,8 @@ export function PayrollPage() {
   const firstTabRender = useRef(true);
   useEffect(() => {
     if (firstTabRender.current) { firstTabRender.current = false; return; }
+    // From 1280px the section nav is a sticky column beside the section: it is always in view, so the page does not move.
+    if (typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 1280px)').matches) return;
     const el = tabsAnchor.current;
     if (!el) return;
     const top = el.getBoundingClientRect().top;
@@ -4531,6 +4793,12 @@ export function PayrollPage() {
   };
   const selectRunId = React.useCallback((id: string | null) => setContextRunId(id ?? undefined), []);
   const navigateTab = React.useCallback((key: string) => { if (TABS.some(x => x.key === key)) setActiveTab(key as Tab); }, []);
+  // What the Bank / WPS tab knows about the run's pay out: the run bar reads the same facts (one stage for the whole page).
+  const [payOutContext, setPayOutContext] = useState<PayOutContext | null>(null);
+  useEffect(() => { if (activeTab !== 'bank-wps') setPayOutContext(null); }, [activeTab]);
+  // The section list folds away below 1280px (a button under the run bar opens it; a bottom sheet on a phone).
+  const [navOpen, setNavOpen] = useState(false);
+  const navToggle = useRef<HTMLButtonElement>(null);
 
   const renderTab = () => {
     switch (activeTab) {
@@ -4541,7 +4809,7 @@ export function PayrollPage() {
       case 'validation':      return <ValidationTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
       case 'approvals':       return <ApprovalsTab selectedRunId={contextRunId} onRunChange={selectRunId} isAdmin={isAdmin} isFinance={isFinance} isHROrPayroll={isHROrPayroll || isAdmin} onReconNotReviewed={reconNotReviewed} />;
       case 'payslips':        return <PayslipsTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
-      case 'bank-wps':        return <BankWpsTab selectedRunId={contextRunId} onRunChange={selectRunId} onNavigate={navigateTab} onRunsChanged={bumpRuns} />;
+      case 'bank-wps':        return <BankWpsTab selectedRunId={contextRunId} onRunChange={selectRunId} onNavigate={navigateTab} onRunsChanged={bumpRuns} onPayOutContext={setPayOutContext} />;
       case 'payment-tracking': return <PaymentTrackingTab selectedRunId={contextRunId} />;
       case 'reports':         return <ReportsTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
       case 'eosb':            return <EOSBTab />;
@@ -4553,21 +4821,21 @@ export function PayrollPage() {
     }
   };
 
-  const roleBadge = isAdmin ? { label: t('Admin'), cls: 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300' }
-    : isFinance ? { label: t('Finance'), cls: 'bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300' }
-    : isHROrPayroll ? { label: t('HR / Payroll'), cls: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' }
-    : null;
+  const activeLabel = t(TABS.find(x => x.key === activeTab)?.label ?? 'Dashboard');
+  const activeGroup = groupOf(activeTab);
+  const navGroups = TAB_GROUPS
+    .map(g => ({
+      id: g.id,
+      label: t(g.label),
+      items: visibleTabs.filter(x => g.ids.includes(x.key)).map(({ key, label, icon }) => ({
+        id: key, label: t(label), icon,
+        href: `${pathname}?${withDeepLink('', { tab: key, runId: contextRunId ?? null }, 'dashboard')}`,
+      })),
+    }))
+    .filter(g => g.items.length > 0);
 
   return (
-    <div className="kx-scroll-tables space-y-5">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">{t('Payroll Management')}</h1>
-          <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{t('End-to-end payroll lifecycle — structures, processing, Finance Controller approval, GL journal, WPS files, and final settlement.')}</p>
-        </div>
-        {roleBadge && <span className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-1 text-xs font-semibold ${roleBadge.cls}`}>{roleBadge.label}</span>}
-      </div>
-
+    <div className="kx-scroll-tables space-y-3">
       <RunPipeline
         runId={contextRunId ?? null}
         onSelectRun={selectRunId}
@@ -4575,22 +4843,58 @@ export function PayrollPage() {
         version={runsVersion}
         onRunsChanged={bumpRuns}
         reviewRequestKey={reviewRequest}
+        activeTab={activeTab}
+        payOutContext={payOutContext}
       />
 
-      <div ref={tabsAnchor} data-testid="payroll-tabs-anchor">
-        <RovingTabList
-          items={visibleTabs.map(({ key, label, icon }) => ({ id: key, label: t(label), icon }))}
-          activeId={activeTab}
-          onChange={setActiveTab}
-          idPrefix="payroll"
-          label={t('Payroll workspace sections')}
-          compact
-          scrollCue
-          groups={TAB_GROUPS.map(g => ({ label: t(g.label), ids: g.ids }))}
-        />
-      </div>
+      {/* The Payroll sections: a sticky grouped column beside the section from 1280px; below that a "{group} › {section}" button opens
+          the same list (inline from 640px, a bottom sheet on a phone). The app menu folds to icons inside Payroll to make the room. */}
+      <div className="xl:grid xl:grid-cols-[208px_minmax(0,1fr)] xl:items-start xl:gap-6">
+        <div ref={tabsAnchor} data-testid="payroll-tabs-anchor" className="mb-3 min-w-0 xl:mb-0">
+          <button
+            ref={navToggle}
+            type="button"
+            aria-expanded={navOpen}
+            aria-controls="payroll-section-list"
+            onClick={() => setNavOpen(v => !v)}
+            className="surface flex min-h-11 w-full items-center gap-2 px-3 py-2 text-start text-body xl:hidden"
+            data-testid="payroll-section-toggle"
+          >
+            <span className="sr-only">{t('Payroll section')}: </span>
+            <span className="text-fg-muted">{t(activeGroup.label)}</span>
+            <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-fg-muted" />
+            <span className="min-w-0 flex-1 font-semibold text-fg">{activeLabel}</span>
+            <ChevronDown aria-hidden="true" className={`h-4 w-4 shrink-0 text-fg-muted transition-transform motion-reduce:transition-none ${navOpen ? 'rotate-180' : ''}`} />
+          </button>
+          <SectionNav
+            groups={navGroups}
+            selectedId={activeTab}
+            currentLabel={activeLabel}
+            open={navOpen}
+            onOpenChange={setNavOpen}
+            toggleRef={navToggle}
+            onSelect={id => setActiveTab(id)}
+            ariaLabel={t('Payroll sections')}
+            sheetTitle={t('Payroll sections')}
+            listId="payroll-section-list"
+            headingId={PAYROLL_SECTION_HEADING_ID}
+            classPrefix="payroll"
+            testId="payroll-section-nav"
+            stickyClass="xl:sticky xl:top-32"
+            itemIdPrefix="payroll-tab-"
+          />
+        </div>
 
-      <TabPanel idPrefix="payroll" tabId={activeTab}>{renderTab()}</TabPanel>
+        <div className="min-w-0 space-y-3">
+          {/* Bank / WPS Files draws its own header (its "More" menu opens the flow's drawers). */}
+          {activeTab !== 'bank-wps' && (
+            <PayrollSectionHeader group={t(activeGroup.label)} title={activeLabel} purpose={t(activeGroup.purpose)} />
+          )}
+          <section role="region" aria-labelledby={PAYROLL_SECTION_HEADING_ID} id={`payroll-panel-${activeTab}`} data-testid="payroll-section-panel" className="min-w-0">
+            {renderTab()}
+          </section>
+        </div>
+      </div>
     </div>
   );
 }
