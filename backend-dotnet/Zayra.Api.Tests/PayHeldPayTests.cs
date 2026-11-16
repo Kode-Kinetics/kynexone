@@ -349,4 +349,44 @@ public class PayHeldPayTests
         colleague.GrossSalary.Should().Be(Basic + Housing + 500m);
         (await Holds(db)).Single().Amount.Should().Be(colleague.GrossSalary, "the hold is the full month's pay before deductions");
     }
+
+    // ══ PR review ═════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>Hold March, release into April, reactivate, reopen and reprocess March: the unpaid release is withdrawn,
+    /// so March is paid once (by March's own recurring pay).</summary>
+    [Fact]
+    public async Task ReprocessingTheHeldMonthAfterReactivation_WithdrawsAnUnpaidRelease_SoTheMonthIsPaidOnce()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var (co, s, mar, apr, hold) = await HeldInMarch(db);
+        Status(await Payroll(db, co.TenantId, Checker).DecideHeldPay(hold.Id, new HeldPayDecisionRequest("pay", null), CancellationToken.None)).Should().Be(200);
+
+        await SetStatus(db, mar.Id, "Draft");                  // reopened
+        await Process(db, co, mar.Id);
+        await Process(db, co, apr.Id);
+
+        (await Slip(db, mar.Id, s.Id))!.GrossSalary.Should().Be(Basic + Housing, "March pays the now-active employee for March");
+        (await Releases(db)).Should().BeEmpty("the release of March's held pay was withdrawn before it was paid");
+        (await EarningSum(db, apr.Id, s.Id, "ADJ_HELD_PAY_RELEASED")).Should().Be(0m, "one payment per employee per held month");
+        (await db.AuditLogs.AsNoTracking().CountAsync(a => a.Action == "payroll.held_pay.release_withdrawn" && a.EntityId == hold.Id.ToString())).Should().Be(1);
+    }
+
+    /// <summary>The same, but April already paid the release: reprocessing March must not pay March again.</summary>
+    [Fact]
+    public async Task ReprocessingTheHeldMonthAfterTheReleaseWasPaid_DoesNotPayThatMonthAgain()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var (co, s, mar, apr, hold) = await HeldInMarch(db);
+        Status(await Payroll(db, co.TenantId, Checker).DecideHeldPay(hold.Id, new HeldPayDecisionRequest("pay", null), CancellationToken.None)).Should().Be(200);
+        await Process(db, co, apr.Id);
+
+        await SetStatus(db, mar.Id, "Draft");
+        await Process(db, co, mar.Id);
+
+        (await Slip(db, mar.Id, s.Id)).Should().BeNull("April already paid March's held pay");
+        (await EarningSum(db, apr.Id, s.Id, "ADJ_HELD_PAY_RELEASED")).Should().Be(Basic + Housing);
+        (await Findings(db, mar.Id)).Should().Contain(f => f.Code == "HELD_PAY_MONTH_ALREADY_SETTLED" && f.EmployeeId == s.Id);
+    }
 }

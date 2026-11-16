@@ -435,6 +435,24 @@ public sealed class PayrollRunProcessor
             }
         }
 
+        // ── HELD PAY: one payment per employee per held month ─────────────────────────────────────────────────────────────
+        // Someone this run pays recurring salary for may have had this month's pay held earlier (they were suspended when the
+        // month was first processed) and that hold decided since. A release not yet paid is withdrawn below, inside the
+        // transaction, so this run pays the month instead; a release already paid, or a forfeit, settles the month, so this
+        // run leaves them out and says so. Either way the month is paid once, whatever the order of release, reopen and void.
+        var heldMonthPlan = includesRecurringPayForPlan(run)
+            ? await HeldPay.PlanPaidMonthAsync(_db, tenantId, company.Id, run, employees.Select(e => e.Id).ToList(), cancellationToken)
+            : HeldPay.MonthPlan.Empty;
+        foreach (var (empId, why) in heldMonthPlan.Settled)
+        {
+            var e = employees.First(x => x.Id == empId);
+            runPopulation.NotEligible.Add(new PayrollRunExclusion(e.Id, e.EmployeeCode, e.FullName,
+                $"This month's pay was held and has since been {why}, so this run does not pay {run.Year}-{run.Month:D2} again."));
+            employees.Remove(e);
+        }
+        var withdrawnReleaseIds = heldMonthPlan.Withdraw.Select(w => w.ReleaseId).ToHashSet();
+        static bool includesRecurringPayForPlan(PayrollRun r) => r.IncludesRecurringPay && PayrollRunTypes.IsPeriodOwning(r.RunType);
+
         var employeeIdsForRun = employees.Select(e => e.Id).ToHashSet();
         if (employeeIdsForRun.Count == 0)
         {
@@ -567,7 +585,8 @@ public sealed class PayrollRunProcessor
         // The loans and salary advances are loaded below, once the leavers this run settles are known.
 
         var approvedAdjustments = await _db.PayrollAdjustments.AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.PayrollRunId == id && a.Status == "Approved" && employeeIdsForRun.Contains(a.EmployeeId))
+            .Where(a => a.TenantId == tenantId && a.PayrollRunId == id && a.Status == "Approved" && employeeIdsForRun.Contains(a.EmployeeId)
+                     && !withdrawnReleaseIds.Contains(a.Id))
             .ToListAsync(cancellationToken);
 
         // ── POD-B2: sibling runs for this (company, year, month) ─────────────────────────────────────
@@ -859,6 +878,9 @@ public sealed class PayrollRunProcessor
             packCc, packJur, "gosi.covered_wage_ceiling_sar", eff, tenantId, cancellationToken) ?? decimal.MaxValue;
 
         var c3Warnings = new List<(string Code, int? EmployeeId, string Message)>();
+        foreach (var (empId, why) in heldMonthPlan.Settled)
+            c3Warnings.Add(("HELD_PAY_MONTH_ALREADY_SETTLED", empId,
+                $"This month's pay was held while the employee was suspended and has since been {why}. This run does not pay the month again."));
         if (!policy.IsEnabled)
             c3Warnings.Add(("WARN_PRORATION_DISABLED", null,
                 "Mid-month proration is DISABLED for this legal entity (payparameter.proration_basis = 'None'). " +
@@ -1250,6 +1272,12 @@ public sealed class PayrollRunProcessor
             await ManpowerRecon.ReconSignoffLifecycleService.SupersedeActiveAsync(
                 _db, tenantId, id, ManpowerRecon.ReconSupersededReasons.Reprocessed, request.ActorUserId, cancellationToken);
             // Held pay is part of what this pass decides, so it commits or rolls back with the slips.
+            if (!await HeldPay.WithdrawReleasesAsync(_db, tenantId, request.ActorUserId, run, heldMonthPlan.Withdraw, cancellationToken))
+                throw new PayrollProcessAbortException(409, new
+                {
+                    error = "held_pay_changed_concurrently",
+                    message = "Held pay for this month was paid or decided while the run was processing. Reload the run and process it again.",
+                });
             await HeldPay.StageAsync(_db, run, company.Id, heldCandidates, cancellationToken);
 
         // Benefit execution is part of the payroll transaction and uses only frozen employee terms.

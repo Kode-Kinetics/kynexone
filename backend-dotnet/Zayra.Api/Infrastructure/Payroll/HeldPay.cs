@@ -33,6 +33,9 @@ public static class HeldPay
     public const string Held = "Held";
     public const string Released = "Released";
     public const string Forfeited = "Forfeited";
+    /// <summary>A release withdrawn before it was paid, because the held month was then paid by its own run (reprocessed after
+    /// the employee was reactivated). Kept for the record; neither held nor owed.</summary>
+    public const string Withdrawn = "Withdrawn";
 
     /// <summary>The reason recorded on every hold this mechanism writes.</summary>
     public const string SuspendedReason = "suspended";
@@ -69,7 +72,7 @@ public static class HeldPay
         var decided = await (from a in db.PayrollAdjustments.AsNoTracking()
                              join r in db.PayrollRuns.AsNoTracking() on a.PayrollRunId equals r.Id
                              where a.TenantId == tenantId && r.TenantId == tenantId && a.SourceType == HoldSource
-                                   && a.Status != Held && ids.Contains(a.EmployeeId)
+                                   && (a.Status == Released || a.Status == Forfeited) && ids.Contains(a.EmployeeId)
                                    && r.Year == run.Year && r.Month == run.Month
                                    && (r.CompanyId == companyId || r.CompanyId == null)
                              // Including a VOIDED run's: a hold released or forfeited stays decided when the run that held it is
@@ -86,6 +89,85 @@ public static class HeldPay
                 SourceSnapshotJson = HoldRecordJson(period, c.EmployeeCode, c.EmployeeName),
             });
         }
+    }
+
+    /// <summary>What a recurring run must do about employees it pays whose pay for the same month was held and decided.</summary>
+    public sealed record MonthPlan(
+        IReadOnlyList<(Guid ReleaseId, Guid HoldId, int EmployeeId, decimal Amount)> Withdraw,
+        IReadOnlyList<(int EmployeeId, string Why)> Settled)
+    {
+        public static readonly MonthPlan Empty = new([], []);
+    }
+
+    /// <summary>
+    /// For the employees a recurring run of a month is about to pay: a hold of the same company and month released into a run
+    /// that has not paid it yet is to be withdrawn (the month is paid by this run instead); a hold forfeited, or released and
+    /// already paid (or on a run past processing), settles the month, so this run must not pay it.
+    /// </summary>
+    public static async Task<MonthPlan> PlanPaidMonthAsync(
+        ZayraDbContext db, Guid tenantId, Guid companyId, PayrollRun run, IReadOnlyCollection<int> payIds, CancellationToken ct)
+    {
+        if (payIds.Count == 0) return MonthPlan.Empty;
+        var ids = payIds.ToList();
+        var holds = await (from a in db.PayrollAdjustments.AsNoTracking()
+                           join r in db.PayrollRuns.AsNoTracking() on a.PayrollRunId equals r.Id
+                           where a.TenantId == tenantId && r.TenantId == tenantId && a.SourceType == HoldSource
+                                 && (a.Status == Released || a.Status == Forfeited) && ids.Contains(a.EmployeeId)
+                                 && r.Year == run.Year && r.Month == run.Month
+                                 && (r.CompanyId == companyId || r.CompanyId == null)
+                           select a).ToListAsync(ct);
+        if (holds.Count == 0) return MonthPlan.Empty;
+        var holdIds = holds.Select(h => (Guid?)h.Id).ToList();
+        var releases = await (from a in db.PayrollAdjustments.AsNoTracking()
+                              join r in db.PayrollRuns.AsNoTracking() on a.PayrollRunId equals r.Id
+                              where a.TenantId == tenantId && a.SourceType == ReleaseSource && holdIds.Contains(a.SourceId)
+                              select new { a.Id, a.SourceId, a.Status, RunStatus = r.Status, r.Year, r.Month }).ToListAsync(ct);
+        var withdraw = new List<(Guid, Guid, int, decimal)>();
+        var settled = new List<(int, string)>();
+        foreach (var hold in holds.OrderBy(h => h.EmployeeId))
+        {
+            if (hold.Status == Forfeited) { settled.Add((hold.EmployeeId, "forfeited")); continue; }
+            var rel = releases.FirstOrDefault(x => x.SourceId == hold.Id);
+            if (rel is not null && rel.Status == "Approved" && RunIsOpen(rel.RunStatus))
+                withdraw.Add((rel.Id, hold.Id, hold.EmployeeId, hold.Amount));
+            else
+                settled.Add((hold.EmployeeId, rel is null ? "released" : $"released and paid by the {rel.Year}-{rel.Month:D2} run"));
+        }
+        // Settled wins for an employee with both (never pay the month while any decision on it stands).
+        var settledIds = settled.Select(x => x.Item1).ToHashSet();
+        return new MonthPlan(withdraw.Where(w => !settledIds.Contains(w.Item3)).ToList(), settled.DistinctBy(x => x.Item1).ToList());
+    }
+
+    /// <summary>
+    /// Withdraws the planned releases inside the run's transaction: each release is deleted only while it is still Approved
+    /// (unpaid), and its hold moves Released → Withdrawn, both compare-and-swap. False if any of them changed meanwhile.
+    /// </summary>
+    public static async Task<bool> WithdrawReleasesAsync(
+        ZayraDbContext db, Guid tenantId, Guid? actorUserId, PayrollRun run,
+        IReadOnlyList<(Guid ReleaseId, Guid HoldId, int EmployeeId, decimal Amount)> withdrawals, CancellationToken ct)
+    {
+        foreach (var w in withdrawals)
+        {
+            var deleted = await db.PayrollAdjustments
+                .Where(a => a.TenantId == tenantId && a.Id == w.ReleaseId && a.SourceType == ReleaseSource && a.Status == "Approved")
+                .ExecuteDeleteAsync(ct);
+            var moved = await db.PayrollAdjustments
+                .Where(a => a.TenantId == tenantId && a.Id == w.HoldId && a.SourceType == HoldSource && a.Status == Released)
+                .ExecuteUpdateAsync(x => x.SetProperty(a => a.Status, Withdrawn), ct);
+            if (deleted != 1 || moved != 1) return false;
+            db.AuditLogs.Add(new AuditLog
+            {
+                TenantId = tenantId, CompanyId = run.CompanyId, UserId = actorUserId,
+                EntityName = nameof(PayrollAdjustment), EntityId = w.HoldId.ToString(), Action = "payroll.held_pay.release_withdrawn",
+                Metadata = JsonSerializer.Serialize(new
+                {
+                    employeeId = w.EmployeeId, amount = w.Amount, runId = run.Id, period = $"{run.Year}-{run.Month:D2}",
+                    reason = "The held month is paid by its own run, reprocessed after the employee was reactivated.",
+                }),
+                CreatedAtUtc = DateTime.UtcNow,
+            });
+        }
+        return true;
     }
 
     /// <summary>
@@ -290,7 +372,7 @@ public static class HeldPay
     {
         var rows = await (from a in db.PayrollAdjustments.AsNoTracking()
                           join r in db.PayrollRuns.AsNoTracking() on a.PayrollRunId equals r.Id
-                          where a.TenantId == tenantId && r.TenantId == tenantId && a.SourceType == HoldSource
+                          where a.TenantId == tenantId && r.TenantId == tenantId && a.SourceType == HoldSource && a.Status != Withdrawn
                                 && (a.PayrollRunId == run.Id
                                     || (a.Status == Held && r.Status != "Voided"
                                         && (r.CompanyId == run.CompanyId || (run.CompanyId == null && r.CompanyId == null))))
