@@ -94,7 +94,10 @@ public sealed class ImportTemplateShapeTests
     private static IReadOnlyList<(string Name, string Csv)> Download(TemplateEndpoint endpoint)
     {
         var controller = (ControllerBase)RuntimeHelpers.GetUninitializedObject(endpoint.Controller);
-        controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
+        // Template downloads are importer-only (the package template is refused to a non-importer), so read them as an Admin.
+        var admin = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+            new[] { new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, "Admin") }, "test"));
+        controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = admin } };
 
         object? result;
         try
