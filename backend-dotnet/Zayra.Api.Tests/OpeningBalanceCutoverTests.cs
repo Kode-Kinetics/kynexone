@@ -881,6 +881,44 @@ public class OpeningBalanceCutoverTests
     }
 
     /// <summary>
+    /// A legacy register routinely writes employee codes in a different case or with stray spaces
+    /// ("emp-001 " for "EMP-001"). The coverage counts already treated those as one person; the lines
+    /// must too, otherwise the headline says "matched" while every figure is reported as missing on
+    /// both sides.
+    /// </summary>
+    [Fact]
+    public async Task VarianceReport_MatchesEmployeeCodesIgnoringCaseAndWhitespace()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        await SeedEmployee(db, tid, co.Id, "EMP-001");
+        var run = await CreateRun(db, tid, 2026, 9, co.Id);
+        (await Payroll(db, tid, Maker).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        var slip = await db.PayrollSlips.AsNoTracking().SingleAsync(s => s.RunId == run.Id);
+
+        var register = "EmployeeCode,ComponentCode,Amount\n" +
+                       $"emp-001 ,GROSS,{slip.GrossSalary}\n" +
+                       $"emp-001 ,NET,{slip.NetSalary}\n";
+
+        var res = await Parallel(db, tid).Variance(run.Id,
+            new ParallelRunController.VarianceRequest(register, Tolerance: 0.01m), CancellationToken.None);
+        var report = (ParallelRunController.VarianceReport)((OkObjectResult)res.Result!).Value!;
+
+        report.MatchedEmployees.Should().Be(1);
+        report.EmployeesOnlyInRun.Should().Be(0);
+        report.EmployeesOnlyInRegister.Should().Be(0);
+        var net = report.Lines.Where(l => l.ComponentCode == "NET").ToList();
+        net.Should().ContainSingle("one person is one line, not one per spelling of their code");
+        net.Single().Presence.Should().Be("Both");
+        net.Single().IsOutsideTolerance.Should().BeFalse();
+        report.Lines.Where(l => l.ComponentCode is "GROSS" or "NET")
+            .Should().OnlyContain(l => l.Presence == "Both" && !l.IsOutsideTolerance);
+    }
+
+    /// <summary>
     /// A percentage tolerance is what a consultant actually uses on the first cycle, when they expect
     /// small rounding differences everywhere and are hunting for the material ones.
     /// </summary>
