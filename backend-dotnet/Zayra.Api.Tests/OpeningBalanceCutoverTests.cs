@@ -888,6 +888,9 @@ public class OpeningBalanceCutoverTests
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
         var tid = Guid.NewGuid();
+        // The tenant already has a company paying in SAR. "The tenant's currency" resolves to the most active
+        // company's, so with only one company the old tenant-only rule and the run's own rule agree and prove nothing.
+        await SeedCompany(db, tid, "2020202020");
         var co = await SeedCompany(db, tid);
         // SeedCompany detaches its entity, so change the stored row rather than the stale object.
         await db.Companies.Where(c => c.Id == co.Id).ExecuteUpdateAsync(u => u.SetProperty(c => c.DefaultCurrency, "KWD"));
@@ -895,6 +898,8 @@ public class OpeningBalanceCutoverTests
         await SeedEmployee(db, tid, co.Id, "EMP-001");
         var run = await CreateRun(db, tid, 2026, 9, co.Id);
         (await Payroll(db, tid, Maker).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        // From here the tenant default (the one active company) is SAR; the run's company is the KWD one.
+        await db.Companies.Where(c => c.Id == co.Id).ExecuteUpdateAsync(u => u.SetProperty(c => c.IsActive, false));
         db.ChangeTracker.Clear();
 
         var res = await Parallel(db, tid).Variance(run.Id,
