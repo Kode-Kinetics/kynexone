@@ -240,21 +240,34 @@ public static class HeldPay
                               where a.TenantId == tenantId && a.SourceType == ReleaseSource && holdIds.Contains(a.SourceId)
                               select new { a.SourceId, RunId = r.Id, r.Year, r.Month }).ToListAsync(ct);
         var empIds = rows.Select(x => x.a.EmployeeId).Distinct().ToList();
-        var employees = await Zayra.Api.Infrastructure.Data.ScopedBypass.NullableTenantWide(db.Employees, tenantId,
-                "Held pay: the list names whoever the pay is owed to, including a deleted record, so the amount is never anonymous.")
-            .AsNoTracking()
-            .Where(e => empIds.Contains(e.Id))
+        // The caller's own view of the employees (company and data filters apply). One it cannot see, or a deleted record, is
+        // still named from the hold's own snapshot, so an amount owed is never anonymous.
+        var employees = await db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && empIds.Contains(e.Id))
             .Select(e => new { e.Id, e.EmployeeCode, e.FullName, e.Status })
             .ToDictionaryAsync(e => e.Id, ct);
+
+        static (string Code, string Name) Snapshot(string json)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
+                var root = doc.RootElement;
+                return (root.TryGetProperty("employeeCode", out var c) ? c.GetString() ?? string.Empty : string.Empty,
+                        root.TryGetProperty("employeeName", out var n) ? n.GetString() ?? string.Empty : string.Empty);
+            }
+            catch (JsonException) { return (string.Empty, string.Empty); }
+        }
 
         return rows
             .OrderBy(x => x.Year).ThenBy(x => x.Month).ThenBy(x => x.a.EmployeeId)
             .Select(x =>
             {
                 employees.TryGetValue(x.a.EmployeeId, out var e);
+                var snap = e is null ? Snapshot(x.a.SourceSnapshotJson) : (string.Empty, string.Empty);
                 var rel = releases.FirstOrDefault(r => r.SourceId == x.a.Id);
                 return new HoldRow(
-                    x.a.Id, x.a.EmployeeId, e?.EmployeeCode ?? string.Empty, e?.FullName ?? string.Empty, e?.Status,
+                    x.a.Id, x.a.EmployeeId, e?.EmployeeCode ?? snap.Item1, e?.FullName ?? snap.Item2, e?.Status,
                     x.a.Amount, x.a.Reason, x.a.Status, x.a.PayrollRunId, $"{x.Year}-{x.Month:D2}", x.a.PayrollRunId == run.Id,
                     rel?.RunId, rel is null ? null : $"{rel.Year}-{rel.Month:D2}");
             })
