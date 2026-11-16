@@ -255,6 +255,31 @@ export interface PayrollPopulationEntry {
 }
 
 /** A blocking compliance error a human consciously cleared, with the reason they gave. */
+/** One held amount (server HeldPay.HoldRow). */
+export interface PayrollHeldPayItem {
+  holdId: string;
+  employeeId: number;
+  employeeCode: string;
+  employeeName: string;
+  employeeStatus: string | null;
+  amount: number;
+  reason: string;
+  status: 'Held' | 'Released' | 'Forfeited';
+  heldRunId: string;
+  heldPeriod: string;
+  heldByThisRun: boolean;
+  paidInRunId: string | null;
+  paidInPeriod: string | null;
+}
+
+export interface PayrollHeldPayView {
+  runId: string;
+  period: string;
+  items: PayrollHeldPayItem[];
+  heldTotal: number;
+  awaitingDecision: number;
+}
+
 export interface PayrollValidationOverride {
   id: string;
   code: string;
@@ -856,6 +881,15 @@ export const payrollApi = {
   // run carries dozens of warnings, so a warning alone is invisible in practice.
   runPopulation: (id: string) =>
     client.get<PayrollRunPopulation>(`/api/payroll/runs/${id}/population`).then((r) => r.data),
+
+  // Pay held for suspended employees: what this run held, plus every earlier hold of the company still undecided.
+  runHeldPay: (id: string) =>
+    client.get<PayrollHeldPayView>(`/api/payroll/runs/${id}/held-pay`).then((r) => r.data),
+
+  // Finance's decision on one held amount: pay it in the next open run, or forfeit it with a reason.
+  decideHeldPay: (holdId: string, action: 'pay' | 'forfeit', reason: string) =>
+    client.post<{ status: string; message: string }>(`/api/payroll/held-pay/${holdId}/decision`, { action, reason })
+      .then((r) => r.data),
 
   runValidationOverrides: (id: string) =>
     client.get<PayrollValidationOverrideReport>(`/api/payroll/runs/${id}/validation-overrides`).then((r) => r.data),

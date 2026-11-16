@@ -76,6 +76,7 @@ import { designMigration } from './designMigration';
 import { setupRollout } from './setupRollout';
 import { attendanceRules } from './attendanceRules';
 import { payrollRules } from './payrollRules';
+import { heldPay } from './heldPay';
 import { gradePackage } from './gradePackage';
 import { appChrome } from './appChrome';
 import { removalSafety } from './removalSafety';
@@ -147,6 +148,7 @@ const en: Dict = {
   ...peopleDeadEnds.en,
   ...attendanceRules.en,
   ...payrollRules.en,
+  ...heldPay.en,
   ...gradePackage.en,
   ...employeeWorkspace.en,
   "Navigation could not be resumed. Try the action again.": "Navigation could not be resumed. Try the action again.",
@@ -1759,6 +1761,7 @@ const ar: Dict = {
   ...peopleDeadEnds.ar,
   ...attendanceRules.ar,
   ...payrollRules.ar,
+  ...heldPay.ar,
   ...gradePackage.ar,
   ...employeeWorkspace.ar,
   "Navigation could not be resumed. Try the action again.": "تعذر استئناف التنقل. أعد المحاولة.",

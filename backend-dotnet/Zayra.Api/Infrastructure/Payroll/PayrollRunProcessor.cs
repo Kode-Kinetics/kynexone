@@ -863,6 +863,17 @@ public sealed class PayrollRunProcessor
                 "(lop.monthly_day_divisor). Two different day-rates on one payslip: a joiner's absent day is " +
                 "valued differently from their unworked days. Align the two before filing."));
 
+        // Held pay Finance released into this run is paid like any adjustment, to the people this run pays. One released for
+        // someone the run does not pay stays on the run, unpaid and not lost: say so, by name and amount.
+        var strandedReleases = await _db.PayrollAdjustments.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.PayrollRunId == id && a.SourceType == HeldPay.ReleaseSource
+                     && a.Status == "Approved" && !employeeIdsForRun.Contains(a.EmployeeId))
+            .ToListAsync(cancellationToken);
+        foreach (var a in strandedReleases)
+            c3Warnings.Add(("HELD_PAY_RELEASE_NOT_PAID", a.EmployeeId,
+                $"Held pay of {a.Amount:N2} released into this run ({a.Reason}) is not paid by it, because the employee is not in this " +
+                "run's population. It stays owed and attached to this run. Include the employee in the run and process it again."));
+
         // ── MF-6(b): unpaid-leave days RECOMPUTED against the employment window ──────────────────────
         // LeavePayrollImpact carries NO dates (only PayPeriod/Days/Amount) and its Amount was SNAPSHOTTED
         // at approval on the FULL basic ÷ 30. For a prorated joiner/leaver that snapshot can exceed the
@@ -1071,6 +1082,50 @@ public sealed class PayrollRunProcessor
         var activeAdvances = await AdvanceRecoveryScope.Query(_db, tenantId, loanCompanyId).AsNoTracking().Where(collectableAdvance).ToListAsync(cancellationToken);
         var advanceCandidateIds = activeAdvances.Select(a => a.Id).ToList();
 
+        // ── HELD PAY: a suspended employee's pay is computed and recorded as HELD, never paid and never lost ──────────
+        // The population loader leaves a Suspended employee out of the slips (SUSPENDED_PAY_HOLD). Their recurring
+        // package for the period is still worked out here, on the same proration policy as everyone else's, and written
+        // inside the run's transaction as a Held amount (HeldPay) that Finance later releases into an open run or
+        // forfeits with a reason. Only a run that pays the month's recurring salary holds anything.
+        var heldCandidates = new List<HeldPay.Candidate>();
+        if (includesRecurringPay && PayrollRunTypes.IsPeriodOwning(run.RunType))
+        {
+            var suspendedIds = populationReport.LeftOut
+                .Where(x => x.Code == PayPopulationReasons.SuspendedPayHold)
+                .Select(x => x.EmployeeId).Distinct().ToList();
+            if (suspendedIds.Count > 0)
+            {
+                var suspendedPeople = await Op(_db.Employees).AsNoTracking()
+                    .Where(e => e.TenantId == tenantId && suspendedIds.Contains(e.Id))
+                    .ToListAsync(cancellationToken);
+                var suspendedSalaries = (await _db.EmployeeSalaryStructures.AsNoTracking()
+                        .Where(x => x.TenantId == tenantId && x.IsActive && x.EffectiveDate <= periodEnd && suspendedIds.Contains(x.EmployeeId))
+                        .ToListAsync(cancellationToken))
+                    .GroupBy(x => x.EmployeeId)
+                    .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.EffectiveDate).First());
+                foreach (var e in suspendedPeople.OrderBy(x => x.Id))
+                {
+                    if (!suspendedSalaries.TryGetValue(e.Id, out var s)) continue;
+                    var joined = e.JoiningDate == default ? (DateOnly?)null : DateOnly.FromDateTime(e.JoiningDate);
+                    var pr = ProrationCalculator.Compute(periodStart, periodEnd, joined, null, policy.Basis, workWeekConfig);
+                    if (pr.IsExcluded) continue;
+                    var other = s.FoodAllowance + s.MobileAllowance + s.OtherAllowance;
+                    var pkg = ProrationCalculator.Apply(s.BasicSalary, s.HousingAllowance, s.TransportAllowance, other, pr.Factor);
+                    var hBasic     = policy.Prorates(ProratedComponentCodes.Basic)           ? pkg.Basic           : s.BasicSalary;
+                    var hHousing   = policy.Prorates(ProratedComponentCodes.Housing)         ? pkg.Housing         : s.HousingAllowance;
+                    var hTransport = policy.Prorates(ProratedComponentCodes.Transport)       ? pkg.Transport       : s.TransportAllowance;
+                    var hOther     = policy.Prorates(ProratedComponentCodes.OtherAllowances) ? pkg.OtherAllowances : other;
+                    var amount = Math.Round(hBasic + hHousing + hTransport + hOther, 2);
+                    if (amount <= 0m) continue;
+                    heldCandidates.Add(new HeldPay.Candidate(e.Id, e.EmployeeCode, e.FullName, amount, new
+                    {
+                        basic = hBasic, housing = hHousing, transport = hTransport, otherAllowances = hOther,
+                        prorationFactor = pr.Factor, paidFrom = pr.PaidFrom, paidTo = pr.PaidTo,
+                    }));
+                }
+            }
+        }
+
         // ── P0-2: ALL-OR-NOTHING MUTATION ──────────────────────────────────────────
         // Everything from here (idempotent delete → slip writes → statutory/loan/advance
         // ledger decrements → audit) commits as one transaction, so a cancel/crash/DB error
@@ -1158,6 +1213,8 @@ public sealed class PayrollRunProcessor
             // The same goes for the reconciliation sign-off: it reviewed the figures this pass is about to replace.
             await ManpowerRecon.ReconSignoffLifecycleService.SupersedeActiveAsync(
                 _db, tenantId, id, ManpowerRecon.ReconSupersededReasons.Reprocessed, request.ActorUserId, cancellationToken);
+            // Held pay is part of what this pass decides, so it commits or rolls back with the slips.
+            await HeldPay.StageAsync(_db, run, company.Id, heldCandidates, cancellationToken);
 
         // Benefit execution is part of the payroll transaction and uses only frozen employee terms.
         // The employee locks also serialize receipt approvals and dated HR benefit changes.
@@ -3402,7 +3459,7 @@ public sealed class PayrollRunProcessor
             if (EmploymentStanding.IsOnPayHold(f))
             {
                 LeaveOut(e, PayPopulationReasons.SuspendedPayHold,
-                    $"Suspended: still employed, but pay is on hold, so this run pays nothing. Pay during a suspension is an HR and Finance decision per case.");
+                    $"Suspended: still employed, but pay is on hold. This run pays nothing and records the month's pay as held; Finance releases it into an open run or forfeits it, per case.");
                 continue;
             }
 

@@ -81,6 +81,7 @@ import { LoadError, serverMessage } from '../components/gl/glUi';
 import { financeGlApi } from '../api/financeGl';
 import { CostCentreLockPreview, CostingOffNote, periodLabel } from '../components/payroll/CostCentreLockPreview';
 import { VoidRunForm } from '../components/payroll/VoidRunForm';
+import { HeldPayPanel } from '../components/payroll/HeldPayPanel';
 import { PostedJournalsView, PostedWithoutCostCentresNote } from '../components/payroll/PostedJournals';
 import { costingNote } from '../lib/glJournalView';
 import { paymentActionRefusal, paymentActionsAllowed, PAYMENT_ACTION_DENIED } from '../lib/payrollPaymentAccess';
@@ -2572,6 +2573,8 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
               )}
 
               {leftOut.length > 0 && <LeftOutPanel entries={leftOut} />}
+
+              {runId && <HeldPayPanel runId={runId} amount={runAmount} />}
 
               {needsOverriddenAck && overrideReport && (
                 <AcknowledgementPanel
