@@ -14,7 +14,7 @@ export const RUN = {
 export const BATCH = {
   id: BATCH_ID, payrollRunId: RUN_ID, batchNumber: 'PAY-202611-220353', paymentMethod: 'WPS', totalAmount: 133588.9, currency: 'SAR', status: 'Created', wpsStatus: 'Draft',
   effectiveWpsStatus: 'Draft', wpsStatusLabel: 'Draft', wpsStatusChangedAtUtc: null, wpsSubmissionReference: null, wpsRejectionReason: null, createdAtUtc: '2026-11-14T01:05:00Z',
-  acceptanceEvidenceCount: 0, isSaudi: true, generatedFileLabel: null,
+  acceptanceEvidenceCount: 0, isSaudi: true, generatedFileLabel: null, paymentExclusions: [], excludedTotal: 0, allowedNextStatuses: ['Generated'],
 };
 export const NAMES = ['Maha Almutairi', 'Layla Al-Harbi', 'Fahad Alharbi', 'Nora Alharbi', 'Khalid Alotaibi', 'Sara Alzahrani', 'Omar Aldosari', 'Huda Alqahtani', 'Yousef Alshehri'];
 export const RECORDS = NAMES.map((name, i) => ({
@@ -56,6 +56,14 @@ export const bankHandler = (o: Opts = {}): Handler => (path, search, method, rou
   if (path === '/api/payroll/runs') return { items: [{ ...RUN, status: o.runStatus ?? RUN.status }], total: 1, page: 1, pageSize: 100 };
   if (path === '/api/payroll/companies') return [COMPANY_ROW];
   if (path === '/api/payroll/readiness') return { year: 2026, month: 11, companyId: null, completionPercent: 100, isReadyForProcessing: true, totalActiveEmployees: 9, employeesWithSalary: 9, salaryCoveragePercent: 100, validationErrors: 0, payrollRunStatus: 'Locked', steps: [] };
+  // Every other Payroll section renders on empty, well-formed data (the shell is tested on all sixteen).
+  if (path === '/api/payroll/grade-packages') return { source: 'GradePayScale', grades: [], olderStructures: [] };
+  if (path === '/api/payroll/salary-structures' || path === '/api/payroll/employee-salary-structures' || path === '/api/payroll/salary-changes') return [];
+  if (path === '/api/payroll/salary-changes/approver-status') return { hasEligibleApprover: true };
+  if (path === '/api/payroll/final-settlements') return { outstandingTotal: 0, note: '', rows: [] };
+  if (path === '/api/finance/gl/journal-exports/formats' || path === '/api/finance/gl/journal-exports') return [];
+  if (/^\/api\/payroll\/runs\/[^/]+\/gl-journal$/.test(path)) return { runId: RUN_ID, period: '2026-11', currency: 'SAR', entries: [], totalDebits: 0, totalCredits: 0, isBalanced: true, isPosted: true };
+  if (path === '/api/payroll/reports/summary') return { totalRuns: 1, lockedRuns: 1, totalEmployeesPaid: 9, totalGrossYtd: 144856.25, totalNetYtd: 133588.9 };
   if (path === '/api/payroll/overview') return { year: 2026, month: 11, totalCompanies: 1, totalActiveEmployees: 9, totalGrossPayroll: 144856.25, totalNetPayroll: 133588.9, totalValidationErrors: 0, totalPendingApprovals: 0, companies: [] };
   if (/^\/api\/payroll\/runs\/[^/]+\/processing$/.test(path)) return { runId: RUN_ID, jobId: null, status: 'Idle', processedEmployees: null, totalEmployees: null, startedAtUtc: null, finishedAtUtc: null, errorCode: null };
   if (/^\/api\/payroll\/runs\/[^/]+\/(validate|approvals)$/.test(path)) return [];
@@ -85,6 +93,11 @@ export const bankHandler = (o: Opts = {}): Handler => (path, search, method, rou
   if (path === `${bp}/companies/c1/templates`) return [];
   if (path === `${bp}/batches/${BATCH_ID}/context`) return { companyId: 'c1', companyName: 'Acme Arabia', countryCode: 'SA', runStatus: 'Locked', existingExport: o.existingExport ?? null };
   if (path === `${bp}/batches/${BATCH_ID}/validate`) return { canExport: true, errors: [], warnings: [], employeeCount: 9, totalAmount: 133588.9, currency: 'SAR', formatId: 'anb-connect-csv-v1', ...(o.validation ?? {}) };
+  if (path === `${bp}/batches/${BATCH_ID}/download`) {
+    void route.fulfill({ status: 200, headers: { 'content-type': 'application/zip', 'content-disposition': 'attachment; filename="bank-file.zip"' }, body: 'PK' });
+    return HANDLED;
+  }
+  if (path === `/api/payroll/payment-batches/${BATCH_ID}/wps-status` && method === 'POST') return { batchId: BATCH_ID, wpsStatus: 'Submitted' };
   if (path === `${bp}/batches/${BATCH_ID}/generate`) {
     const body = JSON.parse(route.request().postData() ?? '{}') as { batchReference: string; paymentDate: string };
     return { id: '44444444-4444-4444-8444-444444444444', formatId: 'anb-connect-csv-v1', files: [{ name: 'header.csv', sha256: 'a'.repeat(64) }, { name: 'body.csv', sha256: 'b'.repeat(64) }],

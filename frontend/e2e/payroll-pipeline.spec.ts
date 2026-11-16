@@ -49,6 +49,8 @@ type Mock = {
   /** Payment batches the server lists (all runs), and the records of any batch. */
   batches?: unknown[];
   records?: unknown[];
+  /** The signed-in user (default: an admin without the payment permissions). */
+  user?: unknown;
 };
 
 async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'dark'; locale?: 'en' | 'ar'; stages?: 'open' | 'folded' | 'default' } = {}) {
@@ -66,7 +68,7 @@ async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'd
     const p = new URL(req.url()).pathname;
     const json = (b: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(b) });
     const runs = opts.runs ?? RUNS;
-    if (p === '/api/auth/me') return json(USER);
+    if (p === '/api/auth/me') return json(opts.user ?? USER);
     if (p === '/api/payroll/companies') return json([COMPANY]);
     if (p === '/api/payroll/runs' && req.method() === 'GET') return json({ items: runs, total: runs.length, page: Number(new URL(req.url()).searchParams.get('page') ?? 1), pageSize: 100 });
     if (p === '/api/payroll/payment-batches') {
@@ -101,16 +103,25 @@ async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'd
     return json([]);
   });
   await page.goto(url);
-  await expect(page.getByRole('heading', { name: opts.locale === 'ar' ? 'إدارة الرواتب' : 'Payroll Management' })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('payroll-section-panel')).toBeVisible({ timeout: 30_000 });
 }
 
+/** A Payroll section's entry in the section nav (a link; the open one is aria-current="page"). */
+/** Found by its stable id at every width (folded below 1280px; on a phone the list lives in a bottom sheet). */
+const section = (page: Page, name: string) => page.locator('a[id^="payroll-tab-"]').filter({ hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`) });
+/** Opens a Payroll section like a user would: below 1280px the list is folded behind the "{group} › {section}" button. */
+async function openSection(page: Page, name: string) {
+  const link = section(page, name);
+  if (!(await link.isVisible())) await page.getByTestId('payroll-section-toggle').click();
+  await link.click();
+}
 const recon = (name: string) => JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8'));
 const stages = (page: Page) => page.getByTestId('pipeline-stages').locator('> li');
 
 test.describe('payroll deep link', () => {
   test('?tab=&run= selects the tab and the run', async ({ page }) => {
     await open(page, `/payroll?tab=validation&run=${RUN_APPROVED}`);
-    await expect(page.getByRole('tab', { name: 'Validation', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(section(page, 'Validation')).toHaveAttribute('aria-current', 'page');
     await expect(page.locator('#pipeline-run-picker')).toHaveValue(RUN_APPROVED);
     await expect(stages(page)).toHaveCount(8);
   });
@@ -118,7 +129,7 @@ test.describe('payroll deep link', () => {
   test('selecting a tab updates the URL with replace, not push', async ({ page }) => {
     await open(page, `/payroll?tab=runs&run=${RUN_APPROVED}`);
     const before = await page.evaluate(() => history.length);
-    await page.getByRole('tab', { name: 'Approvals', exact: true }).click();
+    await openSection(page, 'Approvals');
     await expect(page).toHaveURL(new RegExp(`tab=approvals.*run=${RUN_APPROVED}|run=${RUN_APPROVED}.*tab=approvals`));
     await page.locator('#pipeline-run-picker').selectOption(RUN_PREV);
     await expect(page).toHaveURL(new RegExp(RUN_PREV));
@@ -127,7 +138,7 @@ test.describe('payroll deep link', () => {
 
   test('an unknown tab falls back to the dashboard and the address is cleaned', async ({ page }) => {
     await open(page, '/payroll?tab=nope&run=not-a-guid');
-    await expect(page.getByRole('tab', { name: 'Dashboard', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(section(page, 'Dashboard')).toHaveAttribute('aria-current', 'page');
     await expect(page).toHaveURL(/\/payroll$/);
   });
 
@@ -158,7 +169,7 @@ test.describe('payroll run pipeline', () => {
     await expect(page.getByTestId('stage-reason-validated')).toContainText('2 validation errors are open');
     await expect(page.getByTestId('pipeline-next-reason')).toContainText('Resolve or override');
     await page.getByTestId('pipeline-next-action').click();
-    await expect(page.getByRole('tab', { name: 'Validation', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(section(page, 'Validation')).toHaveAttribute('aria-current', 'page');
   });
 
   test('Review is a stop point: Approve is only the next step once the server holds an Active reconciliation sign-off', async ({ page }) => {
@@ -232,38 +243,41 @@ test.describe('payroll run pipeline', () => {
 });
 
 test.describe('Bank / WPS tab opened from the pipeline', () => {
+  // Someone who prepares bank files (without a payment permission the tab says so instead; bank-guided.spec.ts).
+  const PAYER = { ...USER, permissions: [...USER.permissions, 'payroll.export'] };
   const BATCH = {
     id: 'b1111111-1111-4111-8111-111111111111', payrollRunId: RUN_PREV, batchNumber: 'PB-2026-09-0001', paymentMethod: 'WPS',
     totalAmount: 90000, currency: 'SAR', status: 'Created', wpsStatus: 'NotGenerated', wpsStatusChangedAtUtc: null,
     wpsSubmissionReference: null, wpsRejectionReason: null, createdAtUtc: '2026-09-29T08:00:00Z', isSaudi: true,
   };
-  // The batch's entry in the run's batch list. The number also appears in the tab's status line and, once the run's only
-  // batch has opened itself, in the records heading, so the list entry is found by its role.
-  const batchButton = (page: Page) => page.getByRole('button', { name: new RegExp(`^${BATCH.batchNumber}\\b`) });
+  // The run's only batch opens by itself: its number heads the facts strip of the Bank / WPS flow.
+  const batchFacts = (page: Page) => page.getByTestId('bank-file-facts');
   const RECORD = {
     id: 'r1', paymentBatchId: BATCH.id, employeeId: 226, employeeName: 'Layla Al-Harbi', employeeCode: 'EMP-0226',
     amount: 9000, iban: 'SA03****0000', status: 'Pending', wpsReference: 'WPS-EMP-0226-202609',
   };
 
   test('"Open Bank / WPS" lands on the run the pipeline was showing, with its batch listed', async ({ page }) => {
-    await open(page, `/payroll?tab=runs&run=${RUN_PREV}`, { batches: [BATCH], records: [RECORD] });
+    await open(page, `/payroll?tab=runs&run=${RUN_PREV}`, { batches: [BATCH], records: [RECORD], user: PAYER });
     await expect(page.getByTestId('pipeline-next-action')).toHaveText('Open Bank / WPS');
     await page.getByTestId('pipeline-next-action').click();
-    await expect(page.getByRole('tab', { name: 'Bank / WPS Files', exact: true })).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByLabel('Select payroll run', { exact: true })).toHaveValue(RUN_PREV);
+    await expect(section(page, 'Bank / WPS Files')).toHaveAttribute('aria-current', 'page');
+    await expect(page.locator('#pipeline-run-picker')).toHaveValue(RUN_PREV);
     await expect(page.getByText('No batches yet.')).toHaveCount(0);
-    await expect(batchButton(page)).toBeVisible();
+    await expect(batchFacts(page)).toContainText(BATCH.batchNumber);
   });
 
   test('a deep link to the Bank / WPS tab preselects the run too', async ({ page }) => {
-    await open(page, `/payroll?tab=bank-wps&run=${RUN_PREV}`, { batches: [BATCH], records: [RECORD] });
-    await expect(page.getByLabel('Select payroll run', { exact: true })).toHaveValue(RUN_PREV);
-    await expect(batchButton(page)).toBeVisible();
+    await open(page, `/payroll?tab=bank-wps&run=${RUN_PREV}`, { batches: [BATCH], records: [RECORD], user: PAYER });
+    await expect(page.locator('#pipeline-run-picker')).toHaveValue(RUN_PREV);
+    await expect(batchFacts(page)).toContainText(BATCH.batchNumber);
   });
 
   test('payment records show the employee name, not a bare id', async ({ page }) => {
-    await open(page, `/payroll?tab=bank-wps&run=${RUN_PREV}`, { batches: [BATCH], records: [RECORD] });
-    await batchButton(page).click();
+    await open(page, `/payroll?tab=bank-wps&run=${RUN_PREV}`, { batches: [BATCH], records: [RECORD], user: PAYER });
+    // The payment records open in a drawer from the section's More menu.
+    await page.getByTestId('bank-more').click();
+    await page.getByRole('menuitem', { name: 'Payment records' }).click();
     const row = page.getByRole('row', { name: /WPS-EMP-0226-202609/ });
     await expect(row).toContainText('Layla Al-Harbi');
     await expect(row).not.toContainText('Emp #226');
@@ -272,8 +286,10 @@ test.describe('Bank / WPS tab opened from the pipeline', () => {
 
   test('a record from an older server with no name still shows the id', async ({ page }) => {
     const { employeeName: _n, employeeCode: _c, ...bare } = RECORD;
-    await open(page, `/payroll?tab=bank-wps&run=${RUN_PREV}`, { batches: [BATCH], records: [bare] });
-    await batchButton(page).click();
+    await open(page, `/payroll?tab=bank-wps&run=${RUN_PREV}`, { batches: [BATCH], records: [bare], user: PAYER });
+    // The payment records open in a drawer from the section's More menu.
+    await page.getByTestId('bank-more').click();
+    await page.getByRole('menuitem', { name: 'Payment records' }).click();
     await expect(page.getByRole('row', { name: /WPS-EMP-0226-202609/ })).toContainText('Emp #226');
   });
 });
@@ -352,7 +368,7 @@ test.describe('payroll tables in dark mode', () => {
   });
 });
 
-test.describe('Paid / Exported names the file that exists (a company whose bank file is the Saudi bank export)', () => {
+test.describe('Pay out names the file that exists (a company whose bank file is the Saudi bank export)', () => {
   // RUN_PREV is Locked. Generating the INTERNAL payroll register sets its batch to Generated; it is not a bank file.
   const BATCH = {
     id: 'b2222222-2222-4222-8222-222222222222', payrollRunId: RUN_PREV, batchNumber: 'PB-2026-09-0002', paymentMethod: 'WPS',
@@ -364,16 +380,8 @@ test.describe('Paid / Exported names the file that exists (a company whose bank 
   // The screen isolates the batch number (a left-to-right code) so an Arabic sentence does not reorder it.
   const LTR = (code: string) => `\u2066${code}\u2069`;
   const WORDS = {
-    en: {
-      registerOnly: 'The internal payroll register is generated, but the bank file has not been generated yet.',
-      bankFile: `Batch ${LTR(BATCH.batchNumber)}: Bank file generated`,
-      done: 'Done',
-    },
-    ar: {
-      registerOnly: 'أُنشئ سجل الرواتب الداخلي، لكن الملف البنكي لم يُنشأ بعد.',
-      bankFile: `الدفعة ${LTR(BATCH.batchNumber)}: أُنشئ الملف البنكي`,
-      done: 'مكتمل',
-    },
+    en: { stage: 'Pay out', noFile: 'No bank file yet', created: 'File created — not sent', bankFile: `Batch ${LTR(BATCH.batchNumber)}: Bank file generated`, done: 'Done' },
+    ar: { stage: 'الدفع', noFile: 'لا يوجد ملف بنكي بعد', created: 'أُنشئ الملف — لم يُرسل', bankFile: `الدفعة ${LTR(BATCH.batchNumber)}: أُنشئ الملف البنكي`, done: 'مكتمل' },
   } as const;
   const paidStage = (page: Page) => page.getByTestId('pipeline-stages').locator('> li[data-stage="paid"]');
   const shot = async (page: Page, name: string) => {
@@ -381,58 +389,49 @@ test.describe('Paid / Exported names the file that exists (a company whose bank 
   };
 
   for (const locale of ['en', 'ar'] as const) {
-    test(`[${locale}] the internal register alone does not complete Paid / Exported, and says the bank file is missing`, async ({ page }) => {
+    test(`[${locale}] the internal register alone is "No bank file yet", in the stage, the chip and the run option`, async ({ page }) => {
       await open(page, `/payroll?tab=runs&run=${RUN_PREV}`, { batches: [BATCH], locale });
       if (locale === 'ar') await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
       await expect(paidStage(page)).toHaveAttribute('data-state', 'current');
       await expect(paidStage(page)).toHaveAttribute('aria-current', 'step');
-      await expect(page.getByTestId('stage-reason-paid')).toHaveText(WORDS[locale].registerOnly);
-      await expect(page.getByTestId('pipeline-next-reason')).toHaveText(WORDS[locale].registerOnly);
+      await expect(paidStage(page)).toContainText(WORDS[locale].stage);
+      await expect(page.getByTestId('stage-reason-paid')).toHaveText(WORDS[locale].noFile);
+      await expect(page.getByTestId('pipeline-next-reason')).toHaveText(WORDS[locale].noFile);
+      await expect(page.getByTestId('bank-guide-chip')).toHaveText(WORDS[locale].noFile);
+      await expect(page.locator('#pipeline-run-picker option:checked')).toContainText(WORDS[locale].noFile);
       await expect(paidStage(page)).not.toContainText(WORDS[locale].done);
       await shot(page, `pipeline-register-only-${locale}`);
     });
 
-    test(`[${locale}] a generated bank file completes Paid / Exported and the detail names the bank file`, async ({ page }) => {
+    test(`[${locale}] a bank file that is not yet with the bank is not Done: "File created — not sent", and the detail names the file`, async ({ page }) => {
       await open(page, `/payroll?tab=runs&run=${RUN_PREV}`, { batches: [{ ...BATCH, bankFileGenerated: true }], locale });
-      await expect(paidStage(page)).toHaveAttribute('data-state', 'done');
-      await expect(paidStage(page)).toContainText(WORDS[locale].done);
+      await expect(paidStage(page)).toHaveAttribute('data-state', 'current');
+      await expect(page.getByTestId('stage-reason-paid')).toHaveText(WORDS[locale].created);
       await expect(paidStage(page)).toContainText(WORDS[locale].bankFile);
-      await expect(page.getByTestId('stage-reason-paid')).toHaveCount(0);
+      await expect(paidStage(page)).not.toContainText(WORDS[locale].done);
       await shot(page, `pipeline-bank-file-${locale}`);
     });
   }
 });
 
-test.describe('Paid / Exported waits for the bank to confirm the payments', () => {
-  // RUN_PREV is Locked and its bank file exists, but the bank has spoken about 2 of the 5 payments.
+test.describe('Pay out waits for the bank to confirm the payments', () => {
+  // RUN_PREV is Locked, its bank file was recorded as submitted, and the bank has spoken about 2 of the 5 payments.
   const BATCH = {
     id: 'b3333333-3333-4333-8333-333333333333', payrollRunId: RUN_PREV, batchNumber: 'PB-2026-09-0003', paymentMethod: 'WPS',
-    totalAmount: 90000, currency: 'SAR', status: 'Created', wpsStatus: 'Generated', effectiveWpsStatus: 'Generated',
-    wpsStatusLabel: 'Generated (file ready for the bank)', wpsStatusChangedAtUtc: '2026-09-30T08:00:00Z',
-    wpsSubmissionReference: null, wpsRejectionReason: null, createdAtUtc: '2026-09-29T08:00:00Z', isSaudi: true,
+    totalAmount: 90000, currency: 'SAR', status: 'FileGenerated', wpsStatus: 'Submitted', effectiveWpsStatus: 'Submitted',
+    wpsStatusLabel: 'Submitted', wpsStatusChangedAtUtc: '2026-09-30T08:00:00Z',
+    wpsSubmissionReference: 'ANB-1', wpsRejectionReason: null, createdAtUtc: '2026-09-29T08:00:00Z', isSaudi: true,
     bankFileAvailable: true, bankFileGenerated: true,
     unconfirmedPayments: { count: 3, total: 54000 }, confirmationCoverage: 0.4,
   };
   const WORDS = {
-    en: {
-      waiting: 'Bank file ready — waiting for bank confirmation (2 of 5)',
-      title: 'Confirm payments with the bank',
-      action: 'Open Payment Tracking',
-      done: 'Done',
-      complete: 'All stages are complete.',
-    },
-    ar: {
-      waiting: 'الملف البنكي جاهز — بانتظار تأكيد البنك (2 من 5)',
-      title: 'تأكيد المدفوعات مع البنك',
-      action: 'فتح تتبع المدفوعات',
-      done: 'مكتمل',
-      complete: 'اكتملت كل المراحل.',
-    },
+    en: { waiting: 'Submitted — waiting for the bank (2 of 5)', title: 'Confirm payments with the bank', action: 'Open Payment Tracking', done: 'Done', complete: 'All stages are complete.', confirmed: 'Bank confirmed every payment' },
+    ar: { waiting: 'أُرسل — بانتظار البنك (2 من 5)', title: 'تأكيد المدفوعات مع البنك', action: 'فتح تتبع المدفوعات', done: 'مكتمل', complete: 'اكتملت كل المراحل.', confirmed: 'أكّد البنك جميع المدفوعات' },
   } as const;
   const paidStage = (page: Page) => page.getByTestId('pipeline-stages').locator('> li[data-stage="paid"]');
 
   for (const locale of ['en', 'ar'] as const) {
-    test(`[${locale}] a bank file the bank has not fully confirmed is Current, not Done, and points at Payment Tracking`, async ({ page }) => {
+    test(`[${locale}] a file the bank has not fully confirmed is Current, not Done, and points at Payment Tracking`, async ({ page }) => {
       await open(page, `/payroll?tab=runs&run=${RUN_PREV}`, { batches: [BATCH], locale });
       await expect(paidStage(page)).toHaveAttribute('data-state', 'current');
       await expect(page.getByTestId('stage-reason-paid')).toHaveText(WORDS[locale].waiting);
@@ -440,6 +439,7 @@ test.describe('Paid / Exported waits for the bank to confirm the payments', () =
       await expect(page.getByTestId('pipeline-next-title')).toHaveText(WORDS[locale].title);
       await expect(page.getByTestId('pipeline-next-title')).not.toHaveText(WORDS[locale].complete);
       await expect(page.getByTestId('pipeline-next-reason')).toHaveText(WORDS[locale].waiting);
+      await expect(page.getByTestId('bank-guide-chip')).toHaveText(WORDS[locale].waiting);
       await expect(page.getByTestId('pipeline-next-action')).toHaveText(WORDS[locale].action);
       await page.getByTestId('pipeline-next-action').click();
       await expect(page).toHaveURL(/tab=payment-tracking/);
@@ -450,7 +450,8 @@ test.describe('Paid / Exported waits for the bank to confirm the payments', () =
       await expect(paidStage(page)).toHaveAttribute('data-state', 'done');
       await expect(paidStage(page)).toContainText(WORDS[locale].done);
       await expect(page.getByTestId('stage-reason-paid')).toHaveCount(0);
-      await expect(page.getByTestId('pipeline-next-title')).toHaveText(WORDS[locale].complete);
+      await expect(page.getByTestId('bank-guide-chip')).toHaveText(WORDS[locale].confirmed);
+      await expect(page.getByTestId('pipeline-next-title')).toHaveCount(0);
     });
   }
 });

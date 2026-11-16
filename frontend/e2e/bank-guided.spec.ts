@@ -1,196 +1,155 @@
 import fs from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
-import { payrollUx } from '../src/i18n/payrollUx';
-import { payrollPipeline } from '../src/i18n/payrollPipeline';
-import { bankFileGuide } from '../src/i18n/bankFileGuide';
+import { translate } from '../src/i18n/translations';
 import { boot, HANDLED, type Handler, type Locale } from './demo-polish.fixture';
-import { BATCH, BATCH_ID, RECORDS, RUN_ID, SETTINGS, bankHandler } from './bank-wps.fixture';
+import { BATCH, BATCH_ID, RECORDS, RUN_ID, bankHandler, type Opts } from './bank-wps.fixture';
 
 /**
- * Payroll → Bank / WPS Files as one guided flow. Every API request is intercepted: this proves the UI contract (which step the screen is in,
- * what it says to do, the one primary button, what comes next, EN and AR), not authorisation or the real payloads.
+ * Payroll → Bank / WPS Files: one stage for the whole page (lib/payOut.ts). Every API request is intercepted: this proves the UI contract,
+ * not authorisation or the real payloads.
  *
- * For every place a batch can be, the header, the step list, the primary button and the status chip must all say the same thing; and the one
- * action for the step must be on screen on a laptop without scrolling.
+ * For every stage (setup gate, 1, 2 clean, 2 blocked, 3, 4, 5 waiting, 5 all confirmed), in English and Arabic: the run bar's chip, the run
+ * picker's option, the step strip, the open panel and the primary button say the same thing; the panel's heading and its one primary are on
+ * screen without scrolling at 1440x900 and 1366x768. Then the shell: the Payroll section nav keeps ?tab= deep links, every section renders,
+ * the app menu folds inside Payroll, and a phone has no sideways scroll.
  *
- * Run (dev server on its own port and dist dir):  DEMO_POLISH_PORT=5174 npx playwright test -c e2e/playwright.demo-polish.config.ts bank-guided
- * BANK_GUIDED_SHOTS=<dir> also saves the walk-through screenshots (desktop and phone, EN and AR).
+ * Run (dev server on its own port and dist dir):  DEMO_POLISH_PORT=5191 npx playwright test -c e2e/playwright.demo-polish.config.ts bank-guided
+ * BANK_GUIDED_SHOTS=<dir> also saves the walk-through and the mockup-matching screenshots.
  */
 
 const LOCALES: Locale[] = ['en', 'ar'];
 const url = `/payroll?tab=bank-wps&run=${RUN_ID}`;
 const bp = '/api/payroll/bank-exports';
-
-const say = (locale: Locale, key: string) => (locale === 'ar' ? payrollUx.ar[key] ?? bankFileGuide.ar[key] ?? payrollPipeline.ar[key] ?? `MISSING ${key}` : key);
-const W: Record<Locale, Record<string, string>> = {
-  en: { validate: 'Validate', generate: 'Generate files', download: 'Download zip', saveSetup: 'Save employer setup', createBatch: 'Create Payment Batch', tracking: 'Open Payment Tracking', creditDate: 'Credit value date', change: 'Change', edit: 'Edit', fix: 'Fix', employee: 'Employee (from this batch)' },
-  ar: { validate: 'تحقق', generate: 'إنشاء الملفات', download: 'تنزيل الملف المضغوط', saveSetup: 'حفظ إعدادات صاحب العمل', createBatch: 'إنشاء دفعة دفع', tracking: 'فتح تتبع المدفوعات', creditDate: 'تاريخ قيمة الإيداع', change: 'تغيير', edit: 'تعديل', fix: 'معالجة', employee: 'الموظف (من هذه الدفعة)' },
-};
-
-const step = (page: Page, key: string) => page.locator(`[data-testid="bank-file-steps"] [data-step="${key}"]`);
-const guide = (page: Page) => ({
-  root: page.getByTestId('bank-guide'),
-  position: page.getByTestId('bank-guide-position'),
-  sentence: page.getByTestId('bank-guide-sentence'),
-  next: page.getByTestId('bank-guide-next'),
-  primary: page.getByTestId('bank-guide-primary'),
-  chip: page.getByTestId('bank-guide-chip'),
-});
-
-/** Header, step list, primary button and chip agree on one stage, and only that step is open. */
-async function expectStage(page: Page, locale: Locale, want: { stage: string; position?: number; name?: string; primary?: string | null; chip: string; state?: string }) {
-  const g = guide(page);
-  await expect(g.root).toHaveAttribute('data-stage', want.stage, { timeout: 90_000 });
-  // The list has exactly one current step, and it is the one the header names.
-  if (want.stage !== 'finished') {
-    const current = page.locator('[data-testid="bank-file-steps"] [aria-current="step"]');
-    await expect(current).toHaveCount(1);
-    await expect(current).toHaveAttribute('data-step', want.stage);
-    if (want.state) await expect(current).toHaveAttribute('data-state', want.state);
-  } else {
-    await expect(page.locator('[data-testid="bank-file-steps"] [aria-current="step"]')).toHaveCount(0);
-    await expect(page.locator('[data-testid="bank-file-steps"] [data-state="done"]')).toHaveCount(4);
-  }
-  if (want.position !== undefined && want.name) {
-    const text = locale === 'ar' ? `الخطوة ${want.position} من 4 · ${say(locale, want.name)}` : `Step ${want.position} of 4 · ${want.name}`;
-    await expect(g.position).toHaveText(text);
-  }
-  await expect(g.chip).toHaveAttribute('data-chip', want.chip);
-  // The track names the same stage (at the end every segment is done).
-  if (want.stage === 'finished') await expect(page.locator('[data-testid="bank-guide-progress"] [data-state="done"]')).toHaveCount(4);
-  else await expect(page.locator(`[data-testid="bank-guide-progress"] [data-track="${want.stage}"]`)).not.toHaveAttribute('data-state', 'upcoming');
-  // One primary button (or none), the right one, and nothing else in the guide dressed as primary.
-  if (want.primary === null) await expect(g.primary).toHaveCount(0);
-  else if (want.primary !== undefined) await expect(g.primary).toHaveText(want.primary);
-  await expect(g.root.locator('.btn-primary')).toHaveCount(want.primary === null ? 0 : 1);
-  // What comes next is always said (except at the very end, which has its one action).
-  if (want.stage === 'finished') await expect(g.next).toHaveCount(0); else await expect(g.next).toBeVisible();
-  // Only the current step is open (the finished steps are one line each, the ones ahead say what they wait for).
-  const bodies = page.locator('[data-testid^="bank-step-body-"]');
-  if (want.stage === 'finished') await expect(bodies).toHaveCount(0); else await expect(bodies).toHaveCount(1);
-  if (want.stage !== 'finished') await expect(step(page, want.stage).locator('[data-testid^="bank-step-body-"]')).toHaveCount(1);
-}
-
-async function pickDate(page: Page, locale: Locale) {
-  const group = page.getByRole('group', { name: W[locale].creditDate });
-  const selects = group.getByRole('combobox');
-  await expect(selects).toHaveCount(3);
-  for (let i = 0; i < 3; i++) {
-    const values = await selects.nth(i).locator('option').evaluateAll(els => els.map(e => (e as HTMLOptionElement).value));
-    await selects.nth(i).selectOption(values.includes('2026') ? '2026' : values.includes('31') ? '30' : '11');
-  }
-}
+const say = (locale: Locale, key: string, params?: Record<string, string | number>) => translate(locale, key, params);
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const EMPTY_SETUP = { formatId: '', molEstablishmentId: '', mainAccountNumber: '', organizationName: '', organizationAddress1: '', organizationAddress2: '', organizationAddress3: '', companyName: '', narrative: '', batchType: '', autoWpsUpload: false, nationalUnifiedNo: '', debitAccountIban: '' };
 const FILE = { id: '44444444-4444-4444-8444-444444444444', formatId: 'anb-connect-csv-v1', files: [{ name: 'header.csv', sha256: 'a'.repeat(64) }, { name: 'body.csv', sha256: 'b'.repeat(64) }], batchReference: '202611220353', paymentDate: '2026-11-30', employeeCount: 9, totalAmount: 133588.9 };
-const SUBMITTED = { ...BATCH, status: 'FileGenerated', wpsStatus: 'Submitted', effectiveWpsStatus: 'Submitted', wpsStatusLabel: 'Submitted' };
+const GENERATED = { ...BATCH, status: 'FileGenerated', wpsStatus: 'Generated', effectiveWpsStatus: 'Generated', wpsStatusLabel: 'Generated', bankFileAvailable: true, bankFileGenerated: true, allowedNextStatuses: ['Downloaded', 'Submitted'] };
+const SUBMITTED = { ...GENERATED, wpsStatus: 'Submitted', effectiveWpsStatus: 'Submitted', wpsStatusLabel: 'Submitted', wpsSubmissionReference: 'ANB-55821-0924', wpsStatusChangedAtUtc: '2026-11-16T11:05:00Z', allowedNextStatuses: ['Accepted', 'Rejected'] };
+const ACCEPTED = { ...SUBMITTED, wpsStatus: 'Accepted', effectiveWpsStatus: 'Accepted', wpsStatusLabel: 'Accepted', allowedNextStatuses: ['Paid'] };
+const withStatus = (paid: number, returned: number) => RECORDS.map((r, i) => ({ ...r, status: i < paid ? 'Paid' : i < paid + returned ? 'Returned' : 'Pending' }));
+const BLOCKER = { canExport: false, errors: [{ code: 'bic_missing', message: 'BIC is missing for this employee.', employeeId: 203 }] };
+
+interface Want { stage: string; chip: string; chipText: string; strip: string | null; primary: string | null; next?: string }
+
+/** The run bar's chip, the run option, the strip, the panel and the primary all say the same thing. */
+async function expectStage(page: Page, w: Want) {
+  await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', w.stage, { timeout: 90_000 });
+  const chip = page.getByTestId('bank-guide-chip');
+  await expect(chip).toHaveAttribute('data-chip', w.chip);
+  await expect(chip).toHaveText(w.chipText);
+  // The run picker never says something the page does not: the open run's option ends with the chip's words.
+  await expect(page.locator('#pipeline-run-picker option:checked')).toHaveText(new RegExp(`— ${escape(w.chipText)}$`));
+  const current = page.locator('[data-step-strip="bank-file"] [aria-current="step"]');
+  if (w.strip === null) await expect(current).toHaveCount(0);
+  else { await expect(current).toHaveCount(1); await expect(current).toHaveAttribute('data-step', w.strip); }
+  await expect(page.locator('[data-step-panel]')).toHaveAttribute('data-step-panel', w.stage);
+  const primary = page.getByTestId('bank-guide-primary');
+  if (w.primary === null) await expect(primary).toHaveCount(0); else await expect(primary).toHaveText(w.primary);
+  // Exactly one primary on the page (none in the run bar or the header).
+  await expect(page.locator('main .btn-primary:visible')).toHaveCount(w.primary === null ? 0 : 1);
+  await expect(page.getByTestId('run-pipeline').locator('.btn-primary')).toHaveCount(0);
+  if (w.next) await expect(page.getByTestId('bank-guide-next')).toContainText(w.next);
+}
+
+/** The step's heading and its one action are on screen without scrolling. */
+async function expectInView(page: Page) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const vh = page.viewportSize()!.height;
+  const heading = await page.locator('[data-step-panel] [data-step-heading]').boundingBox();
+  expect(heading!.y, 'step heading top').toBeLessThanOrEqual(480);
+  const action = page.locator('[data-primary-action]');
+  if (await action.count()) {
+    const box = await action.boundingBox();
+    expect(box!.y + box!.height, 'primary bottom').toBeLessThanOrEqual(vh);
+    await expect(action).toBeInViewport();
+  }
+}
+
+type Case = { name: string; opts: Opts; act?: (page: Page, locale: Locale) => Promise<void>; want: (l: Locale) => Want };
+const CASES: Case[] = [
+  {
+    name: 'setup gate', opts: { settings: EMPTY_SETUP },
+    want: l => ({ stage: 'setup', chip: 'setup', chipText: say(l, 'Bank setup needed'), strip: 'setup', primary: say(l, 'Complete bank setup'), next: say(l, 'Check employees') }),
+  },
+  {
+    name: '1 no payment batch', opts: { batches: [] },
+    want: l => ({ stage: 'batch', chip: 'no_batch', chipText: say(l, 'No payment batch yet'), strip: 'batch', primary: say(l, 'Create payment batch'), next: say(l, 'Next: Check employees.') }),
+  },
+  {
+    name: '2 clean', opts: {},
+    want: l => ({ stage: 'check', chip: 'no_file', chipText: say(l, 'No bank file yet'), strip: 'check', primary: say(l, 'Check employees'), next: say(l, 'File details') }),
+  },
+  {
+    name: '2 blocked', opts: { validation: BLOCKER },
+    act: async page => { await page.getByTestId('bank-guide-primary').click(); },
+    want: l => ({ stage: 'check', chip: 'attention', chipText: say(l, 'Needs a fix'), strip: 'check', primary: say(l, 'Check again') }),
+  },
+  {
+    name: '3 file details', opts: {},
+    act: async page => { await page.getByTestId('bank-guide-primary').click(); },
+    want: l => ({ stage: 'create', chip: 'no_file', chipText: say(l, 'No bank file yet'), strip: 'create', primary: say(l, 'Create bank file'), next: say(l, 'Send to bank') }),
+  },
+  {
+    name: '4 send to bank', opts: { batches: [GENERATED], existingExport: FILE },
+    want: l => ({ stage: 'send', chip: 'created', chipText: say(l, 'File created — not sent'), strip: 'send', primary: say(l, 'Download bank file'), next: say(l, 'Next: Record it as submitted once the bank has it.') }),
+  },
+  {
+    name: '5 waiting for the bank', opts: { batches: [SUBMITTED], existingExport: FILE, records: withStatus(6, 0) },
+    want: l => ({ stage: 'response', chip: 'submitted', chipText: say(l, 'Submitted — waiting for the bank ({answered} of {total})', { answered: 6, total: 9 }), strip: 'response', primary: say(l, 'Record the bank’s response'), next: say(l, 'Next: Finance settles the payments after the bank confirms.') }),
+  },
+  {
+    name: '5 all confirmed', opts: { batches: [ACCEPTED], existingExport: FILE, records: withStatus(9, 0) },
+    want: l => ({ stage: 'finished', chip: 'confirmed', chipText: say(l, 'Bank confirmed {total} of {total}', { total: 9 }), strip: null, primary: say(l, 'Settle payments') }),
+  },
+];
 
 for (const locale of LOCALES) {
-  test.describe(`bank file guide: every stage says one thing (${locale})`, () => {
-    test.use({ viewport: { width: 1366, height: 768 } });
-
-    test('no batch on a locked run: step 1, create it', async ({ page }) => {
-      await boot(page, { locale, url, routes: bankHandler({ batches: [] }), waitMs: 2500 });
-      await expectStage(page, locale, { stage: 'batch', position: 1, name: 'Choose the payment batch', primary: W[locale].createBatch, chip: 'waiting', state: 'current' });
-      await expect(guide(page).primary).toBeEnabled();
-    });
-
-    test('no batch on a run that is not locked: step 1 is blocked and the button is off, with the reason beside it', async ({ page }) => {
-      await boot(page, { locale, url, routes: bankHandler({ batches: [], runStatus: 'Approved' }), waitMs: 2500 });
-      await expectStage(page, locale, { stage: 'batch', position: 1, name: 'Choose the payment batch', primary: W[locale].createBatch, chip: 'attention', state: 'blocked' });
-      await expect(guide(page).primary).toBeDisabled();
-      await expect(guide(page).sentence).toContainText(locale === 'ar' ? /قفل/ : /Locked/);
-    });
-
-    test('two batches and none chosen: step 1, choose one from the list; no button until one is', async ({ page }) => {
-      await boot(page, { locale, url, routes: bankHandler({ batches: [BATCH, { ...BATCH, id: 'b2', batchNumber: 'PAY-202611-220354' }] }), waitMs: 2500 });
-      await expectStage(page, locale, { stage: 'batch', position: 1, name: 'Choose the payment batch', primary: null, chip: 'waiting', state: 'current' });
-      await expect(page.getByRole('button', { name: /PAY-202611-220354/ })).toBeVisible();
-      await page.getByRole('button', { name: /PAY-202611-220354/ }).click();
-      await expect(step(page, 'batch')).toHaveAttribute('data-state', 'done');
-    });
-
-    test('bank setup incomplete: the setup is the stage (before step 2), its form is open, Save is the one button, everything after waits', async ({ page }) => {
-      const posts: string[] = [];
-      await boot(page, { locale, url, routes: bankHandler({ settings: EMPTY_SETUP, posts }), waitMs: 2500 });
-      await expectStage(page, locale, { stage: 'setup', primary: W[locale].saveSetup, chip: 'setup', state: 'current' });
-      await expect(guide(page).position).toHaveText(`${say(locale, 'Before you start')} · ${say(locale, 'Bank setup')}`);
-      await expect(page.getByTestId('bank-setup-summary')).toHaveCount(0);
-      await expect(step(page, 'check')).toHaveAttribute('data-state', 'upcoming');
-      await expect(step(page, 'check').getByTestId('bank-step-reason-check')).toContainText(say(locale, 'Waits for the bank setup.'));
-      await expect(step(page, 'create')).toHaveAttribute('data-state', 'upcoming');
-      // The form has no button of its own: the header's is the only one, and it submits the form.
-      await expect(step(page, 'setup').locator('form button[type="submit"]')).toHaveCount(0);
-      await expect(guide(page).primary).toHaveAttribute('type', 'submit');
-      // Saving an empty setup is refused in place and nothing is sent.
-      await guide(page).primary.click();
-      await expect(step(page, 'setup').locator('[aria-invalid="true"]').first()).toBeVisible();
-      expect(posts.filter(p => p.startsWith('PUT'))).toEqual([]);
-    });
-
-    test('step 2: a clean batch is checked from the header; the date is one labelled field with Day, Month and Year placeholders', async ({ page }) => {
-      await boot(page, { locale, url, routes: bankHandler(), waitMs: 2500 });
-      await expectStage(page, locale, { stage: 'check', position: 2, name: 'Check the batch', primary: W[locale].validate, chip: 'waiting', state: 'current' });
-      await expect(step(page, 'batch')).toHaveAttribute('data-state', 'done');
-      await expect(step(page, 'create')).toHaveAttribute('data-state', 'upcoming');
-      await expect(step(page, 'download')).toHaveAttribute('data-state', 'upcoming');
-      // The date: a visible label, a group with the same name, three selects that name themselves while empty.
-      const group = page.getByRole('group', { name: W[locale].creditDate });
-      await expect(step(page, 'check').getByText(W[locale].creditDate, { exact: true }).first()).toBeVisible();
-      for (const [i, word] of [[0, 'Day'], [1, 'Month'], [2, 'Year']] as const) {
-        const select = group.getByRole('combobox').nth(i);
-        await expect(select).toHaveValue('');
-        await expect(select.locator('option').first()).toHaveText(locale === 'ar' ? { Day: 'اليوم', Month: 'الشهر', Year: 'السنة' }[word] : word);
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768 }]) {
+    test.describe(`one stage, said once (${locale}, ${viewport.width}x${viewport.height})`, () => {
+      test.use({ viewport });
+      for (const c of CASES) {
+        test(c.name, async ({ page }) => {
+          const { errors } = await boot(page, { locale, url, routes: bankHandler(c.opts), waitMs: 2500, stages: 'default' });
+          await expect(page.getByTestId('bank-guide')).toBeVisible({ timeout: 90_000 });
+          if (c.act) { await expect(page.getByTestId('bank-guide-primary')).toBeEnabled({ timeout: 60_000 }); await c.act(page, locale); }
+          await expectStage(page, c.want(locale));
+          await expectInView(page);
+          expect(errors).toEqual([]);
+        });
       }
-      // The footer: the bank setup in one line, the notice in one line.
-      await expect(page.getByTestId('bank-setup-summary')).toContainText('••0026');
-      await expect(page.getByTestId('bank-setup-summary').getByRole('button', { name: W[locale].edit })).toBeVisible();
-      await expect(page.getByTestId('bank-pays-nobody')).toBeVisible();
-      await expect(page.getByTestId('bank-notice-details')).toHaveCount(0);
     });
+  }
+}
 
-    test('step 2 → 3 → 4: each clean step hands over to the next, which takes focus, with a brief confirmation', async ({ page }) => {
-      await boot(page, { locale, url, routes: bankHandler(), waitMs: 2500 });
-      await expectStage(page, locale, { stage: 'check', position: 2, name: 'Check the batch', primary: W[locale].validate, chip: 'waiting' });
-      await pickDate(page, locale);
-      await guide(page).primary.click();
-      await expectStage(page, locale, { stage: 'create', position: 3, name: 'Create the bank file', primary: W[locale].generate, chip: 'waiting', state: 'current' });
-      await expect(page.getByTestId('bank-guide-confirmation')).toContainText(say(locale, 'Batch checked — no blockers.'));
-      await expect(step(page, 'check')).toContainText(locale === 'ar' ? 'نجح التحقق' : 'Passed');
-      await expect(step(page, 'create').locator('[data-step-heading]')).toBeFocused();
-      await expect(page.getByTestId('bank-create-recap')).toContainText('2026');
-      await guide(page).primary.click();
-      await expectStage(page, locale, { stage: 'download', position: 4, name: 'Download and mark submitted', primary: W[locale].download, chip: 'ready', state: 'current' });
-      await expect(page.getByTestId('bank-guide-confirmation')).toContainText(say(locale, 'Bank file created.'));
-      await expect(step(page, 'download').locator('[data-step-heading]')).toBeFocused();
-      await expect(step(page, 'download').getByRole('button', { name: W[locale].tracking })).toBeVisible();
-      await expect(page.locator('#bank-wps-generated-export')).toContainText('header.csv');
-    });
+// ── The behaviour behind the stages ────────────────────────────────────────────────────────────────
 
-    test('a blocker has a Fix that opens the beneficiary editor on THAT employee; a clean check after it carries on', async ({ page }) => {
+for (const locale of LOCALES) {
+  test.describe(`the flow (${locale})`, () => {
+    test.use({ viewport: { width: 1440, height: 900 } });
+
+    test('a blocked check: the summary takes focus, Fix opens THAT employee, and a clean check after it moves to step 3 with a confirmation', async ({ page }) => {
       let fixed = false;
       const extra: Handler = (path, _s, method) => {
         if (path === `${bp}/batches/${BATCH_ID}/validate` && method === 'POST') {
           return fixed ? { canExport: true, errors: [], warnings: [], employeeCount: 9, totalAmount: 133588.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' }
-            : { canExport: false, errors: [{ code: 'bic_missing', message: 'BIC is missing for this employee.', employeeId: 203 }], warnings: [], employeeCount: 9, totalAmount: 133588.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' };
+            : { ...BLOCKER, warnings: [], employeeCount: 9, totalAmount: 133588.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' };
         }
         if (path === '/api/employees/203' && method === 'GET') return { id: 203, employeeCode: 'EVT2-0004', fullName: 'Nora Alharbi', wpsBankDetails: '' };
         if (path === '/api/employees/203' && method === 'PUT') { fixed = true; return { id: 203 }; }
         return undefined;
       };
-      await boot(page, { locale, url, routes: bankHandler({ extra }), waitMs: 2500 });
-      await expectStage(page, locale, { stage: 'check', position: 2, name: 'Check the batch', primary: W[locale].validate, chip: 'waiting' });
-      await pickDate(page, locale);
-      await guide(page).primary.click();
-      await expectStage(page, locale, { stage: 'check', position: 2, name: 'Check the batch', primary: W[locale].validate, chip: 'attention', state: 'blocked' });
-      await expect(guide(page).sentence).toHaveText(say(locale, 'The check found blockers. Fix each one below, then check again.'));
-      await expect(guide(page).next).toHaveText(say(locale, 'Next: check again, then create the bank file.'));
-      const blockers = page.getByTestId('bank-blockers');
-      await expect(blockers).toContainText('BIC is missing for this employee.');
-      await blockers.getByTestId('bank-blocker-fix').click();
+      await boot(page, { locale, url, routes: bankHandler({ extra }), waitMs: 2500, stages: 'default' });
+      await expect(page.getByTestId('bank-guide-primary')).toBeEnabled({ timeout: 90_000 });
+      await page.getByTestId('bank-guide-primary').click();
+      const summary = page.getByTestId('bank-error-summary');
+      await expect(summary).toHaveAttribute('role', 'alert');
+      await expect(summary).toContainText(say(locale, 'The bank code (BIC) is missing for this employee.'));
+      await expect(page.getByTestId('bank-guide-live')).toBeFocused();
+      await summary.getByTestId('bank-blocker-fix').click();
       const drawer = page.getByRole('dialog');
-      await expect(drawer).toBeVisible();
-      await expect(drawer.getByLabel(W[locale].employee)).toHaveValue('203', { timeout: 15_000 });
+      await expect(drawer.getByLabel(locale === 'ar' ? 'الموظف (من هذه الدفعة)' : 'Employee (from this batch)')).toHaveValue('203', { timeout: 15_000 });
       await drawer.locator('input[dir="ltr"]').nth(0).fill('ARNBSARI');
       await drawer.locator('input[dir="ltr"]').nth(1).fill('Riyadh');
       await drawer.locator('input[dir="ltr"]').nth(2).fill('Olaya');
@@ -199,216 +158,335 @@ for (const locale of LOCALES) {
       await expect(drawer.locator('form button[type="submit"]')).toBeDisabled({ timeout: 15_000 });
       await page.keyboard.press('Escape');
       await expect(drawer).toHaveCount(0);
-      // The change discarded the old result: the check is to be run again, and then the stage moves on.
-      await guide(page).primary.click();
-      await expectStage(page, locale, { stage: 'create', position: 3, name: 'Create the bank file', primary: W[locale].generate, chip: 'waiting', state: 'current' });
+      await page.getByTestId('bank-guide-primary').click();
+      await expectStage(page, { stage: 'create', chip: 'no_file', chipText: say(locale, 'No bank file yet'), strip: 'create', primary: say(locale, 'Create bank file') });
+      await expect(page.getByTestId('bank-guide-confirmation')).toContainText(say(locale, 'Checked {n} employees — no blockers.', { n: 9 }));
+      await expect(page.locator('[data-step-panel] [data-step-heading]')).toBeFocused();
     });
 
-    test('a blocker on an account number is fixed in People, not in a drawer that cannot change it', async ({ page }) => {
-      const validation = { canExport: false, errors: [{ code: 'account_missing', message: 'No account number.', employeeId: 204 }] };
-      await boot(page, { locale, url, routes: bankHandler({ validation }), waitMs: 2500 });
-      await expectStage(page, locale, { stage: 'check', position: 2, name: 'Check the batch', primary: W[locale].validate, chip: 'waiting' });
-      await pickDate(page, locale);
-      await guide(page).primary.click();
-      const fix = page.getByTestId('bank-blockers').getByTestId('bank-blocker-fix');
-      await expect(fix).toHaveAttribute('href', '/people/204');
+    test('an account-number blocker is fixed in People, not in a drawer that cannot change it', async ({ page }) => {
+      await boot(page, { locale, url, routes: bankHandler({ validation: { canExport: false, errors: [{ code: 'account_missing', message: 'No account number.', employeeId: 204 }] } }), waitMs: 2500, stages: 'default' });
+      await expect(page.getByTestId('bank-guide-primary')).toBeEnabled({ timeout: 90_000 });
+      await page.getByTestId('bank-guide-primary').click();
+      await expect(page.getByTestId('bank-blocker-fix')).toHaveAttribute('href', '/people/204');
     });
 
-    test('the secondary links: bank formats and any employee\'s bank details open in drawers', async ({ page }) => {
-      await boot(page, { locale, url, routes: bankHandler(), waitMs: 2500 });
-      await expect(guide(page).root).toBeVisible({ timeout: 90_000 });
-      await page.getByRole('button', { name: locale === 'ar' ? 'صيغ ملفات البنك' : 'Bank formats' }).click();
-      await expect(page.getByRole('dialog')).toBeVisible();
+    test('step 3: one labelled date with the next working day, Fridays and Saturdays off; Create checks again and makes the file', async ({ page }) => {
+      const posts: string[] = [];
+      await boot(page, { locale, url, routes: bankHandler({ posts }), waitMs: 2500, stages: 'default' });
+      await expect(page.getByTestId('bank-guide-primary')).toBeEnabled({ timeout: 90_000 });
+      await page.getByTestId('bank-guide-primary').click();
+      await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'create');
+      const field = page.getByTestId('bank-value-date').locator('input');
+      await expect(field).toHaveCount(1);
+      // One labelled control: its accessible name is the label.
+      await expect(page.getByRole('combobox', { name: new RegExp(`^${escape(say(locale, 'Salary credit date (value date)'))}`) })).toHaveCount(1);
+      const shown = await field.inputValue();
+      expect(shown).toMatch(/\d{4}/);
+      expect(shown).not.toMatch(/(Fri|Sat|الجمعة|السبت)/);
+      await field.click();
+      const dialog = page.getByRole('dialog', { name: say(locale, 'Choose a date') });
+      await expect(dialog.getByRole('grid')).toBeVisible();
+      // A Friday cannot be chosen by mouse.
+      const friday = dialog.locator('[data-day][aria-disabled="true"]').first();
+      const before = await field.inputValue();
+      await friday.click({ force: true });
+      await expect(field).toHaveValue(before);
+      // Escape closes and returns focus to the field.
       await page.keyboard.press('Escape');
-      await page.getByRole('button', { name: locale === 'ar' ? 'تعديل بيانات موظف البنكية' : 'Edit an employee’s bank details' }).click();
-      await expect(page.getByRole('dialog').getByLabel(W[locale].employee)).toHaveValue('');
-      await page.keyboard.press('Escape');
-      await expect(page.getByRole('dialog')).toHaveCount(0);
-      // The templates are no longer a section of the page, and neither are the beneficiary details.
-      await expect(page.getByRole('heading', { name: /Custom bank salary-file templates|قوالب ملفات الرواتب/ })).toHaveCount(0);
+      await expect(dialog).toHaveCount(0);
+      await expect(field).toBeFocused();
+      // The recap echoes the date.
+      await expect(page.getByTestId('bank-create-recap')).toContainText(before);
+      await page.getByTestId('bank-guide-primary').click();
+      await expectStage(page, { stage: 'send', chip: 'created', chipText: say(locale, 'File created — not sent'), strip: 'send', primary: say(locale, 'Download bank file') });
+      expect(posts.filter(p => p.endsWith('/generate'))).toHaveLength(1);
+      await expect(page.locator('#bank-wps-generated-export')).toContainText('header.csv');
     });
 
-    test('Edit on the setup row opens it in a drawer and a clean save closes it', async ({ page }) => {
-      await boot(page, { locale, url, routes: bankHandler({ extra: (path, _s, method, route) => (method === 'PUT' && path === `${bp}/companies/c1/settings` ? JSON.parse(route.request().postData() ?? '{}') : undefined) }), waitMs: 2500 });
-      await expect(page.getByTestId('bank-setup-summary')).toBeVisible({ timeout: 90_000 });
-      await page.getByTestId('bank-setup-summary').getByRole('button', { name: W[locale].edit }).click();
-      const drawer = page.getByRole('dialog');
-      await expect(drawer.locator('input[name="molEstablishmentId"]')).toHaveValue(SETTINGS.molEstablishmentId);
-      await drawer.locator('input[name="narrative"]').fill('Edited narrative');
-      await drawer.locator('form button[type="submit"]').click();
-      await expect(drawer).toHaveCount(0, { timeout: 15_000 });
-      await expect(page.getByTestId('bank-guide-live')).toContainText(locale === 'ar' ? 'تم حفظ إعدادات صاحب العمل' : 'Employer setup saved');
-    });
-
-    test('step 4: the file exists; download is the one button, Payment Tracking is next, and the file is shown', async ({ page }) => {
-      await boot(page, { locale, url, routes: bankHandler({ existingExport: FILE }), waitMs: 2500 });
-      await expectStage(page, locale, { stage: 'download', position: 4, name: 'Download and mark submitted', primary: W[locale].download, chip: 'ready', state: 'current' });
-      await expect(guide(page).primary).toBeEnabled();
-      await expect(step(page, 'check')).toHaveAttribute('data-state', 'done');
-      await expect(step(page, 'create')).toHaveAttribute('data-state', 'done');
-      await expect(step(page, 'create')).toContainText('202611220353');
-      await expect(guide(page).next).toHaveText(say(locale, 'Next: record the batch as submitted in Payment Tracking.'));
-    });
-
-    test('the end: submitted, nothing else to do here; waiting for the bank, with Payment Tracking as the one action', async ({ page }) => {
-      const batch = { ...SUBMITTED, bankFileAvailable: true, bankFileGenerated: true, unconfirmedPayments: { count: 3, total: 3000 }, confirmationCoverage: 0.4 };
-      await boot(page, { locale, url, routes: bankHandler({ batches: [batch], existingExport: FILE }), waitMs: 2500 });
-      await expectStage(page, locale, { stage: 'finished', primary: W[locale].tracking, chip: 'submitted' });
-      await expect(guide(page).sentence).toContainText(locale === 'ar' ? 'أُرسل ملف البنك — بانتظار تأكيد البنك (2 من 5)' : 'Bank file submitted — waiting for the bank’s confirmation (2 of 5)');
-      await guide(page).primary.click();
-      await expect(page.locator('#payroll-tab-payment-tracking')).toHaveAttribute('aria-selected', 'true');
-    });
-
-    test('a closed gate: step 2 is blocked with its reason and no button (Retry lives with the reason)', async ({ page }) => {
-      await boot(page, { locale, url, routes: bankHandler({ availability: { enabled: false } }), waitMs: 2500 });
-      await expectStage(page, locale, { stage: 'check', position: 2, name: 'Check the batch', primary: null, chip: 'attention', state: 'blocked' });
-      await expect(guide(page).sentence).toHaveText(say(locale, 'Bank file export is switched off for this company. Ask the platform team.'));
-    });
-  });
-}
-
-// ── The page tells one story ──────────────────────────────────────────────────────────────────────
-
-for (const locale of LOCALES) {
-  test.describe(`bank file guide: the page's run list, its next-step card and this tab agree (${locale})`, () => {
-    test.use({ viewport: { width: 1366, height: 768 } });
-
-    // The owner's case: the internal payroll register was generated (the batch says Generated) but the bank file was not made.
-    const REGISTER_ONLY = { ...BATCH, status: 'Generated', wpsStatus: 'Generated', effectiveWpsStatus: 'Generated', wpsStatusLabel: 'Generated (file ready for the bank)', bankFileAvailable: true, bankFileGenerated: false };
-
-    test('a generated internal register is not a bank file: no tab, card or list says it is', async ({ page }) => {
-      await boot(page, { locale, url, routes: bankHandler({ batches: [REGISTER_ONLY] }), waitMs: 2500 });
-      await expectStage(page, locale, { stage: 'check', position: 2, name: 'Check the batch', primary: W[locale].validate, chip: 'waiting' });
-      // The page's run list says what the chip says; the next-step card names the stage this tab is in.
-      await expect(page.locator('#pipeline-run-picker option:checked')).toContainText(say(locale, 'Waiting for the bank file'));
-      await expect(page.getByTestId('pipeline-next-title')).toHaveText(say(locale, 'Create the bank file'));
-      await expect(guide(page).chip).toHaveText(say(locale, 'Waiting for the bank file'));
-      // The old status line ("bank file generated") is gone for good.
-      await expect(page.getByTestId('bank-batch-status')).toHaveCount(0);
-      await expect(page.locator('main')).not.toContainText(locale === 'ar' ? 'تم إنشاء ملف البنك' : 'bank file generated');
-    });
-
-    test('making the bank file here updates the page\'s run list and card without a reload', async ({ page }) => {
-      let made = false;
+    test('download, then Record as submitted (bank reference required, sent once) hands over to the bank\'s response', async ({ page }) => {
+      let submitted = false;
+      const posts: string[] = [];
       const extra: Handler = (path, _s, method) => {
-        if (path === `${bp}/batches/${BATCH_ID}/generate` && method === 'POST') made = true;
-        if (path === '/api/payroll/payment-batches' && method === 'GET') return [{ ...REGISTER_ONLY, bankFileGenerated: made }];
+        if (path === '/api/payroll/payment-batches' && method === 'GET') return [submitted ? SUBMITTED : GENERATED];
+        if (path === `/api/payroll/payment-batches/${BATCH_ID}/wps-status` && method === 'POST') { submitted = true; return { batchId: BATCH_ID, wpsStatus: 'Submitted' }; }
         return undefined;
       };
-      await boot(page, { locale, url, routes: bankHandler({ extra }), waitMs: 2500 });
-      await expectStage(page, locale, { stage: 'check', position: 2, name: 'Check the batch', primary: W[locale].validate, chip: 'waiting' });
-      await expect(page.locator('#pipeline-run-picker option:checked')).toContainText(say(locale, 'Waiting for the bank file'));
-      await pickDate(page, locale);
-      await guide(page).primary.click();
-      await expectStage(page, locale, { stage: 'create', position: 3, name: 'Create the bank file', primary: W[locale].generate, chip: 'waiting' });
-      await guide(page).primary.click();
-      await expectStage(page, locale, { stage: 'download', position: 4, name: 'Download and mark submitted', primary: W[locale].download, chip: 'ready' });
-      await expect(page.locator('#pipeline-run-picker option:checked')).not.toContainText(say(locale, 'Waiting for the bank file'), { timeout: 15_000 });
+      await boot(page, { locale, url, routes: bankHandler({ existingExport: FILE, extra, posts }), waitMs: 2500, stages: 'default' });
+      await expect(page.getByTestId('bank-guide-primary')).toHaveText(say(locale, 'Download bank file'), { timeout: 90_000 });
+      const download = page.waitForEvent('download');
+      await page.getByTestId('bank-guide-primary').click();
+      await download;
+      await expectStage(page, { stage: 'send', chip: 'downloaded', chipText: say(locale, 'Downloaded — not yet submitted'), strip: 'send', primary: say(locale, 'Record as submitted') });
+      await page.getByTestId('bank-guide-primary').click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog.getByTestId('bank-submit-dialog')).toBeVisible();
+      // The reference is required; nothing is sent without it.
+      await dialog.getByRole('button', { name: say(locale, 'Record as submitted') }).click();
+      await expect(dialog.getByRole('alert')).toContainText(say(locale, 'Enter the bank submission reference.'));
+      expect(posts.filter(p => p.endsWith('/wps-status'))).toHaveLength(0);
+      await dialog.getByLabel(say(locale, 'Bank submission reference')).fill('ANB-55821-0924');
+      await dialog.getByRole('button', { name: say(locale, 'Record as submitted') }).click();
+      await expect(dialog).toHaveCount(0);
+      await expectStage(page, { stage: 'response', chip: 'submitted', chipText: say(locale, 'Submitted — waiting for the bank ({answered} of {total})', { answered: 0, total: 9 }), strip: 'response', primary: say(locale, 'Record the bank’s response') });
+      expect(posts.filter(p => p.endsWith('/wps-status'))).toHaveLength(1);
+      await expect(page.getByTestId('bank-guide-confirmation')).toContainText('ANB-55821-0924');
+    });
+
+    test('a Saudi batch whose WPS says Generated but has no bank file is "No bank file yet" everywhere', async ({ page }) => {
+      const REGISTER_ONLY = { ...BATCH, status: 'Generated', wpsStatus: 'Generated', effectiveWpsStatus: 'Generated', wpsStatusLabel: 'Generated (file ready for the bank)', bankFileAvailable: true, bankFileGenerated: false };
+      await boot(page, { locale, url, routes: bankHandler({ batches: [REGISTER_ONLY] }), waitMs: 2500, stages: 'default' });
+      await expectStage(page, { stage: 'check', chip: 'no_file', chipText: say(locale, 'No bank file yet'), strip: 'check', primary: say(locale, 'Check employees') });
+      await expect(page.locator('main')).not.toContainText(locale === 'ar' ? 'تم إنشاء ملف البنك' : 'bank file generated');
+      await expect(page.locator('main')).not.toContainText(say(locale, 'Paid / Exported'));
+    });
+
+    test('several batches and none open: step 1 lists them; Open batch is off until one is chosen', async ({ page }) => {
+      await boot(page, { locale, url, routes: bankHandler({ batches: [BATCH, { ...BATCH, id: 'b2', batchNumber: 'PAY-202611-220354' }] }), waitMs: 2500, stages: 'default' });
+      await expectStage(page, { stage: 'batch', chip: 'no_file', chipText: say(locale, 'No bank file yet'), strip: 'batch', primary: say(locale, 'Open batch') });
+      await expect(page.getByTestId('bank-guide-primary')).toBeDisabled();
+      await expect(page.getByTestId('bank-guide-primary-reason')).toHaveText(say(locale, 'Choose the payment batch, then open it.'));
+      await page.getByRole('radio').first().check();
+      await page.getByTestId('bank-guide-primary').click();
+      await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'check', { timeout: 30_000 });
+    });
+
+    test('the run is not locked: step 1 is blocked and the primary is off, with the reason in the Next slot', async ({ page }) => {
+      await boot(page, { locale, url, routes: bankHandler({ batches: [], runStatus: 'Approved' }), waitMs: 2500, stages: 'default' });
+      await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'batch', { timeout: 90_000 });
+      await expect(page.getByTestId('bank-guide-primary')).toBeDisabled();
+      await expect(page.getByTestId('bank-guide-primary')).toHaveAttribute('aria-describedby', /.+/);
+      await expect(page.getByTestId('bank-guide-primary-reason')).toHaveText(say(locale, 'Lock the run first: a payment batch can only be created once the run is Locked.'));
+    });
+
+    test('the setup form, the template editor and the beneficiary editor are not in the page until opened', async ({ page }) => {
+      await boot(page, { locale, url, routes: bankHandler(), waitMs: 2500, stages: 'default' });
+      await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'check', { timeout: 90_000 });
+      await expect(page.locator('input[name="molEstablishmentId"]')).toHaveCount(0);
+      await expect(page.getByText(/Custom bank salary-file templates|قوالب ملفات الرواتب/)).toHaveCount(0);
+      await page.getByTestId('bank-more').click();
+      await page.getByRole('menuitem', { name: say(locale, 'Bank setup') }).click();
+      await expect(page.getByRole('dialog').locator('input[name="molEstablishmentId"]')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+      await expect(page.getByTestId('bank-more')).toBeFocused();
+    });
+
+    test('without any payment permission the tab says who can give it, and shows no flow', async ({ page }) => {
+      await boot(page, { locale, url, routes: bankHandler({ perms: ['dashboard.read', 'payroll.read', 'payroll.write', 'payroll.approve'] }), waitMs: 2500, stages: 'default' });
+      await expect(page.getByTestId('bank-restricted')).toContainText(say(locale, 'You can’t prepare bank files'), { timeout: 90_000 });
+      await expect(page.getByTestId('bank-guide')).toHaveCount(0);
     });
   });
 }
 
-// ── The walk-through: every step as a payroll officer who has never seen the screen meets it ──────────
+// ── The Payroll shell ───────────────────────────────────────────────────────────────────────────────
+
+for (const locale of LOCALES) {
+  test.describe(`the Payroll shell (${locale})`, () => {
+    test.use({ viewport: { width: 1440, height: 900 } });
+
+    test('the section nav keeps ?tab= links, marks the open section, and every section renders', async ({ page }) => {
+      const { errors } = await boot(page, { locale, url, routes: bankHandler(), waitMs: 2500, stages: 'default' });
+      const nav = page.getByTestId('payroll-section-nav');
+      await expect(nav.locator('[aria-current="page"]')).toHaveAttribute('id', 'payroll-tab-bank-wps', { timeout: 90_000 });
+      const links = nav.locator('a[id^="payroll-tab-"]');
+      const count = await links.count();
+      expect(count).toBeGreaterThanOrEqual(14);
+      for (let i = 0; i < count; i++) {
+        const link = links.nth(i);
+        const id = (await link.getAttribute('id'))!.replace('payroll-tab-', '');
+        await expect(link).toHaveAttribute('href', new RegExp(`tab=${id}.*run=${RUN_ID}|run=${RUN_ID}.*tab=${id}|^/payroll\\?run=${RUN_ID}$`));
+        const label = (await link.innerText()).trim();
+        await link.click();
+        await expect(page).toHaveURL(new RegExp(id === 'dashboard' ? `run=${RUN_ID}` : `tab=${id}`));
+        await expect(nav.locator('[aria-current="page"]')).toHaveAttribute('id', `payroll-tab-${id}`);
+        await expect(page.locator('h1')).toHaveText(label);
+        await expect(page.getByTestId('payroll-section-panel')).toBeVisible();
+      }
+      expect(errors).toEqual([]);
+    });
+
+    test('inside Payroll the app menu folds to icons; expanding it is remembered there, and other pages keep their own setting', async ({ page }) => {
+      await boot(page, { locale, url, routes: bankHandler(), waitMs: 2500, stages: 'default' });
+      const expand = page.getByRole('button', { name: 'Expand sidebar' });
+      await expect(expand).toBeVisible({ timeout: 90_000 });
+      await expand.click();
+      await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toBeVisible();
+      await page.reload();
+      await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toBeVisible({ timeout: 90_000 });
+      expect(await page.evaluate(() => localStorage.getItem('sidebar-collapsed'))).toBeNull();
+    });
+
+    test('from 1680px the facts become the Release summary rail beside the steps', async ({ page }) => {
+      await page.setViewportSize({ width: 1920, height: 1080 });
+      await boot(page, { locale, url, routes: bankHandler(), waitMs: 2500, stages: 'default' });
+      await expect(page.getByTestId('bank-release-summary')).toBeVisible({ timeout: 90_000 });
+      await expect(page.getByTestId('bank-file-facts')).toBeHidden();
+      await expect(page.getByTestId('bank-release-summary')).toContainText('PAY-202611-220353');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    });
+
+    test('a phone has no sideways scroll, the section switcher opens the list, and the primary is fixed at the bottom', async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await boot(page, { locale, url, routes: bankHandler({ settings: EMPTY_SETUP }), waitMs: 2500, stages: 'default' });
+      await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'setup', { timeout: 90_000 });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+      const bar = page.locator('[data-action-bar]');
+      expect(await bar.evaluate(el => getComputedStyle(el).position)).toBe('fixed');
+      await expect(page.getByTestId('bank-guide-primary')).toBeInViewport();
+      await page.getByTestId('payroll-section-toggle').click();
+      const sheet = page.getByRole('dialog', { name: say(locale, 'Payroll sections') });
+      await expect(sheet).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(sheet).toBeHidden();
+      await expect(page.getByTestId('payroll-section-toggle')).toBeFocused();
+    });
+  });
+}
+
+// ── The walk-through and the mockup-matching screenshots ───────────────────────────────────────────
 
 const SHOTS = process.env.BANK_GUIDED_SHOTS;
-for (const locale of LOCALES) {
-  for (const [form, viewport] of [['desktop', { width: 1366, height: 768 }], ['phone', { width: 390, height: 844 }]] as const) {
-    test.describe(`walk-through (${locale}, ${form})`, () => {
-      test.skip(!SHOTS, 'BANK_GUIDED_SHOTS is not set');
-      test.use({ viewport });
+const snap = async (page: Page, name: string) => {
+  fs.mkdirSync(SHOTS!, { recursive: true });
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: `${SHOTS}/${name}.png` });
+};
 
-      const snap = async (page: Page, name: string) => {
-        fs.mkdirSync(SHOTS!, { recursive: true });
-        await page.waitForTimeout(700);
-        await page.screenshot({ path: `${SHOTS}/${name}-${locale}-${form}.png` });
-        await page.screenshot({ path: `${SHOTS}/${name}-${locale}-${form}-full.png`, fullPage: true });
-      };
+test.describe('walk-through as a payroll officer (EN, 1440)', () => {
+  test.skip(!SHOTS, 'BANK_GUIDED_SHOTS is not set');
+  test.use({ viewport: { width: 1440, height: 900 } });
 
-      test('setup → choose → check → fix → create → download → submitted', async ({ page }) => {
-        let setup: Record<string, unknown> = EMPTY_SETUP;
-        let fixed = false;
-        let batches: unknown[] = [BATCH, { ...BATCH, id: 'b2', batchNumber: 'PAY-202611-220354' }];
-        let exported: unknown = null;
-        const extra: Handler = (path, _s, method, route) => {
-          if (path === `${bp}/companies/c1/settings` && method === 'PUT') { setup = JSON.parse(route.request().postData() ?? '{}'); return setup; }
-          if (path === `${bp}/companies/c1/settings`) return setup;
-          if (path === '/api/payroll/payment-batches') return batches;
-          if (path === `${bp}/batches/${BATCH_ID}/context`) return { companyId: 'c1', companyName: 'Acme Arabia', countryCode: 'SA', runStatus: 'Locked', existingExport: exported };
-          if (path === `${bp}/batches/${BATCH_ID}/validate` && method === 'POST') {
-            return fixed ? { canExport: true, errors: [], warnings: [], employeeCount: 9, totalAmount: 133588.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' }
-              : { canExport: false, errors: [{ code: 'bic_missing', message: 'BIC is missing for this employee.', employeeId: 203 }], warnings: [], employeeCount: 9, totalAmount: 133588.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' };
-          }
-          if (path === `${bp}/batches/${BATCH_ID}/generate` && method === 'POST') { exported = FILE; return FILE; }
-          if (path === `${bp}/batches/${BATCH_ID}/download`) { void route.fulfill({ status: 200, headers: { 'content-type': 'application/zip', 'content-disposition': 'attachment; filename="bank-file.zip"' }, body: 'PK' }); return HANDLED; }
-          if (path === '/api/employees/203' && method === 'GET') return { id: 203, employeeCode: 'EVT2-0004', fullName: 'Nora Alharbi', wpsBankDetails: '' };
-          if (path === '/api/employees/203' && method === 'PUT') { fixed = true; return { id: 203 }; }
-          return undefined;
-        };
-        await boot(page, { locale, url, routes: bankHandler({ extra }), waitMs: 2500 });
+  test('choose batch → setup → check (blocker → Fix → check again) → date → create → download → record submitted → waiting', async ({ page }) => {
+    let setup: Record<string, unknown> = EMPTY_SETUP;
+    let fixed = false;
+    let exported: unknown = null;
+    let submitted = false;
+    const B1 = { ...BATCH, paymentExclusions: [{ employeeId: 300, employeeCode: 'EVT2-0010', amount: 4150, reasonCode: 'paid_outside_bank_file', reason: 'Paid by cash' }], excludedTotal: 4150, totalAmount: 129438.9 };
+    const extra: Handler = (path, _s, method, route) => {
+      if (path === `${bp}/companies/c1/settings` && method === 'PUT') { setup = JSON.parse(route.request().postData() ?? '{}'); return setup; }
+      if (path === `${bp}/companies/c1/settings`) return setup;
+      if (path === '/api/payroll/payment-batches' && method === 'GET') {
+        const b1 = submitted ? { ...B1, ...SUBMITTED, totalAmount: 129438.9, paymentExclusions: B1.paymentExclusions, excludedTotal: 4150 } : exported ? { ...B1, ...GENERATED, totalAmount: 129438.9, paymentExclusions: B1.paymentExclusions, excludedTotal: 4150 } : B1;
+        return [b1, { ...BATCH, id: 'b2', batchNumber: 'PAY-202611-220354', paymentMethod: 'BankTransfer' }];
+      }
+      if (path === `${bp}/batches/${BATCH_ID}/context`) return { companyId: 'c1', companyName: 'Acme Arabia', countryCode: 'SA', runStatus: 'Locked', existingExport: exported };
+      if (path === `${bp}/batches/${BATCH_ID}/validate` && method === 'POST') {
+        return fixed ? { canExport: true, errors: [], warnings: [], employeeCount: 9, totalAmount: 129438.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' }
+          : { ...BLOCKER, warnings: [], employeeCount: 9, totalAmount: 129438.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' };
+      }
+      if (path === `${bp}/batches/${BATCH_ID}/generate` && method === 'POST') { const body = JSON.parse(route.request().postData() ?? '{}'); exported = { ...FILE, ...body, totalAmount: 129438.9 }; return exported; }
+      if (path === `/api/payroll/payment-batches/${BATCH_ID}/wps-status` && method === 'POST') { submitted = true; return { batchId: BATCH_ID, wpsStatus: 'Submitted' }; }
+      if (path === '/api/employees/203' && method === 'GET') return { id: 203, employeeCode: 'EVT2-0004', fullName: 'Nora Alharbi', wpsBankDetails: '' };
+      if (path === '/api/employees/203' && method === 'PUT') { fixed = true; return { id: 203 }; }
+      return undefined;
+    };
+    await boot(page, { locale: 'en', url, routes: bankHandler({ extra }), waitMs: 2500, stages: 'default' });
 
-        // 0. two batches and none chosen
-        await expectStage(page, locale, { stage: 'batch', position: 1, name: 'Choose the payment batch', primary: null, chip: 'waiting' });
-        await snap(page, '00-choose-batch');
-        await page.getByRole('button', { name: /PAY-202611-220353/ }).click();
+    await expectStage(page, { stage: 'batch', chip: 'no_file', chipText: 'No bank file yet', strip: 'batch', primary: 'Open batch' });
+    await snap(page, 'walk-01-choose-batch');
+    await page.getByRole('radio').first().check();
+    await page.getByTestId('bank-guide-primary').click();
 
-        // 1. setup incomplete
-        await expectStage(page, locale, { stage: 'setup', primary: W[locale].saveSetup, chip: 'setup' });
-        await snap(page, '01-setup-incomplete');
-        const inline = step(page, 'setup');
-        await inline.locator('input[name="molEstablishmentId"]').fill('7-1234567');
-        await inline.locator('input[name="mainAccountNumber"]').fill('0108061198800026');
-        await inline.locator('input[name="organizationName"]').fill('Acme Arabia');
-        await inline.locator('input[name="companyName"]').fill('Acme Arabia LLC');
-        await inline.locator('input[name="organizationAddress1"]').fill('Riyadh');
-        await inline.locator('input[name="organizationAddress2"]').fill('Olaya');
-        await inline.locator('input[name="organizationAddress3"]').fill('Building 10');
-        await inline.locator('input[name="narrative"]').fill('November payroll');
-        await inline.locator('select').filter({ has: page.locator('option[value="PAYROLL"]') }).selectOption('PAYROLL');
-        await guide(page).primary.click();
+    await expectStage(page, { stage: 'setup', chip: 'setup', chipText: 'Bank setup needed', strip: 'setup', primary: 'Complete bank setup' });
+    await snap(page, 'walk-02-setup-gate');
+    await page.getByTestId('bank-guide-primary').click();
+    const drawer = page.getByRole('dialog');
+    for (const [name, value] of [['molEstablishmentId', '7-1234567'], ['mainAccountNumber', '0108061198800026'], ['organizationName', 'Acme Arabia'], ['companyName', 'Acme Arabia LLC'], ['organizationAddress1', 'Riyadh'], ['organizationAddress2', 'Olaya'], ['organizationAddress3', 'Building 10'], ['narrative', 'November payroll']]) {
+      await drawer.locator(`input[name="${name}"]`).fill(value);
+    }
+    await drawer.locator('select').filter({ has: page.locator('option[value="PAYROLL"]') }).selectOption('PAYROLL');
+    await snap(page, 'walk-03-setup-drawer');
+    await drawer.locator('form button[type="submit"]').click();
 
-        // 2. check (the setup's hand-over)
-        await expectStage(page, locale, { stage: 'check', position: 2, name: 'Check the batch', primary: W[locale].validate, chip: 'waiting' });
-        await expect(page.getByTestId('bank-guide-confirmation')).toContainText(say(locale, 'Bank setup saved.'));
-        await snap(page, '02-step2-check-after-setup');
-        await pickDate(page, locale);
-        await snap(page, '03-step2-check-date-chosen');
-        await guide(page).primary.click();
+    await expectStage(page, { stage: 'check', chip: 'no_file', chipText: 'No bank file yet', strip: 'check', primary: 'Check employees' });
+    await expect(page.getByTestId('bank-guide-confirmation')).toContainText('Bank setup saved.');
+    await snap(page, 'walk-04-check');
+    await page.getByTestId('bank-guide-primary').click();
 
-        // 3. a blocker, and its Fix
-        await expectStage(page, locale, { stage: 'check', position: 2, name: 'Check the batch', primary: W[locale].validate, chip: 'attention', state: 'blocked' });
-        await snap(page, '04-step2-blocked');
-        await page.getByTestId('bank-blocker-fix').click();
-        const drawer = page.getByRole('dialog');
-        await expect(drawer.getByLabel(W[locale].employee)).toHaveValue('203', { timeout: 15_000 });
-        await snap(page, '05-fix-drawer');
-        await drawer.locator('input[dir="ltr"]').nth(0).fill('ARNBSARI');
-        await drawer.locator('input[dir="ltr"]').nth(1).fill('Riyadh');
-        await drawer.locator('input[dir="ltr"]').nth(2).fill('Olaya');
-        await drawer.locator('input[dir="ltr"]').nth(3).fill('Building 10');
-        await drawer.locator('form button[type="submit"]').click();
-        await expect(drawer.locator('form button[type="submit"]')).toBeDisabled({ timeout: 15_000 });
-        await page.keyboard.press('Escape');
-        await guide(page).primary.click();
+    await expectStage(page, { stage: 'check', chip: 'attention', chipText: 'Needs a fix', strip: 'check', primary: 'Check again' });
+    await snap(page, 'walk-05-check-blocked');
+    await page.getByTestId('bank-blocker-fix').click();
+    await expect(drawer.getByLabel('Employee (from this batch)')).toHaveValue('203', { timeout: 15_000 });
+    await drawer.locator('input[dir="ltr"]').nth(0).fill('ARNBSARI');
+    await drawer.locator('input[dir="ltr"]').nth(1).fill('Riyadh');
+    await drawer.locator('input[dir="ltr"]').nth(2).fill('Olaya');
+    await drawer.locator('input[dir="ltr"]').nth(3).fill('Building 10');
+    await snap(page, 'walk-06-fix-drawer');
+    await drawer.locator('form button[type="submit"]').click();
+    await expect(drawer.locator('form button[type="submit"]')).toBeDisabled({ timeout: 15_000 });
+    await page.keyboard.press('Escape');
+    await page.getByTestId('bank-guide-primary').click();
 
-        // 4. create (the check's hand-over): the screenshot (c)
-        await expectStage(page, locale, { stage: 'create', position: 3, name: 'Create the bank file', primary: W[locale].generate, chip: 'waiting' });
-        await expect(page.getByTestId('bank-guide-confirmation')).toContainText(say(locale, 'Batch checked — no blockers.'));
-        await snap(page, '06-handover-step3-create');
-        await guide(page).primary.click();
+    await expectStage(page, { stage: 'create', chip: 'no_file', chipText: 'No bank file yet', strip: 'create', primary: 'Create bank file' });
+    await snap(page, 'walk-07-file-details');
+    await page.getByTestId('bank-value-date').locator('input').click();
+    await snap(page, 'walk-08-date-picker');
+    await page.keyboard.press('Escape');
+    await page.getByTestId('bank-guide-primary').click();
 
-        // 5. download (the file's hand-over)
-        await expectStage(page, locale, { stage: 'download', position: 4, name: 'Download and mark submitted', primary: W[locale].download, chip: 'ready' });
-        await snap(page, '07-step4-download');
-        const download = page.waitForEvent('download');
-        await guide(page).primary.click();
-        await download;
+    await expectStage(page, { stage: 'send', chip: 'created', chipText: 'File created — not sent', strip: 'send', primary: 'Download bank file' });
+    await snap(page, 'walk-09-send');
+    const download = page.waitForEvent('download');
+    await page.getByTestId('bank-guide-primary').click();
+    await download;
+    await expectStage(page, { stage: 'send', chip: 'downloaded', chipText: 'Downloaded — not yet submitted', strip: 'send', primary: 'Record as submitted' });
+    await snap(page, 'walk-10-downloaded');
+    await page.getByTestId('bank-guide-primary').click();
+    await page.getByRole('dialog').getByLabel('Bank submission reference').fill('ANB-55821-0924');
+    await snap(page, 'walk-11-record-submitted');
+    await page.getByRole('dialog').getByRole('button', { name: 'Record as submitted' }).click();
 
-        // 6. submitted: the end state (d)
-        batches = [{ ...SUBMITTED, bankFileAvailable: true, bankFileGenerated: true, unconfirmedPayments: { count: 3, total: 3000 }, confirmationCoverage: 0.4 }];
-        await page.reload();
-        await expectStage(page, locale, { stage: 'finished', primary: W[locale].tracking, chip: 'submitted' });
-        await snap(page, '08-end-submitted');
+    await expectStage(page, { stage: 'response', chip: 'submitted', chipText: 'Submitted — waiting for the bank (0 of 9)', strip: 'response', primary: 'Record the bank’s response' });
+    await snap(page, 'walk-12-waiting');
+  });
+});
+
+test.describe('mockup-matching screenshots', () => {
+  test.skip(!SHOTS, 'BANK_GUIDED_SHOTS is not set');
+  const B1 = { ...BATCH, paymentExclusions: [{ employeeId: 300, employeeCode: 'EVT2-0010', amount: 4150, reasonCode: 'paid_outside_bank_file', reason: 'Paid by cash' }], excludedTotal: 4150, totalAmount: 129438.9 };
+  // The check answers for the same batch (its total is the batch's, after the one left out).
+  const sameTotal: Handler = (path, _s, method) => (path === `${bp}/batches/${BATCH_ID}/validate` && method === 'POST'
+    ? { canExport: true, errors: [], warnings: [], employeeCount: 9, totalAmount: 129438.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' } : undefined);
+
+  test('1: desktop EN, step 2', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [B1] }), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'check', { timeout: 90_000 });
+    await snap(page, 'mockup-1-step2-en-1440');
+  });
+  test('2: desktop AR, step 3 with the date picker', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await boot(page, { locale: 'ar', url, routes: bankHandler({ batches: [B1], extra: sameTotal }), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-guide-primary')).toBeEnabled({ timeout: 90_000 });
+    await page.getByTestId('bank-guide-primary').click();
+    await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'create');
+    await page.getByTestId('bank-value-date').locator('input').click();
+    await snap(page, 'mockup-2-step3-datepicker-ar-1440');
+  });
+  test('3: phone, setup gate', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [B1], settings: EMPTY_SETUP }), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'setup', { timeout: 90_000 });
+    await snap(page, 'mockup-3-setup-gate-en-390');
+  });
+  test('4: end state, waiting for the bank', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [{ ...B1, ...SUBMITTED, totalAmount: 129438.9, paymentExclusions: B1.paymentExclusions, excludedTotal: 4150 }], existingExport: FILE, records: withStatus(6, 1) }), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'response', { timeout: 90_000 });
+    await snap(page, 'mockup-4-waiting-en-1440');
+  });
+  for (const tab of ['runs', 'validation', 'approvals']) {
+    for (const [locale, w, h] of [['en', 1440, 900], ['ar', 1440, 900], ['en', 390, 844]] as const) {
+      test(`shell: ${tab} (${locale} ${w})`, async ({ page }) => {
+        await page.setViewportSize({ width: w, height: h });
+        await boot(page, { locale, url: `/payroll?tab=${tab}&run=${RUN_ID}`, routes: bankHandler({ batches: [B1] }), waitMs: 4000, stages: 'default' });
+        await expect(page.getByTestId('payroll-section-panel')).toBeVisible({ timeout: 90_000 });
+        await snap(page, `shell-${tab}-${locale}-${w}`);
       });
-    });
+    }
   }
-}
+});
+
+void HANDLED;

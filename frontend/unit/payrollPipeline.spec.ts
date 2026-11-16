@@ -163,21 +163,23 @@ test.describe('payroll pipeline stages', () => {
     expect(errors.next).toMatchObject({ kind: 'goto', tab: 'validation' });
   });
 
-  test('a Locked run waits for the bank file; a generated file completes the last stage with its batch', () => {
+  test('a Locked run waits for its pay out: no batch, then a batch with no file, then a file that is not yet with the bank (never "done" on the file alone)', () => {
     const locked = derivePipeline(base({ status: 'Locked' }));
     expect(locked.focus).toBe('paid');
-    expect(locked.nextReason).toEqual({ id: 'no_batch' });
+    expect(locked.nextReason).toEqual({ id: 'pay_out' });
+    expect(locked.payOut?.status).toBe('no_batch');
     expect(state(locked, 'locked')).toBe('done');
     expect(locked.stages.find(s => s.key === 'locked')!.whenUtc).toBe('2026-10-04T08:00:00Z');
 
     const draftBatch = [{ id: 'b', payrollRunId: 'r', batchNumber: 'B-1', wpsStatus: 'Draft', createdAtUtc: '2026-10-05T00:00:00Z' }] as PayrollPaymentBatch[];
-    expect(derivePipeline(base({ status: 'Locked', batches: draftBatch })).nextReason).toEqual({ id: 'batch_not_exported' });
+    expect(derivePipeline(base({ status: 'Locked', batches: draftBatch })).payOut?.status).toBe('no_file');
 
     const sent = [{ ...draftBatch[0], wpsStatus: 'Generated', wpsStatusLabel: 'File generated', wpsStatusChangedAtUtc: '2026-10-06T00:00:00Z' }] as PayrollPaymentBatch[];
-    const done = derivePipeline(base({ status: 'Locked', batches: sent }));
-    expect(state(done, 'paid')).toBe('done');
-    expect(done.stages.find(s => s.key === 'paid')!.detail).toEqual({ id: 'batch', label: 'File generated', number: 'B-1' });
-    expect(done.focus).toBe('paid');
+    const made = derivePipeline(base({ status: 'Locked', batches: sent }));
+    expect(state(made, 'paid')).toBe('current');
+    expect(made.payOut?.status).toBe('created');
+    expect(made.stages.find(s => s.key === 'paid')!.detail).toEqual({ id: 'batch', label: 'File generated', number: 'B-1' });
+    expect(made.focus).toBe('paid');
   });
 
   test('a Voided run and an unknown status highlight nothing and invent no stage', () => {

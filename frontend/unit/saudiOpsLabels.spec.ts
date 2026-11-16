@@ -63,8 +63,8 @@ test('the Saudi bank file is a payroll payment instruction file in a bank format
   expect(panel).not.toContain("title: 'Bank instruction file");
   expect(panel).toContain("title: 'ملف تعليمات دفع الرواتب (بصيغة البنك) — ANB Connect CSV'");
 
-  const payroll = read('src/views/PayrollPage.tsx');
-  const note = literals(payroll).find(s => s.startsWith('Saudi bank payroll file:'));
+  // The note now lives in the Bank / WPS flow's "About this file" dialog.
+  const note = literals(panel).find(s => s.startsWith('Saudi bank payroll file:'));
   expect(note).toBeTruthy();
   expect(note).toContain('Payroll payment instruction file (bank format)');
   expect(note).not.toMatch(/switched on for this company/);
