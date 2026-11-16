@@ -188,4 +188,39 @@ public class PayLeaveCancelRefundTests
         (await Reversals(db, leave.Id)).Should().ContainSingle().Which.Amount.Should().Be(-aprTaken,
             "March's take was handed back by the void; only April's take is still collected");
     }
+
+    /// <summary>PR review: arrears collected in March, the leave cancelled (refund staged), then March voided before the
+    /// refund is paid: the refund goes with the collection, so the replacement run refunds nothing.</summary>
+    [Fact]
+    public async Task VoidingTheRunThatCollected_BeforeTheRefundIsPaid_WithdrawsTheRefund()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        var e = await AddEmployee(db, co, "Active");
+        await AddRun(db, co, 2026, 1, status: "Paid");
+        await AddRun(db, co, 2026, 2, status: "Paid");
+        var leave = await AddUnpaidLeave(db, co, e.Id, new DateOnly(2026, 1, 25), new DateOnly(2026, 1, 31),
+            ("2026-01", 5m, 1_000m, new DateOnly(2026, 1, 25), new DateOnly(2026, 1, 31), "Pending"));
+        var mar = await AddRun(db, co, 2026, 3);
+        await Process(db, co, mar.Id);
+        (await Deductions(db, mar.Id, e.Id)).Where(d => d.ComponentCode == LeaveArrears.ArrearsCode).Sum(d => d.Amount).Should().Be(1_000m);
+        // The cancellation (LeaveService.CancelRequestCoreAsync): status, pending rows gone, refund staged.
+        (await db.LeaveRequests.FirstAsync(r => r.Id == leave.Id)).Status = "Cancelled";
+        await db.SaveChangesAsync();
+        await db.LeavePayrollImpacts.Where(i => i.LeaveRequestId == leave.Id && i.Status != "Processed").ExecuteDeleteAsync();
+        await LeaveArrears.StageReversalsAsync(db, co.TenantId, leave.Id, CancellationToken.None);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        (await Reversals(db, leave.Id)).Should().ContainSingle().Which.Amount.Should().Be(-1_000m);
+
+        (await new PayrollVoidService(db).VoidAsync(mar.Id, co.TenantId, null, "System", "test void", CancellationToken.None)).IsVoided.Should().BeTrue();
+        db.ChangeTracker.Clear();
+        var replacement = await AddRun(db, co, 2026, 3);
+        await Process(db, co, replacement.Id);
+
+        (await Reversals(db, leave.Id)).Where(r => r.Status == "Pending").Should().BeEmpty("nothing is collected any more, so nothing is owed back");
+        (await ReversalLines(db, replacement.Id, e.Id)).Should().BeEmpty();
+        (await Deductions(db, replacement.Id, e.Id)).Where(d => d.ComponentCode == LeaveArrears.ArrearsCode).Should().BeEmpty();
+    }
 }

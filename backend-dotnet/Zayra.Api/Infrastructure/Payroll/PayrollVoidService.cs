@@ -1232,11 +1232,31 @@ public sealed class PayrollVoidService
         {
             var rows = await _db.LeavePayrollImpacts.Where(x => x.TenantId == tenantId && leaveIds.Contains(x.Id))
                 .ToListAsync(ct);
+            // What this run collected and now hands back, per leave and month: a refund staged for those months (the leave was
+            // cancelled after this run collected) shrinks by it, so a refund never exceeds what is still collected. A leave no
+            // longer approved is not owed again either, so its handed-back deduction is not put back as pending.
+            var uncollected = new Dictionary<(Guid RequestId, string Period), decimal>();
+            var leaveRequestIds = rows.Select(x => x.LeaveRequestId).Distinct().ToList();
+            var takenStatuses = Zayra.Api.Application.Leave.LeaveTakenStatuses.All.ToList();
+            var noLongerApproved = (await _db.LeaveRequests.AsNoTracking()
+                    .Where(r => r.TenantId == tenantId && leaveRequestIds.Contains(r.Id) && !takenStatuses.Contains(r.Status))
+                    .Select(r => r.Id).ToListAsync(ct)).ToHashSet();
             foreach (var w in witnesses.Where(w => w.ArtifactType == PayrollConsumptionArtifacts.LeaveImpact))
             {
                 var row = rows.FirstOrDefault(x => x.Id == w.ArtifactId);
                 if (row is null) continue;
-                if (keepConsumed.Contains((row.LeaveRequestId, row.PayPeriod, row.EmployeeId)) && !LeaveArrears.IsReversal(row))
+                var handedBack = !LeaveArrears.IsReversal(row);
+                if (handedBack)
+                    uncollected[(row.LeaveRequestId, row.PayPeriod)] = uncollected.GetValueOrDefault((row.LeaveRequestId, row.PayPeriod)) + w.Amount;
+                if (handedBack && noLongerApproved.Contains(row.LeaveRequestId))
+                {
+                    // Not owed any more: a kept row stays consumed (no remainder is put back); a restored row is removed, exactly
+                    // as cancelling the leave removed its pending rows.
+                    if (!keepConsumed.Contains((row.LeaveRequestId, row.PayPeriod, row.EmployeeId))) _db.LeavePayrollImpacts.Remove(row);
+                    result.ImpactsReleased++;
+                    continue;
+                }
+                if (keepConsumed.Contains((row.LeaveRequestId, row.PayPeriod, row.EmployeeId)) && handedBack)
                 {
                     _db.LeavePayrollImpacts.Add(new LeavePayrollImpact
                     {
@@ -1250,6 +1270,22 @@ public sealed class PayrollVoidService
                 row.Status = w.PriorStatus ?? "Pending";
                 row.ProcessedAtUtc = null;
                 result.ImpactsReleased++;
+            }
+            if (uncollected.Count > 0)
+            {
+                var refunds = await _db.LeavePayrollImpacts
+                    .Where(x => x.TenantId == tenantId && leaveRequestIds.Contains(x.LeaveRequestId)
+                             && x.ImpactType == LeaveArrears.ReversalImpactType && x.Status == "Pending")
+                    .ToListAsync(ct);
+                foreach (var refund in refunds)
+                {
+                    var key = (refund.LeaveRequestId, refund.PayPeriod);
+                    if (!uncollected.TryGetValue(key, out var back) || back <= 0m) continue;
+                    var reduceBy = Math.Min(back, -refund.Amount);
+                    uncollected[key] = back - reduceBy;
+                    refund.Amount = Math.Round(refund.Amount + reduceBy, 2);
+                    if (refund.Amount >= 0m) _db.LeavePayrollImpacts.Remove(refund);
+                }
             }
         }
 
