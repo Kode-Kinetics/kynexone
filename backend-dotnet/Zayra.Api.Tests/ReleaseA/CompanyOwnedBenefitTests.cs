@@ -322,7 +322,7 @@ public class CompanyOwnedBenefitTests
     }
 
     [Fact]
-    public async Task WideningACashAllowance_IsToEveryCompany_ChecksItsGlDriverForEachOne_AndSendsItBackToFinanceUnlessFinanceWidensIt()
+    public async Task WideningACashAllowance_IsToEveryCompany_ChecksItsGlDriverForEachOne_AndSendsItBackToFinance_WhoeverWidensIt()
     {
         await using var h = await Bd.Create();
         var car = Component(await AlphaAdmin(h).AddBenefit(h.Service, OwnCash(h.Alpha.Id, "Car"), default));

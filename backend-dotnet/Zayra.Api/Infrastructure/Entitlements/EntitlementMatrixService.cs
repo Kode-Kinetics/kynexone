@@ -846,12 +846,18 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             {
                 var shown = CashAllowanceDefinitions.Current(g, today) ?? g.First();
                 return new CustomBenefit(shown.Code, shown.NameEn, shown.NameAr,
-                    EntitlementComponentRules.IsAllowance(shown.Code) ? InfoOf(shown) : null, shown, g.ToList());
+                    EntitlementComponentRules.IsAllowance(shown.Code) ? InfoOf(shown, g.ToList()) : null, shown, g.ToList());
             }).ToList();
     }
 
     private static CashAllowanceInfoDto InfoOf(PayComponent row) =>
         new(row.FinanceConfirmedAtUtc is null, row.FinanceConfirmedAtUtc, row.GlDriverKey, row.EosbIncluded, row.EosbExclusionCategory, row.EosbExclusionReason, row.EffectiveFrom);
+
+    /// <summary>The cash state a screen shows for an allowance with <paramref name="versions"/>: the version in force (<paramref name="shown"/>), unless a version is
+    /// waiting for Finance (a correction from a later month, sent back to pending) — then that one, with its own terms and start, so Finance finds it, sees
+    /// what it is confirming, and no grade value is taken while it waits.</summary>
+    private static CashAllowanceInfoDto InfoOf(PayComponent shown, IReadOnlyCollection<PayComponent> versions) =>
+        InfoOf(versions.Where(v => !v.IsDeleted && v.FinanceConfirmedAtUtc is null).OrderByDescending(v => v.EffectiveFrom ?? DateOnly.MinValue).FirstOrDefault() ?? shown);
 
     /// <summary>Whether the caller may know of a benefit owned by <paramref name="owner"/>: every group benefit (each company's grid lists it); a company's
     /// own only with access to that company. Anything else is answered as a benefit that does not exist.</summary>
@@ -1070,16 +1076,12 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             row.StatutoryFloor = PayStatutoryFloors.None; row.IsOffered = true;
             row.EffectiveTo = null;
             row.DisplayOrder = 9100; row.UpdatedAtUtc = DateTime.UtcNow; row.UpdatedBy = actor.UserId;
-            // A cash allowance is money: Finance confirms it before it is used. Someone who already holds the Finance permission confirms a GROUP allowance by
-            // adding it (nobody else is needed); anyone else leaves it "pending Finance", and the person who added it can never confirm it (maker is not checker).
-            // A company's own allowance is never confirmed by the person who adds it: a company admin is often its only HR and Finance at once.
+            // A cash allowance is money: Finance confirms it before it is used, and never the person who added it (maker is not checker) — whatever
+            // permissions they hold, for the group or for one company (owner rule: no exemption, a company admin is often its only HR and Finance at once).
+            // It is "pending Finance" until another Finance user confirms it.
             row.EosbExclusionCategory = eosbCategory;
             row.FinanceConfirmedAtUtc = null; row.FinanceConfirmedByUserId = null;
-            if (cash)
-            {
-                row.CreatedBy = actor.UserId;   // the maker of THIS definition (a removed one coming back is a new proposal)
-                if (owner is null && actor.IsFinance && actor.UserId is not null) { row.FinanceConfirmedAtUtc = DateTime.UtcNow; row.FinanceConfirmedByUserId = actor.UserId; }
-            }
+            if (cash) row.CreatedBy = actor.UserId;   // the maker of THIS definition (a removed one coming back is a new proposal)
             if (d is not null)
             {
                 row.BenefitCategory = d.Category; row.PolicyClass = d.PolicyClass; row.RequiresEnrolment = false; row.SourceBenefitPlanId = null;
@@ -1119,6 +1121,8 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
                     glDriverKey = driver, eosbIncluded = row.EosbIncluded, eosbExclusionCategory = eosbCategory, eosbExclusionReason = eosbReason,
                     financeConfirmed = cash && row.FinanceConfirmedAtUtc is not null, warnings = warnings.Select(w => w.Code).ToArray(),
                 }));
+                // G-011: everyone who could confirm it is told, in the same save (read before the last look below, so nothing awaits after it).
+                var toTell = cash ? await FinanceRecipientsAsync(tid, MakerOnly(actor), row.CompanyId, ct) : [];
                 // The last look at the committed payroll periods, right before the save: an approval that landed since the first check is caught.
                 if (BeforeDefinitionSaveHook is { } beforeSave) await beforeSave();
                 if (await WindowChangeLockProblemAsync(tid, new Window(false, null, null), new Window(d.IsActive, d.From, d.To), openPastCounts: cash, ct, owner) is { } lateLock)
@@ -1126,6 +1130,7 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
                     db.ChangeTracker.Clear();
                     return lateLock;
                 }
+                AddFinanceWaitingNotices(tid, toTell, row, changed: false);
                 await db.SaveChangesAsync(ct);
                 return Ok(await ComponentDtoAsync(tid, code, warnings, ct) ?? ToDto(EntitlementComponentRules.CustomRuleFor(code, row.NameEn, row.NameAr), owner: owner));
             }
@@ -1139,7 +1144,7 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
                 : (object)new { componentCode = code, nameEn, nameAr = row.NameAr, ownerCompanyId = owner }));
             // G-011: an allowance that waits for Finance used to wait in silence (no queue, no notice) and payroll then refused on pay day.
             // Everyone who could confirm it is told, in the same save as the allowance, so there is never an allowance waiting that nobody was told about.
-            if (cash && row.FinanceConfirmedAtUtc is null) await NotifyFinanceWaitingAsync(tid, actor.UserId, row, ct);
+            if (cash) AddFinanceWaitingNotices(tid, await FinanceRecipientsAsync(tid, MakerOnly(actor), row.CompanyId, ct), row, changed: false);
             await db.SaveChangesAsync(ct);
             return Ok(ToDto(EntitlementComponentRules.CustomRuleFor(code, row.NameEn, row.NameAr), cash ? InfoOf(row) : null, cash ? warnings : null, owner: owner));
         }, ct);
@@ -1150,18 +1155,30 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
     public const string FinanceWaitingNotificationEntity = "CashAllowance";
 
     /// <summary>
-    /// Tells every login that could confirm <paramref name="row"/> (<see cref="CashAllowanceFinanceRecipients"/>: the confirm endpoint's own rule, never the
-    /// person who added it) that an allowance is waiting. English and Arabic in one message. Does not save.
+    /// Every login that could confirm an allowance owned by <paramref name="ownerCompanyId"/> (<see cref="CashAllowanceFinanceRecipients"/>: the confirm
+    /// endpoint's own rule), except <paramref name="cannotConfirm"/> — whoever added it or changed it since Finance last confirmed it. A company's own allowance:
+    /// only Finance who can reach that company (a sister company's Finance never learns it exists). Reads only.
     /// </summary>
-    private async Task NotifyFinanceWaitingAsync(Guid tid, Guid? makerUserId, PayComponent row, CancellationToken ct)
+    private async Task<IReadOnlyList<Guid>> FinanceRecipientsAsync(Guid tid, IReadOnlyCollection<Guid> cannotConfirm, Guid? ownerCompanyId, CancellationToken ct) =>
+        await CashAllowanceFinanceRecipients.ResolveAsync(db, tid, null, ct, ownerCompanyId, cannotConfirm);
+
+    private static IReadOnlyCollection<Guid> MakerOnly(MatrixActor actor) => actor.UserId is Guid user ? [user] : [];
+
+    /// <summary>
+    /// Tells <paramref name="recipients"/> that <paramref name="row"/> is waiting for Finance: just added, or (<paramref name="changed"/>) sent back to pending
+    /// by an edit, a correction or a widening. English and Arabic in one message. Does not save.
+    /// </summary>
+    private void AddFinanceWaitingNotices(Guid tid, IReadOnlyList<Guid> recipients, PayComponent row, bool changed)
     {
-        // A company's own allowance: only Finance who can reach that company is told (a sister company's Finance never learns it exists).
-        var recipients = await CashAllowanceFinanceRecipients.ResolveAsync(db, tid, makerUserId, ct, row.CompanyId);
         if (recipients.Count == 0) return;
-        var message = $"{row.NameEn} was added as a monthly cash allowance and cannot be used until Finance confirms it. "
+        var message = (changed
+                ? $"{row.NameEn}, a monthly cash allowance, was changed and needs Finance to confirm it again before payroll can use it. "
+                : $"{row.NameEn} was added as a monthly cash allowance and cannot be used until Finance confirms it. ")
             + "Open Benefits by grade, check the GL account and the end-of-service setting, and confirm it. "
             + "Payroll cannot be processed for anyone who has it on their salary until then."
-            + $"\nأُضيف البدل النقدي الشهري «{row.NameAr}» ولا يمكن استخدامه قبل أن تؤكده المالية. "
+            + (changed
+                ? $"\nتم تغيير البدل النقدي الشهري «{row.NameAr}» ويجب أن تؤكده المالية مرة أخرى قبل أن تستخدمه الرواتب. "
+                : $"\nأُضيف البدل النقدي الشهري «{row.NameAr}» ولا يمكن استخدامه قبل أن تؤكده المالية. ")
             + "افتح «المزايا حسب الدرجة» وراجع حساب الأستاذ العام وإعداد نهاية الخدمة ثم أكّده. "
             + "لا يمكن معالجة الرواتب لأي موظف لديه هذا البدل في راتبه قبل ذلك.";
         db.Notifications.AddRange(recipients.Select(userId => new Notification
@@ -1172,6 +1189,43 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
     }
 
     private static MatrixResult Forbidden(string error, string message) => new(StatusCodes.Status403Forbidden, new { error, message });
+
+    private static MatrixResult Forbidden(string error, string message, string messageAr) => new(StatusCodes.Status403Forbidden, new { error, message, messageAr });
+
+    /// <summary>
+    /// Who may not confirm a cash allowance now, read from its rows and its audit trail (so makership can never be handed on by someone else editing it):
+    /// <c>Makers</c> — whoever added it (every add on its history) and the current maker of each version; <c>Changers</c> — everyone who edited, corrected or
+    /// widened it since Finance last confirmed it (or ever, if never confirmed). Owner rule: nobody confirms what they made or changed.
+    /// </summary>
+    private async Task<(HashSet<Guid> Makers, HashSet<Guid> Changers)> WhoCannotConfirmAsync(Guid tid, IReadOnlyCollection<PayComponent> versions, CancellationToken ct)
+    {
+        var makers = versions.Where(v => v.CreatedBy is not null).Select(v => v.CreatedBy!.Value).ToHashSet();
+        var changers = new HashSet<Guid>();
+        var ids = versions.Select(v => v.Id.ToString()).ToList();
+        var history = await db.AuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == tid && a.EntityId != null && ids.Contains(a.EntityId)
+                && (a.Action == AuditBenefitAdded || a.Action == AuditBenefitUpdated || a.Action == AuditBenefitCorrected || a.Action == AuditBenefitConfirmed))
+            .Select(a => new { a.Action, a.UserId, a.CreatedAtUtc }).ToListAsync(ct);
+        var lastConfirmed = history.Where(a => a.Action == AuditBenefitConfirmed).Select(a => (DateTime?)a.CreatedAtUtc).Max();
+        foreach (var row in history)
+        {
+            if (row.UserId is not Guid user) continue;
+            if (row.Action == AuditBenefitAdded) makers.Add(user);
+            // ">=": a change written in the same instant as a confirmation is never read as confirmed (fails closed).
+            else if (row.Action != AuditBenefitConfirmed && (lastConfirmed is null || row.CreatedAtUtc >= lastConfirmed)) changers.Add(user);
+        }
+        changers.ExceptWith(makers);
+        return (makers, changers);
+    }
+
+    /// <summary>Everyone <see cref="WhoCannotConfirmAsync"/> names, plus <paramref name="actor"/> (whose change is not saved yet): never told to confirm it.</summary>
+    private async Task<IReadOnlyCollection<Guid>> CannotConfirmAfterAsync(MatrixActor actor, IReadOnlyCollection<PayComponent> versions, CancellationToken ct)
+    {
+        var (makers, changers) = await WhoCannotConfirmAsync(actor.TenantId, versions, ct);
+        makers.UnionWith(changers);
+        if (actor.UserId is Guid user) makers.Add(user);
+        return makers;
+    }
 
     /// <summary>The GL driver and end-of-service answer a confirm or a correction ends with: what the caller sent, else what the definition has.</summary>
     private sealed record AllowanceTerms(string Driver, bool EosbIncluded, string? Category, string? Note);
@@ -1231,8 +1285,14 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             var row = versions.OrderByDescending(v => v.EffectiveFrom ?? DateOnly.MinValue).First();
             if (row.FinanceConfirmedAtUtc is not null)
                 return Conflict("already_confirmed", "Finance has already confirmed this allowance.");
-            if (row.CreatedBy == actor.UserId)
-                return Forbidden("maker_cannot_confirm", "You added this allowance, so a different Finance approver must confirm it.");
+            // Maker is not checker, from the audit trail: whoever added it, or changed it since Finance last confirmed it, never confirms it.
+            var (makers, changers) = await WhoCannotConfirmAsync(tid, versions, ct);
+            if (makers.Contains(actor.UserId.Value))
+                return Forbidden("maker_cannot_confirm", "You added or last changed this allowance, so a different Finance approver must confirm it.",
+                    "أنت من أضاف هذا البدل أو غيّره آخر مرة، لذلك يجب أن يؤكده معتمد آخر في المالية.");
+            if (changers.Contains(actor.UserId.Value))
+                return Forbidden("changer_cannot_confirm", "You changed this allowance since Finance last confirmed it, so a different Finance approver must confirm it.",
+                    "أنت من غيّر هذا البدل منذ آخر تأكيد من المالية، لذلك يجب أن يؤكده معتمد آخر في المالية.");
 
             var (problem, terms) = await ResolveTermsAsync(tid, row, req.GlDriverKey, req.EosbIncluded, req.EosbExclusionCategory, req.EosbExclusionReason, validateUnchangedDriver: true, ct);
             if (problem is not null) return problem;
@@ -1254,8 +1314,9 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
     /// <summary>
     /// Finance changes a confirmed cash allowance's GL driver and/or end-of-service setting FROM the first day of a month, with a reason. It is a new
     /// effective-dated version: the version in effect is closed the day before and the new one opens (never rewritten), and every reader — the payroll run,
-    /// back pay, end of service, the remove guard — picks the version in effect for its own date. Refused for any month on or before the latest payroll period
-    /// any company has approved, locked, paid or closed in the GL, and while a later version is already scheduled. Audited with the old and new terms and the reason.
+    /// back pay, end of service, the remove guard — picks the version in effect for its own date. The new version waits for ANOTHER Finance user to confirm it
+    /// (nobody confirms what they changed), and they are told. Refused for any month on or before the latest payroll period any company has approved, locked,
+    /// paid or closed in the GL, and while a later version is already scheduled or still waiting. Audited with the old and new terms and the reason.
     /// </summary>
     public Task<MatrixResult> CorrectBenefitAsync(MatrixActor actor, string code, CorrectAllowanceRequest req, CancellationToken ct) =>
         FinanceDecisionSerializer.SerializeAsync(db, LockScope, actor.TenantId, actor.TenantId, async () =>
@@ -1309,6 +1370,8 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             if (problem is not null) return problem;
             var before = TermsOf(head);
             if (before == terms) return Bad("nothing_to_change", "That is how the allowance is already set. Change the GL driver or the end-of-service setting.");
+            // The corrected version waits for another Finance user; everyone who could confirm it is told (read here, before the last look).
+            var toTell = await FinanceRecipientsAsync(tid, await CannotConfirmAfterAsync(actor, versions, ct), owner, ct);
 
             // The last look before the write: nothing below awaits until SaveChanges, and nothing has been changed yet, so a refusal here saves nothing.
             if (BeforeCorrectionSaveHook is { } beforeSave) await beforeSave();
@@ -1339,18 +1402,20 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
                     EffectiveFrom = from, EffectiveTo = null,
                     // The definition (feature benefit_definition_v1) is the same allowance: its category, policy class and source follow the new version.
                     BenefitCategory = head.BenefitCategory, PolicyClass = head.PolicyClass, RequiresEnrolment = head.RequiresEnrolment, SourceBenefitPlanId = null,
-                    // Finance already confirmed the allowance; the new version carries that confirmation, the correction's own record is the audit row.
-                    FinanceConfirmedAtUtc = head.FinanceConfirmedAtUtc, FinanceConfirmedByUserId = head.FinanceConfirmedByUserId,
                     CreatedBy = actor.UserId, UpdatedAtUtc = DateTime.UtcNow, UpdatedBy = actor.UserId,
                 };
                 db.PayComponents.Add(result);
             }
+            // Nobody confirms what they changed (owner rule, Finance included): the corrected version is pending until ANOTHER Finance user confirms it, and
+            // the corrector is its maker. The months before it keep their confirmed version.
+            result.FinanceConfirmedAtUtc = null; result.FinanceConfirmedByUserId = null; result.CreatedBy = actor.UserId;
             var warnings = CashAllowanceDefinitions.Warnings(result.NameEn, result.NameAr, result.EosbIncluded, result.EosbExclusionCategory, atCreation: false);
             db.AuditLogs.Add(Audit(actor, owner, AuditBenefitCorrected, result.Id, new
             {
                 componentCode = code, ownerCompanyId = owner, effectiveFrom = from, reason, before = TermsAudit(before), after = TermsAudit(terms), amendedInPlace = inPlace,
-                previousVersionId = inPlace ? (Guid?)null : head.Id, warnings = warnings.Select(w => w.Code).ToArray(),
+                previousVersionId = inPlace ? (Guid?)null : head.Id, warnings = warnings.Select(w => w.Code).ToArray(), repended = true,
             }));
+            AddFinanceWaitingNotices(tid, toTell, result, changed: true);
             await db.SaveChangesAsync(ct);
             return Ok(new
             {

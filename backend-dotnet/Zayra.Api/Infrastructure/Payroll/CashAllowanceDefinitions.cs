@@ -101,9 +101,9 @@ public static class CashAllowanceDefinitions
     // ── Pre-run readiness ───────────────────────────────────────────────────────────────────────
 
     /// <summary>One employee whose salary carries a cash allowance line the payroll run could not pay: a stable <c>Problem</c> code
-    /// (<c>no_definition</c>, <c>not_confirmed</c>, <c>no_gl_driver</c>) and the words for it. No amounts.</summary>
+    /// (<c>no_definition</c>, <c>not_confirmed</c>, <c>no_gl_driver</c>, <c>other_company</c>) and the words for it. No amounts.</summary>
     public sealed record ReadinessIssue(int EmployeeId, string EmployeeCode, string EmployeeName, Guid? CompanyId, string Code, string Problem, string Message,
-        string? AllowanceNameEn = null, string? AllowanceNameAr = null, string? Href = null);
+        string? AllowanceNameEn = null, string? AllowanceNameAr = null, string? Href = null, string? MessageAr = null);
 
     /// <summary>Where Finance confirms an allowance that is waiting for it (the list on Benefits by grade).</summary>
     public const string WaitingForFinanceLink = "/benefits/by-grade#waiting-for-finance";
@@ -142,6 +142,16 @@ public static class CashAllowanceDefinitions
             foreach (var line in lines[recordId].OrderBy(l => l.Code, StringComparer.Ordinal))
             {
                 var versions = allVersions[line.Code].Where(v => v.CompanyId == null || v.CompanyId == employee.CompanyId).ToList();
+                if (versions.Count == 0 && allVersions[line.Code].Any())
+                {
+                    // Another company's own allowance, left on the salary of someone who moved here (never stripped on transfer): it is not paid here and is no
+                    // end-of-service wage here. Named by its code only — a sister company's own allowance is never named to another company.
+                    issues.Add(new ReadinessIssue(employee.Id, employee.Code, employee.Name, employee.CompanyId, line.Code, "other_company",
+                        $"{employee.Name} moved from another company. The allowance {line.Code} on their salary belongs to that company and is not paid here. "
+                            + $"Remove it from {employee.Name}'s salary.",
+                        MessageAr: $"انتقل {employee.Name} من شركة أخرى. البدل {line.Code} على راتبه يخص تلك الشركة ولا يُصرف هنا. أزله من راتب {employee.Name}."));
+                    continue;
+                }
                 if (PeriodFault(versions, periodStart) is not { } fault) continue;
                 // The allowance's own name (the version in effect, else the latest one on file), so the line says WHICH allowance, not just its code.
                 var named = InEffect(versions, periodStart) ?? Current(versions, periodStart);

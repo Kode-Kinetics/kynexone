@@ -69,7 +69,7 @@ public class BenefitDefinitionReviewFixTests
     public async Task SwitchingACashAllowanceOff_IsLockChecked_BeforeItWouldAbortAPayrollRun()
     {
         await using var h = await Bd.Create();
-        var created = Component(await h.Add(CashRequest("Car", b => b.EffectiveFrom = Aug1), user: h.FinanceA, finance: true));
+        var created = await h.AddConfirmed(CashRequest("Car", b => b.EffectiveFrom = Aug1));
         await LockNovember(h);
 
         var off = await h.Put("ALW_CAR", new UpdateBenefitRequest(created.Definition!.Version, "Car", null)
@@ -97,7 +97,7 @@ public class BenefitDefinitionReviewFixTests
     private static async Task<(Bd H, string Version)> ConfirmedCar()
     {
         var h = await Bd.Create();
-        var created = Component(await h.Add(CashRequest("Car", b => { b.EffectiveFrom = Bd.Nov1; b.EffectiveTo = Bd.Oct31Next; }), user: h.FinanceA, finance: true));
+        var created = await h.AddConfirmed(CashRequest("Car", b => { b.EffectiveFrom = Bd.Nov1; b.EffectiveTo = Bd.Oct31Next; }));
         return (h, created.Definition!.Version);
     }
 
@@ -113,7 +113,7 @@ public class BenefitDefinitionReviewFixTests
         edited.CashAllowance!.FinancePending.Should().BeFalse();
         var row = (await h.Rows("ALW_CAR")).Single();
         (row.NameAr, row.BenefitCategory, row.PolicyClass, row.EffectiveFrom, row.EffectiveTo, row.GlDriverKey, row.IsActive, row.CreatedBy)
-            .Should().Be(("Car", "Allowance", "Contractual", (DateOnly?)Bd.Nov1, (DateOnly?)Bd.Oct31Next, CarDriver, true, (Guid?)h.FinanceA));
+            .Should().Be(("Car", "Allowance", "Contractual", (DateOnly?)Bd.Nov1, (DateOnly?)Bd.Oct31Next, CarDriver, true, (Guid?)h.Hr));
         row.FinanceConfirmedByUserId.Should().Be(h.FinanceA);
     }
 

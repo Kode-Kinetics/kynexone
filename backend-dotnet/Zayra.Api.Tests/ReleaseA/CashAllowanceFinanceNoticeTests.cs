@@ -132,14 +132,83 @@ public class CashAllowanceFinanceNoticeTests
     }
 
     [Fact]
-    public async Task AFinanceMakerConfirmsByAdding_SoNobodyIsToldToConfirm()
+    public async Task AFinanceMakerDoesNotConfirmByAdding_SoEveryOtherFinanceUserIsTold()
     {
         await using var w = await World.Create();
 
         var added = await w.AddCash(w.FinanceGroup, finance: true);
 
         added.IsSuccess.Should().BeTrue();
-        (await w.Db.Notifications.CountAsync()).Should().Be(0);
+        (await w.Db.Notifications.AsNoTracking().Select(n => n.UserId).ToListAsync())
+            .Should().BeEquivalentTo(new Guid?[] { w.FinanceViaOverride, w.FinanceAllCompanies }, "a group allowance added by Finance still waits for another Finance user");
+    }
+
+    private static async Task EnableDefinitionsAsync(World w)
+    {
+        w.Db.TenantFeatureFlags.AddRange(new TenantFeatureFlag { TenantId = w.Tid, FeatureKey = FeatureKeys.ReleaseA, IsEnabled = true },
+            new TenantFeatureFlag { TenantId = w.Tid, FeatureKey = FeatureKeys.BenefitDefinitionV1, IsEnabled = true });
+        await w.Db.SaveChangesAsync();
+    }
+
+    private static async Task<string> VersionAsync(World w, string code, Guid? companyId = null) =>
+        (await w.Service.ReadAsync(w.Tid, companyId, new DateOnly(2026, 10, 6), default)).Components.Single(c => c.Code == code).Definition!.Version;
+
+    private static async Task<List<Guid?>> FreshNoticesAsync(World w, Func<Task<MatrixResult>> change)
+    {
+        w.Db.Notifications.RemoveRange(await w.Db.Notifications.ToListAsync());
+        await w.Db.SaveChangesAsync();
+        var result = await change();
+        result.IsSuccess.Should().BeTrue(System.Text.Json.JsonSerializer.Serialize(result.Body));
+        var notices = await w.Db.Notifications.AsNoTracking().ToListAsync();
+        notices.Should().OnlyContain(n => n.EntityId == "ALW_CAR" || n.EntityId!.StartsWith("ALW_CAR_"));
+        notices.Should().OnlyContain(n => n.Title.Contains("Waiting for Finance") && n.Message.Contains("سيارة"));
+        return notices.Select(n => n.UserId).ToList();
+    }
+
+    [Fact]
+    public async Task AnEditThatSendsAConfirmedAllowanceBackToPending_TellsFinanceAgain_ButNeverWhoChangedIt()
+    {
+        await using var w = await World.Create();
+        await EnableDefinitionsAsync(w);
+        await w.AddCash(w.Maker, finance: false);
+        (await w.Service.ConfirmBenefitAsync(w.Actor(w.FinanceGroup, true), "ALW_CAR", new ConfirmAllowanceRequest(), default)).IsSuccess.Should().BeTrue();
+        var version = await VersionAsync(w, "ALW_CAR");
+
+        var told = await FreshNoticesAsync(w, () => w.Service.UpdateBenefitAsync(w.Actor(w.FinanceViaOverride, true), "ALW_CAR",
+            new UpdateBenefitRequest(version, "Car", null) { EffectiveFrom = new DateOnly(2026, 11, 1) }, default));
+
+        told.Should().BeEquivalentTo(new Guid?[] { w.FinanceGroup, w.FinanceAllCompanies });
+    }
+
+    [Fact]
+    public async Task ACorrection_TellsFinanceAgain_ButNeverTheCorrectorOrTheMaker()
+    {
+        await using var w = await World.Create();
+        await EnableDefinitionsAsync(w);
+        await w.AddCash(w.FinanceAllCompanies, finance: true);
+        (await w.Service.ConfirmBenefitAsync(w.Actor(w.FinanceGroup, true), "ALW_CAR", new ConfirmAllowanceRequest(), default)).IsSuccess.Should().BeTrue();
+
+        var told = await FreshNoticesAsync(w, () => w.Service.CorrectBenefitAsync(w.Actor(w.FinanceViaOverride, true), "ALW_CAR",
+            new CorrectAllowanceRequest(new DateOnly(2026, 12, 1), "Re-route", EosbIncluded: false, EosbExclusionCategory: EosbExclusionCategories.Reimbursement), default));
+
+        told.Should().BeEquivalentTo(new Guid?[] { w.FinanceGroup });
+    }
+
+    [Fact]
+    public async Task WideningAConfirmedCompanyAllowance_TellsTheGroupsFinance_ButNeverTheWidener()
+    {
+        await using var w = await World.Create();
+        await EnableDefinitionsAsync(w);
+        var added = await w.Service.CreateBenefitAsync(w.Actor(w.Maker, false),
+            new CreateBenefitRequest("Car", "سيارة", BenefitKinds.Cash, "EARN:CAR", true, null, null) { CompanyId = w.CompanyA }, default);
+        var code = ((MatrixComponentDto)added.Body).Code;
+        (await w.Service.ConfirmBenefitAsync(w.Actor(w.FinanceGroup, true), code, new ConfirmAllowanceRequest(), default)).IsSuccess.Should().BeTrue();
+        var version = await VersionAsync(w, code, w.CompanyA);
+
+        var told = await FreshNoticesAsync(w, () => w.Service.UpdateBenefitAsync(w.Actor(w.FinanceAllCompanies, true), code,
+            new UpdateBenefitRequest(version, "Car", null) { Scope = new BenefitScopeInput(null) }, default));
+
+        told.Should().BeEquivalentTo(new Guid?[] { w.FinanceGroup, w.FinanceViaOverride });
     }
 
     [Fact]

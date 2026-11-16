@@ -476,7 +476,8 @@ public static class SalaryAllowanceLines
     }
 
     /// <summary>The lines of each salary record whose definition counts in the end-of-service wage, by record, on the definition version in effect on
-    /// <paramref name="asOf"/> (a Finance correction can change the answer from a month on). A line with no definition version in effect on that date is NOT left
+    /// <paramref name="asOf"/> (a Finance correction can change the answer from a month on). Only definitions the employee's current company can see count:
+    /// the group's and that company's own (a line of a company they moved from is no wage here). A line with no definition version in effect on that date is NOT left
     /// out — that would silently understate the wage; it throws <see cref="CashAllowanceDefinitionMissingException"/> (answered 422), naming the line.</summary>
     public static async Task<Dictionary<Guid, List<EosbCashAllowance>>> EosbIncludedAsync(
         ZayraDbContext db, Guid tenantId, IReadOnlyCollection<Guid> salaryIds, DateOnly asOf, CancellationToken ct)
@@ -485,22 +486,31 @@ public static class SalaryAllowanceLines
         var rows = await LoadAsync(db, tenantId, salaryIds, ct);
         var codes = rows.SelectMany(g => g).Select(r => r.Code).Distinct().ToList();
         if (codes.Count == 0) return result;
-        // A company's own allowance counts like a group one: the line is on the record, so its definition decides (never silently left out).
         var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, anyCompany: true);
-        var counted = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var code in codes)
-        {
-            var version = versions[code].Where(v => v.IsInEffect(asOf)).OrderByDescending(v => v.EffectiveFrom ?? DateOnly.MinValue).FirstOrDefault();
-            if (version is null)
-                throw new CashAllowanceDefinitionMissingException(code,
-                    $"the monthly allowance {code} is on a salary record but has no definition in effect on {asOf:yyyy-MM-dd}, so it cannot be known whether it counts in the end-of-service wage. " +
-                    "Restore the allowance in Benefits by grade or remove the line from the salary, then try again.");
-            if (version.EosbIncluded) counted.Add(code);
-        }
+        // The company each record's employee works for NOW: a company's own allowance counts only for its own company's employees. One left on the salary of
+        // someone who moved to a sister company (never stripped on transfer) is no wage there — exactly as that company's payroll run treats it; the
+        // readiness names the line and the fix.
+        var recordIds = rows.Select(g => g.Key).ToList();
+        var companyOf = await (from s in db.EmployeeSalaryStructures.AsNoTracking()
+                               join e in db.Employees.AsNoTracking() on s.EmployeeId equals e.Id
+                               where s.TenantId == tenantId && e.TenantId == tenantId && recordIds.Contains(s.Id)
+                               select new { s.Id, e.CompanyId }).ToDictionaryAsync(x => x.Id, x => x.CompanyId, ct);
         foreach (var group in rows)
         {
-            var lines = group.Where(r => counted.Contains(r.Code)).OrderBy(r => r.Code, StringComparer.Ordinal)
-                .Select(r => new EosbCashAllowance(r.Code, r.Amount)).ToList();
+            var known = companyOf.TryGetValue(group.Key, out var companyId);
+            var lines = new List<EosbCashAllowance>();
+            foreach (var r in group.OrderBy(r => r.Code, StringComparer.Ordinal))
+            {
+                var all = versions[r.Code].ToList();
+                var visible = known ? all.Where(v => v.CompanyId == null || v.CompanyId == companyId).ToList() : all;
+                if (visible.Count == 0 && all.Count > 0) continue;
+                var version = visible.Where(v => v.IsInEffect(asOf)).OrderByDescending(v => v.EffectiveFrom ?? DateOnly.MinValue).FirstOrDefault();
+                if (version is null)
+                    throw new CashAllowanceDefinitionMissingException(r.Code,
+                        $"the monthly allowance {r.Code} is on a salary record but has no definition in effect on {asOf:yyyy-MM-dd}, so it cannot be known whether it counts in the end-of-service wage. " +
+                        "Restore the allowance in Benefits by grade or remove the line from the salary, then try again.");
+                if (version.EosbIncluded) lines.Add(new EosbCashAllowance(r.Code, r.Amount));
+            }
             if (lines.Count > 0) result[group.Key] = lines;
         }
         return result;

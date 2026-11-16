@@ -294,7 +294,7 @@ public sealed partial class EntitlementMatrixService
         var shown = CashAllowanceDefinitions.Current(versions, today) ?? versions[0];
         var ctx = await DefinitionContextAsync(tid, [code], ct);
         var rule = EntitlementComponentRules.CustomRuleFor(code, shown.NameEn, shown.NameAr);
-        return ToDto(rule, cash ? InfoOf(shown) : null, cash ? warnings ?? CashAllowanceDefinitions.Warnings(shown.NameEn, shown.NameAr, shown.EosbIncluded, shown.EosbExclusionCategory, atCreation: false) : null,
+        return ToDto(rule, cash ? InfoOf(shown, versions) : null, cash ? warnings ?? CashAllowanceDefinitions.Warnings(shown.NameEn, shown.NameAr, shown.EosbIncluded, shown.EosbExclusionCategory, atCreation: false) : null,
             DefinitionOf(shown, versions, ctx, today), shown.CompanyId);
     }
 
@@ -592,16 +592,19 @@ public sealed partial class EntitlementMatrixService
         if (!nameChanged && !categoryChanged && !classChanged && !datesChanged && !activeChanged && !renaming && newTerms is null && !widen)
             return await CurrentAsync(actor, code, ct);
 
-        // A cash allowance's money terms (dates, active, GL/EOSB) — and a name that changes its end-of-service cautions — changed by someone
-        // without the Finance permission put it back to pending Finance, and the editor is then its maker, who can never confirm it. A pending one stays
-        // pending with the editor as its maker. A Finance editor keeps it confirmed and the original maker.
+        // A cash allowance's money terms (dates, active, GL/EOSB) — and a name that changes its end-of-service cautions — changed by ANYONE, a Finance
+        // editor included, put it back to pending Finance, and the editor is then its maker, who can never confirm it (owner rule: nobody confirms what they
+        // made or changed). A pending one stays pending with the editor as its maker. The original maker and every editor since the last confirmation stay
+        // barred too (read from the audit trail at confirm time), so makership is never handed on.
         var cautionsChanged = cash && nameChanged
             && !CashAllowanceDefinitions.Warnings(head.NameEn, head.NameAr, head.EosbIncluded, head.EosbExclusionCategory, atCreation: false).Select(w => w.Code).Order()
                 .SequenceEqual(CashAllowanceDefinitions.Warnings(nameEn, nameAr, head.EosbIncluded, head.EosbExclusionCategory, atCreation: false).Select(w => w.Code).Order());
         // (The policy class is a descriptive label payroll never reads, so it is not a money term.) Widening a company's own allowance to the group is one:
-        // Finance confirmed it for one company, and every company's payroll will pay it now.
+        // Finance confirmed it for one company, and every company's payroll will pay it now — whatever permission the widener holds.
         var moneyChanged = cash && (datesChanged || activeChanged || newTerms is not null || cautionsChanged || widen);
-        var repended = moneyChanged && head.FinanceConfirmedAtUtc is not null && !actor.IsFinance;
+        var repended = moneyChanged && head.FinanceConfirmedAtUtc is not null;
+        // Everyone who could confirm it again is told (read before the last look below, so nothing awaits after it): after a widening, the group's Finance.
+        var toTell = repended ? await FinanceRecipientsAsync(tid, await CannotConfirmAfterAsync(actor, versions, ct), widen ? null : owner, ct) : [];
         var before = new { name = head.NameEn, nameAr = head.NameAr, category = head.BenefitCategory, policyClass = head.PolicyClass, effectiveFrom = head.EffectiveFrom, effectiveTo = head.EffectiveTo, isActive = head.IsActive, code };
         var renamedRows = renaming
             ? await ScopedBypass.TenantWide(db.PayComponents, tid, "A renamed code moves with its company switches, removed ones too (the unique key counts them).")
@@ -661,6 +664,7 @@ public sealed partial class EntitlementMatrixService
             componentCode = code, newCode, before, after, repended, financeTermsChanged = newTerms is not null, requestId = req.RequestId, requestHash = fingerprint,
             ownerCompanyId = widen ? null : owner, widenedFrom = widen ? owner : null, offeredTo = widen ? ctx.ActiveCompanyIds.Where(id => widenExcluded?.Contains(id) != true).ToList() : null,
         }));
+        AddFinanceWaitingNotices(tid, toTell, head, changed: true);
         await db.SaveChangesAsync(ct);
         return await CurrentAsync(actor, newCode, ct);
     }

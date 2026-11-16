@@ -11,7 +11,7 @@ namespace Zayra.Api.Infrastructure.Entitlements;
 /// Who could confirm a cash allowance that is waiting for Finance (G-011). It asks the SAME three questions the confirm endpoint asks of its caller
 /// (<c>POST /api/entitlements/components/{code}/confirm</c>): does the login hold <c>payroll.approve</c>, does it have access to every company (a group
 /// allowance) or to the one company a company's own allowance belongs to (<c>companyId</c>; a sister company's Finance is never told it exists), and is it
-/// a different person from the one who added the allowance (maker is not checker). A login that cannot sign in (inactive, suspended, deleted) is not told.
+/// a different person from whoever added the allowance or changed it since Finance last confirmed it (maker is not checker). A login that cannot sign in (inactive, suspended, deleted) is not told.
 /// Read-only: it grants nothing and changes no decision of the endpoint.
 /// </summary>
 public static class CashAllowanceFinanceRecipients
@@ -19,11 +19,14 @@ public static class CashAllowanceFinanceRecipients
     /// <summary>The permission that makes someone "Finance" for cash allowances (the confirm endpoint's own).</summary>
     public const string ConfirmPermission = "payroll.approve";
 
-    public static async Task<IReadOnlyList<Guid>> ResolveAsync(ZayraDbContext db, Guid tenantId, Guid? makerUserId, CancellationToken ct, Guid? companyId = null)
+    /// <param name="cannotConfirm">Everyone else the confirm endpoint refuses for this allowance: whoever added it or changed it since Finance last confirmed it.</param>
+    public static async Task<IReadOnlyList<Guid>> ResolveAsync(ZayraDbContext db, Guid tenantId, Guid? makerUserId, CancellationToken ct, Guid? companyId = null,
+        IReadOnlyCollection<Guid>? cannotConfirm = null)
     {
         const string why = "Cash allowance Finance notice: find the logins that hold the confirm permission with group scope, whatever the adder's company scope.";
+        var excluded = (cannotConfirm ?? []).Concat(makerUserId is Guid maker ? [maker] : []).Distinct().ToList();
         var users = await ScopedBypass.TenantWide(db.Users, tenantId, why).AsNoTracking()
-            .Where(u => !u.IsDeleted && u.IsActive && u.Status == "Active" && (makerUserId == null || u.Id != makerUserId))
+            .Where(u => !u.IsDeleted && u.IsActive && u.Status == "Active" && !excluded.Contains(u.Id))
             .Include(u => u.UserRoles).ThenInclude(r => r.Role).ThenInclude(r => r!.RolePermissions).ThenInclude(p => p.Permission)
             .Include(u => u.PermissionOverrides).Include(u => u.EntityAccesses).Include(u => u.EmployeeUserAccounts)
             .AsSplitQuery().ToListAsync(ct);

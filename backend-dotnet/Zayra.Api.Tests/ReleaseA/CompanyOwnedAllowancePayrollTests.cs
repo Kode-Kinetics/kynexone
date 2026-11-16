@@ -192,6 +192,6 @@ public class CompanyOwnedAllowancePayrollTests
         var sister = await CashAllowanceDefinitions.ReadinessIssuesAsync(w.Db, w.Tid, [(w.A.Id, w.A.EmployeeCode, "A", (Guid?)w.SisterId)], june, new DateOnly(2026, 6, 30), default);
 
         own.Should().BeEmpty();
-        sister.Should().ContainSingle(i => i.Code == Car && i.Problem == "no_definition");
+        sister.Should().ContainSingle(i => i.Code == Car && i.Problem == "other_company", "the line belongs to the company the employee moved from: named, with the fix");
     }
 }

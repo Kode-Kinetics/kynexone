@@ -18,7 +18,7 @@ Switches are only ever written with `is_offered = false`, so a company row that 
 
 - Created with `companyId` in `POST /api/entitlements/components`: the caller must reach that company (403 `company_not_accessible` otherwise, whether or not it exists). Without `companyId` the benefit is the group's and needs access to every company, as before. A `scope` naming any other company is refused (`scope_not_company`).
 - Edit, remove, confirm and correct: a company's own benefit is handled by anyone who reaches its company. To anyone else it does not exist (404 `unknown_component`, the same answer as a code that was never created). A group benefit still needs access to every company.
-- Widening: group HR sends a `scope` with more companies on `PUT /components/{code}`. The rows move to `company_id = NULL`, every company left out gets a "not offered" switch from the benefit's own start, and from then on it is a group benefit (the company admin gets 403 `group_scope_required`). A cash allowance widens to every company or not at all, its GL driver must post in every company, and it goes back to "pending Finance" unless the person widening holds the Finance permission.
+- Widening: group HR sends a `scope` with more companies on `PUT /components/{code}`. The rows move to `company_id = NULL`, every company left out gets a "not offered" switch from the benefit's own start, and from then on it is a group benefit (the company admin gets 403 `group_scope_required`). A cash allowance widens to every company or not at all, its GL driver must post in every company, and it always goes back to "pending Finance": the widener becomes its maker, whatever permission they hold, and the group's Finance is told.
 
 ## Names and codes
 
@@ -36,10 +36,10 @@ Switches are only ever written with `is_offered = false`, so a company row that 
 | Salary staging (`SalaryAllowanceLines.ValidateAsync`, proposals, breakdown writer) | tenant rows | the employee's company decides: a sister company's own allowance is refused like a code that does not exist. |
 | Payroll run, back pay, staleness, arrears | tenant rows | the run's company. |
 | Pre-run readiness | tenant rows | per employee's company. |
-| End of service wage, salary line names | tenant rows | any company (the line is already on the record). |
-| Finance confirm/correct | group scope | group scope for a group allowance; access to the owning company for a company's own. Maker is never checker. A company's own allowance is never confirmed by its maker, even one who holds the Finance permission. |
+| End of service wage, salary line names | tenant rows | names: any company (the line is already on the record). End of service wage: only definitions the employee's current company sees; a line left from a company the employee moved from is no wage there, and the payroll readiness names the employee and the fix (`other_company`, EN/AR). Lines are never stripped on transfer. |
+| Finance confirm/correct | group scope | group scope for a group allowance; access to the owning company for a company's own. Maker is never checker, read from the audit trail: whoever added it, or edited, corrected or widened it since Finance last confirmed it, is refused (`maker_cannot_confirm` / `changer_cannot_confirm`, EN/AR), whatever permission they hold, group or company. Any money change or correction, by anyone, sends a confirmed allowance back to pending. |
 | GL driver choice and validation | tenant drivers, every company | for a company's own allowance: that company's drivers (its own override wins) judged in that company. |
 | Committed-period guard | every company's runs | the owning company's runs for a company's own benefit. |
-| "Waiting for Finance" notice | Finance with group scope | plus Finance of the owning company. |
+| "Waiting for Finance" notice | Finance with group scope | plus Finance of the owning company. Sent on add and on every return to pending (edit, correction, widening), never to someone who cannot confirm it. |
 
 The `benefit_definition_v1` flag keeps its meaning. `companyId` is not a definition field, so a company's own benefit can be added with the flag off.

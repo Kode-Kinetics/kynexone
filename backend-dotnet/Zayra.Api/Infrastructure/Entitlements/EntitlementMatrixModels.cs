@@ -9,8 +9,8 @@ namespace Zayra.Api.Infrastructure.Entitlements;
 // Release A slice R1 — the shapes the benefits-by-grade matrix API reads and writes. Owned by R1.
 
 /// <summary>Who is acting, as the matrix service needs it. Built by the controller from the request.</summary>
-/// <param name="IsFinance">The caller holds the Finance permission (<c>payroll.approve</c>): a cash allowance they add is confirmed at once, and only
-/// such a caller reaches the confirm and correct actions (the controller's permission gate). Never read from a request body.</param>
+/// <param name="IsFinance">The caller holds the Finance permission (<c>payroll.approve</c>): only such a caller reaches the confirm and correct actions (the
+/// controller's permission gate). It never confirms anything they add or change themselves. Never read from a request body.</param>
 public sealed record MatrixActor(Guid TenantId, Guid? UserId, EntityScopeContext Scope, string? IpAddress, bool IsFinance = false);
 
 /// <summary>A service outcome the controller returns as-is: an HTTP status and its body.</summary>

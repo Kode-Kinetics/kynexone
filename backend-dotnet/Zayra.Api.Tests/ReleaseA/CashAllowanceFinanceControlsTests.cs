@@ -84,6 +84,15 @@ public class CashAllowanceFinanceControlsTests
         public Task<IActionResult> Add(Guid user, bool finance, string name, string? driver = CarDriver, bool eosb = true, string? category = null, string? reason = null) =>
             As(user, finance).AddBenefit(Service, new CreateBenefitRequest(name, null, BenefitKinds.Cash, driver, eosb, reason, category), default);
 
+        /// <summary>An allowance HR added and another Finance user (<see cref="FinanceA"/>) confirmed: nobody confirms what they made.</summary>
+        public async Task AddConfirmed(string name)
+        {
+            var added = await Add(Hr, finance: false, name);
+            Status(added).Should().Be(200, Describe(added));
+            var confirmed = await Confirm(FinanceA, true, "ALW_" + name.ToUpperInvariant());
+            Status(confirmed).Should().Be(200, Describe(confirmed));
+        }
+
         public Task<IActionResult> Confirm(Guid user, bool finance, string code, ConfirmAllowanceRequest? req = null) =>
             As(user, finance).ConfirmBenefit(Service, code, req, default);
 
@@ -117,20 +126,19 @@ public class CashAllowanceFinanceControlsTests
     // ══ 1. Finance confirms a new cash allowance ════════════════════════════════════════════════
 
     [Fact]
-    public async Task AnAllowanceAddedWithoutFinanceRights_IsPendingFinance_ButAFinanceMakerConfirmsItByAddingIt()
+    public async Task AnAllowanceIsPendingFinance_WhoeverAddsIt_EvenSomeoneWhoHoldsTheFinancePermission()
     {
         await using var h = await Mx.Create();
 
         var pending = Component(await h.Add(h.Hr, finance: false, "Car"));
-        var confirmed = Component(await h.Add(h.FinanceA, finance: true, "Phone"));
+        var byFinance = Component(await h.Add(h.FinanceA, finance: true, "Phone"));
 
         pending.CashAllowance!.FinancePending.Should().BeTrue();
-        confirmed.CashAllowance!.FinancePending.Should().BeFalse();
+        byFinance.CashAllowance!.FinancePending.Should().BeTrue("nobody confirms what they made (owner rule), Finance included");
         var car = (await h.Rows(Car)).Single();
         (car.FinanceConfirmedAtUtc, car.FinanceConfirmedByUserId, car.CreatedBy).Should().Be(((DateTime?)null, (Guid?)null, (Guid?)h.Hr));
         var phone = (await h.Rows("ALW_PHONE")).Single();
-        phone.FinanceConfirmedAtUtc.Should().NotBeNull();
-        phone.FinanceConfirmedByUserId.Should().Be(h.FinanceA);
+        (phone.FinanceConfirmedAtUtc, phone.CreatedBy).Should().Be(((DateTime?)null, (Guid?)h.FinanceA));
     }
 
     [Fact]
@@ -221,7 +229,7 @@ public class CashAllowanceFinanceControlsTests
     public async Task ARemovedAllowanceThatComesBack_IsAFreshProposal_ConfirmedAgain()
     {
         await using var h = await Mx.Create();
-        await h.Add(h.FinanceA, finance: true, "Car");
+        await h.AddConfirmed("Car");
         Status(await h.As(h.Hr, false).RemoveBenefit(h.Service, Car, default)).Should().Be(200);
 
         var again = Component(await h.Add(h.Hr, finance: false, "Car"));
@@ -236,7 +244,7 @@ public class CashAllowanceFinanceControlsTests
     public async Task ACorrection_ClosesTheOldVersionTheDayBefore_AndOpensANewOne_WithAnAuditOfOldAndNewAndTheReason()
     {
         await using var h = await Mx.Create();
-        await h.Add(h.FinanceA, finance: true, "Car");
+        await h.AddConfirmed("Car");
 
         var result = await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2026, 12, 1), "Posts to the vehicle cost centre", "EARN:CAR2"));
 
@@ -245,10 +253,12 @@ public class CashAllowanceFinanceControlsTests
         versions.Should().HaveCount(2);
         (versions[0].EffectiveFrom, versions[0].EffectiveTo, versions[0].GlDriverKey).Should().Be(((DateOnly?)null, (DateOnly?)new DateOnly(2026, 11, 30), (string?)CarDriver));
         (versions[1].EffectiveFrom, versions[1].EffectiveTo, versions[1].GlDriverKey).Should().Be(((DateOnly?)new DateOnly(2026, 12, 1), (DateOnly?)null, (string?)"EARN:CAR2"));
-        versions[1].FinanceConfirmedAtUtc.Should().NotBeNull("the correction keeps Finance's confirmation");
+        versions[0].FinanceConfirmedAtUtc.Should().NotBeNull("the months before the correction keep their confirmed version");
+        versions[1].FinanceConfirmedAtUtc.Should().BeNull("the correction waits for another Finance user: nobody confirms what they changed");
         var audit = (await h.Db.AuditLogs.SingleAsync(a => a.Action == EntitlementMatrixService.AuditBenefitCorrected)).Metadata!;
         audit.Should().Contain(CarDriver).And.Contain("EARN:CAR2").And.Contain("Posts to the vehicle cost centre").And.Contain("2026-12-01");
-        // The grid still has one row for the allowance (the version in effect today speaks for it).
+        // The grid still has one row for the allowance; once the correction is confirmed, the version in effect today speaks for it again.
+        Status(await h.Confirm(h.FinanceA, true, Car)).Should().Be(200);
         var matrix = (EntitlementMatrixDto)((OkObjectResult)await h.As(h.Hr, false).Matrix(h.Service, null, Mx.Today, default)).Value!;
         matrix.Components.Count(c => c.Code == Car).Should().Be(1);
         matrix.Components.Single(c => c.Code == Car).CashAllowance!.GlDriverKey.Should().Be(CarDriver);
@@ -258,7 +268,7 @@ public class CashAllowanceFinanceControlsTests
     public async Task ACorrection_ChangesTheEosbSetting_AndRefusesAMonthThatIsLockedForAnyCompany()
     {
         await using var h = await Mx.Create();
-        await h.Add(h.FinanceA, finance: true, "Car");
+        await h.AddConfirmed("Car");
         h.Db.PayrollRuns.Add(new PayrollRun { TenantId = h.Tid, CompanyId = null, Year = 2026, Month = 11, Status = "Locked", RunType = PayrollRunTypes.Regular });
         await h.Db.SaveChangesAsync();
 
@@ -298,6 +308,9 @@ public class CashAllowanceFinanceControlsTests
         (await h.Rows(Car)).Should().ContainSingle();
 
         Status(await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2027, 2, 1), "later", "EARN:CAR2"))).Should().Be(200);
+        Error(await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2027, 1, 1), "earlier than the scheduled one", CarDriver))).Should().Be("not_confirmed",
+            "the scheduled correction waits for another Finance user first");
+        Status(await h.Confirm(h.FinanceA, true, Car)).Should().Be(200);
         Error(await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2027, 1, 1), "earlier than the scheduled one", CarDriver))).Should().Be("later_version_exists");
     }
 
@@ -305,8 +318,9 @@ public class CashAllowanceFinanceControlsTests
     public async Task CorrectingTheSameMonthAgain_AmendsThatVersionInPlace_AndOlderMonthsAreUntouched()
     {
         await using var h = await Mx.Create();
-        await h.Add(h.FinanceA, finance: true, "Car");
+        await h.AddConfirmed("Car");
         await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2026, 12, 1), "first", "EARN:CAR2"));
+        Status(await h.Confirm(h.FinanceA, true, Car)).Should().Be(200, "another Finance user confirms the first correction");
 
         Status(await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2026, 12, 1), "second", CarDriver, false, EosbExclusionCategories.Reimbursement, null))).Should().Be(200);
 
@@ -380,7 +394,8 @@ public class CashAllowanceFinanceControlsTests
     public async Task TheCommissionCaution_IsSaidAtCreationOnly()
     {
         await using var h = await Mx.Create();
-        await h.Add(h.FinanceA, true, "Sales commission");
+        Status(await h.Add(h.Hr, false, "Sales commission")).Should().Be(200);
+        Status(await h.Confirm(h.FinanceA, true, "ALW_SALES_COMMISSION")).Should().Be(200);
 
         var correction = Component(await h.Correct(h.FinanceB, "ALW_SALES_COMMISSION", new CorrectAllowanceRequest(new DateOnly(2026, 12, 1), "driver", "EARN:CAR2")));
 
@@ -413,7 +428,7 @@ public class CashAllowanceFinanceControlsTests
     }
 
     private static async Task<PayComponent> AddDefinitionAsync(ZayraDbContext db, Guid tid, string code, string driver, string name, string account,
-        bool confirmed = true, bool eosb = true, bool driverRow = true, DateOnly? from = null, DateOnly? to = null)
+        bool confirmed = true, bool eosb = true, bool driverRow = true, DateOnly? from = null, DateOnly? to = null, Guid? companyId = null)
     {
         if (driverRow)
             db.GlDrivers.Add(new GlDriver
@@ -423,7 +438,7 @@ public class CashAllowanceFinanceControlsTests
             });
         var row = new PayComponent
         {
-            TenantId = tid, CompanyId = null, Code = code, NameEn = name, NameAr = name + " ar", ComponentType = PayComponentTypes.Earning,
+            TenantId = tid, CompanyId = companyId, IsOffered = true, Code = code, NameEn = name, NameAr = name + " ar", ComponentType = PayComponentTypes.Earning,
             CalcMethod = PayComponentCalcMethods.GradePackage, EntitlementClass = PayEntitlementClasses.QiwaWage, StatutoryFloor = PayStatutoryFloors.None,
             GlDriverKey = driver, GosiSubject = false, WpsIncluded = true, IsTaxable = false, EosbIncluded = eosb, DisplayOrder = 9100,
             EffectiveFrom = from, EffectiveTo = to,
@@ -916,13 +931,59 @@ public class CashAllowanceFinanceControlsTests
         (await ReadinessAsync(w, 2026, 7)).GetProperty("cashAllowanceIssues").GetArrayLength().Should().Be(0);
     }
 
+    /// <summary>An employee moved to another company whose salary still carries the old company's own allowance (owner decision: never stripped on transfer).</summary>
+    private static async Task<Guid> MoveToASisterCompanyAsync(World w, Employee e)
+    {
+        var sister = new Company { TenantId = w.Tid, LegalNameEn = "Sister Co", CountryCode = "SAU", Jurisdiction = "KSA-mainland", IsActive = true, DefaultCurrency = "SAR" };
+        w.Db.Companies.Add(sister);
+        (await w.Db.Employees.FirstAsync(x => x.Id == e.Id)).CompanyId = sister.Id;
+        await w.Db.SaveChangesAsync();
+        return sister.Id;
+    }
+
+    [Fact]
+    public async Task TheEndOfServiceWage_CountsOnlyAllowancesTheEmployeesCurrentCompanyCanSee()
+    {
+        await using var w = await NewWorld();
+        await AddDefinitionAsync(w.Db, w.Tid, "ALW_OLD_ABC234", "EARN:OLD", "Old company car", "5214", companyId: w.CompanyId);
+        await GiveAsync(w, w.A, Car, 500m);
+        await GiveAsync(w, w.A, "ALW_OLD_ABC234", 300m);
+        await GiveAsync(w, w.B, "ALW_OLD_ABC234", 300m);
+        await MoveToASisterCompanyAsync(w, w.A);
+        var moved = (await w.Db.EmployeeSalaryStructures.AsNoTracking().FirstAsync(x => x.EmployeeId == w.A.Id)).Id;
+        var stayed = (await w.Db.EmployeeSalaryStructures.AsNoTracking().FirstAsync(x => x.EmployeeId == w.B.Id)).Id;
+
+        var wage = await SalaryAllowanceLines.EosbIncludedAsync(w.Db, w.Tid, [moved, stayed], new DateOnly(2026, 6, 1), default);
+
+        wage[moved].Select(x => x.Code).Should().Equal([Car], "the old company's own allowance is no wage in the company the employee works for now");
+        wage[stayed].Select(x => x.Code).Should().Equal(["ALW_OLD_ABC234"], "an employee still in that company keeps it in the wage");
+    }
+
+    [Fact]
+    public async Task TheReadiness_NamesTheEmployeeAndTheFix_InBothLanguages_ForALineOfTheirPreviousCompany()
+    {
+        await using var w = await NewWorld(definition: false);
+        await AddDefinitionAsync(w.Db, w.Tid, "ALW_OLD_ABC234", "EARN:OLD", "Old company car", "5214", companyId: w.CompanyId);
+        await GiveAsync(w, w.A, "ALW_OLD_ABC234", 300m);
+        await MoveToASisterCompanyAsync(w, w.A);
+
+        var issue = (await ReadinessAsync(w)).GetProperty("cashAllowanceIssues").EnumerateArray().Single();
+
+        issue.GetProperty("problem").GetString().Should().Be("other_company");
+        issue.GetProperty("employeeCode").GetString().Should().Be("C001");
+        issue.GetProperty("message").GetString().Should().Contain("Ali Hassan").And.Contain("ALW_OLD_ABC234").And.Contain("Remove");
+        issue.GetProperty("messageAr").GetString().Should().Contain("Ali Hassan").And.Contain("ALW_OLD_ABC234").And.MatchRegex("[\u0600-\u06FF]");
+        issue.GetProperty("message").GetString().Should().NotContain("Old company car", "a sister company's own allowance is never named to another company");
+        (await w.Db.EmployeeSalaryAllowances.CountAsync(x => x.Code == "ALW_OLD_ABC234")).Should().Be(1, "the line is never stripped automatically");
+    }
+
     // ══ Security-review fixes (M1, L1, L2, L5, L6) ══════════════════════════════════════════════
 
     [Fact]
     public async Task ACorrection_IsRefused_AndSavesNothing_WhenARunBecomesCommittedAfterTheFirstCheck()
     {
         await using var h = await Mx.Create();
-        await h.Add(h.FinanceA, finance: true, "Car");
+        await h.AddConfirmed("Car");
         // Between the first read of the latest committed period and the write, payroll for December is approved.
         h.Service.BeforeCorrectionSaveHook = async () =>
         {
@@ -944,7 +1005,7 @@ public class CashAllowanceFinanceControlsTests
     public async Task ACorrection_MayStartAtMostTwelveMonthsAfterTheCurrentMonth()
     {
         await using var h = await Mx.Create();      // today = 2026-10-06
-        await h.Add(h.FinanceA, finance: true, "Car");
+        await h.AddConfirmed("Car");
 
         var tooFar = await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2027, 11, 1), "Too far ahead", "EARN:CAR2"));
         Status(tooFar).Should().Be(400, Describe(tooFar));
@@ -965,7 +1026,7 @@ public class CashAllowanceFinanceControlsTests
         Error(await h.Add(h.FinanceA, true, "Car", eosb: false, category: "Other", reason: text)).Should().Be("eosb_reason_invalid");
         (await h.Db.PayComponents.AnyAsync(x => x.Code == Car)).Should().BeFalse();
 
-        await h.Add(h.FinanceA, true, "Car");
+        await h.AddConfirmed("Car");
         Error(await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2026, 12, 1), text, "EARN:CAR2"))).Should().Be("reason_invalid");
         Error(await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2026, 12, 1), "Fine reason", null, false, "Other", text))).Should().Be("eosb_reason_invalid");
         (await h.Rows(Car)).Should().ContainSingle();
@@ -1233,7 +1294,7 @@ public class CashAllowanceFinanceControlsTests
     public async Task ACorrection_TakesTheMatrixLock_OnTheTenantKey()
     {
         await using var h = await Mx.Create();
-        await h.Add(h.FinanceA, finance: true, "Car");
+        await h.AddConfirmed("Car");
         var log = Record();
         try { Status(await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2026, 12, 1), "Posts elsewhere", "EARN:CAR2"))).Should().Be(200); }
         finally { Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.Recorder.Value = null; }

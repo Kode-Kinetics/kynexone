@@ -124,11 +124,11 @@ public class BenefitDefinitionCreateTests
         });
 
         var pending = Component(await h.Add(Cash("Car")));
-        var confirmed = Component(await h.Add(Cash("Phone"), user: h.FinanceA, finance: true));
+        var byFinance = Component(await h.Add(Cash("Phone"), user: h.FinanceA, finance: true));
 
         pending.Code.Should().Be("ALW_CAR");
         pending.CashAllowance!.FinancePending.Should().BeTrue();
-        confirmed.CashAllowance!.FinancePending.Should().BeFalse("a Finance-permission creator still confirms by creating, exactly as today");
+        byFinance.CashAllowance!.FinancePending.Should().BeTrue("nobody confirms what they made (owner rule), a Finance-permission creator included");
         var car = (await h.Rows("ALW_CAR")).Single();
         (car.ComponentType, car.CalcMethod, car.BenefitCategory, car.PolicyClass, car.CreatedBy, car.FinanceConfirmedAtUtc)
             .Should().Be((PayComponentTypes.Earning, PayComponentCalcMethods.GradePackage, "Allowance", "Contractual", (Guid?)h.Hr, (DateTime?)null));
