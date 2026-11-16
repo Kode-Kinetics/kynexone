@@ -6,6 +6,13 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useT } from '../../hooks/useT';
 import { serverMessage } from '../gl/glUi';
 
+/** The server's held-pay view, checked before it is read. */
+function isHeldPayView(value: unknown): value is PayrollHeldPayView {
+  const v = value as Partial<PayrollHeldPayView> | null;
+  return !!v && typeof v === 'object' && !Array.isArray(v) && Array.isArray(v.items)
+    && v.items.every(i => !!i && typeof i === 'object' && typeof i.holdId === 'string' && typeof i.amount === 'number');
+}
+
 const input = 'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sapphire focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white';
 
 /**
@@ -28,11 +35,16 @@ export function HeldPayPanel({ runId, amount }: { runId: string; amount: (n: num
   const load = useCallback(async () => {
     if (!runId) { setView(null); return; }
     try {
-      setView(await payrollApi.runHeldPay(runId));
+      // Only a well-formed reply is shown. Anything else (an API that predates held pay, a proxy's empty body) shows nothing
+      // rather than taking the whole Approvals view down: the panel is a list beside the approval, never a gate on it.
+      const reply: unknown = await payrollApi.runHeldPay(runId);
+      setView(isHeldPayView(reply) ? reply : null);
       setLoadError('');
     } catch (e) {
       setView(null);
-      setLoadError(serverMessage(e, t) || t('Held pay could not be loaded.'));
+      // An API without the endpoint answers 404: there is no held pay to show, which is not an error.
+      const status = (e as { response?: { status?: number } })?.response?.status;
+      setLoadError(status === 404 ? '' : serverMessage(e, t) || t('Held pay could not be loaded.'));
     }
   }, [runId, t]);
   useEffect(() => { void load(); }, [load]);

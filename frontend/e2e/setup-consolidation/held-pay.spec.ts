@@ -83,3 +83,16 @@ test('paying a held amount sends one decision and says where it is paid', async 
   await expect(page.getByRole('status').filter({ hasText: 'added to the next open run' })).toBeVisible();
   expect(sent).toEqual([{ action: 'pay', reason: '' }]);
 });
+
+for (const [what, reply] of [['an empty list', []], ['a 404 from an API without held pay', { status: 404, body: { message: 'Not found' } }]] as const) {
+  test(`the approvals view still renders when held pay answers ${what}`, async ({ page }) => {
+    const { errors } = await boot(page, { persona: FINANCE, url: `/payroll?tab=approvals&run=${RUN.id}`,
+      mocks: { ...mocks, [`/api/payroll/runs/${RUN.id}/held-pay`]: reply } });
+    await expect(page.getByRole('button', { name: /Approve/ }).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText('Something went wrong')).toHaveCount(0);
+    await expect(page.getByTestId('payroll-held-pay')).toHaveCount(0);
+    await expect(page.getByText('Held pay could not be loaded.')).toHaveCount(0);
+    await expect(page.getByText('Not found', { exact: true })).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+}
