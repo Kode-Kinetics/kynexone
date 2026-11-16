@@ -12,7 +12,7 @@
  */
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
 import { approvalsApi, type ApprovalRequest } from '../../api/approvals';
 import { establishmentBlockFromError } from '../../api/establishment';
@@ -48,17 +48,26 @@ export function LeaveDecisionDrawer({ item, onClose, onDecided }: {
   // if the request it loads is anything else, there is no decision here, only the way into the queue.
   const isLeave = req?.entityName === 'LeaveRequest';
 
+  // The request the drawer is showing now. A read that answers after the reviewer has moved on (closed
+  // the drawer, or opened another row) must not land: it would put one person's request under another's
+  // name, and Approve would decide the wrong one.
+  const current = useRef<string | null>(null);
+  current.current = id;
+
   const load = useCallback(async (rid: string) => {
     setState('loading');
     try {
       const r = await approvalsApi.get(rid);
+      if (current.current !== rid) return;
       setReq(r);
       setState('idle');
       if (r.entityName === 'LeaveRequest') {
-        leaveRequestsApi.statutoryHistory([r.entityId]).then((h) => setStatutory(h[r.entityId] ?? null)).catch(() => setStatutory(null));
+        leaveRequestsApi.statutoryHistory([r.entityId])
+          .then((h) => { if (current.current === rid) setStatutory(h[r.entityId] ?? null); })
+          .catch(() => { if (current.current === rid) setStatutory(null); });
       }
     } catch {
-      setState('failed');
+      if (current.current === rid) setState('failed');
     }
   }, []);
 
@@ -68,7 +77,8 @@ export function LeaveDecisionDrawer({ item, onClose, onDecided }: {
   }, [id, load]);
 
   const decide = async (decision: 'Approve' | 'Reject') => {
-    if (!req || !item || saving || !isLeave) return;
+    // Only ever decide the request that belongs to the row that is open.
+    if (!req || !item || saving || !isLeave || req.id !== item.id) return;
     if (decision === 'Reject' && comments.trim().length < 5) {
       setProblem(t('Add a clear rejection reason of at least 5 characters before rejecting.'));
       return;

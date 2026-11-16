@@ -458,6 +458,37 @@ test.describe('HR Command Center: one-screen stage', () => {
     expect(over).toBeLessThanOrEqual(1);
   });
 
+  test('a slow answer for a request the reviewer already left never replaces the request now open, and the decision goes to the one shown', async ({ page }) => {
+    test.skip(!stageOn(page), 'the stage needs at least 1280 x 740');
+    await open(page, { rich: true });
+    let releaseA: () => void = () => {};
+    const heldA = new Promise<void>((r) => { releaseA = r; });
+    const posts: string[] = [];
+    await page.route('**/api/approval-requests/a0**', async (route) => {
+      if (route.request().method() === 'POST') { posts.push('a0'); return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }); }
+      await heldA; // Raj's request is still loading when the reviewer moves on
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(leaveRequest()) });
+    });
+    const amira = { ...leaveRequest(), id: 'a1', entityId: 'lr1', title: 'Annual Leave - Amira Mansour', requestedForEmployeeId: 8 };
+    await page.route('**/api/approval-requests/a1**', (route) => {
+      if (route.request().method() === 'POST') { posts.push('a1'); return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }); }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(amira) });
+    });
+    await page.getByRole('button', { name: /Review.*Raj Krishnamurthy/ }).click();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await page.getByRole('button', { name: /Review.*Amira Mansour/ }).click();
+    const drawer = page.getByRole('dialog');
+    await expect(drawer.getByRole('button', { name: 'Approve' })).toBeVisible();
+    releaseA();
+    // Give Raj's late answer time to land, then prove it changed nothing.
+    await page.waitForTimeout(300);
+    await expect(drawer.getByText('Raj Krishnamurthy')).toHaveCount(0);
+    await drawer.getByRole('button', { name: 'Approve' }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'Amira Mansour' })).toBeVisible();
+    expect(posts).toEqual(['a1']);
+  });
+
   test('a decision made while a refresh is running still gets its own reload afterwards', async ({ page }) => {
     test.skip(!stageOn(page), 'the stage needs at least 1280 x 740');
     let fulls = 0;
