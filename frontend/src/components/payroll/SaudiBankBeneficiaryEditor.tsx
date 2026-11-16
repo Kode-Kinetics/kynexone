@@ -85,7 +85,11 @@ const riyadhToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Riy
 
 type Loaded = { id: number; label: string; parsed: Parsed };
 
-export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChange, initialEmployeeId }: {
+export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChange, initialEmployeeId, lockEmployee = false, onSentForApproval }: {
+  /** Opened from one blocker's Fix: the employee cannot be switched and there is no reload. */
+  lockEmployee?: boolean;
+  /** The change was submitted for approval (not applied yet). */
+  onSentForApproval?: (employeeId: number) => void;
   employeeIds: number[];
   /** "CODE · Name" by employee id, from the batch's records. */
   employeeLabels?: Record<number, string>;
@@ -168,7 +172,8 @@ export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChan
     setBusy(true); setMsg(null);
     try {
       const res = await employeesApi.update(id, riyadhToday(), { wpsBankDetails: JSON.stringify(next) });
-      onChange?.(); // any submitted change invalidates the parent's last validation
+      // An applied change invalidates the parent's last check; one sent for approval changes nothing yet (the parent says so).
+      if (res.status === 202) onSentForApproval?.(id); else onChange?.();
       if (!mounted.current || req !== reqRef.current) return;
       if (res.status === 202) {
         const ref = (res.data as { approvalRequestId?: string } | undefined)?.approvalRequestId ?? '';
@@ -211,12 +216,12 @@ export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChan
           <div className="flex flex-wrap items-end gap-2">
             <div className="min-w-[12rem] flex-1">
               <label htmlFor={fid('emp')} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{c.employee}</label>
-              <select id={fid('emp')} className="input w-full" value={selected ?? ''} onChange={(e) => onSelect(e.target.value)} disabled={busy}>
+              <select id={fid('emp')} className="input w-full" value={selected ?? ''} onChange={(e) => onSelect(e.target.value)} disabled={busy || (lockEmployee && selected != null)}>
                 <option value="">{c.choose}</option>
                 {ids.map((id) => <option key={id} value={id}>{loaded?.id === id ? loaded.label : employeeLabel(id, employeeLabels, (n) => `#${n}`)}</option>)}
               </select>
             </div>
-            {selected != null && (
+            {selected != null && !lockEmployee && (
               <button type="button" className={`${btnCls} border border-slate-200 text-slate-600 dark:border-white/10 dark:text-slate-300`}
                 onClick={() => { setMsg(null); void fetchOne(selected, true); }} disabled={loading || busy}>
                 <RefreshCw className="h-4 w-4" aria-hidden="true" /> {c.reload}

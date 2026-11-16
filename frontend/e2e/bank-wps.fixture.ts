@@ -12,13 +12,15 @@ export const RUN = {
   totalEmployerStatutoryCost: 10206.25, employeeCount: 9, createdAtUtc: '2026-11-14T00:50:00Z', processedAtUtc: '2026-11-14T00:51:00Z', lockedAtUtc: '2026-11-14T00:53:00Z',
 };
 export const BATCH = {
-  id: BATCH_ID, payrollRunId: RUN_ID, batchNumber: 'PAY-202611-220353', paymentMethod: 'WPS', totalAmount: 133588.9, currency: 'SAR', status: 'Created', wpsStatus: 'Draft',
+  id: BATCH_ID, payrollRunId: RUN_ID, batchNumber: 'PAY-202611-220353', paymentMethod: 'WPS', totalAmount: 129438.9, currency: 'SAR', status: 'Created', wpsStatus: 'Draft',
   effectiveWpsStatus: 'Draft', wpsStatusLabel: 'Draft', wpsStatusChangedAtUtc: null, wpsSubmissionReference: null, wpsRejectionReason: null, createdAtUtc: '2026-11-14T01:05:00Z',
-  acceptanceEvidenceCount: 0, isSaudi: true, generatedFileLabel: null, paymentExclusions: [], excludedTotal: 0, allowedNextStatuses: ['Generated'],
+  acceptanceEvidenceCount: 0, isSaudi: true, generatedFileLabel: null, allowedNextStatuses: ['Generated'],
+  // One cash employee is paid outside the file: run net 133,588.90 − 4,150.00 = 129,438.90 in the file, and the records sum to it.
+  paymentExclusions: [{ employeeId: 300, employeeCode: 'EVT2-0010', amount: 4150, reasonCode: 'paid_outside_bank_file', reason: 'Paid by cash, outside the bank file.' }], excludedTotal: 4150,
 };
 export const NAMES = ['Maha Almutairi', 'Layla Al-Harbi', 'Fahad Alharbi', 'Nora Alharbi', 'Khalid Alotaibi', 'Sara Alzahrani', 'Omar Aldosari', 'Huda Alqahtani', 'Yousef Alshehri'];
 export const RECORDS = NAMES.map((name, i) => ({
-  id: `r${i + 1}`, paymentBatchId: BATCH_ID, employeeId: 200 + i, employeeName: name, employeeCode: `EVT2-${String(i + 1).padStart(4, '0')}`, amount: 12000 + i * 350,
+  id: `r${i + 1}`, paymentBatchId: BATCH_ID, employeeId: 200 + i, employeeName: name, employeeCode: `EVT2-${String(i + 1).padStart(4, '0')}`, amount: i === 0 ? 20838.9 : 12000 + i * 350,
   iban: `SA03800000006080101675${10 + i}`, wpsReference: `REF-${i + 1}`, status: 'Pending',
 }));
 export const SETTINGS = {
@@ -63,6 +65,14 @@ export const bankHandler = (o: Opts = {}): Handler => (path, search, method, rou
   if (path === '/api/payroll/final-settlements') return { outstandingTotal: 0, note: '', rows: [] };
   if (path === '/api/finance/gl/journal-exports/formats' || path === '/api/finance/gl/journal-exports') return [];
   if (/^\/api\/payroll\/runs\/[^/]+\/gl-journal$/.test(path)) return { runId: RUN_ID, period: '2026-11', currency: 'SAR', entries: [], totalDebits: 0, totalCredits: 0, isBalanced: true, isPosted: true };
+  // The run's payslips (Payroll Runs lists them for a locked run).
+  if (/^\/api\/payroll\/runs\/[^/]+\/slips$/.test(path)) {
+    const items = RECORDS.map((r, i) => ({ id: `s${i + 1}`, runId: RUN_ID, employeeId: r.employeeId, employeeCode: r.employeeCode, employeeName: r.employeeName, department: 'Operations',
+      basicSalary: r.amount, housingAllowance: 0, transportAllowance: 0, otherAllowances: 0, grossSalary: r.amount, deductions: 0, netSalary: r.amount, status: 'Locked',
+      employeeStatutoryTotal: 0, employerStatutoryTotal: 0, loanDeductions: 0,
+      arrearsAmount: 0, ytdGross: r.amount * 11, ytdNet: r.amount * 11, statutoryBasis: r.amount, gosiCohort: 'Saudi', paidDays: 30, prorationFactor: 1, prorationDenominatorDays: 30, paidFromDate: null, isFinalWageMonth: false }));
+    return { items, total: items.length, page: 1, pageSize: 200 };
+  }
   if (path === '/api/payroll/reports/summary') return { totalRuns: 1, lockedRuns: 1, totalEmployeesPaid: 9, totalGrossYtd: 144856.25, totalNetYtd: 133588.9 };
   if (path === '/api/payroll/overview') return { year: 2026, month: 11, totalCompanies: 1, totalActiveEmployees: 9, totalGrossPayroll: 144856.25, totalNetPayroll: 133588.9, totalValidationErrors: 0, totalPendingApprovals: 0, companies: [] };
   if (/^\/api\/payroll\/runs\/[^/]+\/processing$/.test(path)) return { runId: RUN_ID, jobId: null, status: 'Idle', processedEmployees: null, totalEmployees: null, startedAtUtc: null, finishedAtUtc: null, errorCode: null };
@@ -92,7 +102,7 @@ export const bankHandler = (o: Opts = {}): Handler => (path, search, method, rou
   if (path === `${bp}/companies/c1/settings`) return o.settings ?? SETTINGS;
   if (path === `${bp}/companies/c1/templates`) return [];
   if (path === `${bp}/batches/${BATCH_ID}/context`) return { companyId: 'c1', companyName: 'Acme Arabia', countryCode: 'SA', runStatus: 'Locked', existingExport: o.existingExport ?? null };
-  if (path === `${bp}/batches/${BATCH_ID}/validate`) return { canExport: true, errors: [], warnings: [], employeeCount: 9, totalAmount: 133588.9, currency: 'SAR', formatId: 'anb-connect-csv-v1', ...(o.validation ?? {}) };
+  if (path === `${bp}/batches/${BATCH_ID}/validate`) return { canExport: true, errors: [], warnings: [], employeeCount: 9, totalAmount: 129438.9, currency: 'SAR', formatId: 'anb-connect-csv-v1', ...(o.validation ?? {}) };
   if (path === `${bp}/batches/${BATCH_ID}/download`) {
     void route.fulfill({ status: 200, headers: { 'content-type': 'application/zip', 'content-disposition': 'attachment; filename="bank-file.zip"' }, body: 'PK' });
     return HANDLED;
@@ -101,7 +111,7 @@ export const bankHandler = (o: Opts = {}): Handler => (path, search, method, rou
   if (path === `${bp}/batches/${BATCH_ID}/generate`) {
     const body = JSON.parse(route.request().postData() ?? '{}') as { batchReference: string; paymentDate: string };
     return { id: '44444444-4444-4444-8444-444444444444', formatId: 'anb-connect-csv-v1', files: [{ name: 'header.csv', sha256: 'a'.repeat(64) }, { name: 'body.csv', sha256: 'b'.repeat(64) }],
-      batchReference: body.batchReference, paymentDate: body.paymentDate, employeeCount: 9, totalAmount: 133588.9, downloadUrl: `${bp}/batches/${BATCH_ID}/download` };
+      batchReference: body.batchReference, paymentDate: body.paymentDate, employeeCount: 9, totalAmount: 129438.9, downloadUrl: `${bp}/batches/${BATCH_ID}/download` };
   }
   return undefined;
 };

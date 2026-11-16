@@ -24,7 +24,7 @@ const say = (locale: Locale, key: string, params?: Record<string, string | numbe
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const EMPTY_SETUP = { formatId: '', molEstablishmentId: '', mainAccountNumber: '', organizationName: '', organizationAddress1: '', organizationAddress2: '', organizationAddress3: '', companyName: '', narrative: '', batchType: '', autoWpsUpload: false, nationalUnifiedNo: '', debitAccountIban: '' };
-const FILE = { id: '44444444-4444-4444-8444-444444444444', formatId: 'anb-connect-csv-v1', files: [{ name: 'header.csv', sha256: 'a'.repeat(64) }, { name: 'body.csv', sha256: 'b'.repeat(64) }], batchReference: '202611220353', paymentDate: '2026-11-30', employeeCount: 9, totalAmount: 133588.9 };
+const FILE = { id: '44444444-4444-4444-8444-444444444444', formatId: 'anb-connect-csv-v1', files: [{ name: 'header.csv', sha256: 'a'.repeat(64) }, { name: 'body.csv', sha256: 'b'.repeat(64) }], batchReference: '202611220353', paymentDate: '2026-11-30', employeeCount: 9, totalAmount: 129438.9 };
 const GENERATED = { ...BATCH, status: 'FileGenerated', wpsStatus: 'Generated', effectiveWpsStatus: 'Generated', wpsStatusLabel: 'Generated', bankFileAvailable: true, bankFileGenerated: true, allowedNextStatuses: ['Downloaded', 'Submitted'] };
 const SUBMITTED = { ...GENERATED, wpsStatus: 'Submitted', effectiveWpsStatus: 'Submitted', wpsStatusLabel: 'Submitted', wpsSubmissionReference: 'ANB-55821-0924', wpsStatusChangedAtUtc: '2026-11-16T11:05:00Z', allowedNextStatuses: ['Accepted', 'Rejected'] };
 const ACCEPTED = { ...SUBMITTED, wpsStatus: 'Accepted', effectiveWpsStatus: 'Accepted', wpsStatusLabel: 'Accepted', allowedNextStatuses: ['Paid'] };
@@ -58,7 +58,10 @@ async function expectInView(page: Page) {
   await page.evaluate(() => window.scrollTo(0, 0));
   const vh = page.viewportSize()!.height;
   const heading = await page.locator('[data-step-panel] [data-step-heading]').boundingBox();
-  expect(heading!.y, 'step heading top').toBeLessThanOrEqual(480);
+  // The standing "recorded as submitted" warning sits above the step by ruling; the heading may move down by its height.
+  const banner = page.getByTestId('bank-submitted-banner');
+  const bannerHeight = (await banner.count()) ? (await banner.boundingBox())!.height + 12 : 0;
+  expect(heading!.y, 'step heading top').toBeLessThanOrEqual(480 + bannerHeight);
   const action = page.locator('[data-primary-action]');
   if (await action.count()) {
     const box = await action.boundingBox();
@@ -97,7 +100,7 @@ const CASES: Case[] = [
   },
   {
     name: '5 waiting for the bank', opts: { batches: [SUBMITTED], existingExport: FILE, records: withStatus(6, 0) },
-    want: l => ({ stage: 'response', chip: 'submitted', chipText: say(l, 'Submitted — waiting for the bank ({answered} of {total})', { answered: 6, total: 9 }), strip: 'response', primary: say(l, 'Record the bank’s response'), next: say(l, 'Next: Finance settles the payments after the bank confirms.') }),
+    want: l => ({ stage: 'response', chip: 'submitted', chipText: say(l, 'Submitted — waiting for the bank ({waiting} of {total} waiting)', { waiting: 3, total: 9 }), strip: 'response', primary: say(l, 'Record the bank’s response'), next: say(l, 'Next: Finance settles the payments after the bank confirms.') }),
   },
   {
     name: '5 all confirmed', opts: { batches: [ACCEPTED], existingExport: FILE, records: withStatus(9, 0) },
@@ -133,8 +136,8 @@ for (const locale of LOCALES) {
       let fixed = false;
       const extra: Handler = (path, _s, method) => {
         if (path === `${bp}/batches/${BATCH_ID}/validate` && method === 'POST') {
-          return fixed ? { canExport: true, errors: [], warnings: [], employeeCount: 9, totalAmount: 133588.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' }
-            : { ...BLOCKER, warnings: [], employeeCount: 9, totalAmount: 133588.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' };
+          return fixed ? { canExport: true, errors: [], warnings: [], employeeCount: 9, totalAmount: 129438.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' }
+            : { ...BLOCKER, warnings: [], employeeCount: 9, totalAmount: 129438.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' };
         }
         if (path === '/api/employees/203' && method === 'GET') return { id: 203, employeeCode: 'EVT2-0004', fullName: 'Nora Alharbi', wpsBankDetails: '' };
         if (path === '/api/employees/203' && method === 'PUT') { fixed = true; return { id: 203 }; }
@@ -228,7 +231,7 @@ for (const locale of LOCALES) {
       await dialog.getByLabel(say(locale, 'Bank submission reference')).fill('ANB-55821-0924');
       await dialog.getByRole('button', { name: say(locale, 'Record as submitted') }).click();
       await expect(dialog).toHaveCount(0);
-      await expectStage(page, { stage: 'response', chip: 'submitted', chipText: say(locale, 'Submitted — waiting for the bank ({answered} of {total})', { answered: 0, total: 9 }), strip: 'response', primary: say(locale, 'Record the bank’s response') });
+      await expectStage(page, { stage: 'response', chip: 'submitted', chipText: say(locale, 'Submitted — waiting for the bank ({waiting} of {total} waiting)', { waiting: 9, total: 9 }), strip: 'response', primary: say(locale, 'Record the bank’s response') });
       expect(posts.filter(p => p.endsWith('/wps-status'))).toHaveLength(1);
       await expect(page.getByTestId('bank-guide-confirmation')).toContainText('ANB-55821-0924');
     });
@@ -279,6 +282,141 @@ for (const locale of LOCALES) {
     });
   });
 }
+
+// ── Money ties, batches, the check step, step 5 (review fixes) ───────────────────────────────────────
+
+test.describe('the reviews\' rules', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test('a file that does not tie to the run cannot be created; the tie-out is labelled and neutral until the check has run', async ({ page }) => {
+    const short = { ...BATCH, totalAmount: 129338.9 };
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [short] }), waitMs: 2500, stages: 'default' });
+    const diff = page.getByTestId('bank-file-facts').locator('[data-matches]').first();
+    await expect(diff).toHaveAttribute('data-matches', 'false', { timeout: 90_000 });
+    await expect(page.getByTestId('bank-file-facts')).toContainText('Run net 133,588.90 − paid outside the file 4,150.00 = file 129,438.90');
+    await page.getByTestId('bank-guide-primary').click();
+    await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'create');
+    await expect(page.getByTestId('bank-guide-primary')).toBeDisabled();
+    await expect(page.getByTestId('bank-guide-primary-reason')).toContainText('The file total differs from the approved run by');
+  });
+
+  test('a tying file: the difference is neutral before the check and passed (green) after it', async ({ page }) => {
+    await boot(page, { locale: 'en', url, routes: bankHandler(), waitMs: 2500, stages: 'default' });
+    const diff = page.getByTestId('bank-file-facts').locator('[data-matches]').first();
+    await expect(diff).toHaveAttribute('data-checked', 'false', { timeout: 90_000 });
+    await expect(diff).not.toHaveClass(/text-success-fg/);
+    await page.getByTestId('bank-guide-primary').click();
+    await expect(diff).toHaveAttribute('data-checked', 'true');
+    await expect(diff).toHaveClass(/text-success-fg/);
+  });
+
+  test('step 5: each bucket carries its money, they add up to the file, and the duplicate warning stands above the step', async ({ page }) => {
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [SUBMITTED], existingExport: FILE, records: withStatus(6, 1) }), waitMs: 2500, stages: 'default' });
+    const buckets = page.getByTestId('bank-response-buckets');
+    await expect(buckets).toBeVisible({ timeout: 90_000 });
+    await expect(buckets).toContainText('6 confirmed paid');
+    await expect(buckets).toContainText('1 returned');
+    await expect(buckets).toContainText('2 waiting');
+    await expect(page.getByTestId('bank-response-tie')).toContainText('Confirmed + Returned + Waiting = SAR 129,438.90 (file)');
+    await expect(page.getByTestId('bank-response-mismatch')).toHaveCount(0);
+    await expect(page.getByTestId('bank-returned-lines')).toContainText('Omar Aldosari');
+    const banner = page.getByTestId('bank-submitted-banner');
+    await expect(banner).toContainText('ANB-55821-0924');
+    await expect(banner).toContainText('Uploading this file again can pay employees twice.');
+    const bannerBox = (await banner.boundingBox())!;
+    const panelBox = (await page.locator('[data-step-panel]').boundingBox())!;
+    expect(bannerBox.y).toBeLessThan(panelBox.y);
+    await expect(page.getByRole('button', { name: 'Download again (audit copy)' })).toBeVisible();
+    await expect(page.getByTestId('bank-guide-chip')).toHaveText('Submitted — waiting for the bank (2 of 9 waiting)');
+  });
+
+  test('step 5: records that do not add up to the file say so in red', async ({ page }) => {
+    const off = withStatus(6, 1).map((r, i) => (i === 8 ? { ...r, amount: r.amount - 50 } : r));
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [SUBMITTED], existingExport: FILE, records: off }), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-response-mismatch')).toContainText('Doesn’t match the file by SAR 50.00', { timeout: 90_000 });
+  });
+
+  test('two open batches for one run: each row has its people, channel and amount, the matching one is tagged, and both warn', async ({ page }) => {
+    const other = { ...BATCH, id: 'b2', batchNumber: 'PAY-202611-220354', paymentMethod: 'BankTransfer', totalAmount: 133588.9, paymentExclusions: [], excludedTotal: 0 };
+    const extra: Handler = (path) => (path === '/api/payroll/payment-batches/b2/records' ? RECORDS.slice(0, 4) : undefined);
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [BATCH, { ...other, payrollRunId: RUN_ID }], extra }), waitMs: 2500, stages: 'default' });
+    const rows = page.getByTestId('bank-batch-choices');
+    await expect(rows.locator(`[data-batch-row="${BATCH_ID}"]`)).toContainText('9 employees', { timeout: 90_000 });
+    await expect(rows.locator('[data-batch-row="b2"]')).toContainText('Bank transfer');
+    await expect(rows.locator('[data-batch-row="b2"]')).not.toContainText('BankTransfer');
+    await expect(rows.locator(`[data-batch-row="${BATCH_ID}"]`).getByTestId('bank-batch-matches')).toBeVisible();
+    await expect(page.getByTestId('bank-batch-overlap')).toHaveCount(2);
+    await expect(page.getByTestId('bank-batch-overlap').first()).toContainText('also pays this run');
+  });
+
+  test('a blocker shows no raw code; its Fix is locked to that employee; a fix sent for approval says so', async ({ page }) => {
+    const extra: Handler = (path, _s, method, route) => {
+      if (path === '/api/employees/203' && method === 'GET') return { id: 203, employeeCode: 'EVT2-0004', fullName: 'Nora Alharbi', wpsBankDetails: '' };
+      if (path === '/api/employees/203' && method === 'PUT') { void route.fulfill({ status: 202, json: { approvalRequestId: 'abcdef1234' } }); return HANDLED; }
+      return undefined;
+    };
+    await boot(page, { locale: 'en', url, routes: bankHandler({ validation: BLOCKER, extra }), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-guide-primary')).toBeEnabled({ timeout: 90_000 });
+    await page.getByTestId('bank-guide-primary').click();
+    const blockers = page.getByTestId('bank-blockers');
+    await expect(blockers).toContainText('The bank code (BIC) is missing for this employee.');
+    await expect(blockers).not.toContainText('bic_missing');
+    await blockers.getByTestId('bank-blocker-fix').click();
+    const drawer = page.getByRole('dialog');
+    const who = drawer.getByLabel('Employee (from this batch)');
+    await expect(who).toHaveValue('203', { timeout: 15_000 });
+    await expect(who).toBeDisabled();
+    await expect(drawer.getByRole('button', { name: 'Reload employee' })).toHaveCount(0);
+    for (const [i, v] of ['ARNBSARI', 'Riyadh', 'Olaya', 'Building 10'].entries()) await drawer.locator('input[dir="ltr"]').nth(i).fill(v);
+    await drawer.locator('form button[type="submit"]').click();
+    await expect(drawer).toContainText('Submitted for separate approval', { timeout: 15_000 });
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('bank-fix-pending')).toHaveText('Fix sent for approval. Check again once it is approved.');
+    await expect(blockers).toContainText('Fix sent for approval.');
+  });
+
+  test('the payable employees are listed (folded) at the check', async ({ page }) => {
+    await boot(page, { locale: 'en', url, routes: bankHandler(), waitMs: 2500, stages: 'default' });
+    const list = page.getByTestId('bank-employees-in-file');
+    await expect(list).toContainText('Employees in this file (9)', { timeout: 90_000 });
+    await list.locator('summary').click();
+    await expect(list).toContainText('Maha Almutairi');
+    await expect(list).toContainText('••');
+  });
+
+  test('the company is named first in the facts', async ({ page }) => {
+    await boot(page, { locale: 'en', url, routes: bankHandler(), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-file-facts').locator('dt').first()).toHaveText('Company', { timeout: 90_000 });
+    await expect(page.getByTestId('bank-file-facts')).toContainText('Acme Arabia');
+  });
+});
+
+for (const [w, h] of [[1366, 768], [1440, 900]] as const) {
+  test.describe(`the run bar is one row on every section (${w})`, () => {
+    test.use({ viewport: { width: w, height: h } });
+    for (const tab of ['runs', 'validation', 'approvals', 'bank-wps', 'payment-tracking']) {
+      test(tab, async ({ page }) => {
+        await boot(page, { locale: 'en', url: `/payroll?tab=${tab}&run=${RUN_ID}`, routes: bankHandler(), waitMs: 2500, stages: 'default' });
+        const bar = page.getByTestId('run-pipeline');
+        await expect(page.getByTestId('pipeline-folded-stage')).toBeVisible({ timeout: 90_000 });
+        expect((await bar.boundingBox())!.height).toBeLessThanOrEqual(56);
+        await expect(page.getByTestId('pipeline-next-reason')).toHaveCount(0);
+        // The folded app menu shows icons only: no cut-off letters for its groups.
+        const groups = page.getByRole('navigation', { name: 'Primary navigation' }).locator('button[aria-controls^="sidebar-group-"]');
+        for (const text of await groups.allInnerTexts()) expect(text.trim()).toBe('');
+      });
+    }
+  });
+}
+
+test.describe('Payroll Runs on a locked run', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+  test('lists its payslips and never says "Click Process"', async ({ page }) => {
+    await boot(page, { locale: 'en', url: `/payroll?tab=runs&run=${RUN_ID}`, routes: bankHandler(), waitMs: 3000, stages: 'default' });
+    await expect(page.getByTestId('payroll-section-panel')).toContainText('Maha Almutairi', { timeout: 90_000 });
+    await expect(page.getByText('No slips. Click Process to generate.')).toHaveCount(0);
+  });
+});
 
 // ── The Payroll shell ───────────────────────────────────────────────────────────────────────────────
 
@@ -335,6 +473,11 @@ for (const locale of LOCALES) {
       const bar = page.locator('[data-action-bar]');
       expect(await bar.evaluate(el => getComputedStyle(el).position)).toBe('fixed');
       await expect(page.getByTestId('bank-guide-primary')).toBeInViewport();
+      const fab = page.locator('[data-assistant-launcher]');
+      if (await fab.count()) {
+        const f = (await fab.boundingBox())!; const b = (await bar.boundingBox())!;
+        expect(f.y + f.height, 'the assistant button sits above the action bar').toBeLessThanOrEqual(b.y);
+      }
       await page.getByTestId('payroll-section-toggle').click();
       const sheet = page.getByRole('dialog', { name: say(locale, 'Payroll sections') });
       await expect(sheet).toBeVisible();
@@ -363,7 +506,7 @@ test.describe('walk-through as a payroll officer (EN, 1440)', () => {
     let fixed = false;
     let exported: unknown = null;
     let submitted = false;
-    const B1 = { ...BATCH, paymentExclusions: [{ employeeId: 300, employeeCode: 'EVT2-0010', amount: 4150, reasonCode: 'paid_outside_bank_file', reason: 'Paid by cash' }], excludedTotal: 4150, totalAmount: 129438.9 };
+    const B1 = BATCH;
     const extra: Handler = (path, _s, method, route) => {
       if (path === `${bp}/companies/c1/settings` && method === 'PUT') { setup = JSON.parse(route.request().postData() ?? '{}'); return setup; }
       if (path === `${bp}/companies/c1/settings`) return setup;
@@ -438,14 +581,14 @@ test.describe('walk-through as a payroll officer (EN, 1440)', () => {
     await snap(page, 'walk-11-record-submitted');
     await page.getByRole('dialog').getByRole('button', { name: 'Record as submitted' }).click();
 
-    await expectStage(page, { stage: 'response', chip: 'submitted', chipText: 'Submitted — waiting for the bank (0 of 9)', strip: 'response', primary: 'Record the bank’s response' });
+    await expectStage(page, { stage: 'response', chip: 'submitted', chipText: 'Submitted — waiting for the bank (9 of 9 waiting)', strip: 'response', primary: 'Record the bank’s response' });
     await snap(page, 'walk-12-waiting');
   });
 });
 
 test.describe('mockup-matching screenshots', () => {
   test.skip(!SHOTS, 'BANK_GUIDED_SHOTS is not set');
-  const B1 = { ...BATCH, paymentExclusions: [{ employeeId: 300, employeeCode: 'EVT2-0010', amount: 4150, reasonCode: 'paid_outside_bank_file', reason: 'Paid by cash' }], excludedTotal: 4150, totalAmount: 129438.9 };
+  const B1 = BATCH;
   // The check answers for the same batch (its total is the batch's, after the one left out).
   const sameTotal: Handler = (path, _s, method) => (path === `${bp}/batches/${BATCH_ID}/validate` && method === 'POST'
     ? { canExport: true, errors: [], warnings: [], employeeCount: 9, totalAmount: 129438.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' } : undefined);

@@ -64,7 +64,7 @@ import { SectionNav } from '../components/ui/SectionNav';
 import { PayrollSectionHeader, PAYROLL_SECTION_HEADING_ID } from '../components/payroll/PayrollSectionHeader';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
 import { BankFileGuide, useBankHandOver, type BankPanelData, type GuideSlots } from '../components/payroll/BankFileGuide';
-import { BankFileFacts } from '../components/payroll/BankFileFacts';
+import { BankFileFacts, tieOut } from '../components/payroll/BankFileFacts';
 import { RecordSubmittedDialog } from '../components/payroll/RecordSubmittedDialog';
 import { derivePayOut, pickPayOutBatch, type PayOutStepKey } from '../lib/payOut';
 import { EmptyState } from '../components/ui/EmptyState';
@@ -230,6 +230,12 @@ const TAB_GROUPS: { id: string; label: string; purpose: string; ids: Tab[] }[] =
   { id: 'settle',  label: msg('Settle and check'),  purpose: msg('Settle end-of-service and final pay, and check the payroll for anomalies.'), ids: ['eosb', 'final-settlement', 'ai-validation', 'audit-integrity'] },
 ];
 const groupOf = (tab: Tab) => TAB_GROUPS.find(g => g.ids.includes(tab)) ?? TAB_GROUPS[0];
+/** A section's own purpose line; the others still use their group's sentence (follow-up). */
+const TAB_PURPOSE: Partial<Record<Tab, string>> = {
+  runs: msg('Create, process and lock the month’s run.'),
+  validation: msg('Check the run for problems before it goes to approval.'),
+  approvals: msg('See who has approved this run and what is waiting.'),
+};
 
 // ── Payroll Setup Wizard ───────────────────────────────────────────────────────
 
@@ -1584,7 +1590,7 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                       {slipsError && <tr><td colSpan={9} role="alert" className="py-10 text-center text-sm text-rose-600 dark:text-rose-400">{slipsError}</td></tr>}
-                      {!slipsError && slips.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">{t('No slips. Click Process to generate.')}</td></tr>}
+                      {!slipsError && slips.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">{selectedRun.status === 'Draft' ? t('No slips. Click Process to generate.') : t('No payslips came back for this run. Reload the page, or open Payslips.')}</td></tr>}
                       {slips.map(s => (
                         <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                           <td className="px-3 py-2.5">
@@ -1943,7 +1949,8 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <select aria-label={t('Select payroll run')} className={`${sel} flex-1 max-w-xs`} value={runId} onChange={e => setRunId(e.target.value)}>
+        <label htmlFor="validation-run" className="shrink-0 text-body-sm font-medium text-fg-muted">{t('Payroll run')}</label>
+        <select id="validation-run" aria-label={t('Select payroll run')} className="select flex-1 max-w-xs" value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">{t('Select a payroll run…')}</option>
           <RunSelectOptions runs={runs} />
         </select>
@@ -2493,7 +2500,8 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
       </div>
 
       <div className="flex items-center gap-3">
-        <select aria-label={t('Select payroll run to approve')} className={`${sel} flex-1 max-w-xs`} value={runId} onChange={e => setRunId(e.target.value)}>
+        <label htmlFor="approvals-run" className="shrink-0 text-body-sm font-medium text-fg-muted">{t('Payroll run')}</label>
+        <select id="approvals-run" aria-label={t('Select payroll run to approve')} className="select flex-1 max-w-xs" value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">{t('Select run…')}</option>
           <RunSelectOptions runs={runs} />
         </select>
@@ -2832,6 +2840,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
   const { hasPermission } = useAuth();
   const canExport = paymentActionsAllowed(hasPermission, ['create']);
   const fmtAmt = useFmtAmt();
+  const monthLabel = useMonthLabel();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   // The run is the page's: the run bar's picker is the only run control (clearing it empties this tab too).
@@ -2863,6 +2872,8 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
   const [chosenBatchId, setChosenBatchId] = useState<string | null>(null);
   const [submitOpen, setSubmitOpen] = useState(false);
   const panelMenu = useRef<GuideSlots['menu'] | null>(null);
+  // How many people each batch pays (its payment records), read only when there are batches to choose between.
+  const [batchCounts, setBatchCounts] = useState<Record<string, number>>({});
 
   useEffect(() => {
     setRunsState({ status: 'loading' });
@@ -2975,6 +2986,20 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
     fileMadeRef.current = flow.generated;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flow?.generated, flow?.gate, selectedBatch?.id]);
+
+  useEffect(() => {
+    const live = batches.filter(b => b.wpsStatus !== 'Voided');
+    if (live.length < 2) return;
+    let cancelled = false;
+    for (const b of live) {
+      if (batchCounts[b.id] !== undefined) continue;
+      payrollApi.paymentRecords(b.id)
+        .then(rows => { if (!cancelled && Array.isArray(rows)) setBatchCounts(prev => ({ ...prev, [b.id]: rows.filter(r => r.status !== 'Cancelled').length })); })
+        .catch(() => { /* the count is left out, never guessed */ });
+    }
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batches]);
 
   const currentBatch = batches.find(b => b.wpsStatus !== 'Voided') ?? null;
   const batchFileGenerated = !!currentBatch && (currentBatch.status === 'FileGenerated' || (!!currentBatch.effectiveWpsStatus && currentBatch.effectiveWpsStatus !== 'Draft'));
@@ -3223,18 +3248,38 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
       {onNavigate && <button type="button" className="btn-secondary btn-sm" onClick={() => onNavigate('approvals')}>{t('Open Approvals')}</button>}
     </div>
   ) : liveBatches.length > 1 ? (
-    <fieldset className="space-y-2">
+    <fieldset className="space-y-2" data-testid="bank-batch-choices">
       <legend className="sr-only">{t('Payment batches of this run')}</legend>
-      {liveBatches.map(b => (
-        <label key={b.id} className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 ${chosenBatchId === b.id ? 'border-primary bg-primary-soft' : 'border-line hover:bg-surface-sunken'}`}>
-          <input type="radio" name="bank-batch-choice" value={b.id} checked={chosenBatchId === b.id} onChange={() => setChosenBatchId(b.id)} />
-          <span className="min-w-0 flex-1">
-            <span className="block font-mono text-body font-semibold text-fg"><bdi>{b.batchNumber}</bdi></span>
-            <span className="block text-meta text-fg-muted">{b.paymentMethod} · <bdi dir="ltr">{fmtAmt(b.totalAmount, b.currency)}</bdi></span>
-          </span>
-          <StatusBadge status={b.effectiveWpsStatus || b.wpsStatus || b.status} />
-        </label>
-      ))}
+      {liveBatches.map(b => {
+        const others = liveBatches.filter(o => o.id !== b.id);
+        const tie = tieOut(b, selectedRun);
+        const count = batchCounts[b.id];
+        return (
+          <div key={b.id} className={`rounded-xl border p-3 ${chosenBatchId === b.id ? 'border-primary bg-primary-soft' : 'border-line'}`} data-batch-row={b.id}>
+            <label className="flex cursor-pointer items-center gap-3">
+              <input type="radio" name="bank-batch-choice" value={b.id} checked={chosenBatchId === b.id} onChange={() => setChosenBatchId(b.id)} />
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-body font-semibold text-fg"><bdi>{b.batchNumber}</bdi></span>
+                  {tie && Math.abs(tie.difference) < 0.005 && <span className="badge badge-neutral" data-testid="bank-batch-matches">{t('Matches the run')}</span>}
+                </span>
+                <span className="block text-meta text-fg-muted">
+                  {count !== undefined && <>{t('{count, plural, one {# employee} other {# employees}}', { count })} · </>}
+                  {paymentMethodLabel(t, b.paymentMethod)} · <bdi dir="ltr">{fmtAmt(b.totalAmount, b.currency)}</bdi>
+                </span>
+              </span>
+              <StatusBadge status={b.effectiveWpsStatus || b.wpsStatus || b.status} />
+            </label>
+            {/* A warning, not a block: the server refuses a second live batch for a run, so two here are worth a look. */}
+            {others.map(o => (
+              <p key={o.id} role="note" className="mt-2 flex items-start gap-1.5 text-meta font-medium text-danger-fg" data-testid="bank-batch-overlap">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                {t('Batch {number} also pays this run. Each employee must be in one batch only, or they are paid twice.', { number: o.batchNumber })}
+              </p>
+            ))}
+          </div>
+        );
+      })}
     </fieldset>
   ) : (
     <div className="space-y-4">
@@ -3248,6 +3293,49 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
       {runFacts}
     </div>
   );
+  const runSummary = selectedRun && (
+    <div className="space-y-3" data-testid="bank-run-summary">
+      <p className="text-body font-semibold text-fg">{t('This run')}</p>
+      <dl className="space-y-2">
+        {[
+          [t('Payroll run'), monthLabel(selectedRun.month, selectedRun.year)],
+          [t('Run status'), <EnumLabel key="s" enum="PayrollRunStatus" value={selectedRun.status} />],
+          ...(selectedRun.lockedAtUtc ? [[t('Locked'), fx.dateTime(selectedRun.lockedAtUtc)]] : []),
+          [t('Employees'), fx.integer(selectedRun.employeeCount)],
+          [t('Run net pay'), <bdi key="n" dir="ltr">{fmtAmt(selectedRun.totalNetSalary, liveBatches[0]?.currency)}</bdi>],
+          ...(selectedBatch ? [[t('Payment batch'), <bdi key="b" className="font-mono">{selectedBatch.batchNumber}</bdi>], [t('Payment method'), paymentMethodLabel(t, selectedBatch.paymentMethod)]] : []),
+        ].map(([k, v]) => <div key={String(k)} className="grid grid-cols-[8.5rem_minmax(0,1fr)] items-baseline gap-3"><dt className="text-fg-muted">{k}</dt><dd className="text-end font-medium tabular-nums text-fg">{v}</dd></div>)}
+      </dl>
+    </div>
+  );
+
+  // Everyone the file pays (folded): code, name, IBAN tail and net, so joiners, leavers and partial pay can be seen before the check.
+  const peopleInFile = recordsState.status === 'ready' && records.length > 0 && (
+    <details className="rounded-lg border border-line" data-testid="bank-employees-in-file">
+      <summary className="cursor-pointer px-3 py-2 text-body-sm font-medium text-fg">{t('Employees in this file ({count})', { count: records.length })}</summary>
+      <div className="max-h-64 overflow-auto border-t border-line">
+        <table className="w-full text-body-sm">
+          <thead className="sticky top-0 bg-surface"><tr className="text-meta text-fg-muted">
+            <th className="px-3 py-2 text-start font-medium">{t('Code')}</th>
+            <th className="px-3 py-2 text-start font-medium">{t('Employee')}</th>
+            <th className="px-3 py-2 text-start font-medium">IBAN</th>
+            <th className="px-3 py-2 text-end font-medium">{t('Net pay')}</th>
+          </tr></thead>
+          <tbody className="divide-y divide-line">
+            {records.map(r => (
+              <tr key={r.id}>
+                <td className="whitespace-nowrap px-3 py-1.5 font-mono text-fg-muted"><bdi>{r.employeeCode ?? '—'}</bdi></td>
+                <td className="px-3 py-1.5 text-fg">{r.employeeName ? <bdi>{r.employeeName}</bdi> : runNames[r.employeeId] ? <EmployeeLabelText label={runNames[r.employeeId]} /> : t('Emp #{id}', { id: r.employeeId })}</td>
+                <td className="px-3 py-1.5 font-mono text-fg-muted"><bdi dir="ltr">{r.iban ? `••${r.iban.replace(/\s+/g, '').slice(-4)}` : t('Missing IBAN')}</bdi></td>
+                <td className="px-3 py-1.5 text-end tabular-nums text-fg"><bdi dir="ltr">{fx.number(r.amount, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</bdi></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+
   const batchView = selectedBatch && (
     <div className="space-y-3">
       <dl className="grid grid-cols-2 gap-3 text-body-sm">
@@ -3268,6 +3356,10 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
     const answered = payOut.answered;
     const pct = total ? Math.round(((answered ?? 0) / total) * 100) : 0;
     const file = data?.file;
+    const cur = batchRow?.currency;
+    const fileAmount = file?.totalAmount ?? batchRow?.totalAmount ?? null;
+    const gap = split && fileAmount !== null ? Math.round((fileAmount - split.totalAmount) * 100) / 100 : null;
+    const answeredBad = records.filter(r => /^(returned|rejected)$/i.test(r.status ?? ''));
     return (
       <div className="space-y-5">
         {total !== undefined && answered !== undefined && (
@@ -3276,21 +3368,55 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
             <div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={answered} aria-label={t('Bank response')} className="mt-3 h-2 overflow-hidden rounded-full bg-line" data-essential-motion="">
               <div className="h-full rounded-full bg-success transition-[width] duration-base ease-standard" style={{ width: `${pct}%` }} data-essential-motion="" />
             </div>
-            <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-body-sm text-fg">
-              {split ? (
-                <>
-                  <li className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-2.5 rounded bg-success" />{t('{count} confirmed paid', { count: split.paid })}</li>
-                  <li className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-2.5 rounded bg-danger" />{t('{count} returned', { count: split.returned })}</li>
-                  <li className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-2.5 rounded bg-line" />{t('{count} waiting', { count: split.waiting })} · <bdi dir="ltr">{fmtAmt(split.waitingAmount, batchRow?.currency)}</bdi></li>
-                </>
-              ) : (
-                // Without the payment records, only what the batch list says: answered and waiting (never a guessed split).
-                <li className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-2.5 rounded bg-line" />{t('{count} waiting', { count: total - answered })}</li>
-              )}
+            {split ? (
+              <>
+                {/* Each bucket with its money; together they must be the money in the file. */}
+                <dl className="mt-3 space-y-1.5 text-body-sm" data-testid="bank-response-buckets">
+                  {([
+                    ['bg-success', t('{count} confirmed paid', { count: split.paid }), split.paidAmount],
+                    ['bg-danger', t('{count} returned', { count: split.returned }), split.returnedAmount],
+                    ['bg-line-strong', t('{count} waiting', { count: split.waiting }), split.waitingAmount],
+                  ] as const).map(([dot, label, amount]) => (
+                    <div key={label} className="flex items-center justify-between gap-3">
+                      <dt className="inline-flex items-center gap-1.5 text-fg"><span aria-hidden="true" className={`h-2.5 w-2.5 rounded ${dot}`} />{label}</dt>
+                      <dd className="tabular-nums text-fg"><bdi dir="ltr">{fmtAmt(amount, cur)}</bdi></dd>
+                    </div>
+                  ))}
+                </dl>
+                {fileAmount !== null && (
+                  <p className="mt-2 border-t border-line pt-2 text-body-sm text-fg-muted" data-testid="bank-response-tie">
+                    {t('Confirmed + Returned + Waiting = {amount} (file)', { amount: fmtAmt(split.totalAmount, cur) })}
+                  </p>
+                )}
+                {gap !== null && Math.abs(gap) >= 0.005 && (
+                  <p role="alert" className="mt-1 text-body-sm font-semibold text-danger-fg" data-testid="bank-response-mismatch">
+                    {t('Doesn’t match the file by {amount}', { amount: fmtAmt(gap, cur) })}
+                  </p>
+                )}
+              </>
+            ) : (
+              // Without the payment records, only what the batch list says: answered and waiting (never a guessed split or amount).
+              <p className="mt-3 text-body-sm text-fg">{t('{count} waiting', { count: total - answered })}</p>
+            )}
+          </div>
+        )}
+        {answeredBad.length > 0 && (
+          <div className="rounded-xl border border-danger/40 p-4" data-testid="bank-returned-lines">
+            <p className="text-body font-semibold text-fg">{t('Returned or rejected ({count})', { count: answeredBad.length })}</p>
+            <ul className="mt-2 divide-y divide-line text-body-sm">
+              {answeredBad.map(r => (
+                <li key={r.id} className="flex items-center justify-between gap-3 py-1.5">
+                  <span className="min-w-0 text-fg">{r.employeeName ? <bdi>{r.employeeName}</bdi> : runNames[r.employeeId] ? <EmployeeLabelText label={runNames[r.employeeId]} /> : t('Emp #{id}', { id: r.employeeId })}</span>
+                  <span className="shrink-0 tabular-nums text-fg"><bdi dir="ltr">{fmtAmt(r.amount, cur)}</bdi></span>
+                </li>
+              ))}
             </ul>
+            <p className="mt-2 text-meta text-fg-muted">{t('Paying again creates a new payment batch with a new file reference. Never upload this file again.')}</p>
+            {onNavigate && <button type="button" className="mt-2 text-body-sm font-medium text-primary underline-offset-2 hover:underline" onClick={() => onNavigate('payment-tracking')}>{t('Open Payment Tracking')}</button>}
           </div>
         )}
         <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-body-sm sm:grid-cols-3">
+          {data?.company && <div><dt className="text-fg-muted">{t('Company')}</dt><dd className="font-medium text-fg"><bdi>{data.company}</bdi></dd></div>}
           {wps === 'Submitted' && batchRow?.wpsStatusChangedAtUtc && <div><dt className="text-fg-muted">{t('Recorded as submitted on')}</dt><dd className="font-medium text-fg">{fx.dateTime(batchRow.wpsStatusChangedAtUtc)}</dd></div>}
           {batchRow?.wpsSubmissionReference && <div><dt className="text-fg-muted">{t('Bank reference')}</dt><dd className="font-mono font-medium text-fg"><bdi dir="ltr">{batchRow.wpsSubmissionReference}</bdi></dd></div>}
           {file && <div><dt className="text-fg-muted">{t('File reference')}</dt><dd className="font-mono font-medium text-fg"><bdi dir="ltr">{file.reference}</bdi></dd></div>}
@@ -3303,17 +3429,10 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
         </dl>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-body-sm">
           {panelMenu.current?.download && (
-            <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" aria-describedby="bank-download-again-warning" onClick={panelMenu.current.download}>{t('Download the file again (audit copy)')}</button>
+            <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" aria-describedby="bank-submitted-banner" onClick={panelMenu.current.download}>{t('Download again (audit copy)')}</button>
           )}
           {recordsState.status === 'ready' && <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => setRecordsOpen(true)} data-testid="bank-records-open">{t('View payment records ({count})', { count: records.length })}</button>}
         </div>
-        {panelMenu.current?.download && (
-          <p id="bank-download-again-warning" className="text-meta text-warning-fg">
-            {wps === 'Submitted' && batchRow?.wpsStatusChangedAtUtc
-              ? t('This file was recorded as submitted on {date}. Uploading it again can pay employees twice.', { date: fx.date(batchRow.wpsStatusChangedAtUtc) })
-              : t('This file was recorded as submitted. Uploading it again can pay employees twice.')}
-          </p>
-        )}
       </div>
     );
   };
@@ -3323,8 +3442,8 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
       <ol className="space-y-3">
         {[
           [t('The bank pays and answers for each payment'), null],
-          [t('Record the bank’s response'), t('Record the bank’s response in Payment Tracking: confirmed, returned or rejected. A returned payment is paid again from there.')],
-          [t('Finance settles the payments'), t('Settling posts the net-pay settlement to the ledger. It needs the payment settlement permission.')],
+          [t('Record the bank’s response'), t('Record the bank’s response in Payment Tracking: confirmed, returned or rejected. Paying again creates a new payment batch with a new file reference. Never upload this file again.')],
+          [t('Finance settles the payments'), t('Settle only payments the bank confirmed. Settling posts the net-pay settlement to the ledger and needs the payment settlement permission.')],
         ].map(([title, body], i) => (
           <li key={i} className="flex gap-3">
             <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-line-strong text-caption font-semibold tabular-nums text-fg-muted">{i + 1}</span>
@@ -3332,6 +3451,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
           </li>
         ))}
       </ol>
+      <p className="border-t border-line pt-3 text-meta">{t('The bank reports salaries to WPS (Mudad). KynexOne does not send anything to Mudad.')}</p>
     </div>
   );
   const responsePurpose = (data: BankPanelData | null | undefined) => {
@@ -3347,10 +3467,30 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
 
   const submitSummary = (data: BankPanelData | null | undefined) => {
     const f = data?.file;
-    return t('{count} employees · {amount} · credit date {date} · file {ref}. Record this only after the bank has the file.', {
+    return t('{count} employees · {amount} · credit date {date} · file reference {ref}. Record this only after the bank has the file.', {
       count: f?.employeeCount ?? records.length, amount: fmtAmt(f?.totalAmount ?? selectedBatch?.totalAmount ?? 0, selectedBatch?.currency),
       date: f?.paymentDate ? fx.gregorian(f.paymentDate, 'weekdayDate') : '—', ref: f?.reference ?? '—',
     });
+  };
+
+  const tieRow = selectedBatch ? tieOut(batchRow ?? selectedBatch, selectedRun) : null;
+  const tieGap = tieRow && Math.abs(tieRow.difference) >= 0.005 ? tieRow.difference : null;
+
+  // Once the file is with the bank, a standing warning above the step: uploading it again can pay people twice.
+  const submittedBanner = (data: BankPanelData | null | undefined) => {
+    if (!['submitted', 'confirmed', 'rejected'].includes(payOut.status) || !batchRow) return null;
+    const ref = batchRow.wpsSubmissionReference ?? '—';
+    const when = wps === 'Submitted' && batchRow.wpsStatusChangedAtUtc ? fx.dateTime(batchRow.wpsStatusChangedAtUtc) : null;
+    const bank = data?.bankName ?? null;
+    const text = bank && when ? t('Recorded as submitted to {bank} on {date}, ref {ref}. Uploading this file again can pay employees twice.', { bank, date: when, ref })
+      : bank ? t('Recorded as submitted to {bank}, ref {ref}. Uploading this file again can pay employees twice.', { bank, ref })
+      : when ? t('Recorded as submitted on {date}, ref {ref}. Uploading this file again can pay employees twice.', { date: when, ref })
+      : t('Recorded as submitted, ref {ref}. Uploading this file again can pay employees twice.', { ref });
+    return (
+      <p id="bank-submitted-banner" role="note" className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning-soft px-4 py-3 text-body-sm font-medium text-warning-fg" data-testid="bank-submitted-banner">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />{text}
+      </p>
+    );
   };
 
   const guide = (panel: GuideSlots) => {
@@ -3365,17 +3505,19 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
           payOut={payOut}
           loading={loadingGuide}
           confirmation={handOver.confirmation}
+          confirmationSuccess={handOver.confirmationSuccess}
           onUserAction={handOver.onUserAction}
+          banner={submittedBanner(data)}
           viewing={viewing}
           onView={setViewing}
           facts={selectedBatch && !loadingGuide ? (
             <BankFileFacts batch={batchRow ?? selectedBatch} run={selectedRun} employeesInFile={recordsState.status === 'ready' ? records.length : null}
-              bankName={data?.bankName} accountTail={data?.accountTail}
+              bankName={data?.bankName} accountTail={data?.accountTail} company={data?.company} checked={payOut.steps[1].state === 'done'}
               onShowLeftOut={payOut.steps[1].state === 'done' ? () => setViewing('check') : undefined} />
           ) : null}
           rail={selectedBatch && !loadingGuide ? (
             <BankFileFacts variant="rail" batch={batchRow ?? selectedBatch} run={selectedRun} employeesInFile={recordsState.status === 'ready' ? records.length : null}
-              bankName={data?.bankName} accountTail={data?.accountTail} file={data?.file ?? null} />
+              bankName={data?.bankName} accountTail={data?.accountTail} file={data?.file ?? null} company={data?.company} checked={payOut.steps[1].state === 'done'} />
           ) : null}
           slots={{
             ...panel,
@@ -3384,12 +3526,16 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
               batch: {
                 purpose: payOut.steps[0].reason === 'run_not_locked' ? t('Lock the run first: a payment batch can only be created once the run is Locked.')
                   : liveBatches.length > 1 ? t('Choose the payment batch you want to prepare.') : t('Create the payment batch for this run. It lists who is paid and how much.'),
-                body: batchBody, view: batchView,
+                body: batchBody, view: batchView, aside: runSummary,
               },
+              setup: { ...panel.panels?.setup, aside: runSummary },
+              check: panel.panels?.check ? { ...panel.panels.check, body: <>{panel.panels.check.body}{peopleInFile}</> } : undefined,
               response, finished: response,
             },
             actions: {
               ...panel.actions,
+              // Finance rule: a file that does not tie to the approved run is not created.
+              ...(panel.actions?.create_file && tieGap !== null ? { create_file: { ...panel.actions.create_file, disabled: true, reason: t('The file total differs from the approved run by {amount}', { amount: fmtAmt(tieGap, selectedBatch?.currency) }) } } : {}),
               create_batch: { label: creating ? t('Creating…') : t('Create payment batch'), onClick: createBatch, busy: creating, disabled: creating || batchesState.status !== 'ready' },
               open_batch: { label: t('Open batch'), onClick: () => { const b = liveBatches.find(x => x.id === chosenBatchId); if (b) openBatch(b); }, disabled: !chosenBatchId, reason: chosenBatchId ? null : t('Choose the payment batch, then open it.') },
               record_submitted: { label: t('Record as submitted'), onClick: () => setSubmitOpen(true) },
@@ -3487,6 +3633,17 @@ function MoreMenu({ items }: { items: (false | null | undefined | { label: strin
       )}
     </div>
   );
+}
+
+/** A payment method as people say it ("Bank transfer", not "BankTransfer"). */
+function paymentMethodLabel(t: ReturnType<typeof useT>, method: string): string {
+  switch (method) {
+    case 'WPS': return t('WPS bank file');
+    case 'BankTransfer': return t('Bank transfer');
+    case 'Cash': return t('Cash');
+    case 'Cheque': return t('Cheque');
+    default: return method;
+  }
 }
 
 // ── Payment Tracking Tab ────────────────────────────────────────────────────────
@@ -4888,7 +5045,7 @@ export function PayrollPage() {
         <div className="min-w-0 space-y-3">
           {/* Bank / WPS Files draws its own header (its "More" menu opens the flow's drawers). */}
           {activeTab !== 'bank-wps' && (
-            <PayrollSectionHeader group={t(activeGroup.label)} title={activeLabel} purpose={t(activeGroup.purpose)} />
+            <PayrollSectionHeader group={t(activeGroup.label)} title={activeLabel} purpose={t(TAB_PURPOSE[activeTab] ?? activeGroup.purpose)} />
           )}
           <section role="region" aria-labelledby={PAYROLL_SECTION_HEADING_ID} id={`payroll-panel-${activeTab}`} data-testid="payroll-section-panel" className="min-w-0">
             {renderTab()}

@@ -159,18 +159,21 @@ const RECENT_MS = 20_000;
  * The hand-over between two steps: when the user finishes one, focus moves to the next step's heading and a confirmation says what was
  * done. The confirmation stays until the user's next action (WCAG 2.2.1), in a status region that is always on the page.
  */
-export function useBankHandOver(stage: PayOutStage, loading: boolean, describe: (from: PayOutStage, to: PayOutStage) => string): { confirmation: string; onUserAction: () => void; announce: (text: string) => void } {
+export function useBankHandOver(stage: PayOutStage, loading: boolean, describe: (from: PayOutStage, to: PayOutStage) => string): { confirmation: string; confirmationSuccess: boolean; onUserAction: () => void; announce: (text: string) => void } {
   const lastActed = useRef(0);
   const settled = useRef<PayOutStage | null>(null);
   const describeRef = useRef(describe);
   describeRef.current = describe;
   const [confirmation, setConfirmation] = useState('');
+  // Green is for a check that passed (and money the bank confirmed); every other confirmation is neutral.
+  const [confirmationSuccess, setConfirmationSuccess] = useState(false);
   useEffect(() => {
     if (loading) return;
     const before = settled.current;
     settled.current = stage;
     if (!before || STAGE_RANK[stage] <= STAGE_RANK[before] || Date.now() - lastActed.current > RECENT_MS) return;
     setConfirmation(describeRef.current(before, stage));
+    setConfirmationSuccess(before === 'check');
     const frame = requestAnimationFrame(() => {
       const target = document.querySelector<HTMLElement>('[data-testid="bank-guide"] [data-step-heading]');
       target?.focus({ preventScroll: true });
@@ -181,9 +184,10 @@ export function useBankHandOver(stage: PayOutStage, loading: boolean, describe: 
   }, [stage, loading]);
   return {
     confirmation,
+    confirmationSuccess,
     onUserAction: () => { lastActed.current = Date.now(); setConfirmation(''); },
-    // A confirmation that is not a stage change (a setup saved without moving on, a file downloaded).
-    announce: (text: string) => setConfirmation(text),
+    // A confirmation that is not a stage change (a file downloaded).
+    announce: (text: string) => { setConfirmation(text); setConfirmationSuccess(false); },
   };
 }
 
@@ -192,7 +196,11 @@ export interface BankFileGuideProps {
   /** The run or its batches are still loading: say so instead of a stage that may change. */
   loading?: boolean;
   confirmation?: string;
+  /** The confirmation is a passed check (green); otherwise it is neutral. */
+  confirmationSuccess?: boolean;
   onUserAction?: () => void;
+  /** A standing warning above the step card (the file was recorded as submitted). */
+  banner?: ReactNode;
   /** The done step opened read-only, if any. */
   viewing?: PayOutStepKey | null;
   onView?: (key: PayOutStepKey | null) => void;
@@ -203,7 +211,7 @@ export interface BankFileGuideProps {
   slots: GuideSlots;
 }
 
-export function BankFileGuide({ payOut, loading = false, confirmation = '', onUserAction, viewing = null, onView, facts, rail, slots }: BankFileGuideProps) {
+export function BankFileGuide({ payOut, loading = false, confirmation = '', confirmationSuccess = false, onUserAction, banner, viewing = null, onView, facts, rail, slots }: BankFileGuideProps) {
   const t = useT();
   const uid = useId();
   const stage = payOut.stage;
@@ -297,6 +305,8 @@ export function BankFileGuide({ payOut, loading = false, confirmation = '', onUs
         />
       )}
 
+      {!loading && banner}
+
       {!loading && (
         <section className="surface relative" data-step-panel={panelKey} aria-labelledby={`${uid}-title`}>
           {viewingStep && (
@@ -310,7 +320,7 @@ export function BankFileGuide({ payOut, loading = false, confirmation = '', onUs
               {/* The persistent status region: the hand-over confirmation lives here until the user's next action. */}
               <div role="status" aria-live="polite" data-testid="bank-guide-confirmation" className="empty:hidden">
                 {confirmation && (
-                  <p className="inline-flex items-center gap-1.5 rounded-full bg-success-soft px-2.5 py-0.5 text-meta font-medium text-success-fg">
+                  <p className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-meta font-medium ${confirmationSuccess ? 'bg-success-soft text-success-fg' : 'bg-info-soft text-info-fg'}`}>
                     <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />{confirmation}
                   </p>
                 )}

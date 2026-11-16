@@ -840,3 +840,8 @@ textarea:focus-visible {
   --wg-hero-deep: #041f27;
   --wg-hero-shadow: rgba(0, 0, 0, 0.6);
 }
+
+/* A step's sticky action bar sits above the phone's bottom tab bar: the assistant button moves above both so it never covers the primary. */
+@media (max-width: 639.98px) {
+  html[data-has-action-bar] [data-assistant-launcher] { bottom: calc(11rem + env(safe-area-inset-bottom)); }
+}

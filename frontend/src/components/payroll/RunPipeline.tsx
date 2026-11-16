@@ -308,12 +308,13 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
       data-run-bar=""
     >
       <h2 id="run-pipeline-title" className="sr-only">{t('Payroll run')}</h2>
-      <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-2">
-        <label htmlFor="pipeline-run-picker" className="text-meta text-fg-muted max-md:sr-only">{t('Payroll run')}</label>
-        <div className="w-full min-w-0 md:w-auto">{picker}</div>
+      {/* One row from md on every section (items shrink and cut their text; nothing wraps to a second line). */}
+      <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-2 md:flex-nowrap">
+        <label htmlFor="pipeline-run-picker" className="shrink-0 text-meta text-fg-muted max-md:sr-only">{t('Payroll run')}</label>
+        <div className="w-full min-w-0 md:w-auto md:shrink">{picker}</div>
         {run && model && (
           <>
-            <span className="badge badge-neutral inline-flex items-center gap-1">
+            <span className="badge badge-neutral inline-flex shrink-0 items-center gap-1">
               {run.status === 'Locked' && <Lock className="h-3 w-3" aria-hidden="true" />}
               <EnumLabel enum="PayrollRunStatus" value={run.status} />
             </span>
@@ -325,7 +326,7 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
                     <span key={stage.key} className={`h-1.5 w-4 rounded-full ${i === focusIndex ? 'bg-primary' : i < focusIndex || stage.state === 'done' ? 'bg-primary/40' : 'bg-line'}`} />
                   ))}
                 </span>
-                <span className="text-body-sm text-fg-muted" data-testid="pipeline-folded-stage">
+                <span className="shrink-0 whitespace-nowrap text-body-sm text-fg-muted" data-testid="pipeline-folded-stage">
                   <span className="max-[1439px]:sr-only">{stagePrefix(t, focusIndex + 1)}</span>
                   <span className="font-semibold text-fg">{stageName(t, model.focus)}</span>
                 </span>
@@ -333,7 +334,7 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
             )}
             {chipLabel && payOut ? (
               <span
-                className={`badge ${CHIP_TONE[payOutTone(payOut)]} inline-flex max-w-[320px] items-center gap-1`}
+                className={`badge ${CHIP_TONE[payOutTone(payOut)]} inline-flex min-w-0 max-w-[320px] items-center gap-1`}
                 data-testid="bank-guide-chip"
                 data-chip={payOut.status}
                 title={chipLabel}
@@ -345,16 +346,17 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
                 <span className="truncate">{chipLabel}</span>
               </span>
             ) : focusStage && focusStage.state !== 'done' ? (
-              <span className={`badge ${focusStage.state === 'blocked' ? 'badge-danger' : 'badge-info'}`}>{stateName(t, focusStage.state)}</span>
+              <span className={`badge shrink-0 ${focusStage.state === 'blocked' ? 'badge-danger' : 'badge-info'}`}>{stateName(t, focusStage.state)}</span>
             ) : null}
-            <span className="hidden flex-1 md:block" />
+            <span className="hidden min-w-0 flex-1 md:block" />
             {showNext && (
-              <div className="flex min-w-0 items-center gap-2" data-testid="pipeline-next">
+              <div className="flex min-w-0 shrink items-center gap-2" data-testid="pipeline-next">
                 <p className="min-w-0 truncate text-body-sm text-fg-muted">
                   {nextBefore}<span className="font-semibold text-fg" data-testid="pipeline-next-title">{nextTitle(t, model.next, focusStage, payOut)}</span>{nextAfter}
                 </p>
                 <Button
                   size="sm"
+                  className="shrink-0 whitespace-nowrap"
                   disabled={model.next.disabled}
                   busy={busy}
                   aria-describedby={model.nextReason ? 'pipeline-next-reason' : undefined}
@@ -368,7 +370,7 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
             {!processingActive && (
               <button
                 type="button"
-                className="btn-ghost btn-sm ms-auto md:ms-0"
+                className="btn-ghost btn-sm ms-auto shrink-0 whitespace-nowrap md:ms-0"
                 aria-expanded={stagesOpen}
                 aria-controls="pipeline-stages-region"
                 data-testid="pipeline-stages-toggle"
@@ -381,7 +383,8 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
           </>
         )}
       </div>
-      {showNext && model?.nextReason && (
+      {/* The Pay out reason is the chip's own words: not said a second time. */}
+      {showNext && model?.nextReason && model.nextReason.id !== 'pay_out' && (
         <p className="mt-1 text-meta text-fg-muted" id="pipeline-next-reason" data-testid="pipeline-next-reason">{reasonText(t, model.nextReason, payOut)}</p>
       )}
     </section>

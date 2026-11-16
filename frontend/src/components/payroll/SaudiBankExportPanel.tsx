@@ -86,7 +86,7 @@ export type Copy = {
   autoWpsUpload: string; autoWpsHelp: string; nationalUnifiedNo: string; nationalUnifiedNoHelp: string; unifiedDigits: string;
   molDigits: string; molPlaceholder: string;
   setupTitle: string; setupHelp: string; molEstablishmentId: string; molHelp: string;
-  mainAccountNumber: string; mainAccountHelp: string; organizationName: string;
+  mainAccountNumber: string; mainAccountHelp: string; organizationName: string; organizationNameHelp: string; companyNameHelp: string;
   organizationAddress: (n: number) => string; companyName: string; narrative: string; batchType: string;
   selectBatchType: string; saveSetup: string; saving: string; saved: string; unsaved: string;
   noManagePerm: string; noExportPerm: string;
@@ -132,7 +132,7 @@ export const EN: Copy = {
   zipNote: 'The download is a zip for transport only. ANB Connect takes header.csv and body.csv as two separate files — extract them before uploading.',
   legacyNote: 'This is your Saudi bank payroll file. The "Payroll register (internal — not a bank/WPS file)" in the batch list is for review only — never send it to a bank or Mudad.',
   autoWpsUpload: 'Ask ANB to upload the WPS file to Mudad for us (auto-WPS)',
-  autoWpsHelp: 'When on, ANB builds and signs the WPS file from this instruction and uploads it to Mudad. Requires the national unified number. Check with ANB that auto-WPS is enabled on your account.',
+  autoWpsHelp: 'When on, ANB builds and signs the WPS file from this instruction and uploads it to Mudad. It needs the national unified number: its field appears below once this is ticked. Check with ANB that auto-WPS is enabled on your account.',
   nationalUnifiedNo: 'National unified number',
   nationalUnifiedNoHelp: 'Exactly 10 digits, as shown in Qiwa (usually starts with 7).',
   unifiedDigits: 'Must be exactly 10 digits (0–9).',
@@ -140,11 +140,13 @@ export const EN: Copy = {
   molPlaceholder: 'This is a placeholder (all zeros), not a real establishment ID.',
   setupTitle: 'Employer setup (saved per company)',
   setupHelp: 'Enter these once. They are your account and establishment facts as registered with ANB, not login credentials. Nothing is filled in automatically.',
-  molEstablishmentId: 'MOL establishment ID',
+  molEstablishmentId: 'Establishment ID (Ministry of HR)',
   molHelp: '2–15 characters: labour-office number and sequence number, as shown in Qiwa (for example 7-1234567).',
   mainAccountNumber: 'ANB main account number',
   mainAccountHelp: 'Exactly 16 digits — your ANB employer account number, not an IBAN.',
   organizationName: 'Organisation name',
+  organizationNameHelp: 'Your organisation as your bank registered it on the employer account.',
+  companyNameHelp: 'Your company’s name as it should appear in the bank file.',
   organizationAddress: (n) => `Organisation address line ${n}`,
   companyName: 'Company name',
   narrative: 'Narrative',
@@ -248,7 +250,7 @@ export const AR: Copy = {
   zipNote: 'الملف المضغوط للنقل فقط. يستقبل ANB Connect الملفين header.csv و body.csv بشكل منفصل — استخرجهما قبل الرفع.',
   legacyNote: 'هذا هو ملف الرواتب البنكي السعودي. أما "سجل الرواتب (داخلي — ليس ملفًا بنكيًا أو ملف حماية أجور)" في قائمة الدفعات فهو للمراجعة فقط — لا ترسله إلى البنك أو منصة مدد.',
   autoWpsUpload: 'اطلب من البنك العربي الوطني رفع ملف حماية الأجور إلى مدد نيابةً عنا',
-  autoWpsHelp: 'عند التفعيل يُعدّ البنك ملف حماية الأجور الموقّع من هذه التعليمات ويرفعه إلى مدد. يتطلب الرقم الوطني الموحد. تأكد من تفعيل الخدمة على حسابك لدى البنك.',
+  autoWpsHelp: 'عند التفعيل يُعدّ البنك ملف حماية الأجور الموقّع من هذه التعليمات ويرفعه إلى مدد. يتطلب الرقم الوطني الموحد: يظهر حقله أدناه بعد التفعيل. تأكد من تفعيل الخدمة على حسابك لدى البنك.',
   nationalUnifiedNo: 'الرقم الوطني الموحد',
   nationalUnifiedNoHelp: '10 أرقام بالضبط كما يظهر في منصة قوى (يبدأ عادةً بالرقم 7).',
   unifiedDigits: 'يجب أن يكون 10 أرقام بالضبط (0–9).',
@@ -256,11 +258,13 @@ export const AR: Copy = {
   molPlaceholder: 'هذه قيمة مؤقتة (أصفار)، وليست رقم منشأة حقيقيًا.',
   setupTitle: 'إعدادات صاحب العمل (تُحفظ لكل شركة)',
   setupHelp: 'أدخلها مرة واحدة. هي بيانات حسابك ومنشأتك المسجّلة لدى البنك، وليست بيانات دخول. لا يُملأ أي حقل تلقائيًا.',
-  molEstablishmentId: 'رقم المنشأة لدى وزارة الموارد البشرية',
+  molEstablishmentId: 'رقم المنشأة (وزارة الموارد البشرية)',
   molHelp: 'من 2 إلى 15 حرفًا كما هو مسجّل لدى الوزارة.',
   mainAccountNumber: 'رقم الحساب الرئيسي لدى البنك العربي الوطني',
   mainAccountHelp: '16 رقمًا بالضبط — رقم حساب صاحب العمل لدى البنك، وليس رقم آيبان.',
   organizationName: 'اسم المنظمة',
+  organizationNameHelp: 'منظمتك كما سجّلها بنكك على حساب صاحب العمل.',
+  companyNameHelp: 'اسم شركتك كما يجب أن يظهر في ملف البنك.',
   organizationAddress: (n) => `عنوان المنظمة — السطر ${n}`,
   companyName: 'اسم الشركة',
   narrative: 'الوصف',
@@ -541,8 +545,8 @@ export function SaudiBankSettingsForm({ c, idPrefix, draft, setField, errors, fo
         {textInput('molEstablishmentId', c.molEstablishmentId, { help: c.molHelp, ltr: true })}
         {draftIsCustom && textInput('debitAccountIban', cc.debitAccount, { help: cc.debitHelp, ltr: true })}
         {!draftIsCustom && textInput('mainAccountNumber', c.mainAccountNumber, { help: c.mainAccountHelp, ltr: true, numeric: true })}
-        {!draftIsCustom && textInput('organizationName', c.organizationName)}
-        {!draftIsCustom && textInput('companyName', c.companyName)}
+        {!draftIsCustom && textInput('organizationName', c.organizationName, { help: c.organizationNameHelp })}
+        {!draftIsCustom && textInput('companyName', c.companyName, { help: c.companyNameHelp })}
         {!draftIsCustom && textInput('organizationAddress1', c.organizationAddress(1))}
         {!draftIsCustom && textInput('organizationAddress2', c.organizationAddress(2))}
         {!draftIsCustom && textInput('organizationAddress3', c.organizationAddress(3))}
@@ -618,7 +622,9 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   // The guided flow's drawers and small disclosures. A drawer never survives a batch change.
   const [setupOpen, setSetupOpen] = useState(false);
   const [formatsOpen, setFormatsOpen] = useState(false);
-  const [beneficiary, setBeneficiary] = useState<{ employeeId: number | null } | null>(null);
+  const [beneficiary, setBeneficiary] = useState<{ employeeId: number | null; locked?: boolean } | null>(null);
+  // Employees whose bank-detail fix was sent for approval (not applied yet): their blocker says so until the batch changes.
+  const [sentForApproval, setSentForApproval] = useState<ReadonlySet<number>>(new Set());
   const [refEditing, setRefEditing] = useState(false);
   const [pendingFocus, setPendingFocus] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -658,7 +664,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
     setNotice('');
     setShowSettingsErrors(false);
     setShowBatchErrors(false);
-    setSetupOpen(false); setFormatsOpen(false); setBeneficiary(null); setRefEditing(false); setPendingFocus(null);
+    setSetupOpen(false); setFormatsOpen(false); setBeneficiary(null); setRefEditing(false); setPendingFocus(null); setSentForApproval(new Set());
 
     (async () => {
       try {
@@ -795,6 +801,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
     if (!ctx) return;
     const startedFor = batchId;
     const payload = { ...draft };
+    const wasComplete = setupComplete;
     void runAction('save', async (signal) => {
       const saved = normaliseSettings(await saudiBankExportsApi.saveSettings(ctx.companyId, payload, { signal }));
       if (activeBatchRef.current !== startedFor) return;
@@ -803,7 +810,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
       setDraft((d) => (sameSettings(payload, d) ? saved : d));
       setShowSettingsErrors(false);
       setSetupOpen(false);
-      setNotice(c.saved);
+      if (wasComplete) setNotice(c.saved);
     }, c.genericError);
   };
 
@@ -905,7 +912,10 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   const onFix = (target: BankFixTarget) => {
     if (target.kind === 'setup') { setSetupOpen(true); setPendingFocus(target.field); }
     else if (target.kind === 'input') { if (target.field === 'batchReference') setRefEditing(true); setPendingFocus(target.field); }
-    else if (target.kind === 'beneficiary') setBeneficiary({ employeeId: employeeIds?.includes(target.employeeId) ? target.employeeId : null });
+    else if (target.kind === 'beneficiary') {
+      const known = employeeIds?.includes(target.employeeId);
+      setBeneficiary({ employeeId: known ? target.employeeId : null, locked: !!known });
+    }
   };
 
   const inStep = (body: React.ReactNode) => <>{renderGuide({ panels: { check: { body } } })}</>;
@@ -952,7 +962,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   const has = (...keys: (keyof SaudiBankExportSettings)[]) => keys.every((k) => !savedErrors[k]);
   const checklist: { key: string; label: string; detail: string; saved: boolean }[] = [
     { key: 'format', label: t('Bank and file format'), detail: formatName ?? '', saved: !!savedSettings?.formatId && !savedFormatUnsupported && has('formatId') },
-    { key: 'mol', label: t('Establishment ID'), detail: c.molHelp, saved: has('molEstablishmentId') },
+    { key: 'mol', label: t('Establishment ID (Ministry of HR)'), detail: c.molHelp, saved: has('molEstablishmentId') },
     { key: 'account', label: t('Employer account'), detail: savedIsCustom ? cc.debitHelp : c.mainAccountHelp, saved: savedIsCustom ? has('debitAccountIban') : has('mainAccountNumber') },
     { key: 'org', label: t('Organisation name and address'), detail: '', saved: savedIsCustom || has('organizationName', 'organizationAddress1', 'organizationAddress2', 'organizationAddress3', 'companyName', 'narrative', 'batchType') },
   ];
@@ -1053,7 +1063,10 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   const summary = result && employeeIssues.length > 0 && !employeesPassed(result) ? (
     <div role="alert" className="rounded-xl border border-danger/40 bg-danger-soft p-4" data-testid="bank-error-summary">
       <p className="text-body font-semibold text-danger-fg">{t('{count, plural, one {# problem stops the file.} other {# problems stop the file.}} Fix each one, then check again.', { count: employeeIssues.length })}</p>
-      <IssueList issues={employeeIssues} c={c} labels={employeeLabels} onFix={onFix} t={t} />
+      {employeeIssues.some((i) => sentForApproval.has(Number(i.employeeId))) && (
+        <p className="mt-2 rounded-lg bg-warning-soft px-3 py-2 text-body-sm font-medium text-warning-fg" data-testid="bank-fix-pending">{t('Fix sent for approval. Check again once it is approved.')}</p>
+      )}
+      <IssueList issues={employeeIssues} c={c} labels={employeeLabels} onFix={onFix} t={t} pending={sentForApproval} />
     </div>
   ) : null;
 
@@ -1067,7 +1080,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
     <div className="space-y-5">
       <Field label={t('Salary credit date (value date)')} required size="md"
         info={t('The day your bank credits salaries to employees. We suggested the next working day; the file keeps this date once created.')}
-        hint={t('We suggested the next working day. Past days, Fridays and Saturdays can’t be chosen.')} error={dateError}>
+        hint={t('We suggested the next working day. Past days, Fridays and Saturdays can’t be chosen. Check public holidays with your bank.')} error={dateError}>
         <DateField id={fid('paymentDate')} value={batchInput.paymentDate} onChange={(v) => setBatchField('paymentDate', v)} today={today}
           isSelectable={(d) => isSelectableCreditDate(d, today)} testId="bank-value-date" />
       </Field>
@@ -1078,11 +1091,11 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
             <bdi dir="ltr" className="font-mono text-fg">{batchInput.batchReference}</bdi>
             <button type="button" className="text-body-sm font-medium text-primary underline-offset-2 hover:underline" onClick={() => { setRefEditing(true); setPendingFocus('batchReference'); }}>{c.change}</button>
           </p>
-          <p className="mt-1 text-caption text-fg-muted">{t('Suggested from the payment batch number.')}</p>
+          <p className="mt-1 text-caption text-fg-muted">{t('Must be new. Never reuse a reference, even after cancelling a file.')} {t('Suggested from the payment batch number.')}</p>
         </div>
       ) : (
         <Field label={t('File reference')} required size="md" info={refInfo}
-          hint={`${t('1 to 16 digits.')} ${batchInput.batchReference === suggestedReference ? t('Suggested from the payment batch number.') : ''}`.trim()}
+          hint={`${t('1 to 16 digits.')} ${t('Must be new. Never reuse a reference, even after cancelling a file.')} ${batchInput.batchReference === suggestedReference ? t('Suggested from the payment batch number.') : ''}`.trim()}
           error={refError ?? bErr('batchReference') ?? (refServerError ? bankIssueText(t, refServerError) : null)}>
           <input id={fid('batchReference')} className="input w-full max-w-[320px] font-mono" value={batchInput.batchReference}
             onChange={(e) => setBatchField('batchReference', e.target.value)} inputMode="numeric" dir="ltr" autoComplete="off" />
@@ -1091,7 +1104,8 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
     </div>
   );
   const recapRows: [string, React.ReactNode][] = [
-    [t('Bank and format'), formatName ?? '—'],
+    ...(ctx?.companyName ? [[t('Company'), <bdi key="c">{ctx.companyName}</bdi>] as [string, React.ReactNode]] : []),
+    [t('Bank'), bankName ? <bdi key="b">{bankName}</bdi> : '—'],
     [t('Debit account'), accountTail ? <bdi dir="ltr" className="font-mono">{accountTail}</bdi> : '—'],
     [t('Employees'), result ? fx.integer(result.employeeCount) : peopleInFile !== null ? fx.integer(peopleInFile) : '—'],
     [t('Amount'), <bdi key="a" dir="ltr">{money(result?.totalAmount ?? batch?.totalAmount ?? 0)}</bdi>],
@@ -1100,7 +1114,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   ];
   const recap = (rows: [string, React.ReactNode][]) => (
     <dl className="space-y-2" data-testid="bank-create-recap">
-      {rows.map(([k, v]) => <div key={k} className="flex items-baseline justify-between gap-3"><dt className="text-fg-muted">{k}</dt><dd className="text-end font-medium text-fg tabular-nums">{v}</dd></div>)}
+      {rows.map(([k, v]) => <div key={k} className="grid grid-cols-[8.5rem_minmax(0,1fr)] items-baseline gap-3 text-body-sm"><dt className="text-fg-muted">{k}</dt><dd className="text-end font-medium text-fg tabular-nums">{v}</dd></div>)}
     </dl>
   );
   const createAside = (
@@ -1125,6 +1139,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
         {artifact.files.map((f) => <li key={f.name} className="flex items-center gap-2 text-body font-medium text-fg"><FileText className="h-4 w-4 text-fg-muted" aria-hidden="true" /><bdi dir="ltr">{f.name}</bdi></li>)}
       </ul>
       {recap([
+        ...(ctx?.companyName ? [[t('Company'), <bdi key="c">{ctx.companyName}</bdi>] as [string, React.ReactNode]] : []),
         [t('Employees'), fx.integer(artifact.employeeCount)],
         [t('Amount'), <bdi key="a" dir="ltr">{money(artifact.totalAmount)}</bdi>],
         [t('Credit date'), dateText((artifact.paymentDate ?? '').slice(0, 10))],
@@ -1164,9 +1179,11 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   // ── Drawers and dialogs: the setup form, the bank formats (custom templates), one employee's bank details, about this file
   const overlays = (
     <>
-      <Modal isOpen={setupOpen} title={t('Bank setup')} size="lg" placement="end" onClose={closeSetup} closeDisabled={busy === 'save'} closeLabel={t('Close')}
-        headerContent={<Link href="/setup?tab=bankWps" className="text-body-sm font-medium text-primary underline-offset-2 hover:underline">{t('Open in Setup')}</Link>}>
-        {settingsForm}
+      <Modal isOpen={setupOpen} title={t('Bank setup')} size="lg" placement="end" onClose={closeSetup} closeDisabled={busy === 'save'} closeLabel={t('Close')}>
+        <div className="space-y-3">
+          <Link href="/setup?tab=bankWps" className="inline-flex items-center gap-1 text-body-sm font-medium text-primary underline-offset-2 hover:underline">{t('Open in Setup')}<ExternalLink className="h-3.5 w-3.5" aria-hidden="true" /></Link>
+          {settingsForm}
+        </div>
       </Modal>
       {/* Custom bank templates: layout configured by the customer, approved by a second person. The template routes stay with
           payroll.export, so the editor is not offered to someone who only prepares the file. */}
@@ -1192,7 +1209,9 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
       {employeeIds && beneficiary !== null && (
         <Modal isOpen={beneficiary !== null} title={c.employeeBankTitle} size="lg" placement="end" onClose={() => setBeneficiary(null)} closeLabel={t('Close')}>
           <SaudiBankBeneficiaryEditor key={`${batchId}-${beneficiary?.employeeId ?? 'any'}`} employeeIds={employeeIds} employeeLabels={employeeLabels}
-            initialEmployeeId={beneficiary?.employeeId ?? undefined} onChange={() => setValidation(null)} />
+            initialEmployeeId={beneficiary?.employeeId ?? undefined} lockEmployee={!!beneficiary?.locked}
+            onChange={() => setValidation(null)}
+            onSentForApproval={(id) => setSentForApproval((prev) => new Set(prev).add(id))} />
         </Modal>
       )}
       {aboutOpen && (
@@ -1281,23 +1300,27 @@ function employeesPassed(r: SaudiBankExportValidation): boolean {
   return r.canExport || (r.errors.length > 0 && r.errors.every((e) => INPUT_FIELDS.has(e.field ?? '')));
 }
 
-function IssueList({ issues, c, labels, onFix, t }: { issues: SaudiBankExportIssue[]; c: Copy; labels?: Record<number, string>; onFix: (target: BankFixTarget) => void; t: (key: string, params?: Record<string, string | number>) => string }) {
+function IssueList({ issues, c, labels, onFix, t, pending }: { issues: SaudiBankExportIssue[]; c: Copy; labels?: Record<number, string>; onFix: (target: BankFixTarget) => void; t: (key: string, params?: Record<string, string | number>) => string; pending?: ReadonlySet<number> }) {
   // Every blocker is listed (scrollable, never cut short): the file is all-or-nothing. Each says, in plain words, what is wrong and where it is cured.
   return (
     <ul className="mt-3 max-h-72 space-y-2 overflow-y-auto pe-1 text-body-sm" data-testid="bank-blockers">
       {issues.map((i, idx) => {
         const target = bankFixTarget(i);
+        const name = i.employeeId != null && i.employeeId !== '' ? labels?.[Number(i.employeeId)] || c.employee(String(i.employeeId)) : '';
+        const problem = bankIssueText(t, i);
+        const sent = i.employeeId != null && i.employeeId !== '' && !!pending?.has(Number(i.employeeId));
         return (
-          <li key={`${i.code}-${i.employeeId ?? ''}-${i.field ?? ''}-${idx}`} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 rounded-lg bg-surface px-3 py-2">
+          <li key={`${i.code}-${i.employeeId ?? ''}-${i.field ?? ''}-${idx}`} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 rounded-lg bg-surface px-3 py-2" data-code={i.code}>
             <div className="min-w-0 flex-1">
-              {i.employeeId != null && i.employeeId !== '' && <p className="font-medium text-fg"><EmployeeLabelText label={labels?.[Number(i.employeeId)] || c.employee(String(i.employeeId))} /></p>}
-              <p className="text-fg">{bankIssueText(t, i)}</p>
-              {i.code && <p className="font-mono text-caption text-fg-subtle" dir="ltr">{i.code}</p>}
+              {name && <p className="font-medium text-fg"><EmployeeLabelText label={name} /></p>}
+              <p className="text-fg">{problem}</p>
+              {sent && <p className="mt-1 text-meta font-medium text-warning-fg">{t('Fix sent for approval. Check again once it is approved.')}</p>}
             </div>
             {target.kind === 'people' ? (
               <Link href={`/people/${target.employeeId}`} className="btn-secondary btn-sm shrink-0" data-testid="bank-blocker-fix">{c.fixInPeople}</Link>
             ) : target.kind !== 'none' && (
-              <button type="button" className="btn-secondary btn-sm shrink-0" data-testid="bank-blocker-fix" onClick={() => onFix(target)}>{c.fix}</button>
+              <button type="button" className="btn-secondary btn-sm shrink-0" data-testid="bank-blocker-fix" onClick={() => onFix(target)}
+                aria-label={name ? t('Fix {name}: {problem}', { name: name.replace(/\s*\u00b7\s*/, ' '), problem }) : undefined}>{c.fix}</button>
             )}
           </li>
         );

@@ -264,9 +264,10 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                     aria-expanded={isExpanded}
                     aria-controls={groupId}
                     onClick={() => toggleGroup(group.label)}
-                    className={`mx-auto mb-1 grid h-7 w-9 place-items-center rounded-lg text-caption font-semibold uppercase tracking-wider transition rtl:normal-case rtl:tracking-normal ${hasActiveItem ? 'bg-sapphire/10 text-sapphire dark:text-primary-fg' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.06]'}`}
+                    className={`mx-auto mb-1 grid h-4 w-9 place-items-center rounded-lg transition hover:bg-slate-100 dark:hover:bg-white/[0.06]`}
                   >
-                    {group.label.split(/\s+/).map((word) => word[0]).join('').slice(0, 2)}
+                    {/* Folded: icons only. A group is a short rule (its name is the button's label and tooltip), never cut-off letters. */}
+                    <span aria-hidden="true" className={`block h-px w-5 ${hasActiveItem ? 'bg-sapphire/60 dark:bg-primary-fg/60' : 'bg-slate-300 dark:bg-white/15'}`} />
                   </button>
                 )}
 

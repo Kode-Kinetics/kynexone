@@ -68,10 +68,10 @@ export function StepStrip({ items, ariaLabel, compactLabel, testId, listTestId, 
               <p className={`mt-2 flex items-center gap-1.5 text-body-sm ${i.isStage || viewingKey === i.key ? 'font-semibold text-fg' : 'font-medium text-fg-muted'}`}>
                 <Icon className={`h-4 w-4 shrink-0 ${tone}`} aria-hidden="true" />
                 {i.onView
-                  ? <button type="button" onClick={i.onView} className="min-w-0 text-start underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary" aria-pressed={viewingKey === i.key}>{name}</button>
-                  : <span className="min-w-0">{name}</span>}
+                  ? <button type="button" onClick={i.onView} title={i.label} className="min-w-0 truncate text-start underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary" aria-pressed={viewingKey === i.key}>{name}</button>
+                  : <span className="min-w-0 truncate" title={i.label}>{name}</span>}
               </p>
-              <p className={`mt-0.5 ps-[1.375rem] text-meta ${i.state === 'blocked' ? 'font-medium text-danger-fg' : i.isStage ? 'font-medium text-primary' : i.success && i.state === 'done' ? 'text-success-fg' : 'text-fg-muted'}`} data-testid={`bank-step-reason-${i.key}`}>{i.note}</p>
+              <p title={i.note} className={`mt-0.5 truncate ps-[1.375rem] text-meta ${i.state === 'blocked' ? 'font-medium text-danger-fg' : i.isStage ? 'font-medium text-primary' : i.success && i.state === 'done' ? 'text-success-fg' : 'text-fg-muted'}`} data-testid={`bank-step-reason-${i.key}`}>{i.note}</p>
             </li>
           );
         })}

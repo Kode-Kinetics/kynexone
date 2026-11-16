@@ -59,8 +59,8 @@ const ROWS: Row[] = [
   { name: '4b downloaded (this session)', input: { downloaded: true, batches: [batch({ bankFileGenerated: true, wpsStatus: 'Generated', effectiveWpsStatus: 'Generated', allowedNextStatuses: ['Downloaded', 'Submitted'] })] }, status: 'downloaded', stage: 'send', next: 'record_submitted', disabled: false, label: 'Downloaded — not yet submitted' },
   { name: '4b downloaded, no WPS permission', input: { downloaded: true, can: { ...ALL, wps: false }, batches: [batch({ bankFileGenerated: true, wpsStatus: 'Generated', effectiveWpsStatus: 'Generated', allowedNextStatuses: ['Submitted'] })] }, status: 'downloaded', stage: 'send', next: 'record_submitted', disabled: true, label: 'Downloaded — not yet submitted' },
   { name: '4b Downloaded status, Submitted not allowed', input: { batches: [batch({ bankFileGenerated: true, wpsStatus: 'Downloaded', effectiveWpsStatus: 'Downloaded', allowedNextStatuses: [] })] }, status: 'downloaded', stage: 'send', next: 'record_submitted', disabled: true, label: 'Downloaded — not yet submitted' },
-  { name: '5a waiting (records)', input: { batches: [sub('Submitted')], records: records(115, 0, 6) }, status: 'submitted', stage: 'response', next: 'record_response', disabled: false, label: 'Submitted — waiting for the bank (115 of 121)' },
-  { name: '5a waiting (batch list only)', input: { batches: [sub('Submitted', { unconfirmedPayments: { count: 3, total: 300 }, confirmationCoverage: 0.4 })] }, status: 'submitted', stage: 'response', next: 'record_response', disabled: false, label: 'Submitted — waiting for the bank (2 of 5)' },
+  { name: '5a waiting (records)', input: { batches: [sub('Submitted')], records: records(115, 0, 6) }, status: 'submitted', stage: 'response', next: 'record_response', disabled: false, label: 'Submitted — waiting for the bank (6 of 121 waiting)' },
+  { name: '5a waiting (batch list only)', input: { batches: [sub('Submitted', { unconfirmedPayments: { count: 3, total: 300 }, confirmationCoverage: 0.4 })] }, status: 'submitted', stage: 'response', next: 'record_response', disabled: false, label: 'Submitted — waiting for the bank (3 of 5 waiting)' },
   { name: '5a waiting, an older API', input: { batches: [sub('Submitted')] }, status: 'submitted', stage: 'response', next: 'record_response', disabled: false, label: 'Submitted — waiting for the bank' },
   { name: '5b rejected', input: { batches: [sub('Rejected', { allowedNextStatuses: ['Generated'] })] }, status: 'rejected', stage: 'response', next: 'prepare_corrected', disabled: false, label: 'Rejected by the bank' },
   { name: '5b rejected, may not redo', input: { batches: [sub('Rejected')] }, status: 'rejected', stage: 'response', next: 'prepare_corrected', disabled: true, label: 'Rejected by the bank' },
@@ -184,7 +184,7 @@ test.describe('the facts it reads', () => {
   });
   test('records: Paid and Returned / Rejected answer, Pending waits, Cancelled is out', () => {
     expect(splitFromRecords([{ status: 'Paid', amount: 1 }, { status: 'Rejected', amount: 2 }, { status: 'Returned', amount: 3 }, { status: 'Pending', amount: 4.5 }, { status: 'Cancelled', amount: 9 }]))
-      .toEqual({ paid: 1, returned: 2, waiting: 1, waitingAmount: 4.5, total: 4 });
+      .toEqual({ paid: 1, returned: 2, waiting: 1, total: 4, paidAmount: 1, returnedAmount: 5, waitingAmount: 4.5, totalAmount: 10.5 });
   });
   test('the check passing moves the step, never the chip', () => {
     const before = derivePayOut({ run: RUN, batches: [batch()], openBatchId: 'b1', can: ALL, exportFacts: facts() });
@@ -227,7 +227,7 @@ test.describe('the salary credit date', () => {
 test.describe('the words', () => {
   const KEYS = [
     'No payment batch yet', 'Bank setup needed', 'No bank file yet', 'Needs a fix', 'File created — not sent', 'Downloaded — not yet submitted',
-    'Submitted — waiting for the bank ({answered} of {total})', 'Submitted — waiting for the bank', 'Rejected by the bank',
+    'Submitted — waiting for the bank ({waiting} of {total} waiting)', 'Submitted — waiting for the bank', 'Rejected by the bank',
     'Bank answered {total} of {total} — {returned} returned', 'Bank confirmed {total} of {total}', 'Bank confirmed every payment', 'Paid — settled',
   ];
   test('every status has an Arabic sentence', () => {

@@ -50,7 +50,11 @@ export type PayOutNextKind =
   | 'download' | 'record_submitted' | 'record_response' | 'prepare_corrected' | 'settle';
 export interface PayOutNext { kind: PayOutNextKind; disabled: boolean; reason?: PayOutReason }
 
-export interface PayOutSplit { paid: number; returned: number; waiting: number; waitingAmount: number; total: number }
+export interface PayOutSplit {
+  paid: number; returned: number; waiting: number; total: number;
+  /** The money in each bucket; together they are the money in the file (when the records tie to it). */
+  paidAmount: number; returnedAmount: number; waitingAmount: number; totalAmount: number;
+}
 
 export interface PayOut {
   status: PayOutStatus;
@@ -130,15 +134,21 @@ export function pickPayOutBatch(batches: PipelineBatch[] | null | undefined, ope
 
 /** Answered / waiting from the payment records (rule 3). Cancelled records are out of the batch. */
 export function splitFromRecords(records: ReadonlyArray<{ status: string; amount: number }>): PayOutSplit {
-  let paid = 0; let returned = 0; let waiting = 0; let waitingAmount = 0;
+  let paid = 0; let returned = 0; let waiting = 0; let paidAmount = 0; let returnedAmount = 0; let waitingAmount = 0;
   for (const r of records) {
     const s = (r.status ?? '').toLowerCase();
+    const amount = r.amount ?? 0;
     if (s === 'cancelled') continue;
-    if (s === 'paid') paid++;
-    else if (s === 'returned' || s === 'rejected') returned++;
-    else { waiting++; waitingAmount += r.amount ?? 0; }
+    if (s === 'paid') { paid++; paidAmount += amount; }
+    else if (s === 'returned' || s === 'rejected') { returned++; returnedAmount += amount; }
+    else { waiting++; waitingAmount += amount; }
   }
-  return { paid, returned, waiting, waitingAmount: Math.round(waitingAmount * 100) / 100, total: paid + returned + waiting };
+  const cents = (n: number) => Math.round(n * 100) / 100;
+  return {
+    paid, returned, waiting, total: paid + returned + waiting,
+    paidAmount: cents(paidAmount), returnedAmount: cents(returnedAmount), waitingAmount: cents(waitingAmount),
+    totalAmount: cents(paidAmount + returnedAmount + waitingAmount),
+  };
 }
 
 const step = (key: PayOutStepKey, state: PayOutStepState, note: PayOutStepNote, reason?: PayOutReason): PayOutStep => (reason ? { key, state, note, reason } : { key, state, note });
@@ -298,7 +308,7 @@ export function payOutLabel(t: Translate, p: PayOut): string {
     case 'downloaded': return t('Downloaded — not yet submitted');
     case 'submitted':
       return p.answered !== undefined && p.total !== undefined
-        ? t('Submitted — waiting for the bank ({answered} of {total})', { answered: p.answered, total: p.total })
+        ? t('Submitted — waiting for the bank ({waiting} of {total} waiting)', { waiting: p.total - p.answered, total: p.total })
         : t('Submitted — waiting for the bank');
     case 'rejected': return t('Rejected by the bank');
     case 'confirmed':

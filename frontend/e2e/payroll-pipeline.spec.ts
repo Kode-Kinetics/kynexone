@@ -396,7 +396,8 @@ test.describe('Pay out names the file that exists (a company whose bank file is 
       await expect(paidStage(page)).toHaveAttribute('aria-current', 'step');
       await expect(paidStage(page)).toContainText(WORDS[locale].stage);
       await expect(page.getByTestId('stage-reason-paid')).toHaveText(WORDS[locale].noFile);
-      await expect(page.getByTestId('pipeline-next-reason')).toHaveText(WORDS[locale].noFile);
+      // The chip says it once; the run bar does not repeat it under the row.
+      await expect(page.getByTestId('pipeline-next-reason')).toHaveCount(0);
       await expect(page.getByTestId('bank-guide-chip')).toHaveText(WORDS[locale].noFile);
       await expect(page.locator('#pipeline-run-picker option:checked')).toContainText(WORDS[locale].noFile);
       await expect(paidStage(page)).not.toContainText(WORDS[locale].done);
@@ -425,8 +426,8 @@ test.describe('Pay out waits for the bank to confirm the payments', () => {
     unconfirmedPayments: { count: 3, total: 54000 }, confirmationCoverage: 0.4,
   };
   const WORDS = {
-    en: { waiting: 'Submitted — waiting for the bank (2 of 5)', title: 'Confirm payments with the bank', action: 'Open Payment Tracking', done: 'Done', complete: 'All stages are complete.', confirmed: 'Bank confirmed every payment' },
-    ar: { waiting: 'أُرسل — بانتظار البنك (2 من 5)', title: 'تأكيد المدفوعات مع البنك', action: 'فتح تتبع المدفوعات', done: 'مكتمل', complete: 'اكتملت كل المراحل.', confirmed: 'أكّد البنك جميع المدفوعات' },
+    en: { waiting: 'Submitted — waiting for the bank (3 of 5 waiting)', title: 'Confirm payments with the bank', action: 'Open Payment Tracking', done: 'Done', complete: 'All stages are complete.', confirmed: 'Bank confirmed every payment' },
+    ar: { waiting: 'أُرسل — بانتظار البنك (3 من 5 بانتظار الرد)', title: 'تأكيد المدفوعات مع البنك', action: 'فتح تتبع المدفوعات', done: 'مكتمل', complete: 'اكتملت كل المراحل.', confirmed: 'أكّد البنك جميع المدفوعات' },
   } as const;
   const paidStage = (page: Page) => page.getByTestId('pipeline-stages').locator('> li[data-stage="paid"]');
 
@@ -438,7 +439,7 @@ test.describe('Pay out waits for the bank to confirm the payments', () => {
       await expect(paidStage(page)).not.toContainText(WORDS[locale].done);
       await expect(page.getByTestId('pipeline-next-title')).toHaveText(WORDS[locale].title);
       await expect(page.getByTestId('pipeline-next-title')).not.toHaveText(WORDS[locale].complete);
-      await expect(page.getByTestId('pipeline-next-reason')).toHaveText(WORDS[locale].waiting);
+      await expect(page.getByTestId('pipeline-next-reason')).toHaveCount(0);
       await expect(page.getByTestId('bank-guide-chip')).toHaveText(WORDS[locale].waiting);
       await expect(page.getByTestId('pipeline-next-action')).toHaveText(WORDS[locale].action);
       await page.getByTestId('pipeline-next-action').click();
