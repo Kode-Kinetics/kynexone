@@ -6,6 +6,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Recruitment;
@@ -31,6 +32,7 @@ public class RequisitionsController : ControllerBase
         _approvals = approvals;
     }
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] string? status,
@@ -51,6 +53,7 @@ public class RequisitionsController : ControllerBase
         return Ok(new { items, total, page, pageSize });
     }
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
@@ -318,6 +321,7 @@ public class RequisitionsController : ControllerBase
         User.Claims.Where(c => c.Type == System.Security.Claims.ClaimTypes.Role).Select(c => c.Value).ToList(),
         User.Claims.Where(c => c.Type == "permission").Select(c => c.Value).ToList());
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("stats")]
     public async Task<IActionResult> Stats(CancellationToken ct)
     {

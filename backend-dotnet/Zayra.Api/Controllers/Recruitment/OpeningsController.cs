@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
@@ -25,6 +26,7 @@ public class OpeningsController : ControllerBase
         _db = db; _svc = svc; _notify = notify;
     }
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] string? status,
@@ -62,6 +64,7 @@ public class OpeningsController : ControllerBase
         return Ok(new { items = enriched, total, page, pageSize });
     }
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
@@ -192,6 +195,7 @@ public class OpeningsController : ControllerBase
         return Ok(j);
     }
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("stats")]
     public async Task<IActionResult> Stats(CancellationToken ct)
     {
@@ -216,6 +220,7 @@ public class OpeningsController : ControllerBase
     private static readonly string[] JobOpeningCsvExampleRow =
         { "Example Job Title", "Operations", "Operations Officer", "Full-Time", "1", "Main City", "8000", "12000", "Example description", "Example requirements", "Example responsibilities", "", "Open" };
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("export")]
     public async Task<IActionResult> Export(CancellationToken ct)
     {
