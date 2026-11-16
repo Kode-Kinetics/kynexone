@@ -125,7 +125,10 @@ public static class HeldPay
             return new(409, new { error = "held_pay_run_voided", message = "The run that held this pay was voided. The replacement run holds it again." });
         if (RunIsOpen(holdingRun.Status))
             return new(409, new { error = "held_pay_run_open", message = "The run that held this pay can still be processed again. Release or forfeit the hold once that run is processed." });
-        if (actorUserId is Guid actor && (holdingRun.CreatedByUserId == actor || holdingRun.ProcessedByUserId == actor))
+        // A decision nobody can be named for cannot be checked against the run's preparer, so it is refused.
+        if (actorUserId is not Guid actor)
+            return new(403, new { error = "maker_checker_violation", message = "The person deciding could not be identified, so the decision cannot be checked against the run's preparer." });
+        if (holdingRun.CreatedByUserId == actor || holdingRun.ProcessedByUserId == actor)
             return new(403, new { error = "maker_checker_violation", message = "The user who created or processed this run cannot release or forfeit its held pay. A different approver is required (maker-checker policy)." });
 
         var heldPeriod = $"{holdingRun.Year}-{holdingRun.Month:D2}";
@@ -143,14 +146,33 @@ public static class HeldPay
                          && (r.CompanyId == holdingRun.CompanyId || (holdingRun.CompanyId == null && r.CompanyId == null)))
                 .OrderBy(r => r.Year).ThenBy(r => r.Month).ThenBy(r => r.CreatedAtUtc)
                 .ToListAsync(ct);
-            target = candidates.FirstOrDefault(r => RunIsOpen(r.Status));
+            // The first open run of the held month or later: a stale Draft of an earlier month never receives it.
+            target = candidates.FirstOrDefault(r => RunIsOpen(r.Status)
+                && (r.Year > holdingRun.Year || (r.Year == holdingRun.Year && r.Month >= holdingRun.Month)));
             if (target is null)
                 return new(409, new { error = "held_pay_no_open_run", message = "There is no open payroll run to pay this into. Create the next payroll run, then release the held pay." });
         }
 
         var newStatus = verb == ActionPay ? Released : Forfeited;
+        var targetBusy = false;
         var won = await InTransactionAsync(db, async () =>
         {
+            targetBusy = false;
+            if (target is not null)
+            {
+                // The target run's row FOR UPDATE, the lock Process takes first: a run that started processing meanwhile has
+                // read its adjustments already and would never pay this one, so the release is refused rather than lost.
+                var lockedStatus = await db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                    .AsNoTracking().Where(r => r.TenantId == tenantId && r.Id == target.Id)
+                    .Select(r => r.Status).FirstOrDefaultAsync(ct);
+                if (lockedStatus is null || !RunIsOpen(lockedStatus)) { targetBusy = true; return false; }
+                // A queued or running processing pass reads the run's adjustments before it takes that lock: refuse too.
+                var jobKey = PayrollRunProcessJobHandler.IdempotencyKey(target.Id);
+                if (await db.BackgroundJobs.AsNoTracking().AnyAsync(j => j.TenantId == tenantId && j.JobType == PayrollRunProcessJobHandler.JobType
+                        && j.IdempotencyKey == jobKey
+                        && (j.Status == BackgroundJobStatuses.Queued || j.Status == BackgroundJobStatuses.Running), ct))
+                { targetBusy = true; return false; }
+            }
             // Compare-and-swap on the status: of two decisions racing on one hold, exactly one wins; the loser writes nothing.
             var claimed = await db.PayrollAdjustments
                 .Where(a => a.TenantId == tenantId && a.Id == hold.Id && a.SourceType == HoldSource && a.Status == Held)
@@ -186,6 +208,8 @@ public static class HeldPay
             await db.SaveChangesAsync(ct);
             return true;
         }, ct);
+        if (targetBusy)
+            return new(409, new { error = "held_pay_target_run_busy", message = "The run this would be paid in started processing a moment ago. Try again: the next open run is chosen afresh." });
         if (!won)
             return new(409, new { error = "held_pay_already_decided", message = "This held pay was decided by someone else a moment ago. Reload to see the decision." });
         return new(200, new

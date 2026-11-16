@@ -267,4 +267,59 @@ public class PayHeldPayTests
         (await EarningSum(db, aprReplacement.Id, s.Id, "ADJ_HELD_PAY_RELEASED")).Should().Be(Basic + Housing);
         (await Releases(db)).Should().ContainSingle();
     }
+
+    /// <summary>P2-A4: a stale Draft of an earlier month never receives a later month's held pay.</summary>
+    [Fact]
+    public async Task ARelease_GoesToTheFirstOpenRunOnOrAfterTheHeldMonth_NotAStaleEarlierDraft()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var (co, _, _, apr, hold) = await HeldInMarch(db);
+        var staleFeb = await AddRun(db, co, 2026, 2);
+
+        Status(await Payroll(db, co.TenantId, Checker).DecideHeldPay(hold.Id, new HeldPayDecisionRequest("pay", null), CancellationToken.None)).Should().Be(200);
+
+        (await Releases(db)).Single().PayrollRunId.Should().Be(apr.Id).And.NotBe(staleFeb.Id);
+    }
+
+    /// <summary>Maker-checker: whoever PROCESSED the holding run may not decide its hold, even when someone else created it.</summary>
+    [Fact]
+    public async Task TheProcessorOfTheRun_CannotReleaseOrForfeitItsHold_EvenWhenSomeoneElseCreatedIt()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var processor = Guid.NewGuid();
+        var co = await SeedCompany(db, Guid.NewGuid());
+        await AddEmployee(db, co, "Active");
+        var s = await AddEmployee(db, co, "Suspended");
+        var mar = await AddRun(db, co, 2026, 3);             // created by Maker
+        await ProcessAs(db, co, mar.Id, processor);
+        await SetEmployeeStatus(db, s.Id, "Active");
+        await AddRun(db, co, 2026, 4);
+        var hold = (await Holds(db)).Single();
+
+        foreach (var (action, reason) in new[] { ("pay", (string?)null), ("forfeit", "Investigation upheld; decision on file") })
+        {
+            var refused = await Payroll(db, co.TenantId, processor).DecideHeldPay(hold.Id, new HeldPayDecisionRequest(action, reason), CancellationToken.None);
+            Status(refused).Should().Be(403, $"the processor may not {action} the hold of the run they processed");
+            Json(refused).GetProperty("error").GetString().Should().Be("maker_checker_violation");
+        }
+        Status(await Payroll(db, co.TenantId, Maker).DecideHeldPay(hold.Id, new HeldPayDecisionRequest("pay", null), CancellationToken.None))
+            .Should().Be(403, "nor may the creator");
+        (await Holds(db)).Single().Status.Should().Be(HeldPay.Held);
+    }
+
+    /// <summary>A decision with no identified user cannot be checked against the preparer, so it is refused.</summary>
+    [Fact]
+    public async Task ADecisionWithNoIdentifiedUser_IsRefused()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var (co, _, _, _, hold) = await HeldInMarch(db);
+
+        var outcome = await HeldPay.DecideAsync(db, co.TenantId, hold.Id, null, "pay", null, CancellationToken.None);
+
+        outcome.StatusCode.Should().Be(403);
+        (await Holds(db)).Single().Status.Should().Be(HeldPay.Held);
+    }
 }
