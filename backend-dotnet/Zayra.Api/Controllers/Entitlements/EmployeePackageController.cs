@@ -7,6 +7,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Contracts;
 using Zayra.Api.Application.Entitlements;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Entitlements;
@@ -294,6 +295,11 @@ public sealed class EmployeePackageController : ControllerBase
             return (null, null, Refused(PackageReasons.ProposalClosed, "This proposal was already decided."));
         var employee = await VisibleEmployeeAsync(tid, proposal.EmployeeId, ct);
         if (employee is null) return (null, null, EmployeeNotFound());
+        // The subject never decides: the person the package is about cannot confirm or reject their own proposal, whoever asked for it.
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tid, this.GetUserId(), proposal.EmployeeId, ct))
+            return (null, null, BadRequest(SubjectDecisionBar.Refusal(
+                "This package is about you. Another HR user must decide it.",
+                "هذه الباقة تخصّك. يجب أن يقرّر فيها مستخدم آخر في الموارد البشرية.")));
         return (proposal, employee, null);
     }
 
