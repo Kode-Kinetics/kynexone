@@ -2286,15 +2286,7 @@ public partial class LeaveService : ILeaveService
             || request.DayType.Equals("Hourly", StringComparison.OrdinalIgnoreCase))
             return whole;
 
-        var slices = new List<UnpaidLeaveMonthSlice>();
-        for (var monthStart = new DateOnly(request.StartDate.Year, request.StartDate.Month, 1); monthStart <= request.EndDate; monthStart = monthStart.AddMonths(1))
-        {
-            var from = request.StartDate > monthStart ? request.StartDate : monthStart;
-            var monthEnd = monthStart.AddMonths(1).AddDays(-1);
-            var to = request.EndDate < monthEnd ? request.EndDate : monthEnd;
-            var days = await CalculateWorkingDaysAsync(tenantId, from, to, request.PolicyId, request.CompanyId, ct);
-            if (days > 0) slices.Add(new UnpaidLeaveMonthSlice(from, to, days));
-        }
+        var slices = await CountMonthSlicesAsync(tenantId, request, ct);
         if (slices.Count > 0 && slices.Sum(x => x.Days) == request.TotalDays) return slices;
 
         await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "UnpaidLeaveSliceFallback",
@@ -2304,6 +2296,24 @@ public partial class LeaveService : ILeaveService
             "The month-by-month days do not add up to the request's total, so the whole request is charged to its first month. Check the request's day count.",
             "System", ct);
         return whole;
+    }
+
+    /// <summary>
+    /// Each calendar month of a request with its deductible days there, counted with the request's own working-day rules.
+    /// Pure read: no fallback and no audit entry (the caller decides what a mismatch with TotalDays means).
+    /// </summary>
+    internal async Task<List<UnpaidLeaveMonthSlice>> CountMonthSlicesAsync(Guid tenantId, LeaveRequest request, CancellationToken ct)
+    {
+        var slices = new List<UnpaidLeaveMonthSlice>();
+        for (var monthStart = new DateOnly(request.StartDate.Year, request.StartDate.Month, 1); monthStart <= request.EndDate; monthStart = monthStart.AddMonths(1))
+        {
+            var from = request.StartDate > monthStart ? request.StartDate : monthStart;
+            var monthEnd = monthStart.AddMonths(1).AddDays(-1);
+            var to = request.EndDate < monthEnd ? request.EndDate : monthEnd;
+            var days = await CalculateWorkingDaysAsync(tenantId, from, to, request.PolicyId, request.CompanyId, ct);
+            if (days > 0) slices.Add(new UnpaidLeaveMonthSlice(from, to, days));
+        }
+        return slices;
     }
 
     private async Task<List<LeaveYearSegment>> CalculateYearSegmentsAsync(

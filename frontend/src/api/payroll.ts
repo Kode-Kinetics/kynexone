@@ -280,6 +280,34 @@ export interface PayrollHeldPayView {
   awaitingDecision: number;
 }
 
+export interface LeaveSliceSplitPart { payPeriod: string; from: string; to: string; days: number; amount: number }
+
+export interface LeaveSliceSplitRow {
+  impactId: string;
+  leaveRequestId: string;
+  employeeId: number;
+  employeeCode: string;
+  employeeName: string;
+  startDate: string;
+  endDate: string;
+  requestStatus: string;
+  payPeriod: string;
+  status: string;
+  impactType: string;
+  days: number;
+  amount: number;
+  parts: LeaveSliceSplitPart[];
+  note: string;
+}
+
+export interface LeaveSliceSplitReport {
+  readOnly: boolean;
+  wouldSplit: LeaveSliceSplitRow[];
+  doNotReconcile: LeaveSliceSplitRow[];
+  alreadyDeducted: LeaveSliceSplitRow[];
+  sickScaleRows: LeaveSliceSplitRow[];
+}
+
 export interface PayrollValidationOverride {
   id: string;
   code: string;
@@ -890,6 +918,10 @@ export const payrollApi = {
   decideHeldPay: (holdId: string, action: 'pay' | 'forfeit', reason: string) =>
     client.post<{ status: string; message: string }>(`/api/payroll/held-pay/${holdId}/decision`, { action, reason })
       .then((r) => r.data),
+
+  // Read-only: multi-month unpaid-leave deductions written before month slicing, and how each would split. Changes nothing.
+  leaveSliceSplitReport: () =>
+    client.get<LeaveSliceSplitReport>('/api/payroll/leave-slice-split-report').then((r) => r.data),
 
   runValidationOverrides: (id: string) =>
     client.get<PayrollValidationOverrideReport>(`/api/payroll/runs/${id}/validation-overrides`).then((r) => r.data),

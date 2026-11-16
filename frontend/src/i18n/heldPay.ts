@@ -23,6 +23,26 @@ const ar: Record<string, string> = {
     'الأجر المحتجز الذي صُرف إلى هذا المسير لا يدفعه هذا المسير لأن الموظف ليس ضمنه. ويبقى مستحقًا. أدرج الموظف في المسير ثم عالجه من جديد.',
   'Unpaid-leave arrears from earlier months were not all collected this month, because deductions stay within the company’s share of the wage due. The rest carries to the next run; anything still owed when employment ends is shown on the final settlement.':
     'لم تُحصَّل كل متأخرات الإجازات غير المدفوعة من الأشهر السابقة هذا الشهر، لأن الخصومات تبقى ضمن النسبة التي حددتها الشركة من الأجر المستحق. ويُرحَّل الباقي إلى المسير التالي، وما يبقى مستحقًا عند انتهاء الخدمة يظهر في التسوية النهائية.',
+  // Multi-month leave deductions report (views/LeaveSliceSplitReportPage.tsx), read-only.
+  'The report could not be loaded.': 'تعذّر تحميل التقرير.',
+  'Would be split': 'سيُقسَّم',
+  'Still waiting for a payroll run. The amount would be shared across the months by days, adding up to the original exactly.':
+    'لم يُعالَج بعد في مسير رواتب. سيُوزَّع المبلغ على الأشهر حسب الأيام، ومجموعه يساوي المبلغ الأصلي تمامًا.',
+  'Do not reconcile': 'لا تتطابق',
+  'The month-by-month days do not match the deduction, or the leave is no longer approved. HR checks these; they are never split automatically.':
+    'أيام الأشهر لا تطابق الخصم، أو أن الإجازة لم تعد معتمدة. تراجعها الموارد البشرية، ولا تُقسَّم تلقائيًا أبدًا.',
+  'Already deducted': 'خُصمت مسبقًا',
+  'Taken in full by an earlier run in the first month. Left as they are: the total is right, only the timing differs.':
+    'خُصمت كاملةً في مسير سابق في الشهر الأول. تُترك كما هي: المجموع صحيح، والاختلاف في التوقيت فقط.',
+  'Sick-leave pay-scale rows': 'سجلات سلّم أجر الإجازة المرضية',
+  'Their days are unpaid-equivalent days, so they are not split by days. HR reviews them.':
+    'أيامها أيام مكافئة لغير المدفوعة، لذا لا تُقسَّم حسب الأيام. تراجعها الموارد البشرية.',
+  'Multi-month leave deductions': 'خصومات الإجازات الممتدة لعدة أشهر',
+  'Read-only. Nothing on this page changes a deduction; any change waits for the owner’s sign-off.':
+    'للاطلاع فقط. لا شيء في هذه الصفحة يغيّر أي خصم؛ وأي تغيير ينتظر موافقة المالك.',
+  'None.': 'لا يوجد.',
+  '{days} day(s), {amount}, charged to {period}': '{days} يوم، {amount}، محمّلة على {period}',
+  '{period}: {days} day(s), {amount}': '{period}: {days} يوم، {amount}',
 };
 
 export const heldPay = {
