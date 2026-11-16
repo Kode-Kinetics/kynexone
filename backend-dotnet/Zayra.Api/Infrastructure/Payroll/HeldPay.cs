@@ -52,8 +52,8 @@ public static class HeldPay
 
     /// <summary>
     /// Writes this run's holds, inside the run's own transaction. A re-process replaces the Held rows it wrote before; a
-    /// hold already released or forfeited (on this run, or on any other live run of the same company and period) is
-    /// never written again, so a reopen or a replacement run cannot hold, and later pay, the same month twice.
+    /// hold already released or forfeited (on this run, or on any other run of the same company and period, voided ones
+    /// included) is never written again, so a reopen or a replacement run cannot hold, and later pay, the same month twice.
     /// </summary>
     public static async Task StageAsync(
         ZayraDbContext db, PayrollRun run, Guid companyId, IReadOnlyCollection<Candidate> candidates, CancellationToken ct)
@@ -72,7 +72,8 @@ public static class HeldPay
                                    && a.Status != Held && ids.Contains(a.EmployeeId)
                                    && r.Year == run.Year && r.Month == run.Month
                                    && (r.CompanyId == companyId || r.CompanyId == null)
-                                   && (r.Id == run.Id || r.Status != "Voided")
+                             // Including a VOIDED run's: a hold released or forfeited stays decided when the run that held it is
+                             // voided, so a replacement run of the month can never hold, and later pay, the same month again.
                              select a.EmployeeId).Distinct().ToListAsync(ct);
         var period = $"{run.Year}-{run.Month:D2}";
         foreach (var c in candidates.Where(c => c.Amount > 0m && !decided.Contains(c.EmployeeId)))

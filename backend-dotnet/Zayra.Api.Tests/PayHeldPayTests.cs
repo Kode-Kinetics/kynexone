@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Controllers;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Payroll;
+using Microsoft.AspNetCore.Mvc;
 using Zayra.Api.Models;
 using static Zayra.Api.Tests.PayNext;
 
@@ -181,5 +182,47 @@ public class PayHeldPayTests
             .GetCustomAttributes<HasPermissionAttribute>().Single().Permissions.ToArray();
         Needs(nameof(PayrollController.DecideHeldPay)).Should().Equal("payroll.approve");
         Needs(nameof(PayrollController.GetRunHeldPay)).Should().Equal("payroll.read");
+    }
+
+    // ══ Money audit 2 ══════════════════════════════════════════════════════════════════════════════
+
+    private static async Task SetEmployeeStatus(Zayra.Api.Data.ZayraDbContext db, int employeeId, string status)
+    {
+        (await db.Employees.FirstAsync(e => e.Id == employeeId)).Status = status;
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+    }
+
+    private static Task<List<PayrollAdjustment>> Releases(Zayra.Api.Data.ZayraDbContext db) =>
+        db.PayrollAdjustments.AsNoTracking().Where(a => a.SourceType == HeldPay.ReleaseSource).ToListAsync();
+
+    /// <summary>P1-A1: hold -> release -> void the holding run -> replacement run: the month is never held or paid twice.</summary>
+    [Fact]
+    public async Task AVoidOfTheHoldingRunAfterARelease_LetsNoReplacementHoldOrPayThatMonthAgain()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        await AddEmployee(db, co, "Active");
+        var s = await AddEmployee(db, co, "Suspended");
+        var mar = await AddRun(db, co, 2026, 3);
+        await Process(db, co, mar.Id);                       // March stays Processed: closed to re-processing, so a hold may be decided
+        await SetEmployeeStatus(db, s.Id, "Active");
+        var apr = await AddRun(db, co, 2026, 4);
+        var hold = (await Holds(db)).Single();
+        Status(await Payroll(db, co.TenantId, Checker).DecideHeldPay(hold.Id, new HeldPayDecisionRequest("pay", null), CancellationToken.None)).Should().Be(200);
+
+        await SetEmployeeStatus(db, s.Id, "Suspended");      // suspended again while March is corrected
+        (await new PayrollVoidService(db).VoidAsync(mar.Id, co.TenantId, null, "System", "wrong cost centre", CancellationToken.None)).IsVoided.Should().BeTrue();
+        db.ChangeTracker.Clear();
+        var marReplacement = await AddRun(db, co, 2026, 3);
+        await Process(db, co, marReplacement.Id);
+
+        (await Holds(db)).Where(h => h.PayrollRunId == marReplacement.Id).Should().BeEmpty(
+            "March's pay was already released; the replacement run must not hold it again");
+        await SetEmployeeStatus(db, s.Id, "Active");
+        await Process(db, co, apr.Id);
+        (await Releases(db)).Should().ContainSingle();
+        (await EarningSum(db, apr.Id, s.Id, "ADJ_HELD_PAY_RELEASED")).Should().Be(Basic + Housing, "paid exactly once");
     }
 }

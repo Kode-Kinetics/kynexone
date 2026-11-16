@@ -126,9 +126,12 @@ internal static class PayNext
         return run;
     }
 
-    public static async Task Process(ZayraDbContext db, Co co, Guid runId)
+    public static Task Process(ZayraDbContext db, Co co, Guid runId) => ProcessAs(db, co, runId, Maker);
+
+    /// <summary>Processes the run as <paramref name="userId"/>, who then is the run's processor (ProcessedByUserId).</summary>
+    public static async Task ProcessAs(ZayraDbContext db, Co co, Guid runId, Guid userId)
     {
-        var result = await Payroll(db, co.TenantId, Maker).Process(runId, CancellationToken.None);
+        var result = await Payroll(db, co.TenantId, userId).Process(runId, CancellationToken.None);
         result.Should().BeOfType<OkObjectResult>(JsonSerializer.Serialize((result as ObjectResult)?.Value));
         db.ChangeTracker.Clear();
     }
