@@ -860,13 +860,18 @@ test('save draft, sign out, sign in, resume where it stopped', async ({ page }, 
   await expect(page).toHaveURL(/\/login/);
   // The login screen is a client-hydrated, controlled form: values typed before React has hydrated it are dropped, and
   // Enter then submits nothing (the production build, on a cold runner, shows this). Type and submit until it takes.
+  // An attempt that did submit can take longer than its 3 s check to leave /login on a cold runner; the next attempt must
+  // then not fill the form that is already being torn down (a 15 s "element was detached" wait took the whole budget),
+  // so each attempt first checks it is still on /login and bounds its own actions.
   await expect(async () => {
-    await page.locator('#li-em').fill('owner@wizard.test');
-    await page.locator('#li-pw').fill('a-fixture-password');
-    await expect(page.locator('#li-pw')).toHaveValue('a-fixture-password');
-    await page.locator('#li-pw').press('Enter');
-    await expect(page).not.toHaveURL(/\/login/, { timeout: 3_000 });
-  }).toPass({ timeout: 30_000 });
+    if (!/\/login/.test(page.url())) return;
+    await page.locator('#li-em').fill('owner@wizard.test', { timeout: 3_000 });
+    await page.locator('#li-pw').fill('a-fixture-password', { timeout: 3_000 });
+    await expect(page.locator('#li-pw')).toHaveValue('a-fixture-password', { timeout: 3_000 });
+    await page.locator('#li-pw').press('Enter', { timeout: 3_000 });
+    await expect(page).not.toHaveURL(/\/login/, { timeout: 5_000 });
+  }).toPass({ timeout: 45_000 });
+  await expect(page).not.toHaveURL(/\/login/);
 
   await page.goto('/setup?tab=companies');
   const card = page.getByTestId('company-drafts-card');
