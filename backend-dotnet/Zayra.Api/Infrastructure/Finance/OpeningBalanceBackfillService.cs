@@ -24,9 +24,18 @@ namespace Zayra.Api.Infrastructure.Finance;
 /// <c>needs_manual_reconciliation</c> with the figures (carried, outstanding, payroll takes found) and apply refuses it. Finance
 /// reconciles it with a GL adjustment.</para>
 ///
-/// <para>The decision is taken under the debts' finance.loan / finance.advance locks, which payroll Process also takes: a run
-/// racing the backfill either finished first (its witness is then seen, so the debt is manual) or waits until the opening line
-/// is committed (and then relieves the receivable as usual). A debt whose cutover period is closed, or whose import record names
+/// <para>The decision is taken under the finance.loan / finance.advance locks of the debts apply will post (the ready rows of the
+/// preview the caller confirmed), which payroll Process also takes: a run racing the backfill either finished first (its witness
+/// is then seen, the plan no longer matches the preview, and nothing posts) or waits until the opening line is committed (and
+/// then relieves the receivable as usual). A debt apply will not post is not locked, so a payroll run collecting it never waits
+/// for the backfill. Apply takes only steps 3 and 4 of the lock order (FinanceDecisionSerializer.AcquireDebtLocksAsync: loans
+/// ascending, then advances ascending) and no batch or run-row lock, so it can wait for Process, a settlement or a void but never
+/// holds a lock any of them takes before one it then waits for.</para>
+///
+/// <para><b>Tie-out.</b> The preview and the apply response also state, for the company, the ledger balance of the loan and the
+/// advance receivables (1400, 1410) against the loan and advance sub-ledgers. A difference that posting the ready rows would not
+/// close (a manual journal to the receivable, a debt booked nowhere) is a warning, in English and Arabic; it never changes what
+/// apply posts. A debt whose cutover period is closed, or whose import record names
 /// another company, is refused for its row in English and Arabic. Finance roles or Admin only, company-scoped. No second person is
 /// required: the action restates no balance and moves no money, it books a figure the import already recorded (the origin row),
 /// it is idempotent and every posting is audited.</para>
@@ -44,7 +53,12 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
     public async Task<object> PreviewAsync(Guid tenantId, Guid companyId, bool includeUnattributed, CancellationToken ct)
     {
         var rows = await PlanAsync(tenantId, companyId, includeUnattributed, ct);
-        return new { companyId, digest = Digest(rows), rows = rows.Select(Project).ToList(), ready = rows.Count(r => r.Status == Ready) };
+        var tieOut = await TieOutAsync(tenantId, companyId, rows, ct);
+        return new
+        {
+            companyId, digest = Digest(rows), rows = rows.Select(Project).ToList(), ready = rows.Count(r => r.Status == Ready),
+            tieOut = tieOut.Select(ProjectTieOut).ToList(), warnings = Warnings(tieOut),
+        };
     }
 
     /// <summary>The result of an apply: <see cref="Stale"/> when the plan no longer matches the preview the caller confirmed.</summary>
@@ -62,21 +76,20 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
         {
             if (attempt++ > 0) _db.ChangeTracker.Clear();
             await using var tx = _db.Database.IsRelational() ? await _db.Database.BeginTransactionAsync(ct) : null;
-            var origins = await OriginsAsync(tenantId, companyId, includeUnattributed, ct);
-            // The debt locks first, then the decision: a payroll pass holding one of them finishes before the plan reads its witness.
+            // An unlocked look first, to learn which debts apply would change: only those (the ready rows) are locked. A plan that
+            // already differs from the confirmed preview is stale before any lock is taken.
+            var draft = await PlanAsync(tenantId, companyId, includeUnattributed, ct);
+            var draftDigest = Digest(draft);
+            if (!string.Equals(draftDigest, previewDigest, StringComparison.Ordinal)) return StaleResult(draftDigest);
+            // The debt locks of the ready rows, then the decision again under them: a payroll pass holding one of them finishes
+            // before the plan reads its witness. The digest pins every row's status, so the ready rows decided under the locks are
+            // exactly the ones locked here; a debt that is not ready is never posted and never locked.
             await FinanceDecisionSerializer.AcquireDebtLocksAsync(_db, tenantId,
-                origins.Where(o => o.EntityType == OpeningBalanceEntityTypes.Loan).Select(o => o.EntityId),
-                origins.Where(o => o.EntityType == OpeningBalanceEntityTypes.Advance).Select(o => o.EntityId), ct);
+                draft.Where(r => r.Status == Ready && r.EntityType == OpeningBalanceEntityTypes.Loan).Select(r => r.EntityId),
+                draft.Where(r => r.Status == Ready && r.EntityType == OpeningBalanceEntityTypes.Advance).Select(r => r.EntityId), ct);
             var rows = await PlanAsync(tenantId, companyId, includeUnattributed, ct);
             var digest = Digest(rows);
-            if (!string.Equals(digest, previewDigest, StringComparison.Ordinal))
-                return new ApplyResult(true, new
-                {
-                    error = "backfill_preview_stale",
-                    message = "The opening balances have changed since the preview you confirmed (a debt was added, moved or posted). Nothing was posted. Preview again and confirm the new figures.",
-                    messageAr = "تغيّرت الأرصدة الافتتاحية منذ المعاينة التي أكدتها (أُضيف دين أو تغيّر أو رُحّل). لم يُرحَّل شيء. أعد المعاينة وأكّد الأرقام الجديدة.",
-                    digest,
-                });
+            if (!string.Equals(digest, previewDigest, StringComparison.Ordinal)) return StaleResult(digest);
             if (AfterDecision is { } afterDecision) await afterDecision(ct);
             var posted = 0;
             foreach (var row in rows.Where(r => r.Status == Ready))
@@ -93,6 +106,8 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
                 posted++;
             }
             await _db.SaveChangesAsync(ct);
+            // The tie-out as it stands with this apply's lines on the ledger (read inside the transaction, so they count).
+            var tieOut = await TieOutAsync(tenantId, companyId, [], ct);
             if (tx is not null) await tx.CommitAsync(ct);
             return new ApplyResult(false, new
             {
@@ -100,9 +115,111 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
                 posted,
                 refused = rows.Count(r => r.Status is not (Ready or AlreadyPosted)),
                 rows = rows.Select(Project).ToList(),
+                tieOut = tieOut.Select(ProjectTieOut).ToList(),
+                warnings = Warnings(tieOut),
             });
         });
     }
+
+    private static ApplyResult StaleResult(string digest) => new(true, new
+    {
+        error = "backfill_preview_stale",
+        message = "The opening balances have changed since the preview you confirmed (a debt was added, moved or posted). Nothing was posted. Preview again and confirm the new figures.",
+        messageAr = "تغيّرت الأرصدة الافتتاحية منذ المعاينة التي أكدتها (أُضيف دين أو تغيّر أو رُحّل). لم يُرحَّل شيء. أعد المعاينة وأكّد الأرقام الجديدة.",
+        digest,
+    });
+
+    // ── Tie-out: the receivables on the ledger against the sub-ledgers ──────────────────────────────────────────────────────────
+
+    /// <summary>The loan and advance statuses whose outstanding balance the receivable carries (disbursed, or carried in). Pending,
+    /// Approved, Rejected and Cancelled debts were never paid out, so the ledger holds nothing for them.</summary>
+    private static readonly string[] BookedLoanStatuses = { "Active", "Overdue", "Settled", "Closed" };
+    private static readonly string[] BookedAdvanceStatuses = { "Active", "Settled", "Closed" };
+
+    /// <param name="Receivable">The driver(s) whose account this is: LOAN_RECEIVABLE, ADVANCE_RECEIVABLE, or both when a tenant mapped
+    /// them to one account.</param>
+    /// <param name="GlBalance">Σ DR − Σ CR of the account over the ledger rows stamped with this company (reversals and their contras
+    /// both count, so they net).</param>
+    /// <param name="UnattributedGlBalance">The same over the rows that name no company (postings older than the company dimension),
+    /// shown so a difference they explain can be told apart; not part of the difference.</param>
+    /// <param name="SubLedger">Σ outstanding balance of the company's loans (or advances) the receivable carries.</param>
+    /// <param name="ToPost">What applying the ready rows would add to the account (zero once applied).</param>
+    /// <param name="Difference">GlBalance + ToPost − SubLedger: what remains between ledger and sub-ledger once apply has posted.</param>
+    private sealed record TieOutLine(string Receivable, string Account, decimal GlBalance, decimal UnattributedGlBalance,
+        decimal SubLedger, decimal ToPost, decimal Difference);
+
+    /// <summary>The company's loan and advance receivables against their sub-ledgers. Reads tenant-wide (the caller's company was
+    /// checked; the company is pinned in every predicate) so the caller's own company filter cannot hide a row.</summary>
+    private async Task<List<TieOutLine>> TieOutAsync(Guid tenantId, Guid companyId, IReadOnlyCollection<Row> plan, CancellationToken ct)
+    {
+        var glCtx = await GlAccountResolver.LoadAsync(_db, tenantId, companyId, ct);
+        var loanAccount = GlAccountResolver.AccountLabel(GlControlAccounts.LoanReceivableDriver, glCtx);
+        var advanceAccount = GlAccountResolver.AccountLabel(GlControlAccounts.AdvanceReceivableDriver, glCtx);
+
+        var loanSubLedger = await ScopedBypass.TenantWide(_db.EmployeeLoans, tenantId,
+                "Opening-journal backfill tie-out: the sub-ledger of the company whose receivable is reconciled (the caller's scope was checked for it).")
+            .AsNoTracking().Where(l => l.CompanyId == companyId && !l.IsDeleted && BookedLoanStatuses.Contains(l.Status))
+            .SumAsync(l => l.OutstandingBalance, ct);
+        var advanceSubLedger = await ScopedBypass.TenantWide(_db.SalaryAdvances, tenantId,
+                "Opening-journal backfill tie-out: the sub-ledger of the company whose receivable is reconciled (the caller's scope was checked for it).")
+            .AsNoTracking().Where(a => a.CompanyId == companyId && !a.IsDeleted && BookedAdvanceStatuses.Contains(a.Status))
+            .SumAsync(a => a.OutstandingBalance, ct);
+
+        var accounts = new List<string> { loanAccount, advanceAccount };
+        var ledger = await ScopedBypass.TenantWide(_db.FinanceGlEntries, tenantId,
+                "Opening-journal backfill tie-out: the receivable balance of the company the caller's scope was checked for, and the unattributed rows beside it.")
+            .AsNoTracking()
+            .Where(x => (x.CompanyId == companyId || x.CompanyId == null)
+                     && (accounts.Contains(x.DebitAccount) || accounts.Contains(x.CreditAccount)))
+            .Select(x => new { x.CompanyId, x.DebitAccount, x.CreditAccount, x.Amount })
+            .ToListAsync(ct);
+
+        decimal Balance(string account, bool attributed) => Math.Round(
+            ledger.Where(r => (r.CompanyId != null) == attributed && r.DebitAccount == account).Sum(r => r.Amount)
+          - ledger.Where(r => (r.CompanyId != null) == attributed && r.CreditAccount == account).Sum(r => r.Amount), 2);
+        decimal Pending(string entityType) => plan.Where(r => r.Status == Ready && r.EntityType == entityType).Sum(r => r.ToPost);
+
+        TieOutLine Line(string receivable, string account, decimal subLedger, decimal toPost)
+        {
+            var gl = Balance(account, attributed: true);
+            return new TieOutLine(receivable, account, gl, Balance(account, attributed: false), Math.Round(subLedger, 2), Math.Round(toPost, 2),
+                Math.Round(gl + toPost - subLedger, 2));
+        }
+
+        if (string.Equals(loanAccount, advanceAccount, StringComparison.Ordinal))
+            return [Line($"{GlControlAccounts.LoanReceivableDriver}+{GlControlAccounts.AdvanceReceivableDriver}", loanAccount,
+                loanSubLedger + advanceSubLedger, Pending(OpeningBalanceEntityTypes.Loan) + Pending(OpeningBalanceEntityTypes.Advance))];
+        return
+        [
+            Line(GlControlAccounts.LoanReceivableDriver, loanAccount, loanSubLedger, Pending(OpeningBalanceEntityTypes.Loan)),
+            Line(GlControlAccounts.AdvanceReceivableDriver, advanceAccount, advanceSubLedger, Pending(OpeningBalanceEntityTypes.Advance)),
+        ];
+    }
+
+    private static object ProjectTieOut(TieOutLine t) => new
+    {
+        receivable = t.Receivable, account = t.Account, glBalance = t.GlBalance, unattributedGlBalance = t.UnattributedGlBalance,
+        subLedger = t.SubLedger, toPost = t.ToPost, difference = t.Difference,
+    };
+
+    /// <summary>One warning per receivable whose ledger and sub-ledger still differ once the ready rows post. Informational: apply
+    /// posts exactly the same lines whatever it says.</summary>
+    private static List<object> Warnings(IEnumerable<TieOutLine> tieOut) => tieOut.Where(t => t.Difference != 0m).Select(t => (object)new
+    {
+        code = "receivable_ledger_drift",
+        account = t.Account,
+        difference = t.Difference,
+        message = $"[receivable_ledger_drift] {t.Account}: the ledger carries {t.GlBalance + t.ToPost:N2} for this company" +
+                  (t.ToPost != 0m ? $" once the ready rows post ({t.GlBalance:N2} now)" : string.Empty) +
+                  $", but its loans and advances owe {t.SubLedger:N2}: a difference of {t.Difference:N2}. Something other than the loan and advance flows " +
+                  "(a manual journal, or a debt never booked) has moved this account or left it short. Applying does not correct it; reconcile it with a GL adjustment." +
+                  (t.UnattributedGlBalance != 0m ? $" Rows naming no company carry a further {t.UnattributedGlBalance:N2} on this account." : string.Empty),
+        messageAr = $"{t.Account}: يحمل دفتر الأستاذ لهذه الشركة {t.GlBalance + t.ToPost:N2}" +
+                    (t.ToPost != 0m ? $" بعد ترحيل الصفوف الجاهزة ({t.GlBalance:N2} الآن)" : string.Empty) +
+                    $"، بينما المستحق على قروضها وسلفها {t.SubLedger:N2}، بفارق {t.Difference:N2}. حرّك شيء خارج مسارات القروض والسلف هذا الحساب " +
+                    "(قيد يدوي، أو دين لم يُقيَّد) أو تركه ناقصًا. التطبيق لا يصحّح ذلك؛ سوِّه بقيد تسوية." +
+                    (t.UnattributedGlBalance != 0m ? $" وتحمل قيود لا تحدد شركة {t.UnattributedGlBalance:N2} إضافية على هذا الحساب." : string.Empty),
+    }).ToList();
 
     /// <summary>A fingerprint of the plan a caller is shown: every row's debt, status and amounts, in a fixed order.</summary>
     private static string Digest(IEnumerable<Row> rows)
@@ -277,7 +394,11 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
             .Select(a => a.MetadataJson).ToListAsync(ct);
         if (_unwound.Any(m => m.Contains(id, StringComparison.OrdinalIgnoreCase))) return (false, takes);
 
-        if (isLoan && await _db.LoanRepayments.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.LoanId == debt.EntityId, ct))
+        // Tenant-wide like every other evidence read here: a repayment row the caller's company filter would hide (one naming no
+        // company, or another company) is still a repayment of this debt.
+        if (isLoan && await ScopedBypass.TenantWide(_db.LoanRepayments, tenantId,
+                    "Opening-journal backfill: whether any repayment, reversed or not, was recorded against this carried-in loan, whatever company the row names.")
+                .AsNoTracking().AnyAsync(x => x.LoanId == debt.EntityId, ct))
             return (false, takes);
         if (!isLoan && await _db.AdvanceAuditLogs.AsNoTracking().AnyAsync(
                 l => l.TenantId == tenantId && l.AdvanceId == debt.EntityId && l.Action == AdvanceResidualAudit.Action, ct))
