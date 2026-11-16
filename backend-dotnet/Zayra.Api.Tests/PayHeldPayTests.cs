@@ -389,4 +389,32 @@ public class PayHeldPayTests
         (await EarningSum(db, apr.Id, s.Id, "ADJ_HELD_PAY_RELEASED")).Should().Be(Basic + Housing);
         (await Findings(db, mar.Id)).Should().Contain(f => f.Code == "HELD_PAY_MONTH_ALREADY_SETTLED" && f.EmployeeId == s.Id);
     }
+
+    /// <summary>Hold March, release into April, void March, then delete April: the returned hold stays actionable.</summary>
+    [Fact]
+    public async Task AHoldReturnedAfterItsHoldingRunWasVoided_IsStillListedAndCanBeReleased()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var (co, s, mar, apr, hold) = await HeldInMarch(db);
+        var finance = Payroll(db, co.TenantId, Checker);
+        Status(await finance.DecideHeldPay(hold.Id, new HeldPayDecisionRequest("pay", null), CancellationToken.None)).Should().Be(200);
+        await SetEmployeeStatus(db, s.Id, "Suspended");      // suspended again while March is corrected
+        (await new PayrollVoidService(db).VoidAsync(mar.Id, co.TenantId, null, "System", "wrong cost centre", CancellationToken.None)).IsVoided.Should().BeTrue();
+        db.ChangeTracker.Clear();
+        var marReplacement = await AddRun(db, co, 2026, 3);
+        await Process(db, co, marReplacement.Id);              // March is already released: no second hold
+        await SetStatus(db, marReplacement.Id, "Approved");
+        (await finance.DeleteRun(apr.Id, CancellationToken.None)).Should().BeOfType<NoContentResult>();
+        db.ChangeTracker.Clear();
+        await SetEmployeeStatus(db, s.Id, "Active");
+        var newApr = await AddRun(db, co, 2026, 4);
+
+        var listed = Json(await finance.GetRunHeldPay(newApr.Id, CancellationToken.None)).GetProperty("items").EnumerateArray().ToList();
+        listed.Should().ContainSingle(i => i.GetProperty("holdId").GetGuid() == hold.Id && i.GetProperty("status").GetString() == HeldPay.Held);
+        Status(await finance.DecideHeldPay(hold.Id, new HeldPayDecisionRequest("pay", null), CancellationToken.None)).Should().Be(200);
+        await Process(db, co, newApr.Id);
+        (await EarningSum(db, newApr.Id, s.Id, "ADJ_HELD_PAY_RELEASED")).Should().Be(Basic + Housing);
+        (await Holds(db)).Should().ContainSingle("the month is held once");
+    }
 }

@@ -78,9 +78,25 @@ public static class HeldPay
                              // Including a VOIDED run's: a hold released or forfeited stays decided when the run that held it is
                              // voided, so a replacement run of the month can never hold, and later pay, the same month again.
                              select a.EmployeeId).Distinct().ToListAsync(ct);
+        // A hold still Held on a voided run of the same month (its release was returned after the void) is the same month's
+        // pay: it is adopted by this run rather than held a second time.
+        var orphans = (await (from a in db.PayrollAdjustments
+                              join r in db.PayrollRuns.AsNoTracking() on a.PayrollRunId equals r.Id
+                              where a.TenantId == tenantId && a.SourceType == HoldSource && a.Status == Held && ids.Contains(a.EmployeeId)
+                                    && r.Status == "Voided" && r.Year == run.Year && r.Month == run.Month
+                                    && (r.CompanyId == companyId || r.CompanyId == null)
+                              select a).ToListAsync(ct))
+            .GroupBy(a => a.EmployeeId).ToDictionary(g => g.Key, g => g.ToList());
         var period = $"{run.Year}-{run.Month:D2}";
         foreach (var c in candidates.Where(c => c.Amount > 0m && !decided.Contains(c.EmployeeId)))
         {
+            if (orphans.TryGetValue(c.EmployeeId, out var adopt))
+            {
+                adopt[0].PayrollRunId = run.Id;
+                adopt[0].Amount = c.Amount;
+                adopt[0].SourceSnapshotJson = HoldRecordJson(period, c.EmployeeCode, c.EmployeeName);
+                continue;
+            }
             db.PayrollAdjustments.Add(new PayrollAdjustment
             {
                 TenantId = tenantId, PayrollRunId = run.Id, EmployeeId = c.EmployeeId,
@@ -90,6 +106,16 @@ public static class HeldPay
             });
         }
     }
+
+    /// <summary>True when a live (not voided) run of the hold's company and month holds the same employee's pay itself.</summary>
+    private static Task<bool> SupersededAsync(ZayraDbContext db, Guid tenantId, PayrollAdjustment hold, PayrollRun holdingRun, CancellationToken ct) =>
+        (from a in db.PayrollAdjustments.AsNoTracking()
+         join r in db.PayrollRuns.AsNoTracking() on a.PayrollRunId equals r.Id
+         where a.TenantId == tenantId && a.SourceType == HoldSource && a.Id != hold.Id && a.EmployeeId == hold.EmployeeId
+               && (a.Status == Held || a.Status == Released || a.Status == Forfeited)
+               && r.Status != "Voided" && r.Year == holdingRun.Year && r.Month == holdingRun.Month
+               && (r.CompanyId == holdingRun.CompanyId || r.CompanyId == null)
+         select a.Id).AnyAsync(ct);
 
     /// <summary>What a recurring run must do about employees it pays whose pay for the same month was held and decided.</summary>
     public sealed record MonthPlan(
@@ -210,8 +236,10 @@ public static class HeldPay
         if (holdingRun is null) return new(404, new { error = "held_pay_not_found", message = "This held pay was not found." });
         if (hold.Status != Held)
             return new(409, new { error = "held_pay_already_decided", message = $"This held pay was already {hold.Status.ToLowerInvariant()}." });
-        if (holdingRun.Status == "Voided")
-            return new(409, new { error = "held_pay_run_voided", message = "The run that held this pay was voided. The replacement run holds it again." });
+        // A hold left on a voided run (its release was returned after the void) stays decidable, unless a live run of the same
+        // month holds that employee's pay itself: then that hold is the one to decide, and this one is superseded.
+        if (holdingRun.Status == "Voided" && await SupersededAsync(db, tenantId, hold, holdingRun, ct))
+            return new(409, new { error = "held_pay_superseded", message = "A later run of the same month holds this pay. Decide the hold on that run instead." });
         if (RunIsOpen(holdingRun.Status))
             return new(409, new { error = "held_pay_run_open", message = "The run that held this pay can still be processed again. Release or forfeit the hold once that run is processed." });
         // A decision nobody can be named for cannot be checked against the run's preparer, so it is refused.
@@ -374,9 +402,20 @@ public static class HeldPay
                           join r in db.PayrollRuns.AsNoTracking() on a.PayrollRunId equals r.Id
                           where a.TenantId == tenantId && r.TenantId == tenantId && a.SourceType == HoldSource && a.Status != Withdrawn
                                 && (a.PayrollRunId == run.Id
-                                    || (a.Status == Held && r.Status != "Voided"
+                                    || (a.Status == Held
                                         && (r.CompanyId == run.CompanyId || (run.CompanyId == null && r.CompanyId == null))))
-                          select new { a, r.Year, r.Month }).ToListAsync(ct);
+                          select new { a, r.Year, r.Month, RunStatus = r.Status, r.CompanyId }).ToListAsync(ct);
+        // A hold still Held on a VOIDED run is listed (it is owed and decidable) unless a live run of its month holds the same
+        // employee's pay, which supersedes it.
+        var onVoided = rows.Where(x => x.RunStatus == "Voided" && x.a.PayrollRunId != run.Id).ToList();
+        if (onVoided.Count > 0)
+        {
+            var superseded = new HashSet<Guid>();
+            foreach (var x in onVoided)
+                if (await SupersededAsync(db, tenantId, x.a, new PayrollRun { Id = x.a.PayrollRunId, Year = x.Year, Month = x.Month, CompanyId = x.CompanyId }, ct))
+                    superseded.Add(x.a.Id);
+            rows = rows.Where(x => !superseded.Contains(x.a.Id)).ToList();
+        }
         if (rows.Count == 0) return new List<HoldRow>();
 
         var holdIds = rows.Select(x => (Guid?)x.a.Id).ToList();
