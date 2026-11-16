@@ -93,4 +93,21 @@ public sealed class PackageSubjectDecisionTests
         var other = await Package(db, s, Guid.NewGuid()).RejectProposal(batch, new RejectProposalRequest(s.Term.Id, "Does not match the contract."), default);
         other.Should().BeOfType<OkObjectResult>();
     }
+
+    [Fact]
+    public async Task TheEmployeesOwnLogin_CannotFreezeOrProposeTheirOwnPackage()
+    {
+        var (db, s) = await SeededAsync();
+        await using var _ = db;
+
+        var freeze = await Package(db, s, s.UserId).Freeze(s.Mohammed.Id, new PackageContractRequest(s.Term.Id), default);
+        Body(freeze, 400).GetProperty("error").GetString().Should().Be(SubjectDecisionBar.ErrorCode);
+
+        // The bar answers before the job store is touched, so none is needed.
+        var propose = await Package(db, s, s.UserId).Propose(s.Mohammed.Id, new PackageContractRequest(s.Term.Id), null!, default);
+        var body = Body(propose, 400);
+        body.GetProperty("error").GetString().Should().Be(SubjectDecisionBar.ErrorCode);
+        body.GetProperty("messageAr").GetString().Should().NotBeNullOrWhiteSpace();
+        (await db.EmployeeEntitlements.CountAsync()).Should().Be(0);
+    }
 }

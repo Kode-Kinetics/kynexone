@@ -119,6 +119,7 @@ public sealed class EmployeePackageController : ControllerBase
         if (this.GetTenantId() is not Guid tid) return Unauthorized();
         var employee = await VisibleEmployeeAsync(tid, employeeId, ct);
         if (employee is null) return EmployeeNotFound();
+        if (await OwnPackageRefusalAsync(tid, employeeId, ct) is { } own) return own;
         var contract = await OwnContractAsync(tid, employee.PublicId, req.ContractId, ct);
         if (contract is null)
             return Refused(PackageReasons.ContractNotFound, "That contract isn't one of this employee's.", StatusCodes.Status404NotFound);
@@ -164,6 +165,7 @@ public sealed class EmployeePackageController : ControllerBase
         if (this.GetTenantId() is not Guid tid) return Unauthorized();
         var employee = await VisibleEmployeeAsync(tid, employeeId, ct);
         if (employee is null) return EmployeeNotFound();
+        if (await OwnPackageRefusalAsync(tid, employeeId, ct) is { } own) return own;
         var contract = await OwnContractAsync(tid, employee.PublicId, req.ContractId, ct);
         if (contract?.CompanyId is not Guid companyId)
             return Refused(PackageReasons.ContractNotFound, "That contract isn't one of this employee's.", StatusCodes.Status404NotFound);
@@ -297,11 +299,18 @@ public sealed class EmployeePackageController : ControllerBase
         if (employee is null) return (null, null, EmployeeNotFound());
         // The subject never decides: the person the package is about cannot confirm or reject their own proposal, whoever asked for it.
         if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tid, this.GetUserId(), proposal.EmployeeId, ct))
-            return (null, null, BadRequest(SubjectDecisionBar.Refusal(
-                "This package is about you. Another HR user must decide it.",
-                "هذه الباقة تخصّك. يجب أن يقرّر فيها مستخدم آخر في الموارد البشرية.")));
+            return (null, null, BadRequest(SubjectDecisionBar.Refusal(OwnPackageRefusalEn, OwnPackageRefusalAr)));
         return (proposal, employee, null);
     }
+
+    /// <summary>The subject never decides: the person a package is about cannot fix or propose it, any more than confirm or reject it.</summary>
+    private async Task<IActionResult?> OwnPackageRefusalAsync(Guid tid, int employeeId, CancellationToken ct) =>
+        await SubjectDecisionBar.CallerIsSubjectAsync(_db, tid, this.GetUserId(), employeeId, ct)
+            ? BadRequest(SubjectDecisionBar.Refusal(OwnPackageRefusalEn, OwnPackageRefusalAr))
+            : null;
+
+    private const string OwnPackageRefusalEn = "This package is about you. Another HR user must decide it.";
+    private const string OwnPackageRefusalAr = "هذه الباقة تخصّك. يجب أن يقرّر فيها مستخدم آخر في الموارد البشرية.";
 
     /// <summary>Inside the per-employee lock: a proposal is decided once, however many people press the button at once.</summary>
     private async Task EnsureUndecidedAsync(Guid tid, Guid batchId, Guid contractId, CancellationToken ct)
