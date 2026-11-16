@@ -50,7 +50,7 @@ public class AssessmentsController : ControllerBase
             .Where(x => x.TenantId == tid && x.TemplateId == id)
             .OrderBy(x => x.OrderIndex).ToListAsync(ct);
 
-        // The correct options travel only to people who author templates (the same audience that may create them);
+        // The correct options travel only to the people who author templates or record candidates' marks (HR and Recruiters);
         // everyone else who can read templates receives the questions without the answer field.
         if (CanManageTemplates()) return Ok(new { template, questions });
         return Ok(new
@@ -64,7 +64,7 @@ public class AssessmentsController : ControllerBase
     }
 
     private bool CanManageTemplates() =>
-        User.HasPermission("recruitment.write") && (User.IsInRole("Admin") || User.IsInRole("HR Manager"));
+        User.HasPermission("recruitment.write") && (User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.IsInRole("Recruiter"));
 
     [HttpPost("templates")]
     [Authorize(Roles = "Admin,HR Manager")]

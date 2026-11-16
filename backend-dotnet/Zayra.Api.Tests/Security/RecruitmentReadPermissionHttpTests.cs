@@ -36,6 +36,7 @@ public sealed class RecruitmentReadPermissionHttpTests(LaunchSecurityFixture f) 
         ["/api/recruitment/openings/" + "00000000-0000-0000-0000-000000000001"],
         ["/api/recruitment/openings/stats"],
         ["/api/recruitment/openings/export"],
+        ["/api/recruitment/openings/import-template"],
         ["/api/recruitment/requisitions"],
         ["/api/recruitment/requisitions/00000000-0000-0000-0000-000000000001"],
         ["/api/recruitment/requisitions/stats"],
@@ -58,6 +59,7 @@ public sealed class RecruitmentReadPermissionHttpTests(LaunchSecurityFixture f) 
     [InlineData("/api/recruitment/openings")]
     [InlineData("/api/recruitment/openings/stats")]
     [InlineData("/api/recruitment/openings/export")]
+    [InlineData("/api/recruitment/openings/import-template")]
     [InlineData("/api/recruitment/requisitions")]
     [InlineData("/api/recruitment/requisitions/stats")]
     [InlineData("/api/recruitment/workforce-planning")]
@@ -71,10 +73,18 @@ public sealed class RecruitmentReadPermissionHttpTests(LaunchSecurityFixture f) 
     }
 
     [Fact]
-    public async Task AssessmentTemplateDetail_ForRecruiter_OmitsTheAnswerField()
+    public async Task AssessmentTemplateDetail_ForAnEmployeeRoleUser_IsForbidden_SoNobodyWithoutRecruitmentAccessSeesTheKey()
     {
         var id = await SeedTemplateAsync();
-        using var r = await f.Send(HttpMethod.Get, $"/api/recruitment/assessments/templates/{id}", f.Token("RecruiterA"));
+        (await f.Status(HttpMethod.Get, $"/api/recruitment/assessments/templates/{id}", f.Token("EmployeeA"))).Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task AssessmentTemplateDetail_WithoutWriteAccess_OmitsTheAnswerField()
+    {
+        var id = await SeedTemplateAsync();
+        await f.EnsureUserAsync("ReadOnlyRecruitmentA", "Employee", groupScope: false, f.CompanyA, allow: ["recruitment.read"]);
+        using var r = await f.Send(HttpMethod.Get, $"/api/recruitment/assessments/templates/{id}", f.Token("ReadOnlyRecruitmentA"));
         r.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await r.Content.ReadAsStringAsync();
         body.Should().Contain("Pick one");
@@ -85,7 +95,8 @@ public sealed class RecruitmentReadPermissionHttpTests(LaunchSecurityFixture f) 
     [Theory]
     [InlineData("HrManagerA")]
     [InlineData("AdminA")]
-    public async Task AssessmentTemplateDetail_ForTemplateManagers_StillCarriesTheAnswerField(string persona)
+    [InlineData("RecruiterA")]   // Recruiters record marks, so they read the key (read-only: they cannot create templates)
+    public async Task AssessmentTemplateDetail_ForMarkersAndTemplateManagers_CarriesTheAnswerField(string persona)
     {
         var id = await SeedTemplateAsync();
         using var r = await f.Send(HttpMethod.Get, $"/api/recruitment/assessments/templates/{id}", f.Token(persona));

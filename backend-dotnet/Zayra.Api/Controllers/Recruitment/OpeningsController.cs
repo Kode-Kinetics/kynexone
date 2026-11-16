@@ -239,6 +239,7 @@ public class OpeningsController : ControllerBase
         return CsvDownload.Result(csv);
     }
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("import-template")]
     public IActionResult ImportTemplate()
     {
