@@ -22,7 +22,12 @@
 html {
   min-width: 320px;
   background: rgb(var(--kx-canvas));
-  /* The sticky top bar (60px) and the bottom nav / floating assistant must not cover what an anchor or a focused field scrolls to. */
+}
+
+/* Payroll only: the sticky top bar (60px) and the floating assistant must not cover what an anchor or a focused field scrolls
+   to. Not page-wide: on a page whose own column scrolls (Setup's section list), page scroll padding makes scrollIntoView move
+   the whole page as well. */
+html:has(.kx-scroll-tables) {
   scroll-padding-top: 4.75rem;
   scroll-padding-bottom: 6rem;
 }
