@@ -196,6 +196,15 @@ for (const locale of ['en', 'ar'] as const) {
       const open = groupMatrix.gaps.length + 1;
       await expect(page.getByTestId('matrix-status')).toContainText(say(locale, '{set} of {total} values set', { set: total - open, total }));
       await expect(page.getByTestId('matrix-status')).not.toContainText(say(locale, 'All {total} values are set. Nothing to publish.', { total }));
+      // The "Needs a value" chip counts the same gaps (total - set) and its filter keeps every row that holds one, the loan row included.
+      const chip = page.getByRole('button', { name: say(locale, 'Needs a value ({count})', { count: open }), exact: true });
+      await expect(chip).toHaveAttribute('aria-pressed', 'false');
+      await chip.click();
+      await expect(chip).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('cell-set-value')).toHaveCount(open);
+      await expect(page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') }).filter({ hasText: nameOf(locale) })).toHaveCount(1);
+      await expect(loanCell(page, locale, 'G5')).toContainText(say(locale, 'Set value'));
+      await chip.click();
       await shot(page, `status-band-counts-loan-${locale}`);
       expect(errors).toEqual([]);
     });

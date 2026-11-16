@@ -127,7 +127,7 @@ export function needsValueCodes(components: MatrixComponent[], grades: MatrixGra
   scheduledKeys: ReadonlySet<string>, pendingCodes: ReadonlySet<string>): Set<string> {
   const codes = new Set<string>();
   for (const c of components) {
-    if (c.isLoanFacility || pendingCodes.has(c.code)) continue;
+    if (pendingCodes.has(c.code)) continue;
     if (grades.some(g => { const key = cellKey(g.id, c.code); return drafts[key]?.state === 'unset' && !scheduledKeys.has(key); })) codes.add(c.code);
   }
   return codes;

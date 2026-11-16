@@ -276,7 +276,9 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
   const serverError = (key: string) => serverErrors.find(e => cellKey(e.gradeId, e.componentCode) === key);
 
   // The benefits an admin can still fill: what the "Needs a value" filter keeps.
-  const needs = useMemo(() => needsValueCodes(components, grades, drafts, scheduledKeys, pendingCodes), [components, grades, drafts, scheduledKeys, pendingCodes]);
+  // Loan limits are gaps like any other, and a benefit this company skips has none, so the chip counts exactly what the status band leaves unset.
+  const needs = useMemo(() => needsValueCodes(components, grades, drafts, scheduledKeys, new Set(components.filter(c => skippedHere(c.code)).map(c => c.code))), [components, grades, drafts, scheduledKeys, skippedHere]);
+  const gapCount = progress.total - progress.set;
   const filtering = onlyGaps && needs.size > 0;
   const shown = useMemo(() => (filtering ? components.filter(c => needs.has(c.code)) : components), [filtering, components, needs]);
   const totals = useMemo(() => monthlyFixedTotals(shown, grades, drafts), [shown, grades, drafts]);
@@ -357,7 +359,7 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
           className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-3 text-body-sm font-semibold transition-colors duration-fast ${filtering
             ? 'border-primary bg-primary text-on-primary' : 'border-warning bg-warning-soft text-warning-fg hover:border-line-strong'}`}>
           {filtering ? <Check className="h-3.5 w-3.5" aria-hidden /> : <TriangleAlert className="h-3.5 w-3.5" aria-hidden />}
-          {fillTemplate(t('Needs a value ({count})'), { count: needs.size })}
+          {fillTemplate(t('Needs a value ({count})'), { count: gapCount })}
         </button>}
         {!matrix ? null : canManage
           ? <span className="text-meta text-fg-muted">{t('Select a value to edit it.')}</span>
