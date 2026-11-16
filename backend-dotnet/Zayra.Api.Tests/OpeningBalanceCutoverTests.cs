@@ -958,6 +958,25 @@ public class OpeningBalanceCutoverTests
         refused.Value!.ToString().Should().Contain("no payslips", "the message must say why and what to do");
     }
 
+    /// <summary>The page translates the refusal, so the body carries a stable code and the run's status next to the English message.</summary>
+    [Fact]
+    public async Task VarianceReport_RefusalCarriesAStableCodeAndTheRunStatus()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        await SeedEmployee(db, tid, co.Id, "EMP-001");
+        var run = await CreateRun(db, tid, 2026, 9, co.Id); // Draft: never processed
+
+        var res = await Parallel(db, tid).Variance(run.Id,
+            new ParallelRunController.VarianceRequest("EmployeeCode,ComponentCode,Amount\nEMP-001,NET,100\n"), CancellationToken.None);
+
+        var body = System.Text.Json.JsonSerializer.Serialize(res.Result.Should().BeOfType<UnprocessableEntityObjectResult>().Subject.Value);
+        body.Should().Contain("\"code\":\"run_has_no_payslips\"");
+        body.Should().Contain("\"status\":\"Draft\"");
+    }
+
     /// <summary>The same employee and component twice is almost always a doubled export row; summing it hides a real mismatch.</summary>
     [Fact]
     public async Task VarianceReport_FlagsADuplicateRegisterRowInsteadOfSummingIt()

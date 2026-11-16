@@ -137,6 +137,9 @@ public sealed class ParallelRunController : ControllerBase
         if (allSlips.Count == 0)
             return UnprocessableEntity(new
             {
+                // Stable code and status let the page show this in the viewer's language; the message stays for API callers.
+                code = "run_has_no_payslips",
+                status = run.Status,
                 message = $"This payroll run has no payslips yet (status {run.Status}), so there is nothing to compare. "
                         + "Process the run first — a processed-but-unlocked run posts no GL and publishes nothing, so it is safe to compare and re-process."
             });
