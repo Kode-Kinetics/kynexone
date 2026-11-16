@@ -48,16 +48,19 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
     /// is posted. Null in production.</summary>
     internal Func<CancellationToken, Task>? AfterDecision { get; init; }
 
+    /// <summary>Test seam: runs at the start of every tie-out read (a test makes it throw). Null in production.</summary>
+    internal Func<CancellationToken, Task>? BeforeTieOut { get; init; }
+
     /// <summary>Dry run: every carried-in loan and advance of the company and what applying would post, changing nothing.</summary>
     /// <param name="includeUnattributed">Whether import records naming no company are considered (a group-level caller only).</param>
     public async Task<object> PreviewAsync(Guid tenantId, Guid companyId, bool includeUnattributed, CancellationToken ct)
     {
         var rows = await PlanAsync(tenantId, companyId, includeUnattributed, ct);
-        var tieOut = await TieOutAsync(tenantId, companyId, rows, ct);
+        var (tieOut, warnings) = await TieOutReportAsync(tenantId, companyId, rows, ct);
         return new
         {
             companyId, digest = Digest(rows), rows = rows.Select(Project).ToList(), ready = rows.Count(r => r.Status == Ready),
-            tieOut = tieOut.Select(ProjectTieOut).ToList(), warnings = Warnings(tieOut),
+            tieOut, warnings,
         };
     }
 
@@ -72,7 +75,7 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
     {
         var strategy = _db.Database.CreateExecutionStrategy();
         var attempt = 0;
-        return await strategy.ExecuteAsync(async () =>
+        var outcome = await strategy.ExecuteAsync(async () =>
         {
             if (attempt++ > 0) _db.ChangeTracker.Clear();
             await using var tx = _db.Database.IsRelational() ? await _db.Database.BeginTransactionAsync(ct) : null;
@@ -80,7 +83,7 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
             // already differs from the confirmed preview is stale before any lock is taken.
             var draft = await PlanAsync(tenantId, companyId, includeUnattributed, ct);
             var draftDigest = Digest(draft);
-            if (!string.Equals(draftDigest, previewDigest, StringComparison.Ordinal)) return StaleResult(draftDigest);
+            if (!string.Equals(draftDigest, previewDigest, StringComparison.Ordinal)) return (StaleResult(draftDigest), 0, draft);
             // The debt locks of the ready rows, then the decision again under them: a payroll pass holding one of them finishes
             // before the plan reads its witness. The digest pins every row's status, so the ready rows decided under the locks are
             // exactly the ones locked here; a debt that is not ready is never posted and never locked.
@@ -89,7 +92,7 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
                 draft.Where(r => r.Status == Ready && r.EntityType == OpeningBalanceEntityTypes.Advance).Select(r => r.EntityId), ct);
             var rows = await PlanAsync(tenantId, companyId, includeUnattributed, ct);
             var digest = Digest(rows);
-            if (!string.Equals(digest, previewDigest, StringComparison.Ordinal)) return StaleResult(digest);
+            if (!string.Equals(digest, previewDigest, StringComparison.Ordinal)) return (StaleResult(digest), 0, rows);
             if (AfterDecision is { } afterDecision) await afterDecision(ct);
             var posted = 0;
             foreach (var row in rows.Where(r => r.Status == Ready))
@@ -106,18 +109,23 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
                 posted++;
             }
             await _db.SaveChangesAsync(ct);
-            // The tie-out as it stands with this apply's lines on the ledger (read inside the transaction, so they count).
-            var tieOut = await TieOutAsync(tenantId, companyId, [], ct);
             if (tx is not null) await tx.CommitAsync(ct);
-            return new ApplyResult(false, new
-            {
-                companyId,
-                posted,
-                refused = rows.Count(r => r.Status is not (Ready or AlreadyPosted)),
-                rows = rows.Select(Project).ToList(),
-                tieOut = tieOut.Select(ProjectTieOut).ToList(),
-                warnings = Warnings(tieOut),
-            });
+            return ((ApplyResult?)null, posted, rows);
+        });
+        if (outcome.Item1 is { } stale) return stale;
+
+        // The tie-out is a report, read only once the posting has committed and outside the retrying unit (a retry after the commit
+        // would replay the apply). Its failure can never undo or block the posting: the response says it is unavailable.
+        var (tieOut, warnings) = await TieOutReportAsync(tenantId, companyId, [], ct);
+        var (_, postedCount, decided) = outcome;
+        return new ApplyResult(false, new
+        {
+            companyId,
+            posted = postedCount,
+            refused = decided.Count(r => r.Status is not (Ready or AlreadyPosted)),
+            rows = decided.Select(Project).ToList(),
+            tieOut,
+            warnings,
         });
     }
 
@@ -152,6 +160,7 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
     /// checked; the company is pinned in every predicate) so the caller's own company filter cannot hide a row.</summary>
     private async Task<List<TieOutLine>> TieOutAsync(Guid tenantId, Guid companyId, IReadOnlyCollection<Row> plan, CancellationToken ct)
     {
+        if (BeforeTieOut is { } beforeTieOut) await beforeTieOut(ct);
         var glCtx = await GlAccountResolver.LoadAsync(_db, tenantId, companyId, ct);
         var loanAccount = GlAccountResolver.AccountLabel(GlControlAccounts.LoanReceivableDriver, glCtx);
         var advanceAccount = GlAccountResolver.AccountLabel(GlControlAccounts.AdvanceReceivableDriver, glCtx);
@@ -171,12 +180,14 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
             .AsNoTracking()
             .Where(x => (x.CompanyId == companyId || x.CompanyId == null)
                      && (accounts.Contains(x.DebitAccount) || accounts.Contains(x.CreditAccount)))
-            .Select(x => new { x.CompanyId, x.DebitAccount, x.CreditAccount, x.Amount })
+            // Summed in the database: one row per (attributed or not, debit, credit) pair, never the ledger lines themselves.
+            .GroupBy(x => new { Attributed = x.CompanyId != null, x.DebitAccount, x.CreditAccount })
+            .Select(g => new { g.Key.Attributed, g.Key.DebitAccount, g.Key.CreditAccount, Amount = g.Sum(x => x.Amount) })
             .ToListAsync(ct);
 
         decimal Balance(string account, bool attributed) => Math.Round(
-            ledger.Where(r => (r.CompanyId != null) == attributed && r.DebitAccount == account).Sum(r => r.Amount)
-          - ledger.Where(r => (r.CompanyId != null) == attributed && r.CreditAccount == account).Sum(r => r.Amount), 2);
+            ledger.Where(r => r.Attributed == attributed && r.DebitAccount == account).Sum(r => r.Amount)
+          - ledger.Where(r => r.Attributed == attributed && r.CreditAccount == account).Sum(r => r.Amount), 2);
         decimal Pending(string entityType) => plan.Where(r => r.Status == Ready && r.EntityType == entityType).Sum(r => r.ToPost);
 
         TieOutLine Line(string receivable, string account, decimal subLedger, decimal toPost)
@@ -194,6 +205,27 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
             Line(GlControlAccounts.LoanReceivableDriver, loanAccount, loanSubLedger, Pending(OpeningBalanceEntityTypes.Loan)),
             Line(GlControlAccounts.AdvanceReceivableDriver, advanceAccount, advanceSubLedger, Pending(OpeningBalanceEntityTypes.Advance)),
         ];
+    }
+
+    /// <summary>The tie-out lines and their warnings, or, when the read fails, no lines and one "tie-out unavailable" warning. It
+    /// is information only, so a failure never fails the preview or the apply.</summary>
+    private async Task<(List<object> TieOut, List<object> Warnings)> TieOutReportAsync(
+        Guid tenantId, Guid companyId, IReadOnlyCollection<Row> plan, CancellationToken ct)
+    {
+        try
+        {
+            var lines = await TieOutAsync(tenantId, companyId, plan, ct);
+            return (lines.Select(ProjectTieOut).ToList(), Warnings(lines));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return ([], [new
+            {
+                code = "tie_out_unavailable",
+                message = "[tie_out_unavailable] The receivable tie-out (1400 / 1410 against the loan and advance sub-ledgers) could not be read just now. Nothing about the posting depends on it; preview again to see it.",
+                messageAr = "تعذّرت قراءة مطابقة الذمم المدينة (1400 / 1410 مقابل دفاتر القروض والسلف) الآن. لا يعتمد الترحيل عليها في شيء؛ أعد المعاينة لعرضها.",
+            }]);
+        }
     }
 
     private static object ProjectTieOut(TieOutLine t) => new

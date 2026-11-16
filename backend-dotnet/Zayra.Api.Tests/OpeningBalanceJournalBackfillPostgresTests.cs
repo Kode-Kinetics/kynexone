@@ -313,8 +313,8 @@ public class OpeningBalanceJournalBackfillPostgresTests(PostgresFixture fixture)
         Guid? companyScope = null) => Controller(db, User(tid, role, deniedPermission, companyScope));
 
     private static OpeningBalanceJournalsController Controller(ZayraDbContext db, ClaimsPrincipal user,
-        Func<CancellationToken, Task>? afterDecision = null) =>
-        new(new Zayra.Api.Infrastructure.Finance.OpeningBalanceBackfillService(db) { AfterDecision = afterDecision })
+        Func<CancellationToken, Task>? afterDecision = null, Func<CancellationToken, Task>? beforeTieOut = null) =>
+        new(new Zayra.Api.Infrastructure.Finance.OpeningBalanceBackfillService(db) { AfterDecision = afterDecision, BeforeTieOut = beforeTieOut })
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = user } },
         };
@@ -561,6 +561,37 @@ public class OpeningBalanceJournalBackfillPostgresTests(PostgresFixture fixture)
         }
 
         await AssertManualAndNothingPostsAsync(b, loanId);
+    }
+
+    /// <summary>The tie-out is a report, read after the posting commits: when it fails, the apply still posts and commits its
+    /// lines, and its response says the tie-out is unavailable (in both languages) instead of failing. The preview degrades the same
+    /// way and still offers the rows and digest to confirm.</summary>
+    [Fact]
+    public async Task ATieOutReadThatFails_NeverUndoesThePosting_ItIsReportedUnavailable()
+    {
+        var (b, cutover, _) = await K.SeedAsync(fixture, "BF-TF");
+        var loanId = await SeedCarriedInLoanAsync(b, 300m, cutover);
+        Task Fail(CancellationToken _) => throw new InvalidOperationException("tie-out read failed");
+
+        JsonElement preview;
+        await using (var db = fixture.CreateDb())
+            preview = Json(Assert.IsType<OkObjectResult>(await Controller(db, User(b.Tenant, "Finance Approver"), beforeTieOut: Fail).Preview(b.CompanyId, default)));
+        Assert.Equal("ready", Row(preview.GetProperty("rows").EnumerateArray().ToList(), loanId).GetProperty("status").GetString());
+        Assert.Equal("tie_out_unavailable", Assert.Single(preview.GetProperty("warnings").EnumerateArray()).GetProperty("code").GetString());
+
+        JsonElement applied;
+        await using (var db = fixture.CreateDb())
+            applied = Json(Assert.IsType<OkObjectResult>(await Controller(db, User(b.Tenant, "Finance Approver"), beforeTieOut: Fail)
+                .Apply(new OpeningBalanceBackfillRequest(b.CompanyId, preview.GetProperty("digest").GetString()), default)));
+        Assert.Equal(1, applied.GetProperty("posted").GetInt32());
+        Assert.Empty(applied.GetProperty("tieOut").EnumerateArray());
+        var warning = Assert.Single(applied.GetProperty("warnings").EnumerateArray());
+        Assert.Equal("tie_out_unavailable", warning.GetProperty("code").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(warning.GetProperty("messageAr").GetString()));
+
+        Assert.Equal(300m, Assert.Single(await K.OpeningJournalAsync(fixture, b, loanId)).Amount);
+        await using var verify = fixture.CreateDb();
+        Assert.Equal(1, await verify.AuditLogs.CountAsync(a => a.TenantId == b.Tenant && a.Action == "finance.gl.opening_balance_backfill.applied"));
     }
 
     private async Task AssertManualAndNothingPostsAsync(Kit.Borrower b, params Guid[] debts)
