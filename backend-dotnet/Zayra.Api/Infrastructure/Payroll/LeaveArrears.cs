@@ -45,6 +45,32 @@ public static class LeaveArrears
         var own = $"{run.Year}-{run.Month:00}";
         var prior = loaded.Where(x => string.CompareOrdinal(x.PayPeriod, own) < 0).ToList();
         if (prior.Count == 0) return loaded;
+
+        // An earlier month's DEDUCTION is collected only while its leave is still approved (a cancelled, withdrawn or rejected
+        // leave is not unpaid leave), and never from a row written before month slicing that spans several months: those wait
+        // for the owner's sign-off on the multi-month report (M1-M3). A refund credit is always paid.
+        var requestIds = prior.Where(x => !IsReversal(x)).Select(x => x.LeaveRequestId).Distinct().ToList();
+        var requests = requestIds.Count == 0 ? new Dictionary<Guid, (string Status, DateOnly Start, DateOnly End)>()
+            : (await db.LeaveRequests.AsNoTracking()
+                .Where(r => r.TenantId == tenantId && requestIds.Contains(r.Id))
+                .Select(r => new { r.Id, r.Status, r.StartDate, r.EndDate })
+                .ToListAsync(ct))
+                .ToDictionary(r => r.Id, r => (Status: r.Status, Start: r.StartDate, End: r.EndDate));
+        bool Collectable(LeavePayrollImpact x)
+        {
+            if (IsReversal(x)) return true;
+            if (!requests.TryGetValue(x.LeaveRequestId, out var r)) return false;
+            if (!Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(r.Status)) return false;
+            var multiMonth = r.Start.Year != r.End.Year || r.Start.Month != r.End.Month;
+            return !(x.SliceFrom is null && multiMonth);
+        }
+        var held = prior.Where(x => !Collectable(x)).Select(x => x.Id).ToHashSet();
+        if (held.Count > 0)
+        {
+            loaded = loaded.Where(x => !held.Contains(x.Id)).ToList();
+            prior = prior.Where(x => !held.Contains(x.Id)).ToList();
+            if (prior.Count == 0) return loaded;
+        }
         var earliest = prior.Min(x => x.PayPeriod);
         var openEarlier = (await db.PayrollRuns.AsNoTracking()
                 .Where(r => r.TenantId == tenantId && r.Id != run.Id && r.IncludesRecurringPay

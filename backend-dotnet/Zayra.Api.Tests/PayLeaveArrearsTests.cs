@@ -194,4 +194,60 @@ public class PayLeaveArrearsTests
         LeaveArrears.Budget(50m, 7_500m, 0m, 4_000m, 3_500m).Should().Be(0m);
         LeaveArrears.Budget(50m, 7_500m, 0m, 0m, 100m).Should().Be(100m);
     }
+
+    // ══ Money audit 2, P1-A3 ═══════════════════════════════════════════════════════════════════════
+
+    [Theory]
+    [InlineData("Rejected")]
+    [InlineData("Cancelled")]
+    [InlineData("Withdrawn")]
+    public async Task APendingRowOfALeaveNoLongerApproved_IsNotSweptAsArrears(string requestStatus)
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        var e = await AddEmployee(db, co, "Active");
+        await AddRun(db, co, 2026, 1, status: "Paid");
+        await AddRun(db, co, 2026, 2, status: "Paid");
+        var leave = await AddUnpaidLeave(db, co, e.Id, Jan25, Jan31, ("2026-01", 5m, 1_000m, Jan25, Jan31, "Pending"));
+        (await db.LeaveRequests.FirstAsync(r => r.Id == leave.Id)).Status = requestStatus;
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var mar = await AddRun(db, co, 2026, 3);
+
+        await Process(db, co, mar.Id);
+
+        (await ArrearsLines(db, mar.Id, e.Id)).Should().BeEmpty($"a {requestStatus} leave is not unpaid leave any more");
+        (await db.LeavePayrollImpacts.AsNoTracking().SingleAsync(i => i.LeaveRequestId == leave.Id)).Status.Should().Be("Pending");
+    }
+
+    [Fact]
+    public async Task ALegacySingleRowSpanningTwoMonths_IsLeftForTheOwnersSignOff_NotSweptAsArrears()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        var e = await AddEmployee(db, co, "Active");
+        await AddRun(db, co, 2026, 1, status: "Paid");
+        await AddRun(db, co, 2026, 2, status: "Paid");
+        var leave = new LeaveRequest
+        {
+            TenantId = co.TenantId, CompanyId = co.CompanyId, EmployeeId = e.Id, StartDate = Jan25, EndDate = Feb5,
+            TotalDays = 10m, Status = "Approved", DayType = "Full",
+        };
+        db.LeaveRequests.Add(leave);
+        db.LeavePayrollImpacts.Add(new LeavePayrollImpact     // written before month slicing: one row, no slice dates
+        {
+            TenantId = co.TenantId, LeaveRequestId = leave.Id, EmployeeId = e.Id, PayPeriod = "2026-01",
+            ImpactType = CompanyPayrollRules.UnpaidLeaveImpactType, Days = 10m, Amount = 2_000m, Status = "Pending",
+        });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var mar = await AddRun(db, co, 2026, 3);
+
+        await Process(db, co, mar.Id);
+
+        (await ArrearsLines(db, mar.Id, e.Id)).Should().BeEmpty("the M1-M3 report lists it; it waits for the owner's sign-off");
+        (await db.LeavePayrollImpacts.AsNoTracking().SingleAsync(i => i.LeaveRequestId == leave.Id)).Status.Should().Be("Pending");
+    }
 }
