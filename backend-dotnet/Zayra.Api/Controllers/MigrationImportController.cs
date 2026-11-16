@@ -23,8 +23,8 @@ namespace Zayra.Api.Controllers;
 
 [ApiController]
 [Route("api/migrations")]
-// HR (Admin, HR Manager, and through employees.bulk_import HR Officer and HR Director) imports every section, except that the debt
-// rows posting an opening journal need Finance or an Admin (per row). Finance (the finance roles, through
+// HR (Admin, and through employees.bulk_import HR Manager, HR Officer and HR Director) imports every section, except that the debt
+// rows posting an opening journal need finance.opening_balances.import (per row; Finance, Finance Approver and Admin hold it). Finance (the finance roles, through
 // finance.opening_balances.import) reaches only the package endpoints and, there, only the debt sections (ImportAccessRefusal);
 // the template and batch reads keep the employees.bulk_import gate the pipeline applies.
 [Authorize(Roles = "Admin,HR Manager,Finance,Finance Approver,Finance Controller")]
