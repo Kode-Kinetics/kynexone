@@ -158,13 +158,20 @@ const draftsFor = (list: MatrixComponent[], set: Record<string, CellDraft['state
     return [k, { ...blankDraft(c, g.id), state: set[k] ?? 'unset' }];
   })));
 
-test('the step strip counts the values still needed, in screen order, and skips loans and skipped benefits', () => {
+test('the step strip counts the values still needed, loan limits included, in screen order, and skips skipped benefits', () => {
   const list = [HOUSING, PER_DIEM, LOAN];
   const drafts = draftsFor(list, { [cellKey('g1', 'HOUSING')]: 'offered' });
+  // The loan row's two empty cells are values still needed: the count never says "all set" while the grid asks for one.
   const p = guideProgress(list, two, drafts, new Set(), () => false);
-  expect(p).toEqual({ total: 4, set: 1, nextKey: cellKey('g2', 'HOUSING') });
+  expect(p).toEqual({ total: 6, set: 1, nextKey: cellKey('g2', 'HOUSING') });
   // A benefit this company skips needs no value; one already published to start later counts as set.
-  expect(guideProgress(list, two, drafts, new Set([cellKey('g2', 'HOUSING')]), c => c === 'PER_DIEM')).toEqual({ total: 2, set: 2, nextKey: null });
+  expect(guideProgress(list, two, drafts, new Set([cellKey('g2', 'HOUSING')]), c => c === 'PER_DIEM')).toEqual({ total: 4, set: 2, nextKey: cellKey('g1', 'LOAN_CAR') });
+  // A viewer who cannot edit loan limits still sees them counted, but is never sent to one as the next step.
+  const noLoanEdit = guideProgress(list, two, drafts, new Set([cellKey('g2', 'HOUSING')]), c => c === 'PER_DIEM', null, code => code !== 'LOAN_CAR');
+  expect(noLoanEdit).toEqual({ total: 4, set: 2, nextKey: null });
+  // Once every loan cell has a value the total is complete.
+  const filled = draftsFor(list, Object.fromEntries(list.flatMap(c => two.map(g => [cellKey(g.id, c.code), 'offered' as const]))));
+  expect(guideProgress(list, two, filled, new Set(), () => false)).toEqual({ total: 6, set: 6, nextKey: null });
 });
 
 test('"Save & next" moves past the current cell and wraps round to the first one still empty', () => {

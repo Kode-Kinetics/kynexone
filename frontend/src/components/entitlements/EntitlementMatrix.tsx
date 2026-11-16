@@ -213,8 +213,10 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
   const skippedHere = useCallback((code: string) => matrix?.offerings.find(o => o.componentCode === code)?.mode === 'Skipped'
     || !!matrix?.components.some(c => c.code === code && isPendingFinance(c)), [matrix]);
   const scheduledKeys = useMemo(() => new Set(scheduled.keys()), [scheduled]);
-  const progress = useMemo(() => guideProgress(components, grades, drafts, scheduledKeys, skippedHere), [components, grades, drafts, scheduledKeys, skippedHere]);
-  const nextAfter = (key: string | null) => guideProgress(components, grades, drafts, scheduledKeys, skippedHere, key).nextKey;
+  // A loan limit is counted, but only offered as the next step to someone who can edit it (its loan type is known and they hold the loan permission).
+  const canFillCode = (code: string) => { const c = componentOf(code); return !c?.isLoanFacility || loanFor(c).editable; };
+  const progress = guideProgress(components, grades, drafts, scheduledKeys, skippedHere, undefined, canFillCode);
+  const nextAfter = (key: string | null) => guideProgress(components, grades, drafts, scheduledKeys, skippedHere, key, canFillCode).nextKey;
   const nextLabel = (key: string) => {
     const [gradeId, code] = key.split('|');
     const c = componentOf(code); const g = grades.find(x => x.id === gradeId);

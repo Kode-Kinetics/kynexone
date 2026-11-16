@@ -263,21 +263,26 @@ export interface GuideProgress { total: number; set: number; nextKey: string | n
 
 /**
  * Counts the values the grid still needs and finds the next one, in the order the screen shows them (benefit by benefit,
- * grade by grade). Loan facilities (set in Loans) and benefits a company skips need none; a value already published to
- * start later counts as set. With `after`, the next one AFTER that cell, wrapping round, so "Save & next" moves on.
+ * grade by grade). A loan facility's limit counts like any other value, so the count never says "all set" while a loan
+ * cell on the grid still asks for one; the next step only stops on a cell this viewer can fill (`canFill`, default every
+ * cell), so a loan limit they cannot edit is counted but never offered. Benefits a company skips need no value; a value
+ * already published to start later counts as set. With `after`, the next one AFTER that cell, wrapping round, so
+ * "Save & next" moves on.
  */
 export function guideProgress(components: MatrixComponent[], grades: MatrixGrade[], drafts: Drafts,
-  scheduled: ReadonlySet<string>, skipped: (code: string) => boolean, after?: string | null): GuideProgress {
+  scheduled: ReadonlySet<string>, skipped: (code: string) => boolean, after?: string | null,
+  canFill: (code: string) => boolean = () => true): GuideProgress {
   const keys: string[] = [];
   for (const c of components) {
-    if (c.isLoanFacility || skipped(c.code)) continue;
+    if (skipped(c.code)) continue;
     for (const g of grades) keys.push(cellKey(g.id, c.code));
   }
   const open = (k: string) => drafts[k]?.state === 'unset' && !scheduled.has(k);
+  const fillable = (k: string) => open(k) && canFill(k.split('|')[1]);
   const set = keys.filter(k => !open(k)).length;
   const start = after ? keys.indexOf(after) + 1 : 0;
   const ordered = [...keys.slice(start), ...keys.slice(0, start)];
-  return { total: keys.length, set, nextKey: ordered.find(k => k !== after && open(k)) ?? null };
+  return { total: keys.length, set, nextKey: ordered.find(k => k !== after && fillable(k)) ?? null };
 }
 
 /** Unpublished edits kept in the browser, so a reload, a new benefit or leaving the page does not lose them. Each edit is

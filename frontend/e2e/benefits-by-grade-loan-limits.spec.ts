@@ -187,6 +187,19 @@ for (const locale of ['en', 'ar'] as const) {
       expect(errors).toEqual([]);
     });
 
+    test('the status band counts the loan limits too, so it never says all values are set while a loan cell asks for one', async ({ page }) => {
+      const { errors } = await boot(page, locale);
+      // The grid shows a "Set value" call on the loan row (G5 has no limit yet).
+      await expect(page.getByTestId('cell-set-value')).toHaveCount(4 /* three benefit gaps in the published grid + the Car Loan G5 */);
+      // total = every grade x every row including the loan row; open = the published gaps + the loan cell still unset.
+      const total = groupMatrix.grades.length * (groupMatrix.components.length + 1);
+      const open = groupMatrix.gaps.length + 1;
+      await expect(page.getByTestId('matrix-status')).toContainText(say(locale, '{set} of {total} values set', { set: total - open, total }));
+      await expect(page.getByTestId('matrix-status')).not.toContainText(say(locale, 'All {total} values are set. Nothing to publish.', { total }));
+      await shot(page, `status-band-counts-loan-${locale}`);
+      expect(errors).toEqual([]);
+    });
+
     test('a salary multiple, not eligible and "Not set" are all editable; the same checks as Limits by grade refuse bad figures before any request', async ({ page }) => {
       const { errors, state } = await boot(page, locale);
       // G5 has no limit yet: it reads as not set and can be set.
