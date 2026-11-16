@@ -280,6 +280,8 @@ public class R4ReVerifyTests
         await db.SaveChangesAsync();
         var controller = new MigrationImportController(db, new Zayra.Api.Infrastructure.Auth.Pbkdf2PasswordHasher(),
             new Zayra.Api.Infrastructure.Audit.AuditService(db)) { ControllerContext = Ctx(tenantId) };
+        // The seeded HR Manager bundle carries employees.bulk_import, which is what admits an importer (not the role name).
+        controller.ControllerContext.HttpContext.User.Identities.First().AddClaim(new Claim("permission", "employees.bulk_import"));
 
         var result = await controller.Commit(new MigrationPackageRequest("r4-reimport", new Dictionary<string, string>
         {

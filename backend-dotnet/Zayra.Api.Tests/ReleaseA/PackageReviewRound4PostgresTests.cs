@@ -71,7 +71,7 @@ public sealed class PackageReviewRound4PostgresTests(PostgresFixture fixture)
         await using var db = fixture.CreateDb();
         var import = new MigrationImportController(db, new Zayra.Api.Infrastructure.Auth.Pbkdf2PasswordHasher(),
             new Zayra.Api.Infrastructure.Audit.AuditService(db), Dispatcher(db, today))
-        { ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = User(s, s.UserId) } } };
+        { ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = User(s, s.UserId, "employees.bulk_import") } } };
         const string header = "EmployeeCode,ContractNumber,ContractType,Status,StartDate,EndDate,BasicSalary,CurrencyCode\n";
         var result = await import.Commit(new MigrationPackageRequest($"r4-{Guid.NewGuid():N}", new Dictionary<string, string> { ["contracts"] = header + rows }), default);
         return (MigrationReconciliationDto)Assert.IsType<OkObjectResult>(result.Result).Value!;

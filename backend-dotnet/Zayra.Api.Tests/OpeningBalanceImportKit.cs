@@ -142,31 +142,43 @@ internal static class OpeningBalanceImportKit
     {
         "Admin" => new[] { "finance.opening_balances.import", "employees.bulk_import" },
         "Finance" or "Finance Approver" or "Finance Controller" => new[] { "finance.opening_balances.import" },
+        // AuthSeeder: HR Manager holds every employees.* key, employees.bulk_import among them; never the finance import key.
+        "HR Manager" => new[] { "employees.bulk_import" },
         _ => Array.Empty<string>(),
     };
 
     internal static MigrationImportController Migration(ZayraDbContext db, Guid tid, params string[] roles) => Migration(db, tid, roles, null, null);
 
     /// <param name="denied">Keys removed from the caller's permissions, as a per-user Deny override removes them.</param>
-    internal static MigrationImportController Migration(ZayraDbContext db, Guid tid, string[] roles, Guid? userId, string[]? denied)
+    internal static MigrationImportController Migration(ZayraDbContext db, Guid tid, string[] roles, Guid? userId, string[]? denied) =>
+        Migration(db, Principal(tid, roles, userId, denied));
+
+    internal static MigrationImportController Migration(ZayraDbContext db, ClaimsPrincipal user) =>
+        new(db, new Pbkdf2PasswordHasher(), new AuditService(db))
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = user } },
+        };
+
+    /// <summary>The importer: the roles, their seeded bundles less any <paramref name="denied"/> key, and, when
+    /// <paramref name="companyScope"/> is set, access to that one company only (otherwise no scope claim, as before).</summary>
+    internal static ClaimsPrincipal Principal(Guid tid, string[] roles, Guid? userId = null, string[]? denied = null, Guid? companyScope = null)
     {
         roles = roles.Length == 0 ? new[] { "Admin" } : roles;
         var permissions = new[] { "payroll.read", "payroll.write" }.Concat(roles.SelectMany(BundleOf)).Distinct()
             .Except(denied ?? Array.Empty<string>());
-        return new(db, new Pbkdf2PasswordHasher(), new AuditService(db))
-        {
-            ControllerContext = new ControllerContext
+        var claims = new[]
             {
-                HttpContext = new DefaultHttpContext
-                {
-                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
-                    {
-                        new Claim("tenant_id", tid.ToString()), new Claim(ClaimTypes.NameIdentifier, (userId ?? Guid.NewGuid()).ToString()),
-                        new Claim(ClaimTypes.Name, "consultant"),
-                    }.Concat(roles.Select(r => new Claim(ClaimTypes.Role, r)))
-                     .Concat(permissions.Select(p => new Claim("permission", p))), "test")),
-                },
-            },
-        };
+                new Claim("tenant_id", tid.ToString()), new Claim(ClaimTypes.NameIdentifier, (userId ?? Guid.NewGuid()).ToString()),
+                new Claim(ClaimTypes.Name, "consultant"),
+            }.Concat(roles.Select(r => new Claim(ClaimTypes.Role, r)))
+             .Concat(permissions.Select(p => new Claim("permission", p)))
+             .ToList();
+        if (companyScope is Guid company)
+            claims.Add(new Claim("entity_access", System.Text.Json.JsonSerializer.Serialize(new { c = company, r = roles[0] })));
+        return new ClaimsPrincipal(new ClaimsIdentity(claims, "test"));
     }
+
+    /// <summary>A context whose query filters apply <paramref name="user"/>'s company scope, as a request's context does.</summary>
+    internal static ZayraDbContext ScopedDb(PostgresFixture fx, ClaimsPrincipal user) =>
+        fx.CreateDbWithAccessor(new HttpContextAccessor { HttpContext = new DefaultHttpContext { User = user } });
 }

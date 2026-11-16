@@ -35,6 +35,10 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
 {
     private readonly ZayraDbContext _db = db;
 
+    /// <summary>Test seam: runs inside apply's transaction once the ready debts are locked and the plan is confirmed, before anything
+    /// is posted. Null in production.</summary>
+    internal Func<CancellationToken, Task>? AfterDecision { get; init; }
+
     /// <summary>Dry run: every carried-in loan and advance of the company and what applying would post, changing nothing.</summary>
     /// <param name="includeUnattributed">Whether import records naming no company are considered (a group-level caller only).</param>
     public async Task<object> PreviewAsync(Guid tenantId, Guid companyId, bool includeUnattributed, CancellationToken ct)
@@ -73,6 +77,7 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
                     messageAr = "تغيّرت الأرصدة الافتتاحية منذ المعاينة التي أكدتها (أُضيف دين أو تغيّر أو رُحّل). لم يُرحَّل شيء. أعد المعاينة وأكّد الأرقام الجديدة.",
                     digest,
                 });
+            if (AfterDecision is { } afterDecision) await afterDecision(ct);
             var posted = 0;
             foreach (var row in rows.Where(r => r.Status == Ready))
             {

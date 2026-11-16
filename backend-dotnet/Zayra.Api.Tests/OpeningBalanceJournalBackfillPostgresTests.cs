@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Controllers.Finance;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Models;
 using K = Zayra.Api.Tests.OpeningBalanceImportKit;
 using Kit = Zayra.Api.Tests.DebtRacePostgresKit;
@@ -309,7 +310,16 @@ public class OpeningBalanceJournalBackfillPostgresTests(PostgresFixture fixture)
     };
 
     private static OpeningBalanceJournalsController Controller(ZayraDbContext db, Guid tid, string role, bool deniedPermission = false,
-        Guid? companyScope = null)
+        Guid? companyScope = null) => Controller(db, User(tid, role, deniedPermission, companyScope));
+
+    private static OpeningBalanceJournalsController Controller(ZayraDbContext db, ClaimsPrincipal user,
+        Func<CancellationToken, Task>? afterDecision = null) =>
+        new(new Zayra.Api.Infrastructure.Finance.OpeningBalanceBackfillService(db) { AfterDecision = afterDecision })
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = user } },
+        };
+
+    private static ClaimsPrincipal User(Guid tid, string role, bool deniedPermission = false, Guid? companyScope = null)
     {
         var claims = new List<Claim>
         {
@@ -319,12 +329,276 @@ public class OpeningBalanceJournalBackfillPostgresTests(PostgresFixture fixture)
         };
         // The seeded bundles: Admin, Finance and Finance Approver hold finance.opening_balances.import; a Deny takes it away.
         if (!deniedPermission && role is "Admin" or "Finance" or "Finance Approver") claims.Add(new("permission", "finance.opening_balances.import"));
-        return new(new Zayra.Api.Infrastructure.Finance.OpeningBalanceBackfillService(db))
-        {
-            ControllerContext = new ControllerContext
-            {
-                HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")) },
-            },
-        };
+        return new ClaimsPrincipal(new ClaimsIdentity(claims, "test"));
     }
+
+    // ── #344 audit follow-ups ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>The preview ties the company's receivables out against the sub-ledgers. Clean, there is no warning; once a manual
+    /// journal moves 1400, the difference is a warning in both languages on the preview and on the apply response, and apply posts
+    /// exactly what it would have posted without it (the confirmed digest does not change).</summary>
+    [Fact]
+    public async Task ThePreviewTiesTheReceivablesOut_AManualJournalIsAWarning_AndApplyPostsTheSameLines()
+    {
+        var (b, cutover, _) = await K.SeedAsync(fixture, "BF-TO");
+        var loanId = await SeedCarriedInLoanAsync(b, 300m, cutover);
+
+        var clean = await PreviewAsync(b, "Finance Approver");
+        var loanLine = TieOut(clean, "LOAN_RECEIVABLE");
+        Assert.Equal(300m, loanLine.GetProperty("toPost").GetDecimal());
+        Assert.Equal(0m, loanLine.GetProperty("difference").GetDecimal());
+        Assert.Equal(loanLine.GetProperty("subLedger").GetDecimal(), loanLine.GetProperty("glBalance").GetDecimal() + 300m);
+        Assert.Equal(0m, TieOut(clean, "ADVANCE_RECEIVABLE").GetProperty("difference").GetDecimal());
+        Assert.Empty(clean.GetProperty("warnings").EnumerateArray());
+
+        var account = loanLine.GetProperty("account").GetString()!;
+        await using (var db = fixture.CreateDb())
+        {
+            db.FinanceGlEntries.Add(new FinanceGlEntry
+            {
+                TenantId = b.Tenant, CompanyId = b.CompanyId, SourceModule = "Manual", SourceEntityId = Guid.NewGuid(), EventType = "ManualJournal",
+                DebitAccount = account, CreditAccount = "5900 - Suspense", Amount = 50m, Currency = "SAR", EntryDate = b.Today,
+                Period = $"{b.Today.Year}-{b.Today.Month:D2}", Description = "Manual journal to the loan receivable",
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var drifted = await PreviewAsync(b, "Finance Approver");
+        Assert.Equal(clean.GetProperty("digest").GetString(), drifted.GetProperty("digest").GetString());
+        Assert.Equal(50m, TieOut(drifted, "LOAN_RECEIVABLE").GetProperty("difference").GetDecimal());
+        var warning = Assert.Single(drifted.GetProperty("warnings").EnumerateArray());
+        Assert.Equal("receivable_ledger_drift", warning.GetProperty("code").GetString());
+        Assert.Contains("50.00", warning.GetProperty("message").GetString(), StringComparison.Ordinal);
+        Assert.False(string.IsNullOrWhiteSpace(warning.GetProperty("messageAr").GetString()));
+
+        await using (var db = fixture.CreateDb())
+        {
+            var applied = Json(Assert.IsType<OkObjectResult>(await Controller(db, b.Tenant, "Finance Approver")
+                .Apply(new OpeningBalanceBackfillRequest(b.CompanyId, clean.GetProperty("digest").GetString()), default)));
+            Assert.Equal(1, applied.GetProperty("posted").GetInt32());
+            var after = TieOut(applied, "LOAN_RECEIVABLE");
+            Assert.Equal((0m, 50m), (after.GetProperty("toPost").GetDecimal(), after.GetProperty("difference").GetDecimal()));
+            Assert.Equal("receivable_ledger_drift", Assert.Single(applied.GetProperty("warnings").EnumerateArray()).GetProperty("code").GetString());
+        }
+        Assert.Equal(300m, Assert.Single(await K.OpeningJournalAsync(fixture, b, loanId)).Amount);
+    }
+
+    /// <summary>Apply locks only the debts it posts (the ready rows), loans then advances, each in ascending lock-key order: step 3
+    /// then step 4 of the documented order, and nothing else. A debt left for manual reconciliation or refused for a closed period
+    /// is not locked.</summary>
+    [Fact]
+    public async Task ApplyLocksOnlyTheDebtsItPosts_LoansThenAdvances_EachAscending()
+    {
+        var (b, cutover, _) = await K.SeedAsync(fixture, "BF-LK");
+        var loans = new[] { await SeedCarriedInLoanAsync(b, 300m, cutover), await SeedCarriedInLoanAsync(b, 200m, cutover) };
+        var advances = new[] { await SeedCarriedInAdvanceAsync(b, 300m, cutover), await SeedCarriedInAdvanceAsync(b, 100m, cutover) };
+        var manual = await SeedCarriedInLoanAsync(b, 400m, cutover);
+        await SetOutstandingAsync(manual, 300m);   // below what was carried: moved since cutover
+        var closed = await SeedCarriedInAdvanceAsync(b, 50m, cutover.AddMonths(-1));
+        await K.ClosePeriodAsync(fixture, b, cutover.AddMonths(-1));
+        var preview = await PreviewAsync(b, "Finance Approver");
+        var rows = preview.GetProperty("rows").EnumerateArray().ToList();
+        Assert.Equal("needs_manual_reconciliation", Row(rows, manual).GetProperty("status").GetString());
+        Assert.Equal("period_closed", Row(rows, closed).GetProperty("status").GetString());
+
+        var seen = new List<(string Scope, Guid TenantId, Guid AggregateId)>();
+        IActionResult result;
+        FinanceDecisionSerializer.Recorder.Value = seen;
+        try
+        {
+            await using var db = fixture.CreateDb();
+            result = await Controller(db, b.Tenant, "Finance Approver")
+                .Apply(new OpeningBalanceBackfillRequest(b.CompanyId, preview.GetProperty("digest").GetString()), default);
+        }
+        finally { FinanceDecisionSerializer.Recorder.Value = null; }
+
+        Assert.Equal(4, Json(Assert.IsType<OkObjectResult>(result)).GetProperty("posted").GetInt32());
+        var expected = loans.OrderBy(id => FinanceDecisionSerializer.ComputeLockKey(FinanceDecisionSerializer.ScopeLoan, b.Tenant, id))
+            .Select(id => (FinanceDecisionSerializer.ScopeLoan, b.Tenant, id))
+            .Concat(advances.OrderBy(id => FinanceDecisionSerializer.ComputeLockKey(FinanceDecisionSerializer.ScopeAdvance, b.Tenant, id))
+                .Select(id => (FinanceDecisionSerializer.ScopeAdvance, b.Tenant, id)))
+            .ToList();
+        Assert.Equal(expected, seen);
+    }
+
+    /// <summary>
+    /// A payroll run collecting a carried-in debt the apply does not post is not blocked by the apply. The apply is held after its
+    /// decision (holding the lock of the one advance it posts); Process of this month's run, which collects the borrower's loans
+    /// (one of them carried in and left for manual reconciliation), never waits on a lock and completes; the apply then posts its
+    /// advance. Before, the apply locked every carried-in debt of the company, and Process waited for it.
+    /// </summary>
+    [Fact]
+    public async Task AProcessCollectingADebtTheApplyDoesNotPost_IsNotBlockedByTheApply()
+    {
+        var (b, cutover, _) = await K.SeedAsync(fixture, "BF-NB");
+        var manual = await SeedCarriedInLoanAsync(b, 300m, cutover);
+        await AddRepaymentAsync(b, manual, 100m, cutover.AddDays(2), reversed: true, company: b.CompanyId);
+        var ready = await SeedCarriedInAdvanceAsync(b, 200m, cutover);
+        await using (var db = fixture.CreateDb())   // first instalment next month: not collected by this month's run
+            await db.SalaryAdvances.Where(a => a.Id == ready).ExecuteUpdateAsync(x => x.SetProperty(a => a.RepaymentStartDate, cutover.AddMonths(1)));
+        var runId = await Kit.SeedDraftRunAsync(fixture, b, b.Today.Year, b.Today.Month);
+        var preview = await PreviewAsync(b, "Finance Approver");
+        var rows = preview.GetProperty("rows").EnumerateArray().ToList();
+        Assert.Equal(("needs_manual_reconciliation", "ready"),
+            (Row(rows, manual).GetProperty("status").GetString(), Row(rows, ready).GetProperty("status").GetString()));
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var applyDb = fixture.CreateDb();
+        var apply = Task.Run(() => Controller(applyDb, User(b.Tenant, "Finance Approver"), async _ =>
+            {
+                reached.TrySetResult();
+                await release.Task.WaitAsync(TimeSpan.FromSeconds(60));
+            }).Apply(new OpeningBalanceBackfillRequest(b.CompanyId, preview.GetProperty("digest").GetString()), timeout.Token));
+        await reached.Task.WaitAsync(TimeSpan.FromSeconds(60));
+
+        await using var processDb = fixture.CreateDb();
+        var processPid = await Kit.OpenAndPidAsync(processDb, timeout.Token);
+        var process = Task.Run(() => Kit.ProcessAsync(processDb, b, runId, null, timeout.Token));
+        var waited = await Kit.WaitForLockAsync(fixture, processPid, advisoryOnly: true, process, timeout.Token);
+        release.TrySetResult();
+        var processed = await process;
+        var applied = await apply;
+
+        Assert.False(waited, "payroll must not wait on the lock of a debt the apply does not post");
+        Assert.Equal(200, processed.StatusCode);
+        Assert.Equal(1, Json(Assert.IsType<OkObjectResult>(applied)).GetProperty("posted").GetInt32());
+        Assert.Single(await K.OpeningJournalAsync(fixture, b, ready));
+        Assert.Empty(await K.OpeningJournalAsync(fixture, b, manual));
+    }
+
+    /// <summary>The backfill's evidence reads are tenant-wide for the permitted caller: a company-scoped Finance user, whose company
+    /// filter hides a repayment row naming no company, still sees that the carried-in loan has moved.</summary>
+    [Fact]
+    public async Task AScopedCallersCompanyFilter_DoesNotHideEvidenceFromTheBackfill()
+    {
+        var (b, cutover, _) = await K.SeedAsync(fixture, "BF-SC");
+        var loanId = await SeedCarriedInLoanAsync(b, 300m, cutover);
+        await AddRepaymentAsync(b, loanId, 100m, cutover.AddDays(2), reversed: true, company: null);
+
+        var user = User(b.Tenant, "Finance Approver", companyScope: b.CompanyId);
+        await using var scoped = K.ScopedDb(fixture, user);
+        Assert.False(await scoped.LoanRepayments.AnyAsync(r => r.LoanId == loanId), "the caller's company filter hides the repayment");
+        var preview = Json(Assert.IsType<OkObjectResult>(await Controller(scoped, user).Preview(b.CompanyId, default)));
+        Assert.Equal("needs_manual_reconciliation", Row(preview.GetProperty("rows").EnumerateArray().ToList(), loanId).GetProperty("status").GetString());
+    }
+
+    /// <summary>A repayment recorded after the opening row (even one reversed since, so the balance is back where it was carried)
+    /// leaves the loan for manual reconciliation; nothing posts for it.</summary>
+    [Fact]
+    public async Task ARepaymentAfterTheOpeningRow_LeavesTheLoanForManualReconciliation()
+    {
+        var (b, cutover, _) = await K.SeedAsync(fixture, "BF-RP");
+        var loanId = await SeedCarriedInLoanAsync(b, 300m, cutover);
+        await AddRepaymentAsync(b, loanId, 100m, cutover.AddDays(5), reversed: true, company: b.CompanyId);
+
+        await AssertManualAndNothingPostsAsync(b, loanId);
+    }
+
+    /// <summary>A debt a final settlement moved to the 1420 employee receivable has moved since cutover: an advance with the residual
+    /// audit row, and a loan whose balance is below what was carried, are left for manual reconciliation.</summary>
+    [Fact]
+    public async Task ADebtMovedToThe1420Receivable_IsLeftForManualReconciliation()
+    {
+        var (b, cutover, _) = await K.SeedAsync(fixture, "BF-RV");
+        var advanceId = await SeedCarriedInAdvanceAsync(b, 300m, cutover);
+        await using (var db = fixture.CreateDb())
+        {
+            var advance = await db.SalaryAdvances.AsNoTracking().SingleAsync(a => a.Id == advanceId);
+            db.AdvanceAuditLogs.Add(Zayra.Api.Infrastructure.Payroll.AdvanceResidualAudit.Entry(b.Tenant, advance, 100m, 300m,
+                Guid.NewGuid(), Guid.NewGuid(), null, null, "Settlement"));
+            await db.SaveChangesAsync();
+        }
+        var loanId = await SeedCarriedInLoanAsync(b, 300m, cutover);
+        await SetOutstandingAsync(loanId, 200m);
+
+        await AssertManualAndNothingPostsAsync(b, advanceId, loanId);
+    }
+
+    /// <summary>An instalment a payroll run stamped (its witness on the instalment, none on the debt itself) is a take: the loan and
+    /// the advance whose instalments were stamped are left for manual reconciliation.</summary>
+    [Fact]
+    public async Task AnInstalmentStampedByARun_LeavesTheDebtForManualReconciliation()
+    {
+        var (b, cutover, _) = await K.SeedAsync(fixture, "BF-IN");
+        var loanId = await SeedCarriedInLoanAsync(b, 300m, cutover);
+        var advanceId = await SeedCarriedInAdvanceAsync(b, 300m, cutover);
+        var runId = await Kit.SeedDraftRunAsync(fixture, b, b.Today.Year, b.Today.Month);
+        await using (var db = fixture.CreateDb())
+        {
+            var loanInstalment = new LoanInstallment { TenantId = b.Tenant, LoanId = loanId, InstallmentNumber = 1, DueDate = cutover, AmountDue = 100m };
+            var advanceInstalment = new AdvanceInstallment { TenantId = b.Tenant, AdvanceId = advanceId, InstallmentNumber = 1, DueDate = cutover, AmountDue = 100m };
+            db.AddRange(loanInstalment, advanceInstalment);
+            db.PayrollRunConsumptions.AddRange(
+                Witness(b, runId, PayrollConsumptionArtifacts.LoanInstallment, loanInstalment.Id),
+                Witness(b, runId, PayrollConsumptionArtifacts.AdvanceInstallment, advanceInstalment.Id));
+            await db.SaveChangesAsync();
+        }
+
+        await AssertManualAndNothingPostsAsync(b, loanId, advanceId);
+    }
+
+    /// <summary>A run that took from a carried-in loan and was then reopened gave the take back (the balance is as carried and the
+    /// witnesses are gone), but its reopen audit names the loan: the take and its unwind went through accounts the opening line
+    /// would have to reconcile with, so the loan is left for manual reconciliation.</summary>
+    [Fact]
+    public async Task ADebtARunTookFromAndThatWasReopened_IsLeftForManualReconciliation()
+    {
+        var (b, cutover, _) = await K.SeedAsync(fixture, "BF-RO");
+        var loanId = await SeedCarriedInLoanAsync(b, 300m, cutover);
+        var runId = await Kit.SeedDraftRunAsync(fixture, b, b.Today.Year, b.Today.Month);
+        await using (var db = fixture.CreateDb())
+            Assert.Equal(200, (await Kit.ProcessAsync(db, b, runId, null, CancellationToken.None)).StatusCode);
+        await using (var db = fixture.CreateDb())
+            Assert.True((await db.EmployeeLoans.AsNoTracking().SingleAsync(l => l.Id == loanId)).OutstandingBalance < 300m, "the run took an instalment");
+        await using (var db = fixture.CreateDb())
+            Assert.IsType<OkObjectResult>(await Kit.Payroll(db, b.Tenant).ReopenRun(runId, new Zayra.Api.Controllers.PayrollReasonRequest("wrong inputs"), default));
+        await using (var db = fixture.CreateDb())
+        {
+            Assert.Equal(300m, (await db.EmployeeLoans.AsNoTracking().SingleAsync(l => l.Id == loanId)).OutstandingBalance);
+            Assert.False(await db.PayrollRunConsumptions.AnyAsync(c => c.TenantId == b.Tenant && c.PayrollRunId == runId), "the reopen deleted the witnesses");
+        }
+
+        await AssertManualAndNothingPostsAsync(b, loanId);
+    }
+
+    private async Task AssertManualAndNothingPostsAsync(Kit.Borrower b, params Guid[] debts)
+    {
+        var rows = (await PreviewAsync(b, "Finance Approver")).GetProperty("rows").EnumerateArray().ToList();
+        foreach (var id in debts)
+            Assert.Equal("needs_manual_reconciliation", Row(rows, id).GetProperty("status").GetString());
+        Json(Assert.IsType<OkObjectResult>(await PreviewThenApplyAsync(b, "Finance Approver")));
+        foreach (var id in debts)
+            Assert.Empty(await K.OpeningJournalAsync(fixture, b, id));
+    }
+
+    private static PayrollRunConsumption Witness(Kit.Borrower b, Guid runId, string artifactType, Guid artifactId) => new()
+    {
+        TenantId = b.Tenant, CompanyId = b.CompanyId, PayrollRunId = runId, ArtifactType = artifactType, ArtifactId = artifactId,
+        EmployeeId = b.EmployeeId, Amount = 100m, PriorStatus = "Pending", PriorAmountPaid = 0m,
+    };
+
+    private async Task AddRepaymentAsync(Kit.Borrower b, Guid loanId, decimal amount, DateOnly paid, bool reversed, Guid? company)
+    {
+        await using var db = fixture.CreateDb();
+        db.LoanRepayments.Add(new LoanRepayment
+        {
+            TenantId = b.Tenant, CompanyId = company, LoanId = loanId, Amount = amount, PaidDate = paid, Reference = "CASH-1",
+            PaymentMethod = "Cash", IsReversed = reversed, ReversedAtUtc = reversed ? DateTime.UtcNow : null,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private async Task SetOutstandingAsync(Guid loanId, decimal outstanding)
+    {
+        await using var db = fixture.CreateDb();
+        var loan = await db.EmployeeLoans.SingleAsync(l => l.Id == loanId);
+        loan.TotalRepaid += loan.OutstandingBalance - outstanding;
+        loan.OutstandingBalance = outstanding;
+        await db.SaveChangesAsync();
+    }
+
+    private static JsonElement TieOut(JsonElement body, string receivable) =>
+        body.GetProperty("tieOut").EnumerateArray().Single(t => t.GetProperty("receivable").GetString() == receivable);
 }
