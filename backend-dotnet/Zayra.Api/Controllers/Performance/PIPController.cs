@@ -106,6 +106,8 @@ public class PIPController : ControllerBase
         if (employee is null) return BadRequest(new { error = "employee_not_found", message = "Employee was not found in this tenant." });
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, employee.Id, ct))
+            return BadRequest(SubjectDecisionBar.Refusal(OwnPlanRefusalEn, OwnPlanRefusalAr));
         if (req.TriggerReviewId is { } reviewId
             && !await _db.AppraisalReviews.AsNoTracking().AnyAsync(
                 r => r.Id == reviewId && r.TenantId == tenantId && r.EmployeeId == employee.Id, ct))

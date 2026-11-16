@@ -162,4 +162,38 @@ public sealed class OwnRecordDecisionBarTests
         (await w.Db.AppraisalReviews.AsNoTracking().SingleAsync(r => r.Id == review.Id)).CalibrationAdjustment.Should().Be(0);
         (await w.Db.AppraisalCalibrations.CountAsync()).Should().Be(0);
     }
+
+    // ── Goals and opening a plan ──────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Goal_CannotBeApprovedByTheEmployeeItIsAbout_ButAnotherHrUserCan()
+    {
+        var w = await WorldAsync();
+        await using var _ = w.Db;
+        var goal = new EmployeeGoal { TenantId = w.Tenant, EmployeeId = w.Subject.Id, EmployeeName = w.Subject.FullName, Title = "Own goal", Status = "Draft" };
+        w.Db.EmployeeGoals.Add(goal);
+        await w.Db.SaveChangesAsync();
+        GoalsController Goals(Guid user) => new(w.Db, new DataScopeService(w.Db), new Zayra.Api.Infrastructure.Organization.HrmHierarchyService(w.Db, new Zayra.Api.Infrastructure.Audit.AuditService(w.Db)))
+            { ControllerContext = Hr(w.Tenant, user) };
+
+        ErrorOf(await Goals(w.SubjectUser).Approve(goal.Id, default)).Should().Be(SubjectDecisionBar.ErrorCode);
+        (await w.Db.EmployeeGoals.AsNoTracking().SingleAsync(g => g.Id == goal.Id)).Status.Should().Be("Draft");
+
+        (await Goals(w.OtherUser).Approve(goal.Id, default)).Should().BeOfType<OkObjectResult>();
+        (await w.Db.EmployeeGoals.AsNoTracking().SingleAsync(g => g.Id == goal.Id)).Status.Should().Be("Active");
+    }
+
+    [Fact]
+    public async Task Pip_CannotBeOpenedAboutOneself_ButCanBeAboutSomeoneElse()
+    {
+        var w = await WorldAsync();
+        await using var _ = w.Db;
+        var request = new PIPRequest(w.Subject.Id, w.Subject.FullName, "Dept", null, "Gaps", "Goals", null, new DateOnly(2026, 9, 1), new DateOnly(2026, 12, 1), null);
+
+        ErrorOf(await Pip(w, w.SubjectUser).Create(request, default)).Should().Be(SubjectDecisionBar.ErrorCode);
+        (await w.Db.PerformanceImprovementPlans.CountAsync()).Should().Be(0);
+
+        (await Pip(w, w.OtherUser).Create(request, default)).Should().BeOfType<CreatedResult>();
+        (await w.Db.PerformanceImprovementPlans.CountAsync()).Should().Be(1);
+    }
 }
