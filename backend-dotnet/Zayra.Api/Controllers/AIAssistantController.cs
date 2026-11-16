@@ -281,9 +281,25 @@ public class AIAssistantController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var total = await _db.AIHRQueryLogs.CountAsync(l => l.TenantId == tenantId, ct);
-        var items = await _db.AIHRQueryLogs
-            .Where(l => l.TenantId == tenantId)
+        // A company-scoped caller reads the history of their own company's users (and their own entries) only; a group-level
+        // caller reads the tenant's whole log. A user is "in" a company when every active grant they hold names a company
+        // the caller may access, so a user who also reaches another company, or the whole group, is not shown.
+        var logs = _db.AIHRQueryLogs.Where(l => l.TenantId == tenantId);
+        var scope = this.GetRequestScope();
+        if (!scope.IsGroupLevel && !scope.IsSystemScope)
+        {
+            var companyIds = scope.AuthorizedCompanyIds.ToList();
+            var callerId = this.GetUserId();
+            var grants = _db.UserEntityAccesses.Where(a => a.TenantId == tenantId && a.IsActive);
+            var inside = grants.Where(a => a.CompanyId != null && companyIds.Contains(a.CompanyId.Value)).Select(a => a.UserId);
+            var outside = grants.Where(a => a.CompanyId == null || !companyIds.Contains(a.CompanyId.Value)).Select(a => a.UserId);
+            var groupUsers = _db.Users.Where(u => u.TenantId == tenantId && u.IsGroupScope).Select(u => u.Id);
+            logs = logs.Where(l => l.UserId == callerId
+                || (inside.Contains(l.UserId) && !outside.Contains(l.UserId) && !groupUsers.Contains(l.UserId)));
+        }
+
+        var total = await logs.CountAsync(ct);
+        var items = await logs
             .OrderByDescending(l => l.CreatedAtUtc)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
@@ -300,6 +316,11 @@ public class AIAssistantController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+
+        // Same run-visibility check the run endpoint applies: the run must be visible to the caller's company scope.
+        var runExists = await _db.PayrollRuns
+            .AnyAsync(r => r.Id == payrollRunId && r.TenantId == tenantId, ct);
+        if (!runExists) return NotFound();
 
         var results = await _db.PayrollAIValidationResults
             .Where(r => r.TenantId == tenantId && r.PayrollRunId == payrollRunId)
