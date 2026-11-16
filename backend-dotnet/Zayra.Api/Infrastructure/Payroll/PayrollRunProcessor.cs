@@ -1455,6 +1455,11 @@ public sealed class PayrollRunProcessor
                 .Where(x => x.ImpactType.Contains("Deduction", StringComparison.OrdinalIgnoreCase)).ToList();
             var priorLeaveRows = empLeaveRows
                 .Where(x => x.PayPeriod != runPeriodKey && !LeaveArrears.IsReversal(x) && x.Amount > 0m).ToList();
+            // The pay this month actually earns on the absence base: the prorated basic (or, on the full-package base, the
+            // prorated package). Leave over every deductible day of the employment window takes exactly that (UnpaidLeaveMonth).
+            var earnedLeaveBase = companyPayrollRules.AbsenceDeductionBase == CompanyPayrollRules.AbsenceGross
+                ? basic + housing + transport + otherAllowances + cashAllowanceTotal
+                : basic;
             var leaveDeduction = empLeaveRows
                 .Where(x => x.PayPeriod == runPeriodKey && !LeaveArrears.IsReversal(x))
                 .Sum(x =>
@@ -1462,7 +1467,9 @@ public sealed class PayrollRunProcessor
                     // Unpaid leave was priced on basic when the leave was approved; when the company prices absence on its
                     // full package, unpaid leave follows (statutory sick-leave bands keep their own wage-base rule).
                     var amount = CompanyPayrollRules.UnpaidLeaveDeduction(companyPayrollRules.AbsenceDeductionBase, x.Amount, x.Days, lopDayRate, x.ImpactType);
-                    return leaveImpactScale.TryGetValue(x.Id, out var sc) ? Math.Round(amount * sc, 2) : amount;
+                    amount = leaveImpactScale.TryGetValue(x.Id, out var sc) ? Math.Round(amount * sc, 2) : amount;
+                    return UnpaidLeaveMonth.SliceDeduction(x, amount, earnedLeaveBase, proration.PaidFrom, proration.PaidTo,
+                        d => !workWeekConfig.IsWeekend(d.DayOfWeek) && !periodPublicHolidays.Contains(d));
                 });
 
             // ── Overtime pay: approved MINUTES × hourly rate × statutory multiplier ──
