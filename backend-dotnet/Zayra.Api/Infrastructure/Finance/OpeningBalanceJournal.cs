@@ -47,7 +47,7 @@ public static class OpeningBalanceJournal
     /// returns the difference to <see cref="OpeningBalanceDebt.OutstandingBalance"/>. Throws a coded, bilingual
     /// <see cref="InvalidOperationException"/> when a non-zero difference cannot be posted: the period is closed, or the chart
     /// was remapped since the opening was posted.</summary>
-    public static async Task<Prepared> PrepareAsync(ZayraDbContext db, OpeningBalanceDebt debt, DateOnly openingDate, CancellationToken ct)
+    public static async Task<Prepared> PrepareAsync(ZayraDbContext db, OpeningBalanceDebt debt, DateOnly openingDate, string? currency, CancellationToken ct)
     {
         var glCtx = await GlAccountResolver.LoadAsync(db, debt.TenantId, debt.CompanyId, ct);
         var receivable = GlAccountResolver.AccountLabel(debt.ReceivableDriver, glCtx);
@@ -58,13 +58,14 @@ public static class OpeningBalanceJournal
             : await db.FinanceGlEntries.AsNoTracking()
                 .Where(x => x.TenantId == debt.TenantId && x.SourceModule == debt.SourceModule && x.SourceEntityId == debt.EntityId
                          && x.EventType == GlEventTypes.OpeningBalance && !x.IsReversed)
-                .Select(x => new PostedLine(x.DebitAccount, x.CreditAccount, x.Amount))
+                .Select(x => new PostedLine(x.DebitAccount, x.CreditAccount, x.Amount, x.Currency))
                 .ToListAsync(ct);
         var onLedger = 0m;
         foreach (var line in posted)
         {
-            if (line.DebitAccount == receivable || line.CreditAccount == equity) onLedger += line.Amount;
-            else if (line.CreditAccount == receivable || line.DebitAccount == equity) onLedger -= line.Amount;
+            // BOTH accounts must be the ones mapped now: a line whose receivable OR equity was remapped cannot be told apart.
+            if (line.DebitAccount == receivable && line.CreditAccount == equity) onLedger += line.Amount;
+            else if (line.CreditAccount == receivable && line.DebitAccount == equity) onLedger -= line.Amount;
             else
                 // The chart was remapped since the opening was posted, so what the ledger carries for this debt cannot be told
                 // apart from the accounts it names now. Refuse the row rather than post a difference against the wrong figure.
@@ -73,6 +74,12 @@ public static class OpeningBalanceJournal
                     "(the receivable or opening balance equity was remapped), so its opening balance cannot be restated here. Correct it with a manual GL adjustment. " +
                     $"/ قيد الرصيد الافتتاحي لـ {debt.Reference} مُرحّل إلى حسابات لم يعد دليل الحسابات يربطها، فلا يمكن إعادة بيان رصيده هنا. صحّحه بقيد تسوية يدوي.");
         }
+
+        // A restatement never changes the currency: the existing journal's amounts are in its own currency.
+        if (currency is not null && posted.FirstOrDefault(l => !string.Equals(l.Currency, currency, StringComparison.OrdinalIgnoreCase)) is { } other)
+            throw new InvalidOperationException(
+                $"[opening_journal_currency_changed] {debt.Kind} {debt.Reference}'s opening balance was posted in {other.Currency}, so it cannot be restated in {currency}. Nothing was changed. " +
+                $"/ رُحّل الرصيد الافتتاحي لـ {debt.Reference} بعملة {other.Currency}، فلا يمكن إعادة بيانه بعملة {currency}. لم يتغير شيء.");
 
         var difference = Math.Round(debt.OutstandingBalance - onLedger, 2);
         var period = openingDate.ToString("yyyy-MM", System.Globalization.CultureInfo.InvariantCulture);
@@ -111,7 +118,7 @@ public static class OpeningBalanceJournal
     public static async Task<decimal> PostAsync(
         ZayraDbContext db, OpeningBalanceDebt debt, DateOnly openingDate, string currency, Guid? postedBy, string postedByName,
         CancellationToken ct) =>
-        Apply(db, await PrepareAsync(db, debt, openingDate, ct), debt.EntityId, currency, postedBy, postedByName);
+        Apply(db, await PrepareAsync(db, debt, openingDate, currency, ct), debt.EntityId, currency, postedBy, postedByName);
 
-    private sealed record PostedLine(string DebitAccount, string CreditAccount, decimal Amount);
+    private sealed record PostedLine(string DebitAccount, string CreditAccount, decimal Amount, string Currency);
 }

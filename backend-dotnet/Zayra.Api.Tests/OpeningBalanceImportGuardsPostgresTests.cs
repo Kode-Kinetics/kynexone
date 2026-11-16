@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Models;
 using K = Zayra.Api.Tests.OpeningBalanceImportKit;
 
 namespace Zayra.Api.Tests;
@@ -39,6 +40,47 @@ public class OpeningBalanceImportGuardsPostgresTests(PostgresFixture fixture)
         }
         await using var db = fixture.CreateDb();
         Assert.False(await db.EmployeeLoans.AnyAsync(l => l.TenantId == b.Tenant && l.LoanNumber == number));
+    }
+
+    [Fact]
+    public async Task ARestatementInAnotherCurrency_IsRefused_AndTheJournalIsUnchanged()
+    {
+        var (b, cutover, number) = await K.SeedAsync(fixture, "CCY");
+        await K.CommitAsync(fixture, b, "loans", K.LoanCsv(b, number, paid: 3, outstanding: 300m, cutover), withCutover: true);
+
+        var errors = await K.CommitAsync(fixture, b, "loans",
+            K.LoanCsv(b, number, paid: 3, outstanding: 300m, cutover).Replace(",SAR,", ",USD,"), expectErrors: true);
+
+        Assert.Contains("opening_journal_currency_changed", Assert.Single(errors), StringComparison.Ordinal);
+        await using var db = fixture.CreateDb();
+        var loan = await K.LoanAsync(fixture, b, number);
+        var lines = await db.FinanceGlEntries.AsNoTracking()
+            .Where(x => x.SourceEntityId == loan.Id && x.EventType == Zayra.Api.Models.GlEventTypes.OpeningBalance).ToListAsync();
+        Assert.All(lines, l => Assert.Equal("SAR", l.Currency));
+        Assert.Equal(300m, lines.Sum(l => l.Amount));
+    }
+
+    [Fact]
+    public async Task ARestatement_WhenOnlyTheReceivableWasRemapped_IsRefused_NotPostedAgainstTheNewAccount()
+    {
+        var (b, cutover, number) = await K.SeedAsync(fixture, "RMP");
+        await K.CommitAsync(fixture, b, "loans", K.LoanCsv(b, number, paid: 3, outstanding: 300m, cutover), withCutover: true);
+        var loan = await K.LoanAsync(fixture, b, number);
+        await using (var db = fixture.CreateDb())
+        {
+            // Finance remaps only the loan receivable after the opening was posted; opening balance equity is unchanged.
+            var moved = new GlAccount { TenantId = b.Tenant, CompanyId = null, Code = "1499", Name = "Loans receivable (new)", AccountType = "Asset" };
+            db.GlAccounts.Add(moved);
+            db.GlAccountMappings.Add(new GlAccountMapping
+                { TenantId = b.Tenant, CompanyId = null, DriverKey = Zayra.Api.Infrastructure.Payroll.GlControlAccounts.LoanReceivableDriver, AccountId = moved.Id });
+            await db.SaveChangesAsync();
+        }
+
+        var errors = await K.CommitAsync(fixture, b, "loans", K.LoanCsv(b, number, paid: 2, outstanding: 400m, cutover), expectErrors: true);
+
+        Assert.Contains("opening_journal_remapped", Assert.Single(errors), StringComparison.Ordinal);
+        await using var check = fixture.CreateDb();
+        Assert.Equal(1, await check.FinanceGlEntries.CountAsync(x => x.SourceEntityId == loan.Id && x.EventType == Zayra.Api.Models.GlEventTypes.OpeningBalance));
     }
 
     [Fact]

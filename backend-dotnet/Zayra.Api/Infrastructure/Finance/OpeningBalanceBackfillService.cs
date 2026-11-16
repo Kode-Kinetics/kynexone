@@ -205,7 +205,7 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
 
             try
             {
-                var prepared = await OpeningBalanceJournal.PrepareAsync(_db, debt, o.CutoverDate, ct);
+                var prepared = await OpeningBalanceJournal.PrepareAsync(_db, debt, o.CutoverDate, o.Currency, ct);
                 if (prepared.Difference == 0m)
                 {
                     rows.Add(new Row(o.EntityType, o.EntityId, debt.Reference, o.EmployeeCode, o.CutoverDate, o.CarriedAmount, outstanding,

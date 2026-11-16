@@ -845,7 +845,7 @@ public sealed partial class MigrationImportController
         Zayra.Api.Infrastructure.Finance.OpeningBalanceJournal.PrepareAsync(_db,
             new Zayra.Api.Infrastructure.Finance.OpeningBalanceDebt(tenantId, plan.Employee.CompanyId, "Loan",
                 Zayra.Api.Infrastructure.Payroll.GlControlAccounts.LoanReceivableDriver, loan?.Id ?? Guid.Empty, plan.LoanNumber, "Loan", plan.OutstandingBalance),
-            plan.CutoverDate, ct);
+            plan.CutoverDate, plan.Currency, ct);
 
     /// <summary>Whether anything has been recovered from <paramref name="loan"/> since it was carried in: an instalment a live
     /// (non-voided) payroll run took, an instalment stamped by a payroll run, a repayment recorded against it and not reversed, or
@@ -1085,7 +1085,7 @@ public sealed partial class MigrationImportController
         Zayra.Api.Infrastructure.Finance.OpeningBalanceJournal.PrepareAsync(_db,
             new Zayra.Api.Infrastructure.Finance.OpeningBalanceDebt(tenantId, plan.Employee.CompanyId, "Advance",
                 Zayra.Api.Infrastructure.Payroll.GlControlAccounts.AdvanceReceivableDriver, advance?.Id ?? Guid.Empty, plan.AdvanceNumber, "Advance", plan.OutstandingBalance),
-            plan.CutoverDate, ct);
+            plan.CutoverDate, plan.Currency, ct);
 
     /// <summary>
     /// The advance's schedule, instalment 1 to N, exactly as <see cref="RebuildLoanScheduleAsync"/> builds a loan's: the first
