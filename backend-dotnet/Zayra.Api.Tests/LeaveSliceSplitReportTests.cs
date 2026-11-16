@@ -41,7 +41,7 @@ public class LeaveSliceSplitReportTests
     {
         var leaves = await TestApprovalConfig.LeaveServiceAsync(db, co.TenantId, "HR");
         var http = Ctx(co.TenantId, Checker);
-        var controller = new LeaveSliceSplitReportController(db, leaves, new PnScope())
+        var controller = new LeaveSliceSplitReportController(leaves, new PnScope())
         { ControllerContext = new ControllerContext { HttpContext = http } };
         var result = await controller.Get(CancellationToken.None);
         result.Should().BeOfType<OkObjectResult>();

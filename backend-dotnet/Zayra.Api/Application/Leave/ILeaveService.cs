@@ -32,8 +32,10 @@ public sealed record LeaveSliceSplitReport(
 
 public interface ILeaveService
 {
-    /// <summary>Read-only: multi-month leave deductions that predate month slicing, and how each would split. Writes nothing.</summary>
-    Task<LeaveSliceSplitReport> BuildSliceSplitReportAsync(Guid tenantId, IReadOnlyCollection<int> visibleEmployeeIds, CancellationToken ct = default);
+    /// <summary>Read-only: multi-month leave deductions that predate month slicing, and how each would split. Writes nothing.
+    /// Covers the employees the caller's company filter shows, narrowed to <paramref name="allowedEmployeeIds"/> when the caller's
+    /// data scope is restricted (null = unrestricted).</summary>
+    Task<LeaveSliceSplitReport> BuildSliceSplitReportAsync(Guid tenantId, IReadOnlyCollection<int>? allowedEmployeeIds, CancellationToken ct = default);
 
     // Balance engine
     Task<EmployeeLeaveBalance> GetOrCreateBalanceAsync(Guid tenantId, int employeeId, Guid leaveTypeId, int year, CancellationToken ct = default);

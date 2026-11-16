@@ -23,11 +23,13 @@ namespace Zayra.Api.Infrastructure.Leave;
 public partial class LeaveService
 {
     public async Task<LeaveSliceSplitReport> BuildSliceSplitReportAsync(
-        Guid tenantId, IReadOnlyCollection<int> visibleEmployeeIds, CancellationToken ct = default)
+        Guid tenantId, IReadOnlyCollection<int>? allowedEmployeeIds, CancellationToken ct = default)
     {
         var empty = new LeaveSliceSplitReport([], [], [], []);
-        if (visibleEmployeeIds.Count == 0) return empty;
-        var ids = visibleEmployeeIds.ToList();
+        // Only employees the caller can see: the company filter on Employees, then the caller's data scope.
+        var ids = await _db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId).Select(e => e.Id).ToListAsync(ct);
+        if (allowedEmployeeIds is not null) ids = ids.Where(allowedEmployeeIds.Contains).ToList();
+        if (ids.Count == 0) return empty;
         var rows = await _db.LeavePayrollImpacts.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.SliceFrom == null && x.Amount > 0m
                      && x.ImpactType != LeaveArrears.ReversalImpactType && x.ImpactType != LeaveArrears.RemainderImpactType
