@@ -12,7 +12,7 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    [Migration("20261115120000_AddLeavePayrollImpactSliceDates")]
+    [Migration("20261116030000_AddLeavePayrollImpactSliceDates")]
     partial class AddLeavePayrollImpactSliceDates
     {
         /// <inheritdoc />
