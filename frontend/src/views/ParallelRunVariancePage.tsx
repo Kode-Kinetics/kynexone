@@ -58,8 +58,12 @@ function filterDefs(t: Translate): { key: LineFilter; label: string; hint: strin
 const PAGE_SIZE = 200;
 
 function errorMessage(err: unknown, t: Translate): string {
-  const anyErr = err as { response?: { data?: { message?: string; errors?: string[] } }; message?: string };
+  const anyErr = err as { response?: { data?: { code?: string; status?: string; message?: string; errors?: string[] } }; message?: string };
   const data = anyErr?.response?.data;
+  // The server's stable code is shown in the viewer's language; its English message stays for API callers.
+  if (data?.code === 'run_has_no_payslips') {
+    return t('This payroll run has no payslips yet (status {status}), so there is nothing to compare. Process the run first — a processed-but-unlocked run posts no GL and publishes nothing, so it is safe to compare and re-process.', { status: enumLabel(t, 'PayrollRunStatus', data.status) });
+  }
   if (data?.message && Array.isArray(data.errors) && data.errors.length > 0) {
     return `${data.message} ${data.errors.slice(0, 4).join(' · ')}${data.errors.length > 4 ? ` (+${data.errors.length - 4} more)` : ''}`;
   }

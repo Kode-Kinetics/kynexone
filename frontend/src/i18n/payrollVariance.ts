@@ -66,6 +66,7 @@ const en: Record<string, string> = {
   'KynexOne only': 'KynexOne only',
   'Register only': 'Register only',
   'Neither': 'Neither',
+  'This payroll run has no payslips yet (status {status}), so there is nothing to compare. Process the run first — a processed-but-unlocked run posts no GL and publishes nothing, so it is safe to compare and re-process.': 'This payroll run has no payslips yet (status {status}), so there is nothing to compare. Process the run first — a processed-but-unlocked run posts no GL and publishes nothing, so it is safe to compare and re-process.',
 };
 
 const ar: Record<string, string> = {
@@ -133,6 +134,7 @@ const ar: Record<string, string> = {
   'KynexOne only': 'KynexOne فقط',
   'Register only': 'الكشف فقط',
   'Neither': 'لا أحد',
+  'This payroll run has no payslips yet (status {status}), so there is nothing to compare. Process the run first — a processed-but-unlocked run posts no GL and publishes nothing, so it is safe to compare and re-process.': 'لا توجد قسائم رواتب لهذا المسير بعد (الحالة: {status})، فلا يوجد ما تتم مقارنته. عالج المسير أولًا — فالمسير المعالَج وغير المقفل لا يسجّل قيودًا في دفتر الأستاذ ولا ينشر شيئًا، فمن الآمن مقارنته وإعادة معالجته.',
 };
 
 export const payrollVariance = { en, ar };
