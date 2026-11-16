@@ -84,23 +84,31 @@ public class PayLeaveSliceCapTests
     }
 
     [Fact]
-    public async Task OnARegularRun_DeductionsAboveEarnings_AreReportedByTheNegativeNetGate()
+    public async Task OnARegularRun_DeductionsAboveEarnings_AreReportedByTheNegativeNetGate_WithTheLeaveCapApplied()
     {
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
         var co = await SeedCompany(db, Guid.NewGuid());
         var e = await AddEmployee(db, co, "Active");
         var salary = await db.EmployeeSalaryStructures.FirstAsync(s => s.EmployeeId == e.Id);
-        salary.FixedDeduction = 10_000m;
+        salary.FixedDeduction = 2_000m;
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
+        // Priced at 7,500 (above the 6,000 basic) and leaving 1 March uncovered: the cap, not the full-period rule, applies.
+        await AddUnpaidLeave(db, co, e.Id, new DateOnly(2026, 3, 2), new DateOnly(2026, 3, 26),
+            ("2026-03", 25m, 7_500m, new DateOnly(2026, 3, 2), new DateOnly(2026, 3, 26), "Pending"));
         var mar = await AddRun(db, co, 2026, 3);
 
         await Process(db, co, mar.Id);
 
-        (await Slip(db, mar.Id, e.Id))!.NetSalary.Should().Be(0m, "net pay is never below zero");
-        (await Findings(db, mar.Id)).Should().Contain(f => f.Code == "NEGATIVE_NET_SHORTFALL" && f.Severity == "Error" && f.EmployeeId == e.Id,
-            "the gate covers Regular runs, not only supplemental ones");
+        var slip = (await Slip(db, mar.Id, e.Id))!;
+        slip.NetSalary.Should().Be(0m, "net pay is never below zero");
+        // 7,500 earned - (6,000 capped leave + 2,000 fixed + statutory): the gate names a shortfall measured AFTER the cap.
+        var expectedShortfall = Basic + 2_000m + slip.EmployeeStatutoryTotal - (Basic + Housing);
+        var finding = (await Findings(db, mar.Id)).Should().ContainSingle(f => f.Code == "NEGATIVE_NET_SHORTFALL" && f.EmployeeId == e.Id,
+            "the gate covers Regular runs, not only supplemental ones").Subject;
+        finding.Severity.Should().Be("Error");
+        finding.Message.Should().Contain($"by {expectedShortfall:N2}", "the uncapped 7,500 would report 1,500 more");
     }
 
     [Fact]
@@ -112,4 +120,5 @@ public class PayLeaveSliceCapTests
         UnpaidLeaveMonth.CapTotal(8_000m, 6_000m).Should().Be(6_000m);
         UnpaidLeaveMonth.CapTotal(100m, -5m).Should().Be(0m);
     }
+
 }

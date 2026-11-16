@@ -65,15 +65,21 @@ public class PayLeaveArrearsTests
         var co = await SeedCompany(db, Guid.NewGuid());
         var e = await AddEmployee(db, co, "Active");
         var leave = await AddUnpaidLeave(db, co, e.Id, Jan25, Jan31, ("2026-01", 5m, 1_000m, Jan25, Jan31, "Pending"));
+        // December 2025 has no run at all, so its row was left behind: January is the earliest open run after it.
+        var dec = await AddUnpaidLeave(db, co, e.Id, new DateOnly(2025, 12, 21), new DateOnly(2025, 12, 23),
+            ("2025-12", 3m, 600m, new DateOnly(2025, 12, 21), new DateOnly(2025, 12, 23), "Pending"));
         var janOpen = await AddRun(db, co, 2026, 1);
         var feb = await AddRun(db, co, 2026, 2);
 
         await Process(db, co, feb.Id);
-        (await ArrearsLines(db, feb.Id, e.Id)).Should().BeEmpty("January still has an open run, and that run takes its own month");
+        (await ArrearsLines(db, feb.Id, e.Id)).Should().BeEmpty("January is still open, and it is the earliest open run after both months");
         (await db.LeavePayrollImpacts.AsNoTracking().SingleAsync(i => i.LeaveRequestId == leave.Id)).Status.Should().Be("Pending");
+        (await db.LeavePayrollImpacts.AsNoTracking().SingleAsync(i => i.LeaveRequestId == dec.Id)).Status.Should().Be("Pending");
 
         await Process(db, co, janOpen.Id);
-        (await DeductionSum(db, janOpen.Id, e.Id, "LEAVE")).Should().Be(1_000m);
+        (await DeductionSum(db, janOpen.Id, e.Id, "LEAVE")).Should().Be(1_000m, "January takes its own month");
+        (await ArrearsLines(db, janOpen.Id, e.Id)).Should().ContainSingle("and December's left-behind row, as arrears")
+            .Which.Should().Match<PayrollDeduction>(d => d.ComponentName == "Unpaid leave arrears (2025-12)" && d.Amount == 600m);
 
         // A second employee whose January row is left behind once January has closed: February's successor run sweeps it.
         var e2 = await AddEmployee(db, co, "Active");
@@ -163,6 +169,12 @@ public class PayLeaveArrearsTests
         var leave = await LateApprovedL1(db, co, e.Id);
         var mar = await AddRun(db, co, 2026, 3);
         await Process(db, co, mar.Id);
+        // Before the void: the run took part of January as arrears and carried the rest on a remainder row.
+        var taken = (await ArrearsLines(db, mar.Id, e.Id)).Should().ContainSingle().Subject.Amount;
+        taken.Should().BeGreaterThan(0m).And.BeLessThan(1_000m);
+        var remainder = await db.LeavePayrollImpacts.AsNoTracking()
+            .SingleAsync(i => i.LeaveRequestId == leave.Id && i.ImpactType == LeaveArrears.RemainderImpactType);
+        remainder.Amount.Should().Be(1_000m - taken);
 
         var result = await new PayrollVoidService(db).VoidAsync(mar.Id, co.TenantId, null, "System", "test void", CancellationToken.None);
         result.IsVoided.Should().BeTrue();
@@ -170,7 +182,7 @@ public class PayLeaveArrearsTests
 
         var rows = await db.LeavePayrollImpacts.AsNoTracking().Where(i => i.LeaveRequestId == leave.Id).ToListAsync();
         rows.Should().HaveCount(2, "the remainder row the voided run wrote is gone");
-        rows.Should().OnlyContain(r => r.Status == "Pending" && r.Amount == 1_000m);
+        rows.Should().OnlyContain(r => r.Status == "Pending" && r.Amount == 1_000m && r.ImpactType == CompanyPayrollRules.UnpaidLeaveImpactType);
     }
 
     [Theory]

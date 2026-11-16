@@ -57,19 +57,24 @@ public class PayLeaveFullPeriodTests
     }
 
     [Fact]
-    public async Task ASliceThatLeavesAWorkingDayUncovered_IsStillPricedByItsDays()
+    public async Task OneMissingWorkingDay_DecidesBetweenTheWholeEarnedBasic_AndPricingByDays()
     {
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
         var co = await SeedCompany(db, Guid.NewGuid());
-        var e = await AddEmployee(db, co, "Active");
-        await AddUnpaidLeave(db, co, e.Id, new DateOnly(2026, 2, 1), new DateOnly(2026, 2, 5),
-            ("2026-02", 5m, 1_000m, new DateOnly(2026, 2, 1), new DateOnly(2026, 2, 5), "Pending"));
+        var whole = await AddEmployee(db, co, "Active");
+        var partial = await AddEmployee(db, co, "Active");
+        // At 200 a day: one slice covers all of February, the other leaves the first working days (1-3 February) worked.
+        await AddUnpaidLeave(db, co, whole.Id, new DateOnly(2026, 2, 1), new DateOnly(2026, 2, 28),
+            ("2026-02", 20m, 4_000m, new DateOnly(2026, 2, 1), new DateOnly(2026, 2, 28), "Pending"));
+        await AddUnpaidLeave(db, co, partial.Id, new DateOnly(2026, 2, 4), new DateOnly(2026, 2, 28),
+            ("2026-02", 18m, 3_600m, new DateOnly(2026, 2, 4), new DateOnly(2026, 2, 28), "Pending"));
         var feb = await AddRun(db, co, 2026, 2);
 
         await Process(db, co, feb.Id);
 
-        (await DeductionSum(db, feb.Id, e.Id, "LEAVE")).Should().Be(1_000m);
+        (await DeductionSum(db, feb.Id, whole.Id, "LEAVE")).Should().Be(Basic, "every working day is unpaid: the whole earned basic");
+        (await DeductionSum(db, feb.Id, partial.Id, "LEAVE")).Should().Be(3_600m, "some working days were worked: priced by its days");
     }
 
     [Fact]
