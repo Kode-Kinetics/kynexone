@@ -454,13 +454,8 @@ public sealed class PayrollRunProcessor
         static bool includesRecurringPayForPlan(PayrollRun r) => r.IncludesRecurringPay && PayrollRunTypes.IsPeriodOwning(r.RunType);
 
         var employeeIdsForRun = employees.Select(e => e.Id).ToHashSet();
-        if (employeeIdsForRun.Count == 0)
+        PayrollProcessOutcome NoEmployeesRefusal()
         {
-            // Refusing here is correct — there is no such thing as a payroll run over nobody — but a tenant
-            // that has not added anyone yet reaches this on its very first Process, so the 422 body is a
-            // user-facing empty state, not an error trace. PayrollPage renders `message` verbatim
-            // (PayrollPage.tsx processRun), so it names the company, the period, and the one next action;
-            // `error` stays the stable machine code it always was.
             var periodLabel = $"{System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetMonthName(run.Month)} {run.Year}";
             var setAsideCount = runPopulation.Exclusions.Count + runPopulation.NotEligible.Count;
             return UnprocessableEntity(new
@@ -476,6 +471,13 @@ public sealed class PayrollRunProcessor
                 setAsideCount,
             });
         }
+        // A run over nobody is refused, with one exception: a recurring run of a company whose salaried employees are all
+        // suspended still has to record their held pay (staged below), so it goes on; if it then has nothing to hold either,
+        // it is refused exactly as here.
+        var holdOnlyPossible = includesRecurringPayForPlan(run) && runPopulation.Mode == "AllEligible"
+            && populationReport.LeftOut.Any(x => x.Code == PayPopulationReasons.SuspendedPayHold);
+        if (employeeIdsForRun.Count == 0 && !holdOnlyPossible)
+            return NoEmployeesRefusal();
 
         var salaryAssignments = await _db.EmployeeSalaryStructures.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.IsActive && x.EffectiveDate <= periodEnd && employeeIdsForRun.Contains(x.EmployeeId))
@@ -1183,6 +1185,9 @@ public sealed class PayrollRunProcessor
                 }
             }
         }
+
+        if (employeeIdsForRun.Count == 0 && heldCandidates.Count == 0)
+            return NoEmployeesRefusal();
 
         // ── P0-2: ALL-OR-NOTHING MUTATION ──────────────────────────────────────────
         // Everything from here (idempotent delete → slip writes → statutory/loan/advance

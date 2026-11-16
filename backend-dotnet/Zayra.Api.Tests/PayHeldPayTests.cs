@@ -417,4 +417,36 @@ public class PayHeldPayTests
         (await EarningSum(db, newApr.Id, s.Id, "ADJ_HELD_PAY_RELEASED")).Should().Be(Basic + Housing);
         (await Holds(db)).Should().ContainSingle("the month is held once");
     }
+
+    /// <summary>A company whose only salaried employee is suspended: the run records the hold instead of refusing.</summary>
+    [Fact]
+    public async Task ARunWhoseOnlySalariedEmployeeIsSuspended_IsProcessed_AndRecordsTheHold()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        var s = await AddEmployee(db, co, "Suspended");
+        var mar = await AddRun(db, co, 2026, 3);
+
+        await Process(db, co, mar.Id);
+
+        (await db.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == mar.Id)).Status.Should().Be("Processed");
+        (await Holds(db)).Should().ContainSingle().Which.Should().Match<PayrollAdjustment>(h => h.EmployeeId == s.Id && h.Amount == Basic + Housing);
+        (await db.PayrollSlips.AsNoTracking().CountAsync(x => x.RunId == mar.Id)).Should().Be(0);
+    }
+
+    /// <summary>The guard still refuses a run with nobody to pay and nothing to hold.</summary>
+    [Fact]
+    public async Task ARunWithNobodyToPayAndNothingToHold_IsStillRefused()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        await AddEmployee(db, co, "Resigned", joined: new DateTime(2027, 1, 1));
+        var mar = await AddRun(db, co, 2026, 3);
+
+        var result = await Payroll(db, co.TenantId, Maker).Process(mar.Id, CancellationToken.None);
+
+        Json(result).GetProperty("error").GetString().Should().Be("no_company_employees");
+    }
 }
