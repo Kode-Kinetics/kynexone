@@ -45,7 +45,8 @@ public static class UnpaidLeaveMonth
         var given = 0m;
         for (var i = 0; i < rows.Count; i++)
         {
-            var share = i == rows.Count - 1 ? cap - given : Math.Round(rows[i].Amount * cap / total, 2);
+            // Never more than is left of the cap, so rounding many shares up can never drive a later one below zero.
+            var share = i == rows.Count - 1 ? cap - given : Math.Min(Math.Round(rows[i].Amount * cap / total, 2), cap - given);
             result.Add((rows[i].Row, share));
             given += share;
         }

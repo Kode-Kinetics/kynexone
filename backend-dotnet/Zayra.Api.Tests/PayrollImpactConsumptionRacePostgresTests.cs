@@ -156,7 +156,9 @@ public sealed class PayrollImpactConsumptionRacePostgresTests
         // The cancellation then gives that deduction back, once, as a pending credit the next open run pays.
         var credit = leave.Where(x => x.ImpactType == LeaveArrears.ReversalImpactType).Should().ContainSingle().Subject;
         credit.Status.Should().Be("Pending");
-        credit.Amount.Should().BeNegative();
+        var witnessed = await db.PayrollRunConsumptions.AsNoTracking()
+            .Where(c => c.ArtifactType == PayrollConsumptionArtifacts.LeaveImpact && c.ArtifactId == consumed.Id).Select(c => c.Amount).SumAsync();
+        credit.Amount.Should().Be(-witnessed, "the credit is exactly what the run took");
         (await db.LeaveRequests.AsNoTracking().SingleAsync(x => x.Id == leaveRequestId)).Status.Should().Be("Cancelled");
     }
 

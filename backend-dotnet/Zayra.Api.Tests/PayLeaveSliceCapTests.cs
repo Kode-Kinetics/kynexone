@@ -121,4 +121,15 @@ public class PayLeaveSliceCapTests
         UnpaidLeaveMonth.CapTotal(100m, -5m).Should().Be(0m);
     }
 
+    [Fact]
+    public void CappingManyRows_NeverGivesARowANegativeShare_AndStillSumsToTheCap()
+    {
+        var rows = Enumerable.Range(0, 7)
+            .Select(_ => (Row: new LeavePayrollImpact { ImpactType = CompanyPayrollRules.UnpaidLeaveImpactType }, Amount: 1m)).ToList();
+
+        var shares = UnpaidLeaveMonth.CapRows(rows, 0.05m);
+
+        shares.Should().OnlyContain(x => x.Taken >= 0m, "rounding seven shares up to a cent each must not drive the last one below zero");
+        shares.Sum(x => x.Taken).Should().Be(0.05m);
+    }
 }
