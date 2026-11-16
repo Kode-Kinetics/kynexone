@@ -33,11 +33,10 @@
   "include": [
     "**/*.ts",
     "**/*.tsx",
-    ".next-offer-designer/types/**/*.ts",
     ".next/dev/types/**/*.ts",
     ".next/types/**/*.ts",
     "next-env.d.ts",
-    ".next-claude/types/**/*.ts"
+    ".next-offer-designer/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"
