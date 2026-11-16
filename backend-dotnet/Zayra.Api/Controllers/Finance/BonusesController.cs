@@ -288,12 +288,20 @@ public class BonusesController : ControllerBase
             ? await _db.FinanceGlEntries.Where(x => x.TenantId == tid && x.SourceEntityId == id).OrderByDescending(x => x.EntryDate).ToListAsync(ct)
             : new List<FinanceGlEntry>();
         // A caller who sees only some of the batch's lines sees the totals of those lines, not the other entities' pay.
-        var visibleLines = await _db.EmployeeBonuses.AsNoTracking().Where(x => x.BonusBatchId == id && !x.IsDeleted).Select(x => x.BonusAmount).ToListAsync(ct);
+        var visibleLines = await _db.EmployeeBonuses.AsNoTracking().Where(x => x.BonusBatchId == id && !x.IsDeleted).Select(x => new { x.Id, x.BonusAmount }).ToListAsync(ct);
         if (visibleLines.Count < batch.EmployeeCount)
         {
+            // A batch that spans companies: the journal and the audit trail are not company-filtered by the database, so they are
+            // narrowed here to the companies (and lines) this caller may see. Group-level callers see every line and never reach this.
+            var requestScope = this.GetRequestScope();
+            var visibleLineIds = visibleLines.Select(l => l.Id).ToHashSet();
+            glEntries = glEntries.Where(e => requestScope.CanAccessCompany(e.CompanyId)).ToList();
+            auditLogs = auditLogs.Where(l => l.EmployeeBonusId is null || visibleLineIds.Contains(l.EmployeeBonusId.Value)).ToList();
+            // Batch-level entries carry the whole batch's amounts: keep that they happened, not the other entities' figures.
+            foreach (var log in auditLogs.Where(l => l.EmployeeBonusId is null)) { log.OldValuesJson = string.Empty; log.NewValuesJson = string.Empty; }
             batch = (BonusBatch)_db.Entry(batch).CurrentValues.ToObject();   // detached copy; the stored batch is untouched
             batch.EmployeeCount = visibleLines.Count;
-            batch.TotalAmount = visibleLines.Sum();
+            batch.TotalAmount = visibleLines.Sum(l => l.BonusAmount);
         }
         // SAFE-SERIALIZATION: batch is BonusBatch (aggregate totals, no per-employee PII).
         return Ok(new { batch, bonuses = bonuses.Select(b => EmployeeBonusDto.Project(b, scope.IsUnrestricted)).ToList(), approvals, auditLogs, glEntries });
