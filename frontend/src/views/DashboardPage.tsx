@@ -127,6 +127,11 @@ function CompanyDashboard() {
   const [loadedAt, setLoadedAt] = useState<Date | null>(null);
   const [refreshFailed, setRefreshFailed] = useState(false);
   const inFlight = useRef(false);
+  // A load asked for while another is running is not dropped: one follow-up runs when it ends. A
+  // visible request (`loud`) wins over a background one, so the follow-up is never quieter than asked.
+  const pendingReload = useRef<'quiet' | 'loud' | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const loadedAtRef = useRef<number>(0);
   // Leave requests are decided in a drawer over the dashboard; the list below catches up once the server confirms.
   const [reviewId, setReviewId] = useState<string | null>(null);
@@ -158,11 +163,14 @@ function CompanyDashboard() {
     vt?.finished?.catch(() => {});
   };
 
-  const load = useCallback(async () => {
-    if (inFlight.current) return;
+  /** `quiet` is the background poll: no spinner, and a failure only marks the figures stale. */
+  const load = useCallback(async function run(quiet = false): Promise<void> {
+    if (inFlight.current) {
+      pendingReload.current = quiet && pendingReload.current !== 'loud' ? 'quiet' : 'loud';
+      return;
+    }
     inFlight.current = true;
-    setLoading(true);
-    setError(null);
+    if (!quiet) { setLoading(true); setError(null); }
     try {
       setData(await dashboardApi.full(MONTHS));
       setLoadedAt(new Date());
@@ -171,29 +179,44 @@ function CompanyDashboard() {
     } catch {
       // Keep the last good figures on screen, marked as such, instead of blanking the page.
       setRefreshFailed(true);
+      // A background poll that fails must not bring back a banner the person has dismissed: the stale
+      // chip in the header already says so. Only a load they asked for (or the first one) raises it.
       // A dictionary key, translated where it renders (this callback must not depend on the language).
-      setError(msg('Dashboard data could not be loaded. Figures shown are from the last successful load, if any.'));
+      if (!quiet) setError(msg('Dashboard data could not be loaded. Figures shown are from the last successful load, if any.'));
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
       inFlight.current = false;
+      const next = pendingReload.current;
+      pendingReload.current = null;
+      if (next && mounted.current) void run(next === 'quiet');
     }
   }, []);
 
   // Reload when the company scope changes: the figures are company-scoped.
   useEffect(() => { void load(); }, [load, companyVersion]);
   const onRefresh = () => { void load(); findings.reload(); };
+  // The background refresh re-reads the findings too, so the needs-you card cannot disagree with the tiles.
+  const reloadFindings = useRef(findings.reload);
+  reloadFindings.current = findings.reload;
   // Keeps a dashboard left open honest without a real-time channel: while the tab is visible, figures older
   // than three minutes are re-read quietly (the old ones stay on screen), and again when the tab is revisited.
   useEffect(() => {
     const STALE_MS = 3 * 60_000;
     const refreshIfStale = () => {
       if (document.visibilityState !== 'visible' || !loadedAtRef.current) return;
-      if (Date.now() - loadedAtRef.current > STALE_MS) void load();
+      if (Date.now() - loadedAtRef.current > STALE_MS) { void load(true); reloadFindings.current(); }
     };
     const id = window.setInterval(refreshIfStale, 60_000);
     document.addEventListener('visibilitychange', refreshIfStale);
     return () => { window.clearInterval(id); document.removeEventListener('visibilitychange', refreshIfStale); };
   }, [load]);
+  // The decided row leaves the list, so focus cannot go back to its Review button. It moves to the list
+  // heading (the status note is the fallback) once the drawer has closed and given focus back.
+  const decidedNoteRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (!decidedNote) return;
+    (document.getElementById('approvals-heading') ?? decidedNoteRef.current)?.focus();
+  }, [decidedNote]);
   useEffect(() => {
     if (!decidedNote) return;
     const id = window.setTimeout(() => setDecidedNote(null), 8000);
@@ -315,7 +338,9 @@ function CompanyDashboard() {
     <>
       <LeaveDecisionDrawer item={reviewItem} onClose={() => setReviewId(null)}
         onDecided={(outcome, q) => { setReviewId(null); setDecidedNote({ outcome, name: q.employeeName ?? parseApprovalSubject(q.title).name ?? '' }); void load(); }} />
-      <p role="status" className={decidedNote ? 'rounded-lg bg-emerald-50 px-3 py-2 text-body-sm font-medium text-emerald-900 dark:bg-emerald-500/10 dark:text-emerald-200' : 'sr-only'}>
+      {/* Out of the page flow while shown: inside the fixed-height stage an extra row would push the
+          panels past the bottom of a short window. */}
+      <p ref={decidedNoteRef} tabIndex={-1} role="status" className={decidedNote ? 'pointer-events-none fixed inset-x-0 top-3 z-40 mx-auto w-fit max-w-[calc(100vw-2rem)] rounded-lg bg-emerald-50 px-3 py-2 text-body-sm font-medium text-emerald-900 shadow-md ring-1 ring-emerald-200 outline-none dark:bg-emerald-950 dark:text-emerald-200 dark:ring-emerald-500/30' : 'sr-only'}>
         {decidedNote && (decidedNote.outcome === 'rejected'
           ? t('Rejected the leave request for {name}.', { name: decidedNote.name })
           : decidedNote.outcome === 'advanced'
@@ -390,7 +415,7 @@ function CompanyDashboard() {
       ),
     };
     return (
-      <div ref={frame.ref} style={frame.style} className="mx-auto flex w-full min-w-0 max-w-[1680px] flex-col gap-3" aria-label="HR Command Center">
+      <div ref={frame.ref} style={frame.style} className="mx-auto flex w-full min-w-0 max-w-[1680px] flex-col gap-3" aria-label={t('HR Command Center')}>
         {error && <ErrorBanner message={t(error)} onDismiss={() => setError(null)} />}
         {header}
 {drawerEl}
@@ -410,7 +435,7 @@ function CompanyDashboard() {
   }
 
   return (
-    <div className="mx-auto flex w-full min-w-0 max-w-[1680px] flex-col gap-3.5" aria-label="HR Command Center">
+    <div className="mx-auto flex w-full min-w-0 max-w-[1680px] flex-col gap-3.5" aria-label={t('HR Command Center')}>
       {error && <ErrorBanner message={t(error)} onDismiss={() => setError(null)} />}
       {header}
 {drawerEl}

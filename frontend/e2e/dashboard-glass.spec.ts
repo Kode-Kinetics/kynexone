@@ -32,7 +32,11 @@ const EVIDENCE = process.env.DASHBOARD_EVIDENCE_DIR;
 // resolved from GET /api/payroll/companies — never a hard-coded SAR.
 const COMPANY = { id: 'c-intelliflow-ksa', name: 'IntelliFlow KSA', tradeName: '', defaultCurrency: 'SAR', wpsEmployerId: '', gosiEmployerId: '' };
 
-function dataset(rich: boolean, now: Date) {
+/** A pending approval on the dashboard queue whose entity is NOT a plain leave request, yet whose title reads like one. */
+// The oldest row, so the stage's row cap cannot hide it.
+const ENCASHMENT_ROW = { id: 'enc1', title: 'Leave Encashment - Noura Al-Qahtani', module: 'LeaveEncashmentRequest', detail: '5 days', createdAtUtc: new Date(EARLY.getTime() - 140 * 3.6e6).toISOString() };
+
+function dataset(rich: boolean, now: Date, extraQueue: Record<string, unknown>[] = [], withoutIds: string[] = []) {
   const ago = (h: number) => new Date(now.getTime() - h * 3.6e6).toISOString();
   return {
     summary: { totalEmployees: rich ? 148 : 12, activeEmployees: rich ? 142 : 12, presentToday: rich ? 118 : 0, onLeave: rich ? 9 : 0, absent: rich ? 6 : 0, overtimeHours: 16, churnRisk: 0, attendanceRecordsToday: rich ? 133 : 0 },
@@ -43,7 +47,9 @@ function dataset(rich: boolean, now: Date) {
         ? [['Annual Leave - Raj Krishnamurthy', 130], ['Annual Leave - Amira Mansour', 100], ['Casual Leave - Sunita Patel', 98], ['Employee change approval - EMP-SA-ENG-0007 Omar Haddad', 50], ['Overtime - Layla Farouk', 20]]
         : [['Annual Leave - Raj Krishnamurthy', 125], ['Annual Leave - Amira Mansour', 100], ['Casual Leave - Sunita Patel', 98]]
       ).map(([t, h], i) => ({ id: `a${i}`, title: t as string, module: String(t).startsWith('Employee') ? 'EmployeeChangeRequest' : 'LeaveRequest', createdAtUtc: ago(h as number),
-        ...(rich ? { department: ['Engineering', 'Product', 'Human Resources', 'Engineering', 'Operations'][i], detail: ['12 Oct to 18 Oct', '2 Oct to 6 Oct', '29 Sep', 'IBAN', '20 h, September'][i], dueAtUtc: ago((h as number) - 72) } : {}) })),
+        ...(rich ? { department: ['Engineering', 'Product', 'Human Resources', 'Engineering', 'Operations'][i], detail: ['12 Oct to 18 Oct', '2 Oct to 6 Oct', '29 Sep', 'IBAN', '20 h, September'][i], dueAtUtc: ago((h as number) - 72) } : {}) }))
+        .filter((q) => !withoutIds.includes(q.id))
+        .concat(extraQueue.map((q) => ({ createdAtUtc: ago(60), ...q })) as never),
       payrollSummary: rich ? { periodLabel: 'Sep 2026', totalGross: 2030000, totalNet: 1893400, totalDeductions: 136600, employeeCount: 142, status: 'PendingFinanceReview', payDate: null, employerContributions: 212000, companyId: COMPANY.id } : { periodLabel: 'Sep 2026', totalGross: 205200, totalNet: 194600, totalDeductions: 10600, employeeCount: 12, status: 'Locked', companyId: COMPANY.id },
       payrollByEntity: [], workforceMix: [{ name: 'Full-time', value: 12 }],
       headcountByDepartment: rich
@@ -88,7 +94,7 @@ const USER = {
   permissions: ['dashboard.read', 'employees.read', 'attendance.read', 'leave.read', 'approvals.read', 'approvals.decide', 'payroll.read', 'compliance.read', 'reports.read', 'ai.query', 'ai.insights_view'],
 };
 
-async function open(page: Page, opts: { locale?: 'en' | 'ar'; rich?: boolean; now?: Date; theme?: 'light' | 'dark'; tenantTz?: string; user?: typeof USER } = {}) {
+async function open(page: Page, opts: { extraQueue?: Record<string, unknown>[]; locale?: 'en' | 'ar'; rich?: boolean; now?: Date; theme?: 'light' | 'dark'; tenantTz?: string; user?: typeof USER } = {}) {
   const now = opts.now ?? EARLY;
   await page.clock.setFixedTime(now);
   if (opts.locale) await page.addInitScript((l) => localStorage.setItem('kynexone-locale-choice-v2', l), opts.locale);
@@ -107,7 +113,7 @@ async function open(page: Page, opts: { locale?: 'en' | 'ar'; rich?: boolean; no
     // TenantAdminController.UnstatedLocalizationAsync. It must NOT be a US zone, and the header
     // must then follow the viewer's own browser zone.
     if (p === '/api/tenant-admin/localization') return json({ defaultTimezone: opts.tenantTz ?? 'Asia/Riyadh', calendarSystem: 'Gregorian', hijriDatesEnabled: true });
-    if (p === '/api/dashboard/full') return json(dataset(!!opts.rich, now));
+    if (p === '/api/dashboard/full') return json(dataset(!!opts.rich, now, opts.extraQueue));
     if (p === '/api/payroll/companies') return json([COMPANY]);
     if (p === '/api/payroll/overview') return json({ totalValidationErrors: 3 });
     if (p === '/api/ai/status') return json({ enabled: true, provider: 'fixture' });
@@ -445,6 +451,36 @@ test.describe('HR Command Center: one-screen stage', () => {
     await expect(page.getByRole('dialog')).toHaveCount(0);
     expect(posts).toHaveLength(1);
     expect(JSON.parse(posts[0])).toMatchObject({ decision: 'Approve' });
+    // The decided row is gone, so focus lands on the list heading, not on a removed button.
+    await expect(page.locator('#approvals-heading')).toBeFocused();
+    // The confirmation floats over the page: it must not add a row to the fixed-height stage.
+    const over = await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight);
+    expect(over).toBeLessThanOrEqual(1);
+  });
+
+  test('a decision made while a refresh is running still gets its own reload afterwards', async ({ page }) => {
+    test.skip(!stageOn(page), 'the stage needs at least 1280 x 740');
+    let fulls = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    await open(page, { rich: true });
+    const now = EARLY;
+    await page.route('**/api/dashboard/full**', async (route) => {
+      fulls += 1;
+      if (fulls === 1) await gate; // the manual refresh is held open
+      // From the second read on, the decided request has left the queue.
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(dataset(true, now, [], fulls >= 2 ? ['a0'] : [])) });
+    });
+    await page.route('**/api/approval-requests/a0**', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(leaveRequest()) }));
+    await page.getByRole('button', { name: /Refresh dashboard/ }).click();
+    await expect.poll(() => fulls).toBe(1);
+    await page.getByRole('button', { name: /Review.*Raj Krishnamurthy/ }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Approve' }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'Approved the leave request for Raj Krishnamurthy.' })).toBeVisible();
+    release();
+    // Two reads in all: the held one, then the follow-up the decision asked for while it was running.
+    await expect.poll(() => fulls).toBe(2);
+    await expect(page.getByRole('button', { name: /Review.*Raj Krishnamurthy/ })).toHaveCount(0);
   });
 
   test('a decision the server refuses changes nothing and says so', async ({ page }) => {
@@ -455,8 +491,48 @@ test.describe('HR Command Center: one-screen stage', () => {
       : route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(leaveRequest()) }));
     await page.getByRole('button', { name: /Review.*Raj Krishnamurthy/ }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Approve' }).click();
-    await expect(page.getByRole('dialog').getByRole('alert')).toContainText('Nothing was changed');
+    // The server's own sentence is shown, not a generic one.
+    await expect(page.getByRole('dialog').getByRole('alert')).toContainText('conflict');
     await expect(page.getByRole('status').filter({ hasText: 'Approved the leave request' })).toHaveCount(0);
+  });
+
+  test('a refusal with no message falls back to the generic line; Arabic shows messageAr', async ({ page }) => {
+    test.skip(!stageOn(page), 'the stage needs at least 1280 x 740');
+    await open(page, { rich: true, locale: 'ar' });
+    let body: unknown = {};
+    await page.route('**/api/approval-requests/a0**', (route) => route.request().method() === 'POST'
+      ? route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify(body) })
+      : route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(leaveRequest()) }));
+    await page.getByRole('button', { name: /Raj Krishnamurthy/ }).first().click();
+    const drawer = page.getByRole('dialog');
+    const approve = drawer.getByRole('button', { name: 'موافقة' });
+    await approve.click();
+    await expect(drawer.getByRole('alert')).toContainText('تعذّر حفظ القرار');
+    body = { message: 'conflict', messageAr: 'تم تعديل الطلب بالفعل.' };
+    await approve.click();
+    await expect(drawer.getByRole('alert')).toContainText('تم تعديل الطلب بالفعل.');
+  });
+
+  test('a Leave Encashment row is not decided in the leave drawer: it opens the approvals queue', async ({ page }) => {
+    test.skip(!stageOn(page), 'the stage needs at least 1280 x 740');
+    await open(page, { rich: true, extraQueue: [ENCASHMENT_ROW] });
+    await expect(page.getByRole('button', { name: /Review.*Noura Al-Qahtani/ })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: /Review.*Noura Al-Qahtani/ })).toHaveAttribute('href', '/approvals');
+    // A real leave request on the same list still opens the drawer.
+    await expect(page.getByRole('button', { name: /Review.*Raj Krishnamurthy/ })).toBeVisible();
+  });
+
+  test('if the loaded request is not a leave request the drawer offers no decision, only the queue', async ({ page }) => {
+    test.skip(!stageOn(page), 'the stage needs at least 1280 x 740');
+    await open(page, { rich: true });
+    // The row said LeaveRequest, but the server's record is a different entity.
+    await page.route('**/api/approval-requests/a0**', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...leaveRequest(), entityName: 'LeaveEncashmentRequest' }) }));
+    await page.getByRole('button', { name: /Review.*Raj Krishnamurthy/ }).click();
+    const drawer = page.getByRole('dialog');
+    await expect(drawer.getByRole('note')).toContainText('not a leave request');
+    await expect(drawer.getByRole('button', { name: 'Approve' })).toHaveCount(0);
+    await expect(drawer.getByRole('button', { name: 'Reject' })).toHaveCount(0);
+    await expect(drawer.getByRole('link', { name: 'Open in approvals' })).toHaveAttribute('href', '/approvals');
   });
 
   test('someone who cannot decide sees why, with no Approve or Reject', async ({ page }) => {
@@ -478,6 +554,9 @@ test.describe('HR Command Center: one-screen stage', () => {
     test.skip(!stageOn(page), 'the stage needs at least 1280 x 740');
     await open(page, { rich: true, locale: 'ar' });
     await expect(page.getByRole('tab', { name: 'الإدارات' })).toBeVisible();
+    // The stage's own accessible name is translated, not the English literal.
+    await expect(page.locator('[aria-label="مركز قيادة الموارد البشرية"]')).toHaveCount(1);
+    await expect(page.locator('[aria-label="HR Command Center"]')).toHaveCount(0);
     const over = await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight);
     expect(over).toBeLessThanOrEqual(1);
     await evidence(page, 'stage-ar-overview');

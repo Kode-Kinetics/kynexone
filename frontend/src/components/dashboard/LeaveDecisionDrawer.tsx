@@ -20,7 +20,8 @@ import { leaveRequestsApi, type StatutoryLeaveContext } from '../../api/leave';
 import type { ApprovalQueueItem } from '../../api/dashboard';
 import { Modal } from '../Modal';
 import { StatutoryLeaveHistory } from '../StatutoryLeaveHistory';
-import { useT } from '../../hooks/useT';
+import { useLocale } from '../../contexts/LocaleContext';
+import { pickServerMessage } from '../../lib/glCostAccounting';
 import { parseApprovalSubject } from './dashboardModel';
 import { approvalTitleLabel } from '../../lib/approvalDisplay';
 
@@ -33,7 +34,7 @@ export function LeaveDecisionDrawer({ item, onClose, onDecided }: {
   /** Called only after the server has confirmed the decision. */
   onDecided: (outcome: DecisionOutcome, item: ApprovalQueueItem) => void;
 }) {
-  const t = useT();
+  const { t, locale } = useLocale();
   const id = item?.id ?? null;
   const [req, setReq] = useState<ApprovalRequest | null>(null);
   const [state, setState] = useState<'idle' | 'loading' | 'failed'>('idle');
@@ -42,6 +43,10 @@ export function LeaveDecisionDrawer({ item, onClose, onDecided }: {
   const [saving, setSaving] = useState<'Approve' | 'Reject' | null>(null);
   const [problem, setProblem] = useState('');
   const [needsQueue, setNeedsQueue] = useState(false);
+
+  // The queue row is classified by its entity type, but this drawer only ever decides a leave request:
+  // if the request it loads is anything else, there is no decision here, only the way into the queue.
+  const isLeave = req?.entityName === 'LeaveRequest';
 
   const load = useCallback(async (rid: string) => {
     setState('loading');
@@ -63,7 +68,7 @@ export function LeaveDecisionDrawer({ item, onClose, onDecided }: {
   }, [id, load]);
 
   const decide = async (decision: 'Approve' | 'Reject') => {
-    if (!req || !item || saving) return;
+    if (!req || !item || saving || !isLeave) return;
     if (decision === 'Reject' && comments.trim().length < 5) {
       setProblem(t('Add a clear rejection reason of at least 5 characters before rejecting.'));
       return;
@@ -77,7 +82,8 @@ export function LeaveDecisionDrawer({ item, onClose, onDecided }: {
       // Nothing was saved. Say so, keep what the reviewer typed, and offer the full queue when the
       // refusal is one only the queue explains (the establishment guard shows its own dialog there).
       setNeedsQueue(!!establishmentBlockFromError(err));
-      setProblem(t('The decision could not be saved. Nothing was changed.'));
+      // The server's own sentence (in the viewer's language) when it sent one, else the generic line.
+      setProblem(pickServerMessage((err as { response?: { data?: unknown } })?.response?.data, locale) ?? t('The decision could not be saved. Nothing was changed.'));
       setSaving(null);
     }
   };
@@ -87,8 +93,8 @@ export function LeaveDecisionDrawer({ item, onClose, onDecided }: {
   const last = req && req.stepPosition != null && req.stepCount != null ? req.stepPosition >= req.stepCount : true;
 
   return (
-    <Modal isOpen={open} onClose={onClose} title={t('Review leave request')} placement="end" size="md" closeDisabled={saving != null}
-      footer={req?.canDecide ? (
+    <Modal isOpen={open} onClose={onClose} title={req && !isLeave ? t('Review request') : t('Review leave request')} placement="end" size="md" closeDisabled={saving != null}
+      footer={isLeave && req?.canDecide ? (
         <>
           <button type="button" onClick={() => void decide('Reject')} disabled={saving != null} className="btn-secondary text-rose-600 hover:border-rose-300 disabled:opacity-60">
             {saving === 'Reject' ? t('Saving...') : t('Reject')}
@@ -116,7 +122,13 @@ export function LeaveDecisionDrawer({ item, onClose, onDecided }: {
             </div>
           )}
 
-          {req && (
+          {req && !isLeave && (
+            <p role="note" className="rounded-lg border border-[color:var(--wg-line)] px-3 py-2 text-body-sm text-slate-700 dark:text-slate-300">
+              {t('This is not a leave request, so it cannot be decided here. Open it in approvals.')}
+            </p>
+          )}
+
+          {req && isLeave && (
             <>
               <dl className="grid grid-cols-2 gap-3 rounded-lg border border-[color:var(--wg-line)] p-3 text-body-sm">
                 <div>

@@ -11,7 +11,7 @@ import Link from 'next/link';
 import { AlertTriangle, ArrowRight, CheckCircle2, Clock } from 'lucide-react';
 import { Avatar } from '../Avatar';
 import type { ApprovalQueueItem } from '../../api/dashboard';
-import { ageLabel, entityLabel, parseApprovalSubject } from './dashboardModel';
+import { ageLabel, entityLabel, opensLeaveDrawer, parseApprovalSubject } from './dashboardModel';
 import { useT } from '../../hooks/useT';
 
 const CHIP: Record<string, string> = {
@@ -29,6 +29,8 @@ interface Row {
   dept: string | null;
   kind: string;
   chip: string;
+  /** A plain leave request: the one kind the dashboard decides inline. */
+  leave: boolean;
   detail: string | null;
   ageH: number;
   dueH: number | null; // hours until due (negative = overdue)
@@ -52,7 +54,7 @@ function rowsFrom(queue: ApprovalQueueItem[], now: number): Row[] {
       name: q.employeeName ?? p.name ?? q.title,
       code: q.employeeCode ?? p.code,
       dept: q.department ?? null,
-      kind, chip,
+      kind, chip, leave: opensLeaveDrawer(q.module),
       detail: q.detail ?? null,
       ageH, dueH, refH,
       over: dueH != null ? dueH < 0 : ageH > 72,
@@ -87,7 +89,7 @@ function Wait({ r, stacked = false }: { r: Row; stacked?: boolean }) {
 
 /** Leave requests open the decision drawer when the page provides one; everything else goes to the approvals queue. */
 function ReviewAction({ r, onReview, className, children }: { r: Row; onReview?: (id: string) => void; className: string; children: React.ReactNode }) {
-  if (onReview && r.chip === 'leave') return <button type="button" onClick={() => onReview(r.id)} aria-haspopup="dialog" className={className}>{children}</button>;
+  if (onReview && r.leave) return <button type="button" onClick={() => onReview(r.id)} aria-haspopup="dialog" className={className}>{children}</button>;
   return <Link href="/approvals" className={className}>{children}</Link>;
 }
 
@@ -126,7 +128,7 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
     <section aria-labelledby="approvals-heading" className={`wg-card flex min-w-0 flex-col gap-2 p-5 ${fill ? 'h-full min-h-0' : ''}`}>
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 id="approvals-heading" className="text-body font-semibold text-slate-900 dark:text-white">
+          <h2 id="approvals-heading" tabIndex={-1} className="text-body font-semibold text-slate-900 dark:text-white">
             {t('Approvals')}
             {pending > 0 && <span className="ms-2 rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold tabular-nums text-indigo-800 dark:bg-indigo-500/15 dark:text-indigo-200">{pending}</span>}
           </h2>

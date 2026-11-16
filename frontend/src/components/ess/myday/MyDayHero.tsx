@@ -38,8 +38,19 @@ function LiveHours({ attendance }: { attendance: NonNullable<EssDashboard['atten
   useEffect(() => {
     setNow(Date.now());
     // Whole seconds are a lot of change for anyone who asked for less motion: a minute is enough.
-    const id = window.setInterval(() => setNow(Date.now()), reduced ? 60_000 : 1000);
-    return () => window.clearInterval(id);
+    const every = reduced ? 60_000 : 1000;
+    let id: number | null = null;
+    const stop = () => { if (id != null) { window.clearInterval(id); id = null; } };
+    // A hidden tab has nobody watching the clock: stop ticking, and catch up the moment it is visible again.
+    const sync = () => {
+      stop();
+      if (document.visibilityState === 'hidden') return;
+      setNow(Date.now());
+      id = window.setInterval(() => setNow(Date.now()), every);
+    };
+    sync();
+    document.addEventListener('visibilitychange', sync);
+    return () => { stop(); document.removeEventListener('visibilitychange', sync); };
   }, [reduced]);
   const secs = liveWorkedSeconds(attendance, now);
   if (secs === null) return null;
