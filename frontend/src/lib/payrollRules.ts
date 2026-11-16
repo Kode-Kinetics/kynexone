@@ -6,12 +6,12 @@
 export type PayrollRuleKey =
   | 'rest_day_work_mode' | 'rest_day_multiplier' | 'holiday_multiplier' | 'leave_cashout_on_exit'
   | 'leave_cashout_basis' | 'max_probation_days' | 'proration_basis' | 'absence_deduction_base'
-  | 'recon_variance_pct' | 'recon_variance_min_amount' | 'recon_signoff_required';
+  | 'recon_variance_pct' | 'recon_variance_min_amount' | 'recon_signoff_required' | 'arrears_deduction_cap_pct';
 
 export const PAYROLL_RULE_KEYS: readonly PayrollRuleKey[] = [
   'rest_day_work_mode', 'rest_day_multiplier', 'holiday_multiplier', 'leave_cashout_on_exit',
   'leave_cashout_basis', 'max_probation_days', 'proration_basis', 'absence_deduction_base',
-  'recon_variance_pct', 'recon_variance_min_amount', 'recon_signoff_required',
+  'recon_variance_pct', 'recon_variance_min_amount', 'recon_signoff_required', 'arrears_deduction_cap_pct',
 ];
 
 export const OVERTIME_FLOOR = 1.5;
@@ -22,6 +22,9 @@ export const PROBATION_MAX_DAYS = 365;
 export const RECON_VARIANCE_PCT_MIN = 0.1;
 export const RECON_VARIANCE_PCT_MAX = 100;
 export const RECON_MIN_AMOUNT_MAX = 1_000_000_000;
+/** Server limits for the arrears deduction cap (CompanyPayrollRules.Evaluate): it can only be lowered below the statutory 50%. */
+export const ARREARS_CAP_PCT_MIN = 1;
+export const ARREARS_CAP_PCT_MAX = 50;
 
 export interface PayrollRuleView {
   key: PayrollRuleKey;
@@ -47,7 +50,7 @@ export type PayrollRuleErrors = Partial<Record<PayrollRuleKey, string>>;
 export const EMPTY_RULE_FORM: PayrollRuleForm = {
   rest_day_work_mode: '', rest_day_multiplier: '', holiday_multiplier: '', leave_cashout_on_exit: '',
   leave_cashout_basis: '', max_probation_days: '', proration_basis: '', absence_deduction_base: '',
-  recon_variance_pct: '', recon_variance_min_amount: '', recon_signoff_required: '',
+  recon_variance_pct: '', recon_variance_min_amount: '', recon_signoff_required: '', arrears_deduction_cap_pct: '',
 };
 
 export function ruleFormFromViews(views: readonly PayrollRuleView[]): PayrollRuleForm {
@@ -88,6 +91,10 @@ export function validateRuleForm(form: PayrollRuleForm): PayrollRuleErrors {
     }
     if (key === 'recon_variance_min_amount') {
       if (!DECIMAL.test(value) || Number(value) > RECON_MIN_AMOUNT_MAX) errors[key] = 'Enter an amount of zero or more.';
+    }
+    if (key === 'arrears_deduction_cap_pct') {
+      const n = Number(value);
+      if (!DECIMAL.test(value) || n < ARREARS_CAP_PCT_MIN || n > ARREARS_CAP_PCT_MAX) errors[key] = 'Enter a percentage between 1 and 50.';
     }
   }
   return errors;

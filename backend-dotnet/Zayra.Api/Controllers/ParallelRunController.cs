@@ -136,12 +136,12 @@ public sealed class ParallelRunController : ControllerBase
 
         // Build the run side as (EmployeeCode, ComponentCode) -> amount, in the same shape as the
         // register, so the comparison below is a plain outer join and not a special case per column.
-        var mine = new Dictionary<(string Code, string Component), decimal>();
+        var mine = new Dictionary<(string Code, string Component), decimal>(CodeComponentComparer.Instance);
         var nameByCode = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var codeByEmployeeId = new Dictionary<int, string>();
         foreach (var s in slips)
         {
-            var code = s.EmployeeCode ?? string.Empty;
+            var code = (s.EmployeeCode ?? string.Empty).Trim();
             if (code.Length == 0) continue;
             codeByEmployeeId[s.EmployeeId] = code;
             nameByCode[code] = s.EmployeeName ?? string.Empty;
@@ -161,7 +161,7 @@ public sealed class ParallelRunController : ControllerBase
 
         var isPercentage = VarianceToleranceTypes.Percentage.Equals(request.ToleranceType, StringComparison.OrdinalIgnoreCase);
         var lines = new List<VarianceLine>();
-        foreach (var key in mine.Keys.Union(external.Keys).OrderBy(k => k.Code, StringComparer.OrdinalIgnoreCase).ThenBy(k => k.Component, StringComparer.Ordinal))
+        foreach (var key in mine.Keys.Union(external.Keys, CodeComponentComparer.Instance).OrderBy(k => k.Code, StringComparer.OrdinalIgnoreCase).ThenBy(k => k.Component, StringComparer.Ordinal))
         {
             var hasMine = mine.TryGetValue(key, out var mineAmount);
             var hasTheirs = external.TryGetValue(key, out var theirAmount);
@@ -339,7 +339,7 @@ public sealed class ParallelRunController : ControllerBase
 
     private static (Dictionary<(string Code, string Component), decimal> Rows, List<string> Errors) ParseRegister(string csv)
     {
-        var rows = new Dictionary<(string, string), decimal>();
+        var rows = new Dictionary<(string Code, string Component), decimal>(CodeComponentComparer.Instance);
         var errors = new List<string>();
         if (string.IsNullOrWhiteSpace(csv))
         {
@@ -368,8 +368,26 @@ public sealed class ParallelRunController : ControllerBase
         return (rows, errors);
     }
 
-    private static void Accumulate(Dictionary<(string, string), decimal> map, string code, string component, decimal amount)
+    private static void Accumulate(Dictionary<(string Code, string Component), decimal> map, string code, string component, decimal amount)
         => map[(code, component)] = map.GetValueOrDefault((code, component)) + amount;
+
+    /// <summary>
+    /// Employee codes match case-insensitively (a legacy register writes "emp-001" where the run has
+    /// "EMP-001"); component codes are already <see cref="Normalise"/>d, so they compare exactly.
+    /// One comparer for both sides and for the union, so the lines and the coverage counts can never
+    /// disagree about who is the same person.
+    /// </summary>
+    private sealed class CodeComponentComparer : IEqualityComparer<(string Code, string Component)>
+    {
+        public static readonly CodeComponentComparer Instance = new();
+
+        public bool Equals((string Code, string Component) x, (string Code, string Component) y)
+            => string.Equals(x.Code, y.Code, StringComparison.OrdinalIgnoreCase)
+               && string.Equals(x.Component, y.Component, StringComparison.Ordinal);
+
+        public int GetHashCode((string Code, string Component) k)
+            => HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(k.Code), StringComparer.Ordinal.GetHashCode(k.Component));
+    }
 
     /// <summary>Component codes are compared case- and separator-insensitively: a legacy register
     /// writes "Basic Salary" where the catalogue says "BASIC_SALARY", and refusing to match those

@@ -1209,19 +1209,83 @@ public sealed class PayrollVoidService
                 });
         }
 
+        // L13/L14 — an arrears row this run collected only in part was carried on a remainder row it wrote. The remainder goes
+        // away again and the original returns to Pending whole. If a later run already collected the remainder, the original
+        // stays consumed and only the part THIS run took is owed again, as a new pending remainder of the same month, so
+        // nothing is collected twice.
+        var remainderWitnesses = witnesses.Where(w => w.ArtifactType == LeaveArrears.RemainderArtifact).ToList();
+        var keepConsumed = new HashSet<(Guid RequestId, string Period, int EmployeeId)>();
+        if (remainderWitnesses.Count > 0)
+        {
+            var remainderIds = remainderWitnesses.Select(w => w.ArtifactId).ToList();
+            var remainders = await _db.LeavePayrollImpacts.Where(x => x.TenantId == tenantId && remainderIds.Contains(x.Id)).ToListAsync(ct);
+            foreach (var rem in remainders)
+            {
+                if (rem.Status == "Processed") keepConsumed.Add((rem.LeaveRequestId, rem.PayPeriod, rem.EmployeeId));
+                else _db.LeavePayrollImpacts.Remove(rem);
+            }
+        }
+
         var leaveIds = witnesses.Where(w => w.ArtifactType == PayrollConsumptionArtifacts.LeaveImpact)
                                 .Select(w => w.ArtifactId).ToList();
         if (leaveIds.Count > 0)
         {
             var rows = await _db.LeavePayrollImpacts.Where(x => x.TenantId == tenantId && leaveIds.Contains(x.Id))
                 .ToListAsync(ct);
+            // What this run collected and now hands back, per leave and month: a refund staged for those months (the leave was
+            // cancelled after this run collected) shrinks by it, so a refund never exceeds what is still collected. A leave no
+            // longer approved is not owed again either, so its handed-back deduction is not put back as pending.
+            var uncollected = new Dictionary<(Guid RequestId, string Period), decimal>();
+            var leaveRequestIds = rows.Select(x => x.LeaveRequestId).Distinct().ToList();
+            var takenStatuses = Zayra.Api.Application.Leave.LeaveTakenStatuses.All.ToList();
+            var noLongerApproved = (await _db.LeaveRequests.AsNoTracking()
+                    .Where(r => r.TenantId == tenantId && leaveRequestIds.Contains(r.Id) && !takenStatuses.Contains(r.Status))
+                    .Select(r => r.Id).ToListAsync(ct)).ToHashSet();
             foreach (var w in witnesses.Where(w => w.ArtifactType == PayrollConsumptionArtifacts.LeaveImpact))
             {
                 var row = rows.FirstOrDefault(x => x.Id == w.ArtifactId);
                 if (row is null) continue;
+                var handedBack = !LeaveArrears.IsReversal(row);
+                if (handedBack)
+                    uncollected[(row.LeaveRequestId, row.PayPeriod)] = uncollected.GetValueOrDefault((row.LeaveRequestId, row.PayPeriod)) + w.Amount;
+                if (handedBack && noLongerApproved.Contains(row.LeaveRequestId))
+                {
+                    // Not owed any more: a kept row stays consumed (no remainder is put back); a restored row is removed, exactly
+                    // as cancelling the leave removed its pending rows.
+                    if (!keepConsumed.Contains((row.LeaveRequestId, row.PayPeriod, row.EmployeeId))) _db.LeavePayrollImpacts.Remove(row);
+                    result.ImpactsReleased++;
+                    continue;
+                }
+                if (keepConsumed.Contains((row.LeaveRequestId, row.PayPeriod, row.EmployeeId)) && handedBack)
+                {
+                    _db.LeavePayrollImpacts.Add(new LeavePayrollImpact
+                    {
+                        TenantId = row.TenantId, LeaveRequestId = row.LeaveRequestId, EmployeeId = row.EmployeeId,
+                        PayPeriod = row.PayPeriod, ImpactType = LeaveArrears.RemainderImpactType, Days = 0m, Amount = w.Amount,
+                        SliceFrom = row.SliceFrom, SliceTo = row.SliceTo, Status = "Pending",
+                    });
+                    result.ImpactsReleased++;
+                    continue;
+                }
                 row.Status = w.PriorStatus ?? "Pending";
                 row.ProcessedAtUtc = null;
                 result.ImpactsReleased++;
+            }
+            if (uncollected.Count > 0)
+            {
+                var refunds = await _db.LeavePayrollImpacts
+                    .Where(x => x.TenantId == tenantId && leaveRequestIds.Contains(x.LeaveRequestId)
+                             && x.ImpactType == LeaveArrears.ReversalImpactType && x.Status == "Pending")
+                    .ToListAsync(ct);
+                foreach (var refund in refunds)
+                {
+                    var key = (refund.LeaveRequestId, refund.PayPeriod);
+                    if (!uncollected.TryGetValue(key, out var back) || back <= 0m) continue;
+                    var reduceBy = Math.Min(back, -refund.Amount);
+                    uncollected[key] = back - reduceBy;
+                    refund.Amount = Math.Round(refund.Amount + reduceBy, 2);
+                    if (refund.Amount >= 0m) _db.LeavePayrollImpacts.Remove(refund);
+                }
             }
         }
 
@@ -1306,6 +1370,11 @@ public sealed class PayrollVoidService
                 result.ImpactsReleased++;
             }
         }
+
+        // Held pay Finance released into a run that is being VOIDED is no longer paid by it (its payslips are voided with it):
+        // the hold returns to Held, to be released into another run. A reopen keeps the run, whose re-process pays it again.
+        if (runIsRetired)
+            await HeldPay.ReturnReleasesAsync(_db, tenantId, runId, null, "The run it was released into was voided.", ct);
 
         // The witnesses have been replayed; a re-Process of this run writes a fresh set.
         if (witnesses.Count > 0) _db.PayrollRunConsumptions.RemoveRange(witnesses);

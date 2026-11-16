@@ -259,6 +259,22 @@ test.describe('My day: today', () => {
     await expect(page.getByTestId('ess-today')).toContainText('The current period is added when you clock out');
   });
 
+  test('the arrival fact comes only from a processed day: late is named, a raw punch is provisional', async ({ page }) => {
+    const punch = { workDate: inDays(0), status: 'Present', firstInUtc: ago(3 * 3600_000), totalWorkedMinutes: 0, missingPunch: false, overtimeMinutes: 0 };
+    await boot(page, { dashboard: { attendanceToday: { ...punch, lateMinutes: 12 }, attendanceTodaySource: 'processed' } });
+    await expect(page.getByTestId('ess-hero')).toContainText('Arrival');
+    await expect(page.getByTestId('ess-hero')).toContainText('Late by 12 min');
+    await expect(page.getByTestId('ess-hero')).not.toContainText('Provisional');
+  });
+
+  test('a raw (unprocessed) punch hides the arrival fact and says the day is provisional', async ({ page }) => {
+    const punch = { workDate: inDays(0), status: 'Present', firstInUtc: ago(3 * 3600_000), totalWorkedMinutes: 0, missingPunch: false, lateMinutes: 0, overtimeMinutes: 0 };
+    await boot(page, { dashboard: { attendanceToday: punch, attendanceTodaySource: 'raw' } });
+    await expect(page.getByTestId('ess-hero')).not.toContainText('Arrival');
+    await expect(page.getByTestId('ess-hero')).not.toContainText('On time');
+    await expect(page.getByTestId('ess-hero')).toContainText('Provisional: lateness and status are confirmed when HR processes the day.');
+  });
+
   test('no punch today is said plainly', async ({ page }) => {
     await boot(page, { dashboard: { attendanceToday: null, attendanceTodaySource: null } });
     await expect(page.getByTestId('ess-today')).toContainText('No attendance record for today');
@@ -439,6 +455,22 @@ test.describe('My day: Arabic', () => {
     await expect(page.getByTestId('ess-home-leave')).toContainText('13');
     expect(await noSidewaysScroll(page)).toBeLessThanOrEqual(1);
     await shot(page, 'ar-records', info.project.name);
+  });
+});
+
+test.describe('My day: Arabic arrival', () => {
+  test('the arrival fact and the provisional note read in Arabic', async ({ page }) => {
+    const punch = { workDate: inDays(0), status: 'Present', firstInUtc: ago(3 * 3600_000), totalWorkedMinutes: 0, missingPunch: false, lateMinutes: 0, overtimeMinutes: 0 };
+    await boot(page, { locale: 'ar', dashboard: { attendanceToday: punch, attendanceTodaySource: 'processed' } });
+    await expect(page.getByTestId('ess-hero')).toContainText('وقت الوصول');
+    await expect(page.getByTestId('ess-hero')).toContainText('في الوقت المحدد');
+  });
+
+  test('a raw punch is marked provisional in Arabic and shows no arrival fact', async ({ page }) => {
+    const punch = { workDate: inDays(0), status: 'Present', firstInUtc: ago(3 * 3600_000), totalWorkedMinutes: 0, missingPunch: false, lateMinutes: 0, overtimeMinutes: 0 };
+    await boot(page, { locale: 'ar', dashboard: { attendanceToday: punch, attendanceTodaySource: 'raw' } });
+    await expect(page.getByTestId('ess-hero')).not.toContainText('وقت الوصول');
+    await expect(page.getByTestId('ess-hero')).toContainText('مبدئي: يتأكد التأخير والحالة عندما تعالج الموارد البشرية اليوم.');
   });
 });
 

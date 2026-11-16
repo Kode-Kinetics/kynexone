@@ -87,6 +87,10 @@ test('the "Needs a value" filter keeps only benefits with an empty grade, never 
   const codes = needsValueCodes([housing, phone, meal], grades, drafts, new Set([cellKey('g2', 'BEN_MEAL')]), new Set());
   expect([...codes].sort()).toEqual(['ALW_PHONE', 'BEN_MEAL']);
   expect([...needsValueCodes([housing, phone, meal], grades, drafts, new Set(), new Set(['BEN_MEAL']))].sort()).toEqual(['ALW_PHONE']);
+  // A loan facility with an empty limit is a gap too.
+  const loan = { ...phone, code: 'LOAN_CAR', isLoanFacility: true };
+  const withLoan = { ...drafts, [cellKey('g1', 'LOAN_CAR')]: blankDraft(loan, 'g1') };
+  expect([...needsValueCodes([housing, loan], grades, withLoan, new Set(), new Set())]).toEqual(['LOAN_CAR']);
 });
 
 test('the monthly total adds only fixed monthly amounts of wage benefits, is left out when it would add up one row, and ignores percentages', () => {

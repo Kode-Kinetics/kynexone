@@ -90,6 +90,10 @@ const ar: Record<string, string> = {
   'These rules lower a payroll control. They will be saved with your name and the time.': 'تخفّض هذه القواعد إحدى ضوابط الرواتب. ستُحفظ باسمك وبوقت الحفظ.',
   'Needs your confirmation': 'يتطلب تأكيدك',
   'I understand the effect of these values and I confirm them for this company.': 'أدرك أثر هذه القيم وأؤكدها لهذه الشركة.',
+  'Most a month\'s deductions can take (%)': 'أقصى نسبة يمكن أن تستقطعها خصومات الشهر (%)',
+  'When unpaid-leave arrears from earlier months are collected, all of the month\'s deductions together stay within this share of the wage due. The rest carries to the next month. Leave empty for the statutory 50%. Allowed: 1 to 50.': 'عند تحصيل متأخرات الإجازات غير المدفوعة من الأشهر السابقة، تبقى جميع خصومات الشهر مجتمعةً ضمن هذه النسبة من الأجر المستحق، ويُرحَّل الباقي إلى الشهر التالي. اتركه فارغًا لتطبيق النسبة النظامية 50%. المسموح: من 1 إلى 50.',
+  '{n}% of the wage due': '{n}% من الأجر المستحق',
+  'Enter a percentage between 1 and 50.': 'أدخل نسبة بين 1 و50.',
 };
 
 export const payrollRules = {

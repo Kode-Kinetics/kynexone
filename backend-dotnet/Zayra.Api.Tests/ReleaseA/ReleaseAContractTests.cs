@@ -490,6 +490,8 @@ public class ReleaseAContractTests
             new Zayra.Api.Infrastructure.Audit.AuditService(db),
             new ContractTermLifecycleDispatcher([hook], new TenantModuleService(db, new MemoryCache(new MemoryCacheOptions()))));
         Bind(controller, tenantId);
+        // The seeded HR Manager bundle carries employees.bulk_import, which is what admits an importer (not the role name).
+        controller.ControllerContext.HttpContext.User.Identities.First().AddClaim(new Claim("permission", "employees.bulk_import"));
         const string header = "EmployeeCode,ContractNumber,ContractType,Status,StartDate,EndDate,BasicSalary,CurrencyCode\n";
 
         var result = await controller.Commit(new MigrationPackageRequest("ra-import", new Dictionary<string, string>

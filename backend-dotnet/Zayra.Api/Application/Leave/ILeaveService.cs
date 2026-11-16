@@ -11,8 +11,32 @@ public sealed record LeaveYearRolloverResult(int FromYear, int RowsClosed, decim
 /// <summary>What one scheduled monthly run posted for a tenant.</summary>
 public sealed record LeaveScheduledAccrualResult(int AccrualYear, int AccrualEntries, int AllocationEntries, LeaveYearRolloverResult Rollover);
 
+/// <summary>One month of a pre-slicing unpaid-leave row as it would be split (spec R10): its dates, days and share of the amount.</summary>
+public sealed record LeaveSliceSplitPart(string PayPeriod, DateOnly From, DateOnly To, decimal Days, decimal Amount);
+
+/// <summary>One single-row leave deduction that spans more than one month, and how the slice model would treat it.</summary>
+public sealed record LeaveSliceSplitRow(
+    Guid ImpactId, Guid LeaveRequestId, int EmployeeId, string EmployeeCode, string EmployeeName,
+    DateOnly StartDate, DateOnly EndDate, string RequestStatus, string PayPeriod, string Status, string ImpactType,
+    decimal Days, decimal Amount, IReadOnlyList<LeaveSliceSplitPart> Parts, string Note);
+
+/// <summary>
+/// Read-only report (spec M1-M3) of existing multi-month leave deductions written before month slicing. Nothing is changed:
+/// the owner signs off before any row is split.
+/// </summary>
+public sealed record LeaveSliceSplitReport(
+    IReadOnlyList<LeaveSliceSplitRow> WouldSplit,
+    IReadOnlyList<LeaveSliceSplitRow> DoNotReconcile,
+    IReadOnlyList<LeaveSliceSplitRow> AlreadyDeducted,
+    IReadOnlyList<LeaveSliceSplitRow> SickScaleRows);
+
 public interface ILeaveService
 {
+    /// <summary>Read-only: multi-month leave deductions that predate month slicing, and how each would split. Writes nothing.
+    /// Covers the employees the caller's company filter shows, narrowed to <paramref name="allowedEmployeeIds"/> when the caller's
+    /// data scope is restricted (null = unrestricted).</summary>
+    Task<LeaveSliceSplitReport> BuildSliceSplitReportAsync(Guid tenantId, IReadOnlyCollection<int>? allowedEmployeeIds, CancellationToken ct = default);
+
     // Balance engine
     Task<EmployeeLeaveBalance> GetOrCreateBalanceAsync(Guid tenantId, int employeeId, Guid leaveTypeId, int year, CancellationToken ct = default);
     Task AccrueMonthlyAsync(Guid tenantId, CancellationToken ct = default);

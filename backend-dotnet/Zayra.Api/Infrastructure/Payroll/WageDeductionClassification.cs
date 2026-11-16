@@ -71,9 +71,12 @@ public static class WageDeductionClassification
     /// (<c>Attendance</c>) and unpaid leave (<c>Leave</c>).</summary>
     public static readonly IReadOnlySet<string> WageReductionSources = new HashSet<string>(StringComparer.Ordinal) { "Attendance", "Leave" };
 
-    /// <summary>True for an employee-side line that reduces the wage due itself (absence, loss of pay, unpaid leave).</summary>
+    /// <summary>True for an employee-side line that reduces the wage due itself (absence, loss of pay, unpaid leave).
+    /// Unpaid-leave ARREARS (an earlier month's unpaid days, recovered now) are not: they are not pay this month failed to
+    /// earn, so they do not shrink this month's wage due. The run keeps them inside its own cap (LeaveArrears.Budget).</summary>
     public static bool IsWageReduction(PayrollDeduction line) =>
-        !line.IsEmployerContribution && line.Source is not null && WageReductionSources.Contains(line.Source);
+        !line.IsEmployerContribution && line.Source is not null && WageReductionSources.Contains(line.Source)
+        && line.ComponentCode != LeaveArrears.ArrearsCode;
 
     /// <summary>
     /// The Art. 93 "wage due": gross pay minus the pay not earned (absence/LOP and unpaid-leave lines). Owner decision

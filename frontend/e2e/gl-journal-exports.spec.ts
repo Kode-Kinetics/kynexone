@@ -54,6 +54,9 @@ interface State {
   rejects: unknown[];
   creates: string[];
   errors: string[];
+  /** Every request to the ERP export endpoints, and every non-2xx API response the page received. */
+  erpCalls: string[];
+  forbidden: string[];
 }
 
 interface BootOptions {
@@ -71,6 +74,8 @@ interface BootOptions {
   liveOverlap?: boolean;
   /** Opening-balance lines in the scope: the ERP already holds them, so the check reports them as not exported. */
   openingBalances?: boolean;
+  /** A viewer who sees the GL Journal tab but holds neither finance.gl.read nor finance.gl.manage (an HR Manager). */
+  noGlAccess?: boolean;
 }
 
 const runFile = 'journal-SA01-run-f15b4846-SAR-generic-csv-FB8A0869.csv';
@@ -89,13 +94,14 @@ async function boot(page: Page, options: BootOptions = {}): Promise<State> {
   const visibleCompanies = groupScope ? [companyA, companyB] : [companyA];
   const state: State = {
     doublePost: options.doublePost ?? false, history: [], confirms: [], rejects: [], creates: [], errors: [],
-    periodCalls: [], listCalls: [],
+    periodCalls: [], listCalls: [], erpCalls: [], forbidden: [],
     journals: [
       { journalRef: '2026-07-Payroll-11111111-Accrual', companyCode: 'SA01', composite: false, lineCount: 2, debits: 10000, credits: 10000, accountingDate: '2026-07-31', description: 'July salaries', status: 'Pending', erpDocumentNumber: null, erpPostedAtUtc: null, reason: null, decidedByName: null },
       { journalRef: '2026-07-Loan-66666666-Disbursement', companyCode: '1010-555', composite: false, lineCount: 2, debits: 2500, credits: 2500, accountingDate: '2026-07-31', description: 'Loan LN-1', status: 'Pending', erpDocumentNumber: null, erpPostedAtUtc: null, reason: null, decidedByName: null },
     ],
   };
   page.on('pageerror', error => state.errors.push(error.message));
+  page.on('response', response => { if (response.status() === 403) state.forbidden.push(new URL(response.url()).pathname); });
   await page.addInitScript(({ locale }) => {
     localStorage.setItem('zayra_access_token', 'gl-export-browser-fixture');
     localStorage.setItem('kynexone-locale-choice-v2', locale);
@@ -111,8 +117,8 @@ async function boot(page: Page, options: BootOptions = {}): Promise<State> {
     if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
     if (path === '/api/auth/me') return reply({
       id: 'gl-reviewer', tenantId: 'gl-tenant', tenantSlug: 'gl-fixture', fullName: 'Finance Reviewer',
-      roles: ['Admin'],
-      permissions: ['payroll.read', 'finance.gl.read', 'finance.gl.manage', 'finance.erp.confirm', 'finance.gl.period.reopen', 'dashboard.read',
+      roles: [options.noGlAccess ? 'HR Manager' : 'Admin'],
+      permissions: options.noGlAccess ? ['payroll.read', 'dashboard.read'] : ['payroll.read', 'finance.gl.read', 'finance.gl.manage', 'finance.erp.confirm', 'finance.gl.period.reopen', 'dashboard.read',
         ...(options.screen === 'periods' ? ['organization.write', 'organization.read'] : [])],
       accountType: 'Group', isGroupScope: groupScope,
       companies: visibleCompanies.map(c => ({ id: c.id, name: c.name, code: c.id, countryCode: 'SA', isActive: true })),
@@ -129,6 +135,10 @@ async function boot(page: Page, options: BootOptions = {}): Promise<State> {
     }
 
     const gl = '/api/finance/gl/journal-exports';
+    if (path.startsWith(gl)) {
+      state.erpCalls.push(path);
+      if (options.noGlAccess) return reply({ message: 'Access denied.' }, 403);
+    }
     if (path === `${gl}/formats`) return reply(formats);
     const forViewer = (m: JournalExportManifest): JournalExportManifest => (options.readerOnly ? { ...m, sample: null } : m);
     if (path === `${gl}/preview` && options.liveOverlap) return reply(forViewer({
@@ -204,6 +214,7 @@ async function boot(page: Page, options: BootOptions = {}): Promise<State> {
   }
   await page.goto('/payroll');
   await page.getByRole('tab', { name: /GL Journal|قيود دفتر الأستاذ/ }).click();
+  if (options.noGlAccess) return state;
   const heading = options.locale === 'ar' ? 'إرسال القيد إلى نظام تخطيط الموارد' : 'Send journal to your ERP';
   await expect(page.getByRole('heading', { name: heading })).toBeVisible({ timeout: 60_000 });
   return state;
@@ -606,4 +617,33 @@ test('Arabic: the opening-balance note is in Arabic', async ({ page }) => {
   await accountingMonthAr.getByLabel('الشهر', { exact: true }).selectOption('7');
   await page.getByRole('button', { name: 'التحقق من التوازن' }).click();
   await expect(page.getByTestId('journal-export-opening-balances')).toContainText('قيود الأرصدة الافتتاحية');
+});
+
+test('an HR Manager without GL access sees one plain line and no ERP panel, and no 403 is ever requested', async ({ page }, info) => {
+  const state = await boot(page, { noGlAccess: true });
+  const line = page.getByTestId('journal-export-no-access');
+  await expect(line).toBeVisible({ timeout: 60_000 });
+  await expect(line).toHaveText('Exporting the journal needs Finance access');
+  await expect(page.getByRole('heading', { name: 'Send journal to your ERP' })).toHaveCount(0);
+  await expect(page.getByText('Access Denied')).toHaveCount(0);
+  await page.waitForTimeout(500);
+  expect(state.erpCalls).toEqual([]);
+  expect(state.forbidden).toEqual([]);
+  expect(state.errors).toEqual([]);
+  await page.screenshot({ path: info.outputPath('gl-journal-hr-manager-en.png'), fullPage: true });
+});
+
+test('the no-access line reads in Arabic', async ({ page }, info) => {
+  await boot(page, { noGlAccess: true, locale: 'ar' });
+  await expect(page.getByTestId('journal-export-no-access')).toHaveText('تصدير القيد يحتاج إلى صلاحية المالية');
+  await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+  await page.screenshot({ path: info.outputPath('gl-journal-hr-manager-ar.png'), fullPage: true });
+});
+
+test('a Finance user still gets the ERP panel and its formats load', async ({ page }) => {
+  const state = await boot(page);
+  await expect(page.getByRole('heading', { name: 'Send journal to your ERP' })).toBeVisible();
+  await expect(page.getByTestId('journal-export-no-access')).toHaveCount(0);
+  expect(state.erpCalls.some(p => p.endsWith('/formats'))).toBe(true);
+  expect(state.forbidden).toEqual([]);
 });

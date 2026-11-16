@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Infrastructure.Common;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -711,6 +712,13 @@ public sealed partial class MigrationImportController
         return created ? "created" : "updated";
     }
 
+    /// <summary>Why the restatement guards read their evidence tenant-wide: the importer is permitted for the debt (it was found
+    /// through their own scope), and a witness, repayment or origin row of that debt is evidence whatever company it names. Read
+    /// through the caller's company filter, such a row naming no company (or another) was hidden and a debt payroll had already
+    /// collected from could be restated.</summary>
+    private const string EvidenceReadReason =
+        "Opening-balance import restatement guard: the evidence (origin, payroll witness, repayment) of a debt the importer was permitted to find, whatever company the evidence row names.";
+
     /// <summary>The permission that lets the finance roles import the opening-balance debt sections (loans, advances).</summary>
     internal const string OpeningBalanceImportPermission = "finance.opening_balances.import";
     private static readonly string[] DebtSections = { "loans", "advances" };
@@ -718,13 +726,12 @@ public sealed partial class MigrationImportController
     private bool HasPermissionClaim(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>Who the import has always admitted for every section: Admin, a holder of employees.bulk_import, or an HR Manager
-    /// (who holds it in every seeded bundle) unless they reach the import only as a finance importer.</summary>
-    private bool IsImporter =>
-        User.IsInRole("Admin") || HasPermissionClaim("employees.bulk_import")
-        || (User.IsInRole("HR Manager") && !HasPermissionClaim(OpeningBalanceImportPermission));
+    /// <summary>Who imports every section (except the debt rows, which also need <see cref="IsFinanceImporter"/>): Admin, or a holder
+    /// of employees.bulk_import. Decided by the permission, never the HR Manager role name: an HR Manager holds the key in every
+    /// seeded bundle and keeps importing exactly as before, and one whose key is denied per user is no longer admitted by the name
+    /// alone (the package endpoints already required the key; the template and batch reads did not).</summary>
+    private bool IsImporter => User.IsInRole("Admin") || HasPermissionClaim("employees.bulk_import");
 
-    /// <summary>A finance importer: a finance role, or the opening-balance import permission.</summary>
     /// <summary>A finance importer holds finance.opening_balances.import. Decided by the permission, never the role name, so a per-user
     /// Deny of the key takes the access away (Admin holds it through its bundle like any other key).</summary>
     private bool IsFinanceImporter => HasPermissionClaim(OpeningBalanceImportPermission);
@@ -811,8 +818,8 @@ public sealed partial class MigrationImportController
     /// </summary>
     private async Task<bool> GuardLoanRestatementAsync(EmployeeLoan loan, LoanPlan plan, Guid tenantId, CancellationToken ct)
     {
-        var origin = await _db.OpeningBalanceOrigins.AsNoTracking()
-            .Where(o => o.TenantId == tenantId && o.EntityType == OpeningBalanceEntityTypes.Loan && o.EntityId == loan.Id)
+        var origin = await ScopedBypass.TenantWide(_db.OpeningBalanceOrigins, tenantId, EvidenceReadReason).AsNoTracking()
+            .Where(o => o.EntityType == OpeningBalanceEntityTypes.Loan && o.EntityId == loan.Id)
             .Select(o => new { o.CarriedAmount }).FirstOrDefaultAsync(ct);
         if (origin is null)
             throw new InvalidOperationException(
@@ -855,15 +862,15 @@ public sealed partial class MigrationImportController
     {
         var tenantId = loan.TenantId;
         if (Math.Abs(loan.ApprovedAmount - loan.TotalRepaid - loan.OutstandingBalance) > 0.005m) return true;
-        if (await (from c in _db.PayrollRunConsumptions.AsNoTracking()
-                   join r in _db.PayrollRuns.AsNoTracking() on c.PayrollRunId equals r.Id
-                   where c.TenantId == tenantId && c.ArtifactType == PayrollConsumptionArtifacts.Loan && c.ArtifactId == loan.Id
-                         && r.TenantId == tenantId && r.Status != "Voided"
+        if (await (from c in ScopedBypass.TenantWide(_db.PayrollRunConsumptions, tenantId, EvidenceReadReason).AsNoTracking()
+                   join r in ScopedBypass.TenantWide(_db.PayrollRuns, tenantId, EvidenceReadReason).AsNoTracking() on c.PayrollRunId equals r.Id
+                   where c.ArtifactType == PayrollConsumptionArtifacts.Loan && c.ArtifactId == loan.Id && r.Status != "Voided"
                    select c.Id).AnyAsync(ct))
             return true;
         if (await _db.LoanInstallments.AsNoTracking().AnyAsync(i => i.TenantId == tenantId && i.LoanId == loan.Id && i.PayrollRunId != null, ct))
             return true;
-        return await _db.LoanRepayments.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.LoanId == loan.Id && !x.IsReversed, ct);
+        return await ScopedBypass.TenantWide(_db.LoanRepayments, tenantId, EvidenceReadReason).AsNoTracking()
+            .AnyAsync(x => x.LoanId == loan.Id && !x.IsReversed, ct);
     }
 
     private async Task<LoanType> ResolveLoanTypeAsync(LoanPlan plan, Guid tenantId, CancellationToken ct)
@@ -1056,14 +1063,14 @@ public sealed partial class MigrationImportController
     /// </summary>
     private async Task GuardAdvanceRestatementAsync(SalaryAdvance advance, AdvancePlan plan, Guid tenantId, CancellationToken ct)
     {
-        var carriedIn = await _db.OpeningBalanceOrigins.AsNoTracking().AnyAsync(
-            o => o.TenantId == tenantId && o.EntityType == OpeningBalanceEntityTypes.Advance && o.EntityId == advance.Id, ct);
+        var carriedIn = await ScopedBypass.TenantWide(_db.OpeningBalanceOrigins, tenantId, EvidenceReadReason).AsNoTracking().AnyAsync(
+            o => o.EntityType == OpeningBalanceEntityTypes.Advance && o.EntityId == advance.Id, ct);
         if (!carriedIn)
             throw new InvalidOperationException(
                 $"[advance_not_carried_in] Advance {plan.AdvanceNumber} already exists and was not carried in by an opening-balance import, so it is not restated. Use a different advance number, or correct the advance in Salary Advances.");
         RefuseRepointing(advance.EmployeeIntId, advance.CompanyId, plan.Employee, plan.AdvanceNumber);
-        if (await _db.PayrollRunConsumptions.AsNoTracking().AnyAsync(
-                c => c.TenantId == tenantId && c.ArtifactType == PayrollConsumptionArtifacts.Advance && c.ArtifactId == advance.Id, ct))
+        if (await ScopedBypass.TenantWide(_db.PayrollRunConsumptions, tenantId, EvidenceReadReason).AsNoTracking().AnyAsync(
+                c => c.ArtifactType == PayrollConsumptionArtifacts.Advance && c.ArtifactId == advance.Id, ct))
             throw new InvalidOperationException(
                 $"[advance_collected_by_payroll] Advance {plan.AdvanceNumber} has already had an instalment collected by payroll, so its opening balance can no longer be restated. Correct it in Salary Advances.");
         if (advance.Status != "Active")

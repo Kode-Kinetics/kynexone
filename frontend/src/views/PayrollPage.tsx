@@ -81,6 +81,7 @@ import { LoadError, serverMessage } from '../components/gl/glUi';
 import { financeGlApi } from '../api/financeGl';
 import { CostCentreLockPreview, CostingOffNote, periodLabel } from '../components/payroll/CostCentreLockPreview';
 import { VoidRunForm } from '../components/payroll/VoidRunForm';
+import { HeldPayPanel } from '../components/payroll/HeldPayPanel';
 import { PostedJournalsView, PostedWithoutCostCentresNote } from '../components/payroll/PostedJournals';
 import { costingNote } from '../lib/glJournalView';
 import { paymentActionRefusal, paymentActionsAllowed, PAYMENT_ACTION_DENIED } from '../lib/payrollPaymentAccess';
@@ -2573,6 +2574,8 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
 
               {leftOut.length > 0 && <LeftOutPanel entries={leftOut} />}
 
+              {runId && <HeldPayPanel runId={runId} amount={runAmount} />}
+
               {needsOverriddenAck && overrideReport && (
                 <AcknowledgementPanel
                   tone="rose"
@@ -3835,6 +3838,8 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
   const t = useT();
   const fmtAmt = useFmtAmt();
   const { hasPermission } = useAuth();
+  // The ERP-export endpoints answer 403 without one of these; without them the panel (and its reads) is not mounted at all.
+  const mayUseErpExport = hasPermission('finance.gl.read') || hasPermission('finance.gl.manage');
   const { companies: payrollCompanies } = usePayrollCompanies();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setLocalRunId] = useState(selectedRunId ?? '');
@@ -3980,7 +3985,9 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
       )}
 
       {/* ERP hand-off: the posting file for the month, and what the ERP said about it. */}
-      <JournalExportsPanel defaultPeriod={exportPeriod} />
+      {mayUseErpExport
+        ? <JournalExportsPanel defaultPeriod={exportPeriod} />
+        : <p data-testid="journal-export-no-access" className="text-sm text-fg-muted">{t('Exporting the journal needs Finance access')}</p>}
     </div>
   );
 }

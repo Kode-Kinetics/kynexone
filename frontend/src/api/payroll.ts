@@ -254,6 +254,59 @@ export interface PayrollPopulationEntry {
   message: string;
 }
 
+/** One held amount (server HeldPay.HoldRow). */
+export interface PayrollHeldPayItem {
+  holdId: string;
+  employeeId: number;
+  employeeCode: string;
+  employeeName: string;
+  employeeStatus: string | null;
+  amount: number;
+  reason: string;
+  status: 'Held' | 'Released' | 'Forfeited';
+  heldRunId: string;
+  heldPeriod: string;
+  heldByThisRun: boolean;
+  paidInRunId: string | null;
+  paidInPeriod: string | null;
+}
+
+export interface PayrollHeldPayView {
+  runId: string;
+  period: string;
+  items: PayrollHeldPayItem[];
+  heldTotal: number;
+  awaitingDecision: number;
+}
+
+export interface LeaveSliceSplitPart { payPeriod: string; from: string; to: string; days: number; amount: number }
+
+export interface LeaveSliceSplitRow {
+  impactId: string;
+  leaveRequestId: string;
+  employeeId: number;
+  employeeCode: string;
+  employeeName: string;
+  startDate: string;
+  endDate: string;
+  requestStatus: string;
+  payPeriod: string;
+  status: string;
+  impactType: string;
+  days: number;
+  amount: number;
+  parts: LeaveSliceSplitPart[];
+  note: string;
+}
+
+export interface LeaveSliceSplitReport {
+  readOnly: boolean;
+  wouldSplit: LeaveSliceSplitRow[];
+  doNotReconcile: LeaveSliceSplitRow[];
+  alreadyDeducted: LeaveSliceSplitRow[];
+  sickScaleRows: LeaveSliceSplitRow[];
+}
+
 /** A blocking compliance error a human consciously cleared, with the reason they gave. */
 export interface PayrollValidationOverride {
   id: string;
@@ -856,6 +909,19 @@ export const payrollApi = {
   // run carries dozens of warnings, so a warning alone is invisible in practice.
   runPopulation: (id: string) =>
     client.get<PayrollRunPopulation>(`/api/payroll/runs/${id}/population`).then((r) => r.data),
+
+  // Pay held for suspended employees: what this run held, plus every earlier hold of the company still undecided.
+  runHeldPay: (id: string) =>
+    client.get<PayrollHeldPayView>(`/api/payroll/runs/${id}/held-pay`).then((r) => r.data),
+
+  // Finance's decision on one held amount: pay it in the next open run, or forfeit it with a reason.
+  decideHeldPay: (holdId: string, action: 'pay' | 'forfeit', reason: string) =>
+    client.post<{ status: string; message: string }>(`/api/payroll/held-pay/${holdId}/decision`, { action, reason })
+      .then((r) => r.data),
+
+  // Read-only: multi-month unpaid-leave deductions written before month slicing, and how each would split. Changes nothing.
+  leaveSliceSplitReport: () =>
+    client.get<LeaveSliceSplitReport>('/api/payroll/leave-slice-split-report').then((r) => r.data),
 
   runValidationOverrides: (id: string) =>
     client.get<PayrollValidationOverrideReport>(`/api/payroll/runs/${id}/validation-overrides`).then((r) => r.data),

@@ -129,7 +129,7 @@ public class EmployeesController : ControllerBase
         // ONE predicate for the group-level list, this list and the bulk resolver (ResolveTargetIdsAsync), so a scoped user's
         // "select all matching + search" resolves exactly the set this list shows.
         query = EmployeeSearch.Apply(query, _db.Branches, search, CanViewSensitive());
-        if (!string.IsNullOrWhiteSpace(status)) query = query.Where(e => e.Status == status);
+        query = EmployeeStatusFilter.Apply(query, status);
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(e => e.Department == department);
         query = EmployeeSearch.ApplyFilters(query, _db.Branches, branch, designation);
         // SERVER-SIDE readiness / import-gap filter (fixes the page-local "Needs info" deep-link). Must be
@@ -191,7 +191,7 @@ public class EmployeesController : ControllerBase
                 || e.EnglishName.Contains(term) || e.ArabicName.Contains(term)
                 || (e.WorkEmail != null && e.WorkEmail.Contains(term)));
         }
-        if (!string.IsNullOrWhiteSpace(status)) query = query.Where(e => e.Status == status);
+        query = EmployeeStatusFilter.Apply(query, status);
 
         var total = await query.CountAsync(cancellationToken);
         var pageRows = await query
@@ -5063,7 +5063,7 @@ public class EmployeesController : ControllerBase
         {
             var f = req.Filter ?? new BulkSelectAllFilter(null, null, null, null, null);
             query = EmployeeSearch.Apply(query, _db.Branches, f.Search, CanViewSensitive());
-            if (!string.IsNullOrWhiteSpace(f.Status)) query = query.Where(e => e.Status == f.Status);
+            query = EmployeeStatusFilter.Apply(query, f.Status);
             query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, f.Readiness, f.ImportBatchId, f.GapType);
             query = await EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId, EmployeeAccessStates.ParseFilter(f.Access), ct);
         }
@@ -6236,7 +6236,7 @@ public class EmployeesController : ControllerBase
         var next60 = today.AddDays(60);
         return Ok(new EmployeeReportsDto(
             await employees.CountAsync(cancellationToken),
-            await employees.CountAsync(x => x.Status == "Active", cancellationToken),
+            await employees.CountAsync(x => x.Status.ToLower() == "active", cancellationToken),
             await employees.CountAsync(x => x.JoiningDate >= DateTime.UtcNow.AddDays(-30), cancellationToken),
             await employees.CountAsync(x => x.Status == "Exited" || x.Status == "Terminated", cancellationToken),
             await employees.CountAsync(x => x.ProbationEndDate != null && x.ProbationEndDate >= today, cancellationToken),

@@ -2155,6 +2155,11 @@ public partial class LeaveService : ILeaveService
         else
             _db.LeavePayrollImpacts.RemoveRange(await pendingImpacts.ToListAsync(ct));
 
+        // S4, C2-C5 — a deduction a run ALREADY took is given back, never left standing: one credit per month it was taken in,
+        // equal to what the run actually deducted, paid by the earliest open run as "Leave deduction reversal for YYYY-MM".
+        // Closed runs are not touched. Idempotent per (leave, month), and under the employee's leave lock taken above.
+        await Zayra.Api.Infrastructure.Payroll.LeaveArrears.StageReversalsAsync(_db, tenantId, requestId, ct);
+
         var projection = await _db.ApprovalRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId
             && x.EntityName == nameof(LeaveRequest) && x.EntityId == requestId.ToString() && x.Status == "Pending", ct);
         if (projection is not null)
@@ -2281,15 +2286,7 @@ public partial class LeaveService : ILeaveService
             || request.DayType.Equals("Hourly", StringComparison.OrdinalIgnoreCase))
             return whole;
 
-        var slices = new List<UnpaidLeaveMonthSlice>();
-        for (var monthStart = new DateOnly(request.StartDate.Year, request.StartDate.Month, 1); monthStart <= request.EndDate; monthStart = monthStart.AddMonths(1))
-        {
-            var from = request.StartDate > monthStart ? request.StartDate : monthStart;
-            var monthEnd = monthStart.AddMonths(1).AddDays(-1);
-            var to = request.EndDate < monthEnd ? request.EndDate : monthEnd;
-            var days = await CalculateWorkingDaysAsync(tenantId, from, to, request.PolicyId, request.CompanyId, ct);
-            if (days > 0) slices.Add(new UnpaidLeaveMonthSlice(from, to, days));
-        }
+        var slices = await CountMonthSlicesAsync(tenantId, request, ct);
         if (slices.Count > 0 && slices.Sum(x => x.Days) == request.TotalDays) return slices;
 
         await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "UnpaidLeaveSliceFallback",
@@ -2299,6 +2296,24 @@ public partial class LeaveService : ILeaveService
             "The month-by-month days do not add up to the request's total, so the whole request is charged to its first month. Check the request's day count.",
             "System", ct);
         return whole;
+    }
+
+    /// <summary>
+    /// Each calendar month of a request with its deductible days there, counted with the request's own working-day rules.
+    /// Pure read: no fallback and no audit entry (the caller decides what a mismatch with TotalDays means).
+    /// </summary>
+    internal async Task<List<UnpaidLeaveMonthSlice>> CountMonthSlicesAsync(Guid tenantId, LeaveRequest request, CancellationToken ct)
+    {
+        var slices = new List<UnpaidLeaveMonthSlice>();
+        for (var monthStart = new DateOnly(request.StartDate.Year, request.StartDate.Month, 1); monthStart <= request.EndDate; monthStart = monthStart.AddMonths(1))
+        {
+            var from = request.StartDate > monthStart ? request.StartDate : monthStart;
+            var monthEnd = monthStart.AddMonths(1).AddDays(-1);
+            var to = request.EndDate < monthEnd ? request.EndDate : monthEnd;
+            var days = await CalculateWorkingDaysAsync(tenantId, from, to, request.PolicyId, request.CompanyId, ct);
+            if (days > 0) slices.Add(new UnpaidLeaveMonthSlice(from, to, days));
+        }
+        return slices;
     }
 
     private async Task<List<LeaveYearSegment>> CalculateYearSegmentsAsync(

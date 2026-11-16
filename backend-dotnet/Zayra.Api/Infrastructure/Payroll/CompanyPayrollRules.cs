@@ -21,12 +21,15 @@ public static class PayrollRuleKeys
     public const string ReconVarianceMinAmount = "recon_variance_min_amount";
     /// <summary>Whether a run needs a recorded manpower + value reconciliation sign-off before it can be approved. Default true.</summary>
     public const string ReconSignoffRequired = "recon_signoff_required";
+    /// <summary>The most a month's deductions may take, as a percentage of the wage due, once unpaid-leave arrears are
+    /// collected. Default 50 (KSA Labour Law Art. 93); a company may only set a LOWER percentage, never a higher one.</summary>
+    public const string ArrearsDeductionCapPct = "arrears_deduction_cap_pct";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
         RestDayWorkMode, RestDayMultiplier, HolidayMultiplier, LeaveCashOutOnExit,
         LeaveCashOutBasis, MaxProbationDays, ProrationBasis, AbsenceDeductionBase,
-        ReconVariancePct, ReconVarianceMinAmount, ReconSignoffRequired,
+        ReconVariancePct, ReconVarianceMinAmount, ReconSignoffRequired, ArrearsDeductionCapPct,
     };
 }
 
@@ -54,6 +57,10 @@ public sealed record CompanyPayrollRuleSet(
     public static readonly CompanyPayrollRuleSet Defaults = new(
         RestDayWorkModes.PaidPremium, null, null, true, CompanyPayrollRules.BasisGross, null,
         null, CompanyPayrollRules.AbsenceBasic);
+
+    /// <summary>The cap on a month's deductions once unpaid-leave arrears are collected, as a percentage of the wage due
+    /// (<see cref="PayrollRuleKeys.ArrearsDeductionCapPct"/>). 50 unless the company chose lower.</summary>
+    public decimal ArrearsDeductionCapPct { get; init; } = CompanyPayrollRules.MaxArrearsDeductionCapPct;
 }
 
 /// <summary>One rule as shown on the settings screen.</summary>
@@ -86,6 +93,8 @@ public static class CompanyPayrollRules
 
     /// <summary>Art. 107: overtime is the hour plus at least half of it again.</summary>
     public const decimal StatutoryOvertimeFloor = 1.5m;
+    /// <summary>Art. 93: deductions may not exceed half the wage due. The arrears cap may be set lower, never higher.</summary>
+    public const decimal MaxArrearsDeductionCapPct = 50m;
     /// <summary>Art. 53: probation of at most 90 days, extendable once by written agreement to 180.</summary>
     public const int StatutoryProbationDays = 90;
     public const int ExtendedProbationDays = 180;
@@ -148,6 +157,12 @@ public static class CompanyPayrollRules
                 if (!bool.TryParse(v, out var required)) return ($"{key} must be true or false.", null);
                 return (null, required ? null : new PayrollRuleWarning(key, WarnReconSignoffOff,
                     "Turning this off lets a payroll run be approved without a recorded manpower and value reconciliation sign-off. It is recorded against the person who confirms it."));
+            }
+            case PayrollRuleKeys.ArrearsDeductionCapPct:
+            {
+                if (!decimal.TryParse(v, NumberStyles.Number, CultureInfo.InvariantCulture, out var cap) || cap < 1m || cap > MaxArrearsDeductionCapPct)
+                    return ($"{key} must be a percentage between 1 and {MaxArrearsDeductionCapPct:0}. It can only be lowered below the statutory {MaxArrearsDeductionCapPct:0}%.", null);
+                return (null, null);
             }
             case PayrollRuleKeys.MaxProbationDays:
             {
@@ -363,7 +378,10 @@ public static class CompanyPayrollRules
             Get(PayrollRuleKeys.LeaveCashOutBasis, d.LeaveCashOutBasis),
             Int(PayrollRuleKeys.MaxProbationDays),
             v.TryGetValue(PayrollRuleKeys.ProrationBasis, out var pb) && Evaluate(PayrollRuleKeys.ProrationBasis, pb).Error is null ? pb.Trim() : null,
-            Get(PayrollRuleKeys.AbsenceDeductionBase, d.AbsenceDeductionBase));
+            Get(PayrollRuleKeys.AbsenceDeductionBase, d.AbsenceDeductionBase))
+        {
+            ArrearsDeductionCapPct = Dec(PayrollRuleKeys.ArrearsDeductionCapPct) ?? d.ArrearsDeductionCapPct,
+        };
     }
 
     /// <summary>The rules as shown on the settings screen on <paramref name="asOf"/> (default: today), with the next dated change if one is queued.</summary>
