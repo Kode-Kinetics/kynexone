@@ -2155,6 +2155,11 @@ public partial class LeaveService : ILeaveService
         else
             _db.LeavePayrollImpacts.RemoveRange(await pendingImpacts.ToListAsync(ct));
 
+        // S4, C2-C5 — a deduction a run ALREADY took is given back, never left standing: one credit per month it was taken in,
+        // equal to what the run actually deducted, paid by the earliest open run as "Leave deduction reversal for YYYY-MM".
+        // Closed runs are not touched. Idempotent per (leave, month), and under the employee's leave lock taken above.
+        await Zayra.Api.Infrastructure.Payroll.LeaveArrears.StageReversalsAsync(_db, tenantId, requestId, ct);
+
         var projection = await _db.ApprovalRequests.FirstOrDefaultAsync(x => x.TenantId == tenantId
             && x.EntityName == nameof(LeaveRequest) && x.EntityId == requestId.ToString() && x.Status == "Pending", ct);
         if (projection is not null)

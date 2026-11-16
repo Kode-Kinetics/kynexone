@@ -31,6 +31,27 @@ public static class UnpaidLeaveMonth
 
     public static decimal CapTotal(decimal total, decimal earnedBase) => Math.Min(total, Math.Max(0m, earnedBase));
 
+    /// <summary>
+    /// The month's rows after the month's cap: unchanged when they fit; otherwise each row's share of the earned base in
+    /// proportion to its amount, rounded to the cent, the last row taking the cent remainder so they sum to the cap exactly.
+    /// </summary>
+    public static List<(LeavePayrollImpact Row, decimal Taken)> CapRows(
+        IReadOnlyList<(LeavePayrollImpact Row, decimal Amount)> rows, decimal earnedBase)
+    {
+        var cap = Math.Max(0m, earnedBase);
+        var total = rows.Sum(r => r.Amount);
+        if (total <= cap) return rows.Select(r => (r.Row, r.Amount)).ToList();
+        var result = new List<(LeavePayrollImpact Row, decimal Taken)>(rows.Count);
+        var given = 0m;
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var share = i == rows.Count - 1 ? cap - given : Math.Round(rows[i].Amount * cap / total, 2);
+            result.Add((rows[i].Row, share));
+            given += share;
+        }
+        return result;
+    }
+
     /// <summary>True when [from, to] includes the first and the last deductible day of the window (and so every one between).
     /// A window with no deductible day at all is never "covered".</summary>
     public static bool CoversEveryDeductibleDay(DateOnly from, DateOnly to, DateOnly windowFrom, DateOnly windowTo, Func<DateOnly, bool> isDeductibleDay)

@@ -1323,6 +1323,8 @@ public sealed class PayrollRunProcessor
         var settlementRecoveryReduced = new List<(int Id, string Code, string Name, decimal Planned, decimal Taken)>();
         // L13/L14 — per-attempt, like everything above: the arrears rows this pass collects from, and who had some carried.
         var leaveArrearsTakenAll = new List<(LeavePayrollImpact Row, decimal Taken)>();
+        // What each of this month's leave rows actually took (after the month's cap): the witness amount a refund reads.
+        var leaveTakenById = new Dictionary<Guid, decimal>();
         var leaveArrearsCarried = new List<(int Id, string Code, string Name, decimal Carried, decimal Taken)>();
         // One pass over each per-employee source, instead of a full scan per employee (employees x rows).
         // Lookups keep source order, so every per-employee sequence is exactly what the scan produced.
@@ -1461,17 +1463,27 @@ public sealed class PayrollRunProcessor
             var earnedLeaveBase = companyPayrollRules.AbsenceDeductionBase == CompanyPayrollRules.AbsenceGross
                 ? basic + housing + transport + otherAllowances + cashAllowanceTotal
                 : basic;
-            var leaveDeduction = UnpaidLeaveMonth.CapTotal(empLeaveRows
+            var currentLeave = empLeaveRows
                 .Where(x => x.PayPeriod == runPeriodKey && !LeaveArrears.IsReversal(x))
-                .Sum(x =>
+                .Select(x =>
                 {
                     // Unpaid leave was priced on basic when the leave was approved; when the company prices absence on its
                     // full package, unpaid leave follows (statutory sick-leave bands keep their own wage-base rule).
                     var amount = CompanyPayrollRules.UnpaidLeaveDeduction(companyPayrollRules.AbsenceDeductionBase, x.Amount, x.Days, lopDayRate, x.ImpactType);
                     amount = leaveImpactScale.TryGetValue(x.Id, out var sc) ? Math.Round(amount * sc, 2) : amount;
-                    return UnpaidLeaveMonth.SliceDeduction(x, amount, earnedLeaveBase, proration.PaidFrom, proration.PaidTo,
-                        d => !workWeekConfig.IsWeekend(d.DayOfWeek) && !periodPublicHolidays.Contains(d));
-                }), earnedLeaveBase);
+                    return (Row: x, Amount: UnpaidLeaveMonth.SliceDeduction(x, amount, earnedLeaveBase, proration.PaidFrom, proration.PaidTo,
+                        d => !workWeekConfig.IsWeekend(d.DayOfWeek) && !periodPublicHolidays.Contains(d)));
+                })
+                .ToList();
+            // What each row actually took, after the month's cap, is what its consumption witness records: a refund of a
+            // cancelled leave gives back exactly that, never the amount priced at approval.
+            var currentLeaveTaken = UnpaidLeaveMonth.CapRows(currentLeave, earnedLeaveBase);
+            foreach (var (row, taken) in currentLeaveTaken) leaveTakenById[row.Id] = taken;
+            var leaveDeduction = currentLeaveTaken.Sum(x => x.Taken);
+            // S4, C2-C5 — a deduction an earlier run took for a leave since cancelled, given back on its own earnings line.
+            // Never capped: it is the employee's own pay.
+            var empLeaveReversals = empLeaveRows.Where(LeaveArrears.IsReversal).ToList();
+            var leaveReversalCredit = Math.Round(-empLeaveReversals.Sum(x => x.Amount), 2);
 
             // ── Overtime pay: approved MINUTES × hourly rate × statutory multiplier ──
             // Recomputed from OvertimePayrollImpacts (not .Amount) so the statutory multiplier
@@ -1614,6 +1626,7 @@ public sealed class PayrollRunProcessor
                 fixedDeduction = 0m; hourlyRate = 0m;
                 attendanceDeduction = 0m; lopDays = 0m; lopDayRate = 0m; lopDeduction = 0m;
                 leaveDeduction = 0m; overtimePay = 0m; otHours = 0m; taxDeduction = 0m;
+                leaveReversalCredit = 0m;
                 // POD-C3 — a supplemental run pays no recurring wage, so the FULL package is not its
                 // statutory basis either. Zeroing them here keeps the slip's proration witnesses honest
                 // and stops the FullMonth GOSI branch below re-introducing a whole month's covered wage
@@ -1763,7 +1776,7 @@ public sealed class PayrollRunProcessor
                                      + taxDeduction + gosiEmployeeTotal + adjustmentDeductions + totalBonusTax
                                      + settlementDeductionTotal + configuredDeductions;
             var earningsForPeriod = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal
-                                  + settlementEarningTotal + configuredEarnings + cashAllowanceTotal;
+                                  + settlementEarningTotal + configuredEarnings + cashAllowanceTotal + leaveReversalCredit;
             var affordable = Math.Round(earningsForPeriod - deductionsBeforeDebt, 2);
 
             var loanTakenById = new Dictionary<Guid, decimal>();
@@ -1946,14 +1959,14 @@ public sealed class PayrollRunProcessor
                 // POD-C1 — the settlement's earnings ride the SAME aggregate as bonus/adjustment/arrears do,
                 // so NetSalary, the WPS/SIF amount and the payment batch total all pick them up with no new
                 // machinery. (The statutory base is untouched — see the GOSI decision on FinalSettlement.)
-                OtherAllowances = otherAllowances + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings + cashAllowanceTotal,
-                GrossSalary = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings + cashAllowanceTotal,
+                OtherAllowances = otherAllowances + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings + cashAllowanceTotal + leaveReversalCredit,
+                GrossSalary = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings + cashAllowanceTotal + leaveReversalCredit,
                 Deductions = deductions,
                 NetSalary = netSalary,
                 EmployeeStatutoryTotal = statutoryResult.TotalEmployeeDeduction,
                 EmployerStatutoryTotal = statutoryResult.TotalEmployerContribution,
                 LoanDeductions = totalLoanDeduction,
-                YtdGross = ytdGross + gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings + cashAllowanceTotal,
+                YtdGross = ytdGross + gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings + cashAllowanceTotal + leaveReversalCredit,
                 YtdDeductions = ytdDeduct + deductions,
                 YtdNet = ytdNet + netSalary,
                 Status = "Draft",
@@ -2212,6 +2225,16 @@ public sealed class PayrollRunProcessor
             // L13/L14 — unpaid-leave arrears, one line per month they belong to, emitted OUTSIDE both emission branches (neither
             // owns them, so the legacy block and the component engine stay identical). Source "Leave": the same DED:LEAVE
             // driver as the month's own unpaid-leave line.
+            // S4, C2-C5 — a cancelled leave's deduction given back, one earnings line per month it was taken in. Pinned to the
+            // basic-salary driver: it is the basic pay those days were docked.
+            if (leaveReversalCredit > 0m)
+                foreach (var g in empLeaveReversals.GroupBy(x => x.PayPeriod).OrderBy(g => g.Key, StringComparer.Ordinal))
+                {
+                    var credit = Math.Round(-g.Sum(x => x.Amount), 2);
+                    if (credit > 0m)
+                        AddEarning(tenantId, id, e.Id, LeaveArrears.ReversalCode, LeaveArrears.ReversalLabel(g.Key), credit, "Leave",
+                            glDriverKey: "EARN:BASIC");
+                }
             foreach (var g in empArrearsTaken.GroupBy(x => x.Row.PayPeriod).OrderBy(g => g.Key, StringComparer.Ordinal))
                 AddDeduction(tenantId, company.Id, id, e.Id, LeaveArrears.ArrearsCode, LeaveArrears.ArrearsLabel(g.Key),
                     Math.Round(g.Sum(x => x.Taken), 2), "Leave");
@@ -2354,12 +2377,13 @@ public sealed class PayrollRunProcessor
             // the same month, witnessed so a void or reopen of this run deletes it again (the original returns to Pending).
             var arrearsTakenById = leaveArrearsTakenAll.ToDictionary(x => x.Row.Id, x => x.Taken);
             var consumedLeave = leaveImpacts
-                .Where(x => (x.PayPeriod == runPeriodKey && !LeaveArrears.IsReversal(x)) || arrearsTakenById.ContainsKey(x.Id))
+                .Where(x => x.PayPeriod == runPeriodKey || LeaveArrears.IsReversal(x) || arrearsTakenById.ContainsKey(x.Id))
                 .ToList();
             var leaveImpactIds = consumedLeave.Select(x => x.Id).ToList();
             foreach (var x in consumedLeave)
                 Witness(PayrollConsumptionArtifacts.LeaveImpact, x.Id, x.EmployeeId,
-                    arrearsTakenById.TryGetValue(x.Id, out var takenFromRow) ? takenFromRow : x.Amount, x.Status);
+                    arrearsTakenById.TryGetValue(x.Id, out var takenFromRow) ? takenFromRow
+                        : leaveTakenById.TryGetValue(x.Id, out var takenThisMonth) ? takenThisMonth : x.Amount, x.Status);
             foreach (var (row, taken) in leaveArrearsTakenAll.Where(t => t.Taken < t.Row.Amount))
             {
                 var remainder = new LeavePayrollImpact
@@ -3636,6 +3660,8 @@ public sealed class PayrollRunProcessor
             // Overtime approved after its period closed is carried forward as an adjustment (code
             // ADJ_ + "Overtime Back Pay"); it is still overtime expense, not "other earnings".
             "ADJ_OVERTIME_BACK_PAY" => "EARN:OVERTIME",
+            // A cancelled unpaid leave's deduction given back is the basic pay those days were docked.
+            LeaveArrears.ReversalCode => "EARN:BASIC",
             // POD-C3 — arrears are the SAME expense as the component they settle, just paid late. Routing
             // them to EARN:OTHER (5099) would move a retro basic-salary increase out of Basic Salary
             // Expense and quietly distort every payroll cost report. The GL stays balanced either way —

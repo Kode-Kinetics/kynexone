@@ -73,6 +73,57 @@ public static class LeaveArrears
         return Math.Max(0m, Math.Min(limit - otherDeductions, netLeft));
     }
 
+    /// <summary>
+    /// S4, C2-C5 — when an approved leave is cancelled, every month whose deduction a run already took gets ONE credit row
+    /// (negative amount, same month), equal to what was actually taken: the consumption witness of each consumed row (what
+    /// the run deducted after the month's cap), or the row's amount where no witness exists (a run older than witnesses).
+    /// Idempotent per (leave, month): calling it again writes nothing. Pending rows are not this method's business; the
+    /// caller deletes them. Rows are added to the context, not saved. Returns the rows it added.
+    /// </summary>
+    public static async Task<List<LeavePayrollImpact>> StageReversalsAsync(
+        ZayraDbContext db, Guid tenantId, Guid leaveRequestId, CancellationToken ct)
+    {
+        var consumed = await db.LeavePayrollImpacts.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.LeaveRequestId == leaveRequestId && x.Status == "Processed"
+                     && x.Amount > 0m && x.ImpactType != ReversalImpactType && x.ImpactType.Contains("Deduction"))
+            .ToListAsync(ct);
+        var added = new List<LeavePayrollImpact>();
+        if (consumed.Count == 0) return added;
+
+        var ids = consumed.Select(x => x.Id).ToList();
+        var witnessed = (await db.PayrollRunConsumptions.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.ArtifactType == PayrollConsumptionArtifacts.LeaveImpact && ids.Contains(c.ArtifactId))
+                .Select(c => new { c.ArtifactId, c.Amount })
+                .ToListAsync(ct))
+            .GroupBy(c => c.ArtifactId)
+            .ToDictionary(g => g.Key, g => g.Sum(c => c.Amount));
+        var alreadyCredited = (await db.LeavePayrollImpacts.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.LeaveRequestId == leaveRequestId && x.ImpactType == ReversalImpactType)
+                .Select(x => x.PayPeriod)
+                .ToListAsync(ct))
+            .ToHashSet(StringComparer.Ordinal);
+        alreadyCredited.UnionWith(db.ChangeTracker.Entries<LeavePayrollImpact>()
+            .Where(e => e.State == EntityState.Added && e.Entity.LeaveRequestId == leaveRequestId && e.Entity.ImpactType == ReversalImpactType)
+            .Select(e => e.Entity.PayPeriod));
+
+        foreach (var month in consumed.GroupBy(x => x.PayPeriod).OrderBy(g => g.Key, StringComparer.Ordinal))
+        {
+            if (alreadyCredited.Contains(month.Key)) continue;
+            var taken = Math.Round(month.Sum(x => witnessed.TryGetValue(x.Id, out var w) ? w : x.Amount), 2);
+            if (taken <= 0m) continue;
+            var first = month.OrderBy(x => x.SliceFrom).First();
+            var row = new LeavePayrollImpact
+            {
+                TenantId = tenantId, LeaveRequestId = leaveRequestId, EmployeeId = first.EmployeeId,
+                PayPeriod = month.Key, ImpactType = ReversalImpactType, Days = 0m, Amount = -taken,
+                SliceFrom = first.SliceFrom, SliceTo = month.Max(x => x.SliceTo), Status = "Pending",
+            };
+            db.LeavePayrollImpacts.Add(row);
+            added.Add(row);
+        }
+        return added;
+    }
+
     /// <summary>Oldest month first: what each row gives up to the budget. A row the budget cannot reach gives nothing.</summary>
     public static List<(LeavePayrollImpact Row, decimal Taken)> Allocate(IEnumerable<LeavePayrollImpact> rows, decimal budget)
     {
