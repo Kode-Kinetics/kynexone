@@ -228,6 +228,10 @@ test.describe('Chrome security gate — company isolation', () => {
     });
 
     await page.goto('/people');
+    // "networkidle" can fire before the list's own requests start (it is sometimes already fired when
+    // goto resolves), so reading the page then catches the "Loading employees" state. Wait for the
+    // caller's own company code to render, then assert the sibling's absence on that loaded page.
+    await expect(page.locator('body')).toContainText(/ALM-DAIRY-KSA/, { timeout: 30_000 }).catch(() => {});
     await page.waitForLoadState('networkidle');
     const body = (await page.locator('body').innerText().catch(() => '')) ?? '';
 

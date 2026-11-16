@@ -164,21 +164,6 @@ public class LeavePoliciesController : ControllerBase
     }
 
     /// <summary>
-    /// A cap with nothing to cap. <c>CarryForwardMax</c> ("Carry-Forward Max (0=none)") and
-    /// <c>CarryForwardExpiry</c> were stored and read by nothing, because <b>there is no leave
-    /// year-end process of any kind</b>: no accrual job, no roll-over job, no expiry job. The one
-    /// background job type the product registers is <c>attendance.process</c>. On 1 January nothing
-    /// happens — no balance rolls over, nothing expires, and the cap the client spent UAT arguing
-    /// about was never consulted because nothing ever tried to carry anything forward.
-    /// <c>LeaveService</c>'s <c>case "CarryForward"</c> is a balance-transaction type that nothing
-    /// ever posts.
-    ///
-    /// <para>So a cap is refused rather than stored. Zero — the documented "none" value — is
-    /// accepted, because it is the only value that is currently true. When the year-end job is
-    /// built (<c>LeaveAccrualRule</c> is its data model, which is why that entity must not be
-    /// deleted), this guard comes out in the same change as the consumer goes in.</para>
-    /// </summary>
-    /// <summary>
     /// Judged on the policy as it will be saved. Encashment with a zero cap was the old form's only
     /// outcome (it had no cap input), and EncashmentController refuses every request above the cap —
     /// so "Encashment Allowed" encashed nothing. A policy that allows it must now say how much.
@@ -196,17 +181,22 @@ public class LeavePoliciesController : ControllerBase
         return null;
     }
 
+    /// <summary>
+    /// A cap or an expiry that would forfeit days. The year rollover (<c>LeaveService.RolloverYearAsync</c>, run by the monthly leave job)
+    /// carries ALL unused annual leave into the next year with no expiry (CTO decision 2026-11-12): Labour Law Art. 110 does not allow
+    /// annual leave to be waived, so forfeiting days needs an explicit, recorded acknowledgement that is not built yet. Until it is, a cap
+    /// or expiry is refused rather than stored and then ignored. Zero — the documented "none" value — is accepted, because it is the only
+    /// value that is true.
+    /// </summary>
     private IActionResult? RefuseCarryForward(decimal? max, int? expiry)
         => (max is > 0m) || (expiry is > 0)
             ? BadRequest(new
             {
                 error = "leave_carry_forward_not_implemented",
                 message =
-                    "Leave carry-forward is not implemented in this build, so a carry-forward cap or expiry cannot "
-                    + "be configured. There is no year-end process: no balance rolls over on 1 January, nothing "
-                    + "expires, and a stored cap would never be consulted — it would read back correctly on screen "
-                    + "and govern nothing. Leave both at 0 (the documented 'none' value). Unused balance is handled "
-                    + "today by encashment, which is enforced.",
+                    "A carry-forward cap or expiry cannot be set: it would forfeit unused annual leave, which needs an explicit "
+                    + "acknowledgement that is not available yet. Once scheduled accrual is switched on, unused annual leave is carried into the "
+                    + "next year in full, with no expiry, on 1 January. Leave both at 0 (the documented 'none' value).",
             })
             : null;
 

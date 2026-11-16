@@ -186,12 +186,13 @@ public class AIAssistantController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var query = _db.EmployeeRiskScores.Where(r => r.TenantId == tenantId);
+        // Company scope follows the employee (the employee query carries the caller's company filter).
+        var query = _db.EmployeeRiskScores.Where(r => r.TenantId == tenantId && _db.Employees.Any(e => e.Id == r.EmployeeId && e.TenantId == tenantId));
         if (!string.IsNullOrWhiteSpace(riskLevel)) query = query.Where(r => r.OverallRiskLevel == riskLevel);
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(r => r.DepartmentName == department);
 
         var items = await query
-            .OrderByDescending(r => r.ChurnRiskScore)
+            .OrderByDescending(r => (double)r.ChurnRiskScore)
             .Take(100)
             .ToListAsync(ct);
 

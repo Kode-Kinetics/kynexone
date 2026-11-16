@@ -5,6 +5,7 @@ import { CheckCircle2 } from 'lucide-react';
 import { payrollApi, type PayrollRun, type PayrollSlip, type PayrollValidationResult } from '../../api/payroll';
 import type { ReconDto } from '../../api/payrollRecon';
 import { employeesWithIssues } from '../../lib/payrollPipeline';
+import { findingText } from '../../lib/validationFindingText';
 import type { ReconLoadState } from '../../hooks/useRunRecon';
 import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
@@ -66,6 +67,90 @@ export function RunReviewPanel({ run, results, recon, reconState, reconError, re
 
   const visibleIssues = showAllIssues ? issues : issues.slice(0, ISSUES_SHOWN);
 
+  // A locked or paid run has nothing left to review: it shows the sign-off summary, and the full reconciliation and the
+  // open findings sit under Details for anyone who wants to look back.
+  const settled = run.status === 'Locked' || run.status === 'Paid';
+
+  const signoffSummary = reviewedAtUtc ? (
+    <p className="flex items-center gap-2 text-body-sm text-success-fg" data-testid="review-complete">
+      <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+      {reviewedByName
+        ? t('Reconciliation signed off by {name}, {when}.', { name: reviewedByName, when: fmt.dateTime(reviewedAtUtc) })
+        : t('Reconciliation signed off, {when}.', { when: fmt.dateTime(reviewedAtUtc) })}
+    </p>
+  ) : null;
+
+  const reconPanel = (
+    <ManpowerReconPanel
+      run={run}
+      candidates={candidates}
+      recon={recon}
+      state={reconState}
+      error={reconError}
+      reload={reloadRecon}
+      mayApprove={mayApprove}
+      priorRunId={priorRunId}
+      onPriorRunChange={onPriorRunChange}
+      tab={tab}
+      onTab={setTab}
+      onSignedOff={onSignedOff}
+    />
+  );
+
+  const findings = (
+    <div className="space-y-2">
+      <h4 className="text-body font-semibold text-fg">{t('Employees with open results')}</h4>
+      {results === null && <p role="alert" className="text-body-sm text-danger-fg">{t('The validation results could not be read, so the employees with issues are not listed.')}</p>}
+      {results !== null && issues.length === 0 && <p className="text-body-sm text-fg-muted" data-testid="review-no-issues">{t('No employee has an open validation result.')}</p>}
+      {issues.length > 0 && (
+        <Table caption={t('Employees with open validation results')} density="compact">
+          <thead>
+            <tr>
+              <Th>{t('Employee')}</Th>
+              <Th numeric>{t('Errors')}</Th>
+              <Th numeric>{t('Warnings')}</Th>
+              <Th>{t('What was found')}</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleIssues.map(i => (
+              <tr key={i.employeeId} data-testid="review-issue-row">
+                <Td>{nameOf(i.employeeId)}</Td>
+                <Td numeric>{fmt.integer(i.errors)}</Td>
+                <Td numeric>{fmt.integer(i.warnings)}</Td>
+                <Td>{[...new Set(i.findings.map(f => findingText(t, f)))].join(' · ')}</Td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      )}
+      {issues.length > ISSUES_SHOWN && (
+        <Button size="sm" onClick={() => setShowAllIssues(v => !v)} aria-expanded={showAllIssues}>
+          {showAllIssues ? t('Show fewer') : t('Show all {count} employees', { count: fmt.integer(issues.length) })}
+        </Button>
+      )}
+      <p className="text-meta text-fg-muted">{t('Open results are cleared, or overridden with a reason, on the Validation tab.')}{' '}
+        <button type="button" className="underline" onClick={onOpenValidation}>{t('Open Validation')}</button>
+      </p>
+    </div>
+  );
+
+  if (settled) {
+    return (
+      <section aria-labelledby={`review-${run.id}`} className="space-y-3 rounded-lg border border-line bg-surface-sunken p-4" data-testid="run-review">
+        <h3 id={`review-${run.id}`} className="text-h4 font-semibold text-fg">{t('Review')}</h3>
+        {signoffSummary ?? <p className="text-body-sm text-fg-muted" data-testid="review-not-required">{t('No reconciliation sign-off is needed for this run')}</p>}
+        <details className="rounded-lg border border-line bg-surface">
+          <summary className="cursor-pointer px-3 py-2 text-body-sm font-medium text-fg">{t('Details')}</summary>
+          <div className="space-y-4 p-3">
+            {reconPanel}
+            {findings}
+          </div>
+        </details>
+      </section>
+    );
+  }
+
   return (
     <section aria-labelledby={`review-${run.id}`} className="space-y-4 rounded-lg border border-line bg-surface-sunken p-4" data-testid="run-review">
       <div>
@@ -75,66 +160,12 @@ export function RunReviewPanel({ run, results, recon, reconState, reconError, re
           : t('Read how this run moved from the prior month and explain what moved. Your company does not require a sign-off before Approve, so Approve is not held for it. You can still sign the reconciliation off.')}</p>
       </div>
 
-      <ManpowerReconPanel
-        run={run}
-        candidates={candidates}
-        recon={recon}
-        state={reconState}
-        error={reconError}
-        reload={reloadRecon}
-        mayApprove={mayApprove}
-        priorRunId={priorRunId}
-        onPriorRunChange={onPriorRunChange}
-        tab={tab}
-        onTab={setTab}
-        onSignedOff={onSignedOff}
-      />
+      {reconPanel}
 
-      <div className="space-y-2">
-        <h4 className="text-body font-semibold text-fg">{t('Employees with open results')}</h4>
-        {results === null && <p role="alert" className="text-body-sm text-danger-fg">{t('The validation results could not be read, so the employees with issues are not listed.')}</p>}
-        {results !== null && issues.length === 0 && <p className="text-body-sm text-fg-muted" data-testid="review-no-issues">{t('No employee has an open validation result.')}</p>}
-        {issues.length > 0 && (
-          <Table caption={t('Employees with open validation results')} density="compact">
-            <thead>
-              <tr>
-                <Th>{t('Employee')}</Th>
-                <Th numeric>{t('Errors')}</Th>
-                <Th numeric>{t('Warnings')}</Th>
-                <Th>{t('What was found')}</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleIssues.map(i => (
-                <tr key={i.employeeId} data-testid="review-issue-row">
-                  <Td>{nameOf(i.employeeId)}</Td>
-                  <Td numeric>{fmt.integer(i.errors)}</Td>
-                  <Td numeric>{fmt.integer(i.warnings)}</Td>
-                  <Td>{i.messages.join(' · ')}</Td>
-                </tr>
-              ))}
-            </tbody>
-          </Table>
-        )}
-        {issues.length > ISSUES_SHOWN && (
-          <Button size="sm" onClick={() => setShowAllIssues(v => !v)} aria-expanded={showAllIssues}>
-            {showAllIssues ? t('Show fewer') : t('Show all {count} employees', { count: fmt.integer(issues.length) })}
-          </Button>
-        )}
-        <p className="text-meta text-fg-muted">{t('Open results are cleared, or overridden with a reason, on the Validation tab.')}{' '}
-          <button type="button" className="underline" onClick={onOpenValidation}>{t('Open Validation')}</button>
-        </p>
-      </div>
+      {findings}
 
       <div className="flex flex-wrap items-center gap-3 border-t border-line pt-3">
-        {reviewedAtUtc ? (
-          <p className="flex items-center gap-2 text-body-sm text-success-fg" data-testid="review-complete">
-            <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-            {reviewedByName
-              ? t('Reconciliation signed off by {name}, {when}.', { name: reviewedByName, when: fmt.dateTime(reviewedAtUtc) })
-              : t('Reconciliation signed off, {when}.', { when: fmt.dateTime(reviewedAtUtc) })}
-          </p>
-        ) : (
+        {signoffSummary ?? (
           <>
             <Button variant={signoffRequired ? 'primary' : 'secondary'} onClick={() => setTab('signoff')} data-testid="review-go-to-signoff">{t('Go to sign-off')}</Button>
             <p className="text-meta text-fg-muted">{signoffRequired

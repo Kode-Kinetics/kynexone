@@ -28,6 +28,9 @@ public class DashboardControllerTests
             new AttendanceRecord { TenantId = tenantId, EmployeeId = 2, WorkDate = today, Status = "Absent", OvertimeHours = 0m },
             new AttendanceRecord { TenantId = tenantId, EmployeeId = 3, WorkDate = today, Status = "On Leave", OvertimeHours = 0m },
             new AttendanceRecord { TenantId = tenantId, EmployeeId = 4, WorkDate = earlier, Status = "Present", OvertimeHours = 4.5m });
+        // The overtime tile counts APPROVED overtime (the payroll-impact minutes), not raw attendance hours.
+        ApprovedOvertime(db, tenantId, 1, today, 120);
+        ApprovedOvertime(db, tenantId, 4, earlier, 270);
         // Today's tiles (present / absent / on leave) read AttendanceDailyRecords — the table every
         // capture path writes — while overtime and churn still read the legacy mirror above. No
         // TenantLocalizationSetting is seeded, so "today" is the UTC date.
@@ -71,6 +74,10 @@ public class DashboardControllerTests
             new AttendanceRecord { TenantId = tenantId, EmployeeId = 2, WorkDate = previousMonth.AddDays(2), Status = "Absent", OvertimeHours = 0m },
             new AttendanceRecord { TenantId = tenantId, EmployeeId = 1, WorkDate = today, Status = "Present", OvertimeHours = 3m },
             new AttendanceRecord { TenantId = tenantId, EmployeeId = 2, WorkDate = today, Status = "Present", OvertimeHours = 2m });
+        // The overtime series counts APPROVED overtime (the payroll-impact minutes), not raw attendance hours.
+        ApprovedOvertime(db, tenantId, 1, previousMonth.AddDays(1), 60);
+        ApprovedOvertime(db, tenantId, 1, today, 180);
+        ApprovedOvertime(db, tenantId, 2, today, 120);
         await db.SaveChangesAsync();
 
         var result = await CreateController(db, tenantId).Trends(2, CancellationToken.None);
@@ -81,6 +88,13 @@ public class DashboardControllerTests
         Assert.Equal(1m, trends[0].OvertimeHours);
         Assert.Equal(100m, trends[1].AttendanceRate);
         Assert.Equal(5m, trends[1].OvertimeHours);
+    }
+
+    private static void ApprovedOvertime(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly day, int minutes)
+    {
+        var request = new OvertimeRequest { TenantId = tenantId, EmployeeId = employeeId, WorkDate = day, Status = "Approved", ApprovedMinutes = minutes };
+        db.OvertimeRequests.Add(request);
+        db.OvertimePayrollImpacts.Add(new OvertimePayrollImpact { TenantId = tenantId, OvertimeRequestId = request.Id, EmployeeId = employeeId, Minutes = minutes });
     }
 
     private static ZayraDbContext CreateDb()

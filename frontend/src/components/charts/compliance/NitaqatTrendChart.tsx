@@ -24,11 +24,12 @@ export function NitaqatTrendChart({
   nextFloor,
 }: {
   points: Point[];
-  floor: number;
+  /** Null when no verified band floor exists: the line is then drawn without floors. */
+  floor: number | null;
   nextFloor: number | null;
 }) {
   const values = points.map((p) => p.achievedPercent);
-  const candidates = [...values, floor, ...(nextFloor != null ? [nextFloor] : [])];
+  const candidates = [...values, ...(floor != null ? [floor] : []), ...(nextFloor != null ? [nextFloor] : [])];
   const min = Math.max(0, Math.floor(Math.min(...candidates) - 3));
   const max = Math.min(100, Math.ceil(Math.max(...candidates) + 3));
 
@@ -49,9 +50,11 @@ export function NitaqatTrendChart({
           contentStyle={{ fontSize: 12, borderRadius: 8 }}
         />
 
-        <ReferenceLine y={floor} stroke="#EF4444" strokeDasharray="4 4">
-          <Label value={`Band floor ${floor.toFixed(1)}%`} position="insideBottomLeft" fontSize={10} fill="#EF4444" />
-        </ReferenceLine>
+        {floor != null && (
+          <ReferenceLine y={floor} stroke="#EF4444" strokeDasharray="4 4">
+            <Label value={`Band floor ${floor.toFixed(1)}%`} position="insideBottomLeft" fontSize={10} fill="#EF4444" />
+          </ReferenceLine>
+        )}
 
         {nextFloor != null && (
           <ReferenceLine y={nextFloor} stroke="#00C896" strokeDasharray="4 4">

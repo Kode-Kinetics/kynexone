@@ -366,14 +366,43 @@ public class SalaryAdvance : ITenantOwned, ICompanyScopedOperational
     public decimal TotalRepaid { get; set; }
     public decimal OutstandingBalance { get; set; }
     public string Reason { get; set; } = string.Empty;
-    public string Status { get; set; } = "Pending";         // Pending, Approved, Rejected, Active, Settled
+    /// <summary>Pending → Approved (terms agreed, awaiting payout) → Active (paid, recovered by payroll) → Closed.
+    /// Rejected and Cancelled are the unpaid exits. Settled is a legacy manual-settlement value.</summary>
+    public string Status { get; set; } = "Pending";
     public string? RejectionReason { get; set; }
+    /// <summary>When Finance recorded the payout. Null on an unpaid advance, and on an Active advance created by the
+    /// old flow, which posted the disbursement at approval and counts as paid.</summary>
+    public DateTime? PaidAtUtc { get; set; }
+    /// <summary>The bank or cash reference of the payout; a repeated payout with the same reference is idempotent.</summary>
+    public string? PaymentReference { get; set; }
+    public Guid? PaidByUserId { get; set; }
+    public DateTime? CancelledAtUtc { get; set; }
+    public string? CancelReason { get; set; }
     public bool IsLockedByPayroll { get; set; }
     public bool IsDeleted { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
     public Guid? UpdatedBy { get; set; }
+}
+
+/// <summary>
+/// The salary-advance status vocabulary. Pending → Approved (terms agreed, awaiting payout) → Active (paid, recovered by
+/// payroll) → Closed; Rejected and Cancelled are the unpaid exits; Settled is a legacy manual settlement. AdvancesController owns
+/// every transition; payroll moves Active to Closed.
+/// </summary>
+public static class AdvanceStatuses
+{
+    public const string Pending = "Pending";
+    public const string Approved = "Approved";
+    public const string Active = "Active";
+    public const string Closed = "Closed";
+    public const string Settled = "Settled";
+    public const string Rejected = "Rejected";
+    public const string Cancelled = "Cancelled";
+
+    /// <summary>The cash left: paid out and being recovered, or recovered. An Approved advance has not been paid.</summary>
+    public static bool IsPaid(string? status) => status is Active or Closed or Settled;
 }
 
 public class AdvanceApproval : ITenantOwned

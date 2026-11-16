@@ -32,6 +32,9 @@ export const employeeHireApi = {
   saBanks: () => client.get<SaBank[]>('/api/reference/sa-banks').then(r => (Array.isArray(r.data) ? r.data : null)).catch(() => null),
   /** CD26: the existing employee GET, used to resume a draft. The server scopes it; a 404 or 403 means the draft is not available to this user. */
   loadDraft: (id: number) => client.get<EmployeeDetail & { updatedAtUtc?: string }>(`/api/employees/${id}`).then(r => r.data),
+  /** What a new hire in this company starts with (the company's default notice period). Nulls when there is none, or it cannot be loaded: nothing is pre-filled. */
+  defaults: (companyId: string) => client.get<{ noticePeriodDays?: number | null }>('/api/employees/hire-defaults', { params: { companyId } })
+    .then(r => ({ noticePeriodDays: typeof r.data?.noticePeriodDays === 'number' ? r.data.noticePeriodDays : null })).catch(() => ({ noticePeriodDays: null })),
   /** Null when the endpoint is not there yet: the picker then uses the built-in ISO list. */
   nationalities: () => client.get<ApiNationality[]>('/api/reference/nationalities').then(r => (Array.isArray(r.data) ? r.data : null)).catch(() => null),
 };

@@ -247,7 +247,7 @@ test('Finance records a failed line, retries it, and requests audited correction
   await page.getByRole('button', { name: 'Record Outcome — LN-001' }).click();
   await page.getByLabel('Bank reference', { exact: true }).fill('RETRY-100');
   await page.getByRole('button', { name: 'Confirm Loan Payment Outcome' }).click();
-  await expect(page.getByRole('dialog').getByText('PartiallyPaid', { exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog').getByText('Partially paid', { exact: true })).toBeVisible();
   await expect(page.getByRole('dialog').getByText('Instruction total:', { exact: false })).toContainText('SAR');
   await expect(page.getByText('Paid amount', { exact: true }).locator('..')).toContainText('1,000.00');
   await expect(page.getByText('Remaining to pay', { exact: true }).locator('..')).toContainText('1,000.00');
@@ -359,8 +359,8 @@ test('cancelled or waived schedule history does not create a collectible balance
   await page.getByRole('button', { name: 'View loan LN-001' }).click();
   const statement = page.getByRole('region', { name: 'Loan statement' });
   for (const label of ['Outstanding', 'Due to date', 'Overdue']) await expect(statement.getByText(label, { exact: true }).locator('..')).toContainText('0.00');
-  await expect(page.getByRole('row').filter({ hasText: '2020-01-01' })).toContainText('Cancelled');
-  await expect(page.getByRole('row').filter({ hasText: '2020-02-01' })).toContainText('Waived');
+  await expect(page.getByRole('row').filter({ hasText: /1 Jan(uary)? 2020|Jan(uary)? 1, 2020/ })).toContainText('Cancelled');
+  await expect(page.getByRole('row').filter({ hasText: /1 Feb(ruary)? 2020|Feb(ruary)? 1, 2020/ })).toContainText('Waived');
   expect(errors).toEqual([]);
 });
 

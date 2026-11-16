@@ -368,7 +368,7 @@ export function AttendancePage() {
   const resultsNote = filtering && !loading && activeTab === 'dashboard' ? t('{count, plural, one {# result} other {# results}}', { count: dailyTotal }) : '';
   const toggleTile = (tile: AttendanceTile) => { setStatusFilter(''); setTileFilter((current) => (current === tile ? '' : tile)); };
   // The empty-state wording for the pressed tile: the status it is named after, or the missing-punch sentence.
-  const tileStatusLabel = tileFilter === 'present' ? 'Present' : tileFilter === 'late' ? 'Late' : tileFilter === 'absent' ? 'Absent' : statusFilter;
+  const tileStatusLabel = tileFilter === 'present' ? t('Present') : tileFilter === 'late' ? t('Late') : tileFilter === 'absent' ? t('Absent') : statusFilter;
 
   const dailyEmpty = filtering ? (
     <EmptyState kind="filtered" title={t('No records match')}
@@ -521,7 +521,7 @@ export function AttendancePage() {
               {unavailableMessage('daily', loadErrors) ? <DomainUnavailable message={unavailableMessage('daily', loadErrors)!} /> : <DailyTable records={daily} loading={loading} empty={dailyEmpty} />}
             </div>
             <div className="grid gap-5 md:grid-cols-2 wide:w-96 wide:shrink-0 wide:grid-cols-1">
-              <Panel title={t('Device Health')} action={deviceSyncUnavailable ? 'Unavailable' : `${deviceSync.length} devices`}>
+              <Panel title={t('Device Health')} action={deviceSyncUnavailable ? t('Unavailable') : t('{count, plural, one {# device} other {# devices}}', { count: deviceSync.length })}>
                 {deviceSyncUnavailable ? <DomainUnavailable message={deviceSyncUnavailable} /> : (
                   <div className="space-y-3">
                     {deviceSync.length === 0 && <DeviceEmpty />}
@@ -538,7 +538,7 @@ export function AttendancePage() {
                   </div>
                 )}
               </Panel>
-              <Panel title={t('Exceptions')} action={insightsUnavailable ? 'Unavailable' : `${insights.length} open`}>
+              <Panel title={t('Exceptions')} action={insightsUnavailable ? t('Unavailable') : t('{count} open', { count: insights.length })}>
                 {insightsUnavailable ? <DomainUnavailable message={insightsUnavailable} /> : <InsightList insights={insights.slice(0, 5)} />}
               </Panel>
             </div>
@@ -572,7 +572,7 @@ export function AttendancePage() {
 )}
             {canManageSources && <AttendanceCsvImportPanel onImported={load} />}
           </div>
-          <Panel title={t('Raw Punch Logs')} action={rawUnavailable ? 'Unavailable' : `${rawEvents.length} latest`}>
+          <Panel title={t('Raw Punch Logs')} action={rawUnavailable ? t('Unavailable') : t('{count} latest', { count: rawEvents.length })}>
             {rawUnavailable ? <DomainUnavailable message={rawUnavailable} /> : <RawTable rows={rawEvents} canViewSelfie={hasPermission('attendance.evidence.view')} />}
           </Panel>
         </div>
@@ -583,9 +583,9 @@ export function AttendancePage() {
           {dailyUnavailable && <DomainUnavailable message={dailyUnavailable} />}
           {canProcess && <AttendanceProcessPanel blocked={!!loadErrors.daily} onProcessed={load} />}
           <div className="grid gap-5 md:grid-cols-3">
-            <Kpi label={t('Worked Today')} value={dailyUnavailable ? 'Unavailable' : minutes(totalWorked)} icon={Timer} tone="blue" />
-            <Kpi label={t('Overtime Cases')} value={dashboardUnavailable ? 'Unavailable' : (summary?.overtimeEmployees ?? 0)} icon={Clock} tone="amber" />
-            <Kpi label={t('Payroll Locked')} value={dailyUnavailable ? 'Unavailable' : daily.filter((x) => x.isPayrollLocked).length} icon={ShieldCheck} tone="slate" />
+            <Kpi label={t('Worked Today')} value={dailyUnavailable ? t('Unavailable') : minutes(totalWorked)} icon={Timer} tone="blue" />
+            <Kpi label={t('Overtime Cases')} value={dashboardUnavailable ? t('Unavailable') : (summary?.overtimeEmployees ?? 0)} icon={Clock} tone="amber" />
+            <Kpi label={t('Payroll Locked')} value={dailyUnavailable ? t('Unavailable') : daily.filter((x) => x.isPayrollLocked).length} icon={ShieldCheck} tone="slate" />
           </div>
         </div>
       )}
@@ -611,7 +611,7 @@ export function AttendancePage() {
             </div>
           </form>
 )}
-          <Panel title={t('Pending Approval Queue')} action={correctionQueueUnavailable ? 'Unavailable' : `${pendingRegularizations.length} pending`}>
+          <Panel title={t('Pending Approval Queue')} action={correctionQueueUnavailable ? t('Unavailable') : t('{count} pending', { count: pendingRegularizations.length })}>
             <input className="input mb-3 w-full" value={decisionComment} onChange={(e) => setDecisionComment(e.target.value)} aria-label={t('Decision comment')} />
             {correctionQueueUnavailable
               ? <DomainUnavailable message={correctionQueueUnavailable} />
@@ -624,7 +624,7 @@ export function AttendancePage() {
 
       {activeTab === 'reports' && (
         <div className="grid gap-5 xl:grid-cols-2">
-          <Panel title={t('Payroll Attendance Summary')} action={payrollSummaryUnavailable ? 'Unavailable' : `${payrollSummary.length} employees`}>
+          <Panel title={t('Payroll Attendance Summary')} action={payrollSummaryUnavailable ? t('Unavailable') : t('{count, plural, one {# employee} other {# employees}}', { count: payrollSummary.length })}>
             {payrollSummaryUnavailable ? <DomainUnavailable message={payrollSummaryUnavailable} /> : <PayrollTable rows={payrollSummary} />}
           </Panel>
           <Panel title={t('Daily Exception Reports')} action={filterDate}>
@@ -635,7 +635,7 @@ export function AttendancePage() {
 
       {activeTab === 'ai' && (
         <div className="grid gap-5 lg:grid-cols-[1fr_360px]">
-          <Panel title={t('Attendance Insights')} action={insightsUnavailable ? 'Unavailable' : `${insights.length} signals`}>
+          <Panel title={t('Attendance Insights')} action={insightsUnavailable ? t('Unavailable') : t('{count, plural, one {# signal} other {# signals}}', { count: insights.length })}>
             {insightsUnavailable ? <DomainUnavailable message={insightsUnavailable} /> : <InsightList insights={insights} />}
           </Panel>
           <Panel title={t('Human Review Guardrails')}>

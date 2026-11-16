@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { retainedEmailRequest, offerWorkspacePath, canOfferAction, communicationLabel, draftInput } from '../src/api/offerLifecycle';
-import client from '../src/api/client';
+import { retainedEmailRequest, offerWorkspacePath, canOfferAction, communicationLabel, draftInput, offerLifecycleApi } from '../src/api/offerLifecycle';
+import client, { setActiveCompanyId } from '../src/api/client';
 import { applicationsApi, offersApi } from '../src/api/recruitment';
 import { offerTemplatesApi } from '../src/api/offerTemplates';
 import { employeeDraftsApi } from '../src/api/employeeDrafts';
@@ -58,4 +58,18 @@ test('candidate preview sends parent identity and version and handoff never send
     expect(captured[0].body).toEqual({ offerId: 'actual-offer', expectedVersion: 12, design: { schemaVersion: 2 } });
     expect(captured[1].body).toEqual({ expectedVersion: 6, dispositions: [{ code: 'BASIC', action: 'Payroll', payrollField: 'BasicSalary' }], confirm: true });
   } finally { client.defaults.adapter = original; }
+});
+
+test('component options are always requested for the offer\'s own company, even when the caller has no company selected', async () => {
+  // A group-scope user in a one-company workspace has no switcher and no selected company, and the
+  // endpoint refuses a request that names none (403) — which left Save draft permanently disabled.
+  const seen: Record<string, unknown>[] = [];
+  const original = client.defaults.adapter;
+  client.defaults.adapter = async config => { seen.push({ url: config.url, company: config.headers?.get?.('X-Company-Id') ?? (config.headers as Record<string, unknown> | undefined)?.['X-Company-Id'] }); return { data: {}, status: 200, statusText: 'OK', headers: {}, config }; };
+  try {
+    await offerLifecycleApi.options('2027-01-15', 'offer-company');
+    setActiveCompanyId('other-company');
+    await offerLifecycleApi.options('2027-01-15', 'offer-company');
+    expect(seen.map(r => r.company)).toEqual(['offer-company', 'offer-company']);
+  } finally { client.defaults.adapter = original; setActiveCompanyId(null); }
 });

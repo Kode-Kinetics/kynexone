@@ -289,6 +289,25 @@ public class MfaService : IMfaService
                 user.MfaFailedCount++;
                 if (challenge.FailedAttempts >= MfaChallengeToken.MaxAttempts)
                     challenge.UsedAtUtc = verifiedAtUtc;
+                // The same per-account lockout as the sign-in code step: a new enrollment challenge can be requested as often as the
+                // password allows, so the account count, not the challenge, bounds the wrong codes. At the threshold the account is locked
+                // for the tenant's lockout period; an administrator's unlock or the end of the period clears it.
+                var mfaLocked = user.MfaFailedCount >= AuthService.MfaFailedLockoutThreshold;
+                if (mfaLocked)
+                {
+                    var policy = await _db.SecuritySettings.AsNoTracking()
+                        .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, cancellationToken);
+                    user.IsLocked = true;
+                    user.LockoutEnd = verifiedAtUtc.AddMinutes(policy?.LockoutDurationMinutes ?? 15);
+                    _db.AuditLogs.Add(AuthAuditEntry.Create(
+                        Guid.NewGuid(),
+                        verifiedAtUtc,
+                        "auth.account_locked",
+                        "User",
+                        user.Id.ToString(),
+                        new RequestContext(null, null, user.Id, user.TenantId),
+                        "{\"reason\":\"account_locked_after_repeated_mfa_failures\",\"step\":\"enrollment\"}"));
+                }
                 _db.AuditLogs.Add(AuthAuditEntry.Create(
                     auditId,
                     verifiedAtUtc,

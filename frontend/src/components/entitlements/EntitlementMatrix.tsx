@@ -36,7 +36,7 @@ import {
 import {
   FLOOR_PROBLEM, applyFromGradeUpward, applySameForAll, blankDraft, cellKey, dependantKeys, draftFromCell, draftProblem, groupKeys, groupOrder,
   inputFromDraft, markRestNotOffered, monthStarts, periodChoiceKeys, sameDraft, summarise, tierKeys, type CellDraft, type SummaryPart,
-  draftStorageKey, guideProgress, restoreDrafts, savedFrom, type SavedDrafts, gridToCsv, importGrid, type GridImport,
+  draftStorageKey, defaultEffectiveFrom, guideProgress, restoreDrafts, savedFrom, type SavedDrafts, gridToCsv, importGrid, type GridImport,
 } from '../../lib/entitlementMatrix';
 
 const valueTypeKeys: Record<string, string> = {
@@ -136,10 +136,9 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
     // Unpublished edits come back after a reload or a new benefit, as long as the value each one started from is unchanged.
     const kept = restoreDrafts(next, saved);
     setMatrix(m); setOriginal(next); setDrafts(kept.drafts); setServerErrors([]);
-    return kept.restored;
     // Editing the grid as of a later date publishes from that date by default (an earlier date would sit under it).
-    const floor = m.asOf > m.today ? m.asOf : m.today;
-    setEffectiveFrom(current => (current && current >= floor ? current : floor));
+    setEffectiveFrom(current => defaultEffectiveFrom(current, m));
+    return kept.restored;
   }, []);
 
   const load = useCallback(async (date?: string | null) => {
@@ -224,6 +223,7 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
     setError(''); setNotice(''); setServerErrors([]);
     if (!changed.length) { setError(t('Change at least one benefit before publishing.')); return; }
     if (problems.length) { setError(t('Some benefits need correcting before they can be published.')); return; }
+    if (!effectiveFrom) { setError(t('Choose the date these changes start from.')); return; }
     setPublishing(true);
     try {
       const result = await entitlementsApi.publish({ companyId: companyId || null, effectiveFrom, cells: changed.map(inputFromDraft) });

@@ -8,7 +8,7 @@ const SHOTS = process.env.APP_CHROME_SHOTS_DIR;
 
 /** Found in English on the Arabic Setup page and sidebar by the design review (decisions item 11). */
 const LISTED_ENGLISH = [
-  'Group Overview', 'Insights & Reports', 'Tax Policies', 'GOSI Filing', 'Parallel Run Variance', 'Home',
+  'Group Overview', 'Insights & Reports', 'Tax Policies', 'GOSI Reconciliation', 'Parallel Run Variance', 'Home',
   'Import CSV', 'Template', 'Export', 'Importing…', 'Checking…',
 ];
 
@@ -175,7 +175,7 @@ test.describe('Arabic leftovers', () => {
       expect(sidebarText.split('\n').map(line => line.trim()), `sidebar shows "${english}"`).not.toContain(english);
     }
     // Tax policies is a Setup section now (setup consolidation), no longer a sidebar entry.
-    for (const arabic of ['نظرة على المجموعة', 'التحليلات والتقارير', 'ملفات التأمينات الاجتماعية', 'فروقات التشغيل الموازي']) {
+    for (const arabic of ['نظرة على المجموعة', 'التحليلات والتقارير', 'مطابقة التأمينات الاجتماعية', 'فروقات التشغيل الموازي']) {
       expect(sidebarText, `sidebar shows «${arabic}»`).toContain(arabic);
     }
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/sidebar-ar-${info.project.name}.png` });

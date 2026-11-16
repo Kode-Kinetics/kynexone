@@ -253,6 +253,26 @@ internal static class OrganizationLabelArabic
         Add("الاستقبال", "Reception");
         Add("مكتب الموقع", "Site Office");
 
+        // Leave types (the leave-type form's "Suggest (AR)"): reviewed HR wording, never the phonetic reading
+        // ("Unpaid Leave" used to come out as "ونبايد ليافي"). Names that are not here give no suggestion.
+        Add("إجازة سنوية", "Annual Leave");
+        Add("إجازة مرضية", "Sick Leave", "Medical Leave");
+        Add("إجازة بدون راتب", "Unpaid Leave", "Leave Without Pay");
+        Add("إجازة أمومة", "Maternity Leave");
+        Add("إجازة أبوة", "Paternity Leave");
+        Add("إجازة الحج", "Hajj Leave");
+        Add("إجازة زواج", "Marriage Leave");
+        Add("إجازة وفاة", "Bereavement Leave");
+        Add("إجازة طارئة", "Emergency Leave");
+        Add("إجازة دراسية", "Study Leave");
+        Add("إجازة اختبار", "Exam Leave", "Examination Leave");
+        Add("إجازة تعويضية", "Compensatory Leave", "Comp-Off Leave", "Compensatory Off");
+        Add("إجازة عارضة", "Casual Leave");
+        Add("إجازة العدة", "Iddah Leave");
+        Add("إجازة العدة (لغير المسلمة)", "Iddah Leave (non-Muslim)");
+        Add("إجازة وفاة (أخ أو أخت)", "Bereavement Leave (sibling)");
+        Add("إجازة المولود", "Paternity Leave (birth)");
+
         // Leadership.
         Add("الرئيس التنفيذي", "Chief Executive Officer", "CEO");
         Add("المدير المالي", "Chief Financial Officer", "CFO");

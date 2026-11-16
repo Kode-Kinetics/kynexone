@@ -86,7 +86,7 @@ test('setup_owned_destinations_carry_the_section_label_and_route_labels_are_unch
     payroll: 'Payroll and salary structures', benefits: 'Benefit enrolments', loans: 'Loans and advances',
     learning: 'Learning catalogue and rules', engagement: 'Engagement survey templates', performance: 'Performance cycles',
     succession: 'Succession and development', hrRequests: 'Request center', hrLetters: 'HR letters', offboarding: 'Offboarding and settlement',
-    compliance: 'Documents and renewals', saudiComplianceDashboard: 'Saudization and Qiwa status', gosiFiling: 'GOSI filing',
+    compliance: 'Documents and renewals', saudiComplianceDashboard: 'Saudization and Qiwa status', gosiFiling: 'GOSI reconciliation',
   };
   const sectionIds = new Set([...SETUP_SETTING_SECTIONS, ...SETUP_MODULE_SECTIONS].map(section => section.id as string));
   expect(Object.fromEntries(destinations().filter(item => !sectionIds.has(item.id)).map(item => [item.id, item.label]))).toEqual(expectedLabels);

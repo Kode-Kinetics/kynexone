@@ -157,11 +157,11 @@ public class BonusGlIndependentAuditTests
     }
 
     /// <summary>
-    /// An advance disburses only when a second person approves it, so the request is made by one login and the
-    /// approval by another (each <see cref="Advances"/> call signs in a fresh user). Returns the approval result,
-    /// which is where the disbursement journal is posted, and where a closed period refuses it.
+    /// An advance is requested by one login, approved by another (each <see cref="Advances"/> call signs in a fresh user),
+    /// and paid out by Finance. Approval posts nothing, so a closed period never refuses it; the payout posts the
+    /// disbursement journal on the paid date (today here), and that is where a closed period refuses. Returns the payout result.
     /// </summary>
-    private static async Task<IActionResult> RequestAndApproveAdvance(ZayraDbContext db, Guid tid, Employee emp, decimal amount)
+    private static async Task<IActionResult> RequestApproveAndPayAdvance(ZayraDbContext db, Guid tid, Employee emp, decimal amount)
     {
         (await Advances(db, tid).Create(
                 new CreateAdvanceRequest(Guid.Empty, emp.FullName, amount, "Installments", 3, null, "rent", emp.Id), CancellationToken.None))
@@ -169,7 +169,12 @@ public class BonusGlIndependentAuditTests
         db.ChangeTracker.Clear();
         var pending = await db.SalaryAdvances.IgnoreQueryFilters()
             .SingleAsync(x => x.TenantId == tid && x.EmployeeIntId == emp.Id && x.Status == "Pending");
-        return await Advances(db, tid).Approve(pending.Id, new AdvanceApproveRequest(amount, 3, null), CancellationToken.None);
+        (await Advances(db, tid).Approve(pending.Id, new AdvanceApproveRequest(amount, 3, null), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>("approving an advance posts nothing, so it is never refused by a closed period");
+        db.ChangeTracker.Clear();
+        var finance = Advances(db, tid);
+        ((ClaimsIdentity)finance.User.Identity!).AddClaim(new Claim(ClaimTypes.Role, "Finance"));
+        return await finance.Payout(pending.Id, new AdvancePayoutRequest(null, $"BANK-{pending.Id:N}"[..20], null), CancellationToken.None);
     }
 
     private static FinanceGlController Gl(ZayraDbContext db, Guid tid)
@@ -555,10 +560,10 @@ public class BonusGlIndependentAuditTests
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 
-        // ── ADVANCE: disbursed when a second person approves it. ──
-        (await RequestAndApproveAdvance(db, tid, empA, 900m)).Should().BeOfType<OkObjectResult>();
+        // ── ADVANCE: approved by a second person, disbursed when Finance records the payout. ──
+        (await RequestApproveAndPayAdvance(db, tid, empA, 900m)).Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
-        (await RequestAndApproveAdvance(db, tid, empB, 1_200m)).Should().BeOfType<OkObjectResult>();
+        (await RequestApproveAndPayAdvance(db, tid, empB, 1_200m)).Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 
         var gl = await Ledger(db, tid);
@@ -663,16 +668,16 @@ public class BonusGlIndependentAuditTests
             .Should().BeOfType<UnprocessableEntityObjectResult>("company A's period is closed to loan disbursement");
         db.ChangeTracker.Clear();
 
-        await FluentActions.Awaiting(() => RequestAndApproveAdvance(db, tid, empA, 900m))
-            .Should().ThrowAsync<PeriodClosedException>("company A's period is closed to advance disbursement");
+        (await RequestApproveAndPayAdvance(db, tid, empA, 900m))
+            .Should().BeOfType<UnprocessableEntityObjectResult>("company A's period is closed to advance disbursement");
         db.ChangeTracker.Clear();
 
         (await Ledger(db, tid)).Should().BeEmpty(
-            "the guard throws BEFORE SaveChanges — a closed period must leave no partial journal behind");
+            "the guards refuse BEFORE SaveChanges — a closed period must leave no partial journal behind");
         (await db.EmployeeLoans.IgnoreQueryFilters().SingleAsync(x => x.TenantId == tid)).Status.Should().Be("Approved",
             "the approved loan remains awaiting payment when the payment period is closed");
-        (await db.SalaryAdvances.IgnoreQueryFilters().SingleAsync(x => x.TenantId == tid)).Status.Should().Be("Pending",
-            "the refused approval leaves the request waiting, with nothing disbursed");
+        (await db.SalaryAdvances.IgnoreQueryFilters().SingleAsync(x => x.TenantId == tid)).Status.Should().Be("Approved",
+            "the refused payout leaves the advance approved and awaiting payout, with nothing disbursed");
 
         // ── Company B: same period, still open → all three post normally. ──
         var batchB = await Batch(db, tid, period, "BON-EB", (empB, 2_000m, 0m));
@@ -682,7 +687,7 @@ public class BonusGlIndependentAuditTests
         (await DisburseLoan(db, tid, empB, loanType.Id, 8_000m, 8))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
-        (await RequestAndApproveAdvance(db, tid, empB, 1_200m)).Should().BeOfType<OkObjectResult>();
+        (await RequestApproveAndPayAdvance(db, tid, empB, 1_200m)).Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 
         var gl = await Ledger(db, tid);
@@ -735,8 +740,8 @@ public class BonusGlIndependentAuditTests
                 "tightening the guard to per-company must NOT weaken a group-wide close");
         db.ChangeTracker.Clear();
 
-        await FluentActions.Awaiting(() => RequestAndApproveAdvance(db, tid, empB, 1_200m))
-            .Should().ThrowAsync<PeriodClosedException>();
+        (await RequestApproveAndPayAdvance(db, tid, empB, 1_200m))
+            .Should().BeOfType<UnprocessableEntityObjectResult>("a group-wide close blocks the advance payout too");
         db.ChangeTracker.Clear();
 
         (await Ledger(db, tid)).Should().BeEmpty();
@@ -777,12 +782,13 @@ public class BonusGlIndependentAuditTests
 
         var payroll = Payroll(db, tid);
         await Lock(db, payroll, run.Id);
+        // Lock relieves the covered advance receivable itself, so the loan remittance has nothing left to clear.
         (await payroll.RemitStatutory(run.Id, new RemitStatutoryRequest("LOAN", "EMI"), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+            .Should().BeOfType<ConflictObjectResult>();
         db.ChangeTracker.Clear();
 
         var gl = await Ledger(db, tid);
-        AssertBalanced(gl, "disbursement + accrual + remittance must balance");
+        AssertBalanced(gl, "disbursement + accrual must balance");
         Asset(gl, "1410").Should().Be(0m,
             "the advance receivable must amortise to ZERO once the instalment is withheld from pay");
         Liability(gl, "2107").Should().Be(0m, "the loan-deduction control account clears");

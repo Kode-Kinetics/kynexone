@@ -139,6 +139,18 @@ public class FieldEncryptionWritePathTests
     }
 
     [Fact]
+    public async Task ADraftsIdNumber_IsEncryptedLikeItsOtherIdentityNumbers_WithoutABlindIndex()
+    {
+        var kit = new FeKit(); var t = Guid.NewGuid();
+        await using var db = kit.Db();
+        var draft = new EmployeeDraft { TenantId = t, IdNumber = "1000000008", IqamaNumber = "2123456789" };
+        db.Add(draft); await db.SaveChangesAsync();
+        Enc(db.Entry(draft), "IdNumberEnc").Should().NotBeNull();
+        Enc(db.Entry(draft), "IqamaNumberEnc").Should().NotBeNull();
+        db.Entry(draft).Metadata.FindProperty("IdNumberBidx").Should().BeNull();
+    }
+
+    [Fact]
     public async Task WhereBlindIndex_FindsTheRow_AcrossFormatVariants_AndNeverAcrossTenants()
     {
         var kit = new FeKit(); var a = Guid.NewGuid(); var b = Guid.NewGuid();

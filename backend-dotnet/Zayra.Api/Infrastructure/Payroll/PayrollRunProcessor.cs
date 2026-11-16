@@ -550,14 +550,13 @@ public sealed class PayrollRunProcessor
 
         // COMPLIANCE: Load active loans and salary advances per employee for EMI deduction
         var loanCompanyId = company.Id;
-        var activeLoans = await Op(_db.EmployeeLoans).AsNoTracking()
-            .Where(l => l.TenantId == tenantId && l.CompanyId == loanCompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
-                && (!l.RepaymentStartDate.HasValue || l.RepaymentStartDate.Value <= periodEnd))
-            .ToListAsync(cancellationToken);
-        var activeAdvances = await Op(_db.SalaryAdvances).AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
-                && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd))
-            .ToListAsync(cancellationToken);
+        // The leavers whose final settlement this run pays, filled in once the settlements are read below. A leaver's loans and
+        // advances are recovered whole from the final pay whatever their repayment start date (see collectableAdvance).
+        var settlingEmployeeIds = new List<int>();
+        System.Linq.Expressions.Expression<Func<EmployeeLoan, bool>> collectableLoan = l =>
+            l.TenantId == tenantId && l.CompanyId == loanCompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
+                && (!l.RepaymentStartDate.HasValue || l.RepaymentStartDate.Value <= periodEnd || settlingEmployeeIds.Contains(l.EmployeeIntId.Value));
+        // The loans and salary advances are loaded below, once the leavers this run settles are known.
 
         var approvedAdjustments = await _db.PayrollAdjustments.AsNoTracking()
             .Where(a => a.TenantId == tenantId && a.PayrollRunId == id && a.Status == "Approved" && employeeIdsForRun.Contains(a.EmployeeId))
@@ -1034,6 +1033,34 @@ public sealed class PayrollRunProcessor
             }
         }
 
+        // COMPLIANCE: the salary advances this run collects from. A first, unlocked look, like the loans: they are locked and
+        // re-read inside the transaction below. A leaver whose final settlement this run pays has the WHOLE outstanding advance
+        // recovered from the final pay whatever its repayment start date: the settlement planned exactly that
+        // (PlannedAdvanceRecovery counts every open advance), and skipping one not yet due paid the full settlement out and moved
+        // the advance to 1420, to be chased from an ex-employee. Everyone else is collected from the advance's start date.
+        //
+        // Only advances owned by this run's company, exactly as for loans (collectableLoan): an advance is the 1410 receivable of
+        // the legal entity that paid it, and this run's accrual relieves this company's 1410. An employee who moved to another
+        // entity is therefore NOT charged in the new entity's payroll for the old entity's advance; it is collected only in the
+        // owning entity's runs, which no longer carry the employee, so (as for a loan) the old entity must settle it at the
+        // transfer. Collecting it here instead would credit a 1410 this company never debited. A legacy advance with no company
+        // (written before company scope was required, not yet backfilled) is still collected, as before: the ledger treats the
+        // unattributed 1410 pool as part of every company's view (GlControlAccounts), and dropping it would silently stop
+        // collecting a debt.
+        settlingEmployeeIds.AddRange(settlementsByEmp.Keys);
+        // COMPLIANCE: the loans this run collects from, on the same rule. A first, unlocked look: the loans are locked and re-read
+        // inside the transaction below. A leaver's loan not yet due is recovered whole from the final pay, as the settlement plan
+        // (PlannedLoanRecovery counts every open loan) promised; it used to be skipped, so the plan and the run disagreed.
+        var activeLoans = await Op(_db.EmployeeLoans).AsNoTracking().Where(collectableLoan).ToListAsync(cancellationToken);
+        var loanCandidateIds = activeLoans.Select(l => l.Id).ToList();
+        // The ownership rule itself (this company's, or no company) is AdvanceRecoveryScope, shared with the settlement plan and the
+        // settlement payment so the three cannot drift apart, and read the same way for every caller (never through Op()).
+        System.Linq.Expressions.Expression<Func<SalaryAdvance, bool>> collectableAdvance = a =>
+            a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value)
+                && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd || settlingEmployeeIds.Contains(a.EmployeeIntId.Value));
+        var activeAdvances = await AdvanceRecoveryScope.Query(_db, tenantId, loanCompanyId).AsNoTracking().Where(collectableAdvance).ToListAsync(cancellationToken);
+        var advanceCandidateIds = activeAdvances.Select(a => a.Id).ToList();
+
         // ── P0-2: ALL-OR-NOTHING MUTATION ──────────────────────────────────────────
         // Everything from here (idempotent delete → slip writes → statutory/loan/advance
         // ledger decrements → audit) commits as one transaction, so a cancel/crash/DB error
@@ -1047,12 +1074,14 @@ public sealed class PayrollRunProcessor
         // read-only snapshots loaded above are immutable and safe to reuse across a retry.
         int? failingEmployeeId = null;
         string? failingEmployeeCode = null;
+        PayrollProcessOutcome? refusedUnderLock = null;
         var attempt = 0;
         var strategy = _db.Database.CreateExecutionStrategy();
         try
         {
             await strategy.ExecuteAsync(async () =>
             {
+            refusedUnderLock = null;
             // Retry-safety: on a transient RETRY, discard the failed attempt's tracked state so the
             // rebuild starts clean. We do NOT clear on the first attempt — that would detach entities
             // the caller is still holding (the request's scoped context), changing observable behaviour.
@@ -1065,6 +1094,36 @@ public sealed class PayrollRunProcessor
             // The transaction MUST open BEFORE the ExecuteUpdateAsync impact-status writes below,
             // otherwise that raw SQL auto-commits on its own connection and re-opens the split.
             await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
+
+            // LOCK ORDER, step 2 (FinanceDecisionSerializer.AcquireDebtLocksAsync documents the whole order): the run row FOR UPDATE,
+            // FIRST in the transaction, before the loan and advance locks below. A void of a run in a processable status (Draft,
+            // Failed) takes this row first and, when it cascades over a live child run, the chain's debt locks after it; Process used
+            // to take the debt locks first and write the run row last, so a void cascading over a Draft child could deadlock with the
+            // Process of that child (40P01), and a Process that had read the run before a void committed could write "Processed" over
+            // "Voided". Settle needs a Locked run, which Process refuses, so it cannot meet Process on one run. The status is read
+            // again under the lock (the tracked copy above may be stale, and a tracked entity is not refreshed by a second query):
+            // a run voided or processed while this pass waited is refused with the same answer the up-front check gives.
+            var lockedStatus = await Op(_db.PayrollRuns).TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                .AsNoTracking().Where(r => r.Id == id && r.TenantId == tenantId)
+                .Select(r => r.Status).FirstOrDefaultAsync(cancellationToken);
+            if (lockedStatus is null) { refusedUnderLock = NotFound(); return; }
+            if (CheckRunState(new PayrollRun { Status = lockedStatus }) is { } refusal) { refusedUnderLock = refusal; return; }
+
+            // Loan-level serialisation with every other writer of these loans, above all the cash early settlement
+            // (LoansController.RecordRepayment), which holds the same finance.loan advisory lock. Taken right after the
+            // run row above, before any other lock or row write, in ascending key order (the order the loan payout batch
+            // uses), so it cannot deadlock against them. The loans are then re-read under the lock: one settled in cash
+            // after the unlocked look above drops out, and no payoff can commit until this run has committed its
+            // instalment, after which RecordRepayment refuses because an unlocked run holds that instalment.
+            // The advances follow the loans, in the one order every multi-lock writer uses (FinanceDecisionSerializer.AcquireDebtLocksAsync):
+            // the leaver-settlement payment moves both to 1420 and the void restores both, and each re-reads them under these locks.
+            await FinanceDecisionSerializer.AcquireDebtLocksAsync(_db, tenantId, loanCandidateIds, advanceCandidateIds, cancellationToken);
+            activeLoans = loanCandidateIds.Count == 0 ? [] : await Op(_db.EmployeeLoans).AsNoTracking()
+                .Where(collectableLoan).Where(l => loanCandidateIds.Contains(l.Id))
+                .ToListAsync(cancellationToken);
+            activeAdvances = advanceCandidateIds.Count == 0 ? [] : await AdvanceRecoveryScope.Query(_db, tenantId, loanCompanyId).AsNoTracking()
+                .Where(collectableAdvance).Where(a => advanceCandidateIds.Contains(a.Id))
+                .ToListAsync(cancellationToken);
 
             // Idempotent delete of previously-generated rows (enrolls in this tx).
             _db.PayrollSlips.RemoveRange(Op(_db.PayrollSlips).Where(s => s.RunId == id && s.TenantId == tenantId));
@@ -1536,7 +1595,7 @@ public sealed class PayrollRunProcessor
                 EmployeeId:   Guid.Empty, // Employee PK is int; Guid field not used in pack calculations
                 CompanyId:    run.CompanyId ?? Guid.Empty,
                 Salary:       new SalaryBreakdown(priorBasic + statBasic, priorHousing + statHousing + gosiIncludedBonusTotal + gosiArrearsTotal, transport, otherAllowances),
-                Nationality:  e.Nationality ?? string.Empty,
+                Nationality:  Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(e) ?? string.Empty,
                 ContractType: e.ContractType ?? "Indefinite",
                 PeriodYear:   run.Year,
                 PeriodMonth:  run.Month)
@@ -1908,9 +1967,14 @@ public sealed class PayrollRunProcessor
                 // same rows: BASIC's EmitWhenZero flag would otherwise emit a 0.00 BASIC line here while
                 // the legacy branch skipped it entirely. Bonus / Adjustment / Statutory providers survive —
                 // those are exactly the supplemental families a non-recurring run pays.
+                // A leaver whose final settlement this run pays has their loans and advances recovered from it (empLoans / empAdv
+                // above), so their instalment lines are emitted too. Without them the slip's deduction total carried an amount no
+                // line explained (PAYSLIP_LINES_MISMATCH, an Error that blocks Approve and Lock and cannot be overridden) and the
+                // accrual, built from the lines, never relieved 1400 / 1410 while the loan or advance already showed it repaid.
+                // Nobody else in a run without recurring pay has a debt taken, so for them the set is unchanged.
                 var effectiveComponents = includesRecurringPay
                     ? payComponents
-                    : payComponents.Where(c => IsSupplementalPayComponent(c)).ToList();
+                    : payComponents.Where(c => IsSupplementalPayComponent(c) || (isSettlingEmployee && IsDebtRecoveryPayComponent(c))).ToList();
                 var computation = PayComponentEngine.Compute(effectiveComponents, payCtx);
                 // Defence in depth against paying one code twice. The catalog API refuses a component on a cash allowance's code, but a row written
                 // before that rule (or by a path that skipped it) can still be in the store: the engine would pay its configured amount here and the
@@ -2459,12 +2523,10 @@ public sealed class PayrollRunProcessor
         // employee's balance can be touched by it.
         var runDecrementsDebt = includesRecurringPay || settlementsDisbursed.Count > 0;
         var activeLoansMutable = !runDecrementsDebt ? new List<EmployeeLoan>() : await Op(_db.EmployeeLoans)
-            .Where(l => l.TenantId == tenantId && l.CompanyId == loanCompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
-                && (!l.RepaymentStartDate.HasValue || l.RepaymentStartDate.Value <= periodEnd))
+            .Where(collectableLoan)
             .ToListAsync(cancellationToken);
-        var activeAdvMutable = !runDecrementsDebt ? new List<SalaryAdvance>() : await Op(_db.SalaryAdvances)
-            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
-                && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd))
+        var activeAdvMutable = !runDecrementsDebt ? new List<SalaryAdvance>() : await AdvanceRecoveryScope.Query(_db, tenantId, loanCompanyId)
+            .Where(collectableAdvance)
             .ToListAsync(cancellationToken);
 
         // POD-B3 — the loan witness is UNCONDITIONAL and PER-LOAN, and it records the balances as they were
@@ -2491,6 +2553,48 @@ public sealed class PayrollRunProcessor
             loan.OutstandingBalance -= deducted;
             loan.TotalRepaid += deducted;
             if (loan.OutstandingBalance <= 0) loan.Status = "Closed";
+            // Closed by this run (a leaver's final pay recovering the whole loan, or the last instalment): every instalment still
+            // open is settled by it, as a cash early settlement settles them (Paid), so a closed loan carries no Pending rows.
+            if (loan.OutstandingBalance <= 0)
+            {
+                var open = await _db.LoanInstallments
+                    .Where(i => i.TenantId == tenantId && i.LoanId == loan.Id && i.Status == "Pending")
+                    .OrderBy(i => i.DueDate).ThenBy(i => i.InstallmentNumber).ToListAsync(cancellationToken);
+                var left = deducted;
+                for (var k = 0; k < open.Count; k++)
+                {
+                    var row = open[k];
+                    var share = k == open.Count - 1 ? left : Math.Min(left, row.AmountDue - row.AmountPaid);
+                    if (share < 0m) share = 0m;
+                    Witness(PayrollConsumptionArtifacts.LoanInstallment, row.Id, loan.EmployeeIntId ?? 0, share,
+                            row.Status, priorAmountPaid: row.AmountPaid, priorRunId: row.PayrollRunId);
+                    row.Status = "Paid"; row.PaidDate = DateOnly.FromDateTime(DateTime.UtcNow); row.PayrollRunId = id; row.AmountPaid += share;
+                    left -= share;
+                }
+                continue;
+            }
+            // A leaver's final pay that recovers part of the loan settles its instalments in due order, whatever their due dates (the
+            // whole balance was due): each fully covered row Paid, the rest of the take recorded on the next row, every row witnessed.
+            // So a later 1420 move closes exactly the rest, and a void of this run reopens exactly what it took.
+            if (settlingEmployeeIds.Contains(loan.EmployeeIntId ?? 0))
+            {
+                var open = await _db.LoanInstallments
+                    .Where(i => i.TenantId == tenantId && i.LoanId == loan.Id && i.Status == "Pending")
+                    .OrderBy(i => i.DueDate).ThenBy(i => i.InstallmentNumber).ToListAsync(cancellationToken);
+                var left = deducted;
+                foreach (var row in open)
+                {
+                    if (left <= 0m) break;
+                    var share = Math.Min(left, row.AmountDue - row.AmountPaid);
+                    if (share <= 0m) continue;
+                    Witness(PayrollConsumptionArtifacts.LoanInstallment, row.Id, loan.EmployeeIntId ?? 0, share,
+                            row.Status, priorAmountPaid: row.AmountPaid, priorRunId: row.PayrollRunId);
+                    row.AmountPaid += share; row.PayrollRunId = id;
+                    if (row.AmountPaid >= row.AmountDue) { row.Status = "Paid"; row.PaidDate = DateOnly.FromDateTime(DateTime.UtcNow); }
+                    left -= share;
+                }
+                continue;
+            }
             // Record the paid installment
             var inst = await _db.LoanInstallments
                 .OrderBy(i => i.DueDate)
@@ -2518,6 +2622,45 @@ public sealed class PayrollRunProcessor
             adv.OutstandingBalance -= deducted;
             adv.TotalRepaid += deducted;
             if (adv.OutstandingBalance <= 0) adv.Status = "Closed";
+            // Closed by this run: every instalment still open is settled by it (Paid), exactly as for loans above.
+            if (adv.OutstandingBalance <= 0)
+            {
+                var open = await _db.AdvanceInstallments
+                    .Where(i => i.TenantId == tenantId && i.AdvanceId == adv.Id && i.Status == "Pending")
+                    .OrderBy(i => i.DueDate).ThenBy(i => i.InstallmentNumber).ToListAsync(cancellationToken);
+                var left = deducted;
+                for (var k = 0; k < open.Count; k++)
+                {
+                    var row = open[k];
+                    var share = k == open.Count - 1 ? left : Math.Min(left, row.AmountDue - row.AmountPaid);
+                    if (share < 0m) share = 0m;
+                    Witness(PayrollConsumptionArtifacts.AdvanceInstallment, row.Id, adv.EmployeeIntId ?? 0, share,
+                            row.Status, priorAmountPaid: row.AmountPaid, priorRunId: row.PayrollRunId);
+                    row.Status = "Paid"; row.PaidDate = DateOnly.FromDateTime(DateTime.UtcNow); row.PayrollRunId = id; row.AmountPaid += share;
+                    left -= share;
+                }
+                continue;
+            }
+            // A leaver's partial recovery: the same in-order settlement as for loans above.
+            if (settlingEmployeeIds.Contains(adv.EmployeeIntId ?? 0))
+            {
+                var open = await _db.AdvanceInstallments
+                    .Where(i => i.TenantId == tenantId && i.AdvanceId == adv.Id && i.Status == "Pending")
+                    .OrderBy(i => i.DueDate).ThenBy(i => i.InstallmentNumber).ToListAsync(cancellationToken);
+                var left = deducted;
+                foreach (var row in open)
+                {
+                    if (left <= 0m) break;
+                    var share = Math.Min(left, row.AmountDue - row.AmountPaid);
+                    if (share <= 0m) continue;
+                    Witness(PayrollConsumptionArtifacts.AdvanceInstallment, row.Id, adv.EmployeeIntId ?? 0, share,
+                            row.Status, priorAmountPaid: row.AmountPaid, priorRunId: row.PayrollRunId);
+                    row.AmountPaid += share; row.PayrollRunId = id;
+                    if (row.AmountPaid >= row.AmountDue) { row.Status = "Paid"; row.PaidDate = DateOnly.FromDateTime(DateTime.UtcNow); }
+                    left -= share;
+                }
+                continue;
+            }
             var inst = await _db.AdvanceInstallments
                 .OrderBy(i => i.DueDate)
                 .FirstOrDefaultAsync(i => i.TenantId == tenantId && i.AdvanceId == adv.Id && i.Status == "Pending" && i.DueDate <= periodEnd, cancellationToken);
@@ -2616,8 +2759,12 @@ public sealed class PayrollRunProcessor
             if (settlementEncashmentTaken.Count > 0)
             {
                 var balanceIds = settlementEncashmentTaken.Select(x => x.BalanceId).Distinct().ToList();
+                // Locked in id order inside the run's transaction, like the outside-payroll payment: a concurrent writer of the
+                // same rows waits rather than losing this increment (or this one losing theirs).
                 var balanceRows = await _db.EmployeeLeaveBalances
+                    .TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
                     .Where(b => b.TenantId == tenantId && balanceIds.Contains(b.Id))
+                    .OrderBy(b => b.Id)
                     .ToListAsync(cancellationToken);
                 foreach (var (balanceId, empId, days) in settlementEncashmentTaken)
                 {
@@ -2750,6 +2897,8 @@ public sealed class PayrollRunProcessor
         {
             throw; // never reached: the filter only tags the exception and answers false
         }
+        // Refused under the run lock: the transaction ended without a commit, so nothing was written.
+        if (refusedUnderLock is { } refusedOutcome) return refusedOutcome;
         return Ok(run);
     }
 
@@ -2856,6 +3005,11 @@ public sealed class PayrollRunProcessor
         return c.ProviderKey is PayComponentProviders.Bonus or PayComponentProviders.Adjustment or PayComponentProviders.Tax;
     }
 
+    /// <summary>The loan and advance instalment components: emitted in a run without recurring pay only for a leaver whose final
+    /// settlement the run pays, because that is the only employee such a run recovers a debt from.</summary>
+    internal static bool IsDebtRecoveryPayComponent(PayComponent c) =>
+        c.ProviderKey is PayComponentProviders.Loan or PayComponentProviders.Advance;
+
     /// <summary>
     /// The operator's include/exclude intent for one run, and THE rule for who it admits: any Include row makes the run an allow-list (only the named
     /// employees), and an Exclude row removes an employee either way. <see cref="ResolveRunPopulationAsync"/> applies it to the eligible set at Process;
@@ -2953,6 +3107,50 @@ public sealed class PayrollRunProcessor
         return new RunPopulation(population, exclusions, notEligible, selections, mode);
     }
 
+    /// <summary>The newest non-cancelled offboarding's last working day per employee (a re-hire may have an older, completed one).</summary>
+    internal static IEnumerable<(int EmployeeId, DateOnly LastWorkingDay)> NewestLastWorkingDays(
+        IEnumerable<(int EmployeeId, DateOnly LastWorkingDay, DateTime CreatedAtUtc)> offboardings) =>
+        offboardings.GroupBy(o => o.EmployeeId)
+            .Select(g => (g.Key, g.OrderByDescending(o => o.CreatedAtUtc).First().LastWorkingDay));
+
+    /// <summary>
+    /// Whether a non-active employee with this last working day is still paid by the period's run: employed in the period at
+    /// all, and not left before it. The ONE rule the run's leaver union and the compliance readiness population share.
+    /// </summary>
+    internal static bool LeaverIsPayableInPeriod(DateOnly lastWorkingDay, DateTime joiningDate, DateOnly periodStart, DateOnly periodEnd)
+    {
+        var joined = joiningDate == default ? (DateOnly?)null : DateOnly.FromDateTime(joiningDate);
+        if (joined is DateOnly jd && jd > periodEnd) return false;   // not employed in this period at all
+        return lastWorkingDay >= periodStart;                        // false: already left before the period
+    }
+
+    /// <summary>
+    /// The non-active employees (notice-period leavers) the run for this period still pays, tenant-wide, by the same rules as
+    /// <c>LoadEligibleWithLeaversAsync</c>: a non-cancelled offboarding whose last working day is on or after the period's
+    /// start, employed in the period, and no non-voided final-wage slip yet. Company scope is the ambient filter of
+    /// <paramref name="db"/>; the settlement-disbursement branch (runs of that purpose only) is not part of it.
+    /// </summary>
+    internal static async Task<HashSet<int>> PayableLeaverIdsAsync(ZayraDbContext db, Guid tenantId, DateOnly periodStart, DateOnly periodEnd, CancellationToken ct)
+    {
+        var offboardings = await db.EmployeeOffboardings.AsNoTracking()
+            .Where(o => o.TenantId == tenantId && o.Status != "Cancelled" && o.LastWorkingDay >= periodStart)
+            .Select(o => new { o.EmployeeId, o.LastWorkingDay, o.CreatedAtUtc })
+            .ToListAsync(ct);
+        if (offboardings.Count == 0) return [];
+        var lwd = NewestLastWorkingDays(offboardings.Select(o => (o.EmployeeId, o.LastWorkingDay, o.CreatedAtUtc))).ToDictionary(x => x.EmployeeId, x => x.LastWorkingDay);
+        var candidateIds = lwd.Keys.ToList();
+        var leavers = await db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && candidateIds.Contains(e.Id) && e.Status != "Active")
+            .Select(e => new { e.Id, e.JoiningDate })
+            .ToListAsync(ct);
+        var leaverIds = leavers.Select(e => e.Id).ToList();
+        var finalised = (await db.PayrollSlips.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.IsFinalWageMonth && s.Status != "Voided" && leaverIds.Contains(s.EmployeeId))
+            .Select(s => s.EmployeeId).Distinct().ToListAsync(ct)).ToHashSet();
+        return leavers.Where(e => !finalised.Contains(e.Id) && LeaverIsPayableInPeriod(lwd[e.Id], e.JoiningDate, periodStart, periodEnd))
+            .Select(e => e.Id).ToHashSet();
+    }
+
     /// <summary>
     /// POD-C3 — the SAME eligible query as above, UNIONED with this period's LEAVERS.
     ///
@@ -3037,8 +3235,8 @@ public sealed class PayrollRunProcessor
             .ToListAsync(ct);
         if (offboardings.Count == 0) return (active, leaverIds, lwdByEmp, unpayable, settlementIds);
 
-        foreach (var g in offboardings.GroupBy(o => o.EmployeeId))
-            lwdByEmp[g.Key] = g.OrderByDescending(o => o.CreatedAtUtc).First().LastWorkingDay;
+        foreach (var (employeeId, lastWorkingDay) in NewestLastWorkingDays(offboardings.Select(o => (o.EmployeeId, o.LastWorkingDay, o.CreatedAtUtc))))
+            lwdByEmp[employeeId] = lastWorkingDay;
 
         var candidateIds = lwdByEmp.Keys.ToList();
         // COMPANY SCOPE re-applied from the employee, exactly as the Active query does.
@@ -3065,10 +3263,7 @@ public sealed class PayrollRunProcessor
             // POD-C1 — already admitted by the settlement branch above; adding them twice would produce
             // two identical Employee entries and therefore two payslips for one person.
             if (settlementIds.Contains(e.Id)) continue;
-            var lwd = lwdByEmp[e.Id];
-            var joined = e.JoiningDate == default ? (DateOnly?)null : DateOnly.FromDateTime(e.JoiningDate);
-            if (joined is DateOnly jd && jd > pEnd) continue;   // not employed in this period at all
-            if (lwd < pStart) continue;                          // already left before the period
+            if (!LeaverIsPayableInPeriod(lwdByEmp[e.Id], e.JoiningDate, pStart, pEnd)) continue;
             active.Add(e);
             leaverIds.Add(e.Id);
         }

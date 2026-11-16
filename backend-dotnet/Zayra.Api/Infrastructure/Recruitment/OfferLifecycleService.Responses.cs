@@ -76,18 +76,36 @@ public sealed partial class OfferLifecycleService
     }
 
     public Task<JobApplication> ChangeApplicationAsync(OfferActor actor, Guid applicationId, long? expectedVersion,
-        string action, string reason, CancellationToken ct = default) =>
-        OfferApplicationBoundary.ExecuteAsync(db, actor, applicationId, app =>
+        string action, string reason, CancellationToken ct = default, string? overrideReason = null) =>
+        OfferApplicationBoundary.ExecuteAsync(db, actor, applicationId, async app =>
         {
             if (expectedVersion is null) throw new OfferLifecycleException("application_version_required", "Reload the application and submit its expectedVersion.");
             if (app.Version != expectedVersion) throw new OfferLifecycleException("application_version_conflict", "The application changed. Reload before continuing.");
             OfferApplicationBoundary.RequireUnreserved(app); OfferApplicationBoundary.RequireActive(app);
+            string? fromStage = null, toStage = null, gateNote = null;
             if (action == "Reject") { RequireReason(reason); app.Status = "Rejected"; app.RejectionReason = reason; }
             else if (action == "Advance")
             {
                 var next = RecruitmentStages.Next(app.Stage);
                 if (next is null) throw new OfferLifecycleException("application_final_stage", "The application is already at its final stage.");
                 if (next == "Hired") throw new OfferLifecycleException("hire_requires_offer_acceptance", "Accept the offer to hire and create the employee draft.");
+                // An offer follows an interview or an assessment. Without either, the person moving the application says why, and the reason is kept on the timeline.
+                if (next == "Offer")
+                {
+                    var hasInterview = await db.InterviewSchedules.AsNoTracking().AnyAsync(i => i.TenantId == actor.TenantId && i.ApplicationId == app.Id && i.Status != "Cancelled", ct);
+                    var hasAssessment = !hasInterview && await db.CandidateAssessments.AsNoTracking()
+                        .AnyAsync(a => a.TenantId == actor.TenantId && a.ApplicationId == app.Id && (a.Status == "Sent" || a.Status == "InProgress" || a.Status == "Completed"), ct);
+                    switch (OfferStageGate.Evaluate(next, hasInterview, hasAssessment, overrideReason))
+                    {
+                        case OfferStageGateOutcome.NeedsEvaluation:
+                            throw new OfferLifecycleException(OfferStageGate.ErrorCode,
+                                "Nobody has interviewed or assessed this candidate yet. Schedule an interview or assessment first, or give a reason (at least 5 characters) to move to Offer without one.", 422);
+                        case OfferStageGateOutcome.OverriddenWithReason:
+                            gateNote = $"Moved to Offer without an interview or assessment. Reason: {overrideReason!.Trim()}";
+                            break;
+                    }
+                }
+                fromStage = app.Stage; toStage = next;
                 app.Stage = next; app.StageOrder = RecruitmentStages.OrderOf(next); app.StageChangedAtUtc = DateTime.UtcNow;
             }
             else throw new OfferLifecycleException("application_action_invalid", "Choose Advance or Reject.", 422);
@@ -95,8 +113,9 @@ public sealed partial class OfferLifecycleService
             if (tracked is not null) db.Entry(tracked).State = EntityState.Detached;
             db.JobApplications.Attach(app); db.Entry(app).State = EntityState.Modified; app.Version++;
             db.ApplicationEvents.Add(new() { TenantId = actor.TenantId, ApplicationId = app.Id,
-                EventType = action == "Reject" ? "Rejected" : "StageAdvanced", Stage = app.Stage, Notes = reason,
+                EventType = action == "Reject" ? "Rejected" : "StageAdvanced", Stage = app.Stage, FromStage = fromStage, ToStage = toStage,
+                Notes = gateNote is null ? reason : $"{reason} {gateNote}",
                 PerformedByUserId = actor.UserId, PerformedByName = actor.Name });
-            return Task.FromResult(app);
+            return app;
         }, ct);
 }

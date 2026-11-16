@@ -1,7 +1,8 @@
 import type { HireForm } from './hireForm';
 import { addYears, ageOn, isRealDate, startDateRange } from './dates';
 import { validateIban } from './iban';
-import { buildCountryOptions } from './nationality';
+import { buildCountryOptions, nationalityClass } from './nationality';
+import { isValidNoticeDays } from './gosiNotice';
 import { workEmailLocalProblem, workEmailProblemKey } from '../employeeAccess';
 import { isFixedTerm, parseAmount } from './payload';
 import { parseMobile } from './phone';
@@ -42,7 +43,7 @@ export interface ValidationContext {
 const STEP: Partial<Record<keyof HireForm, 1 | 2 | 3>> = {
   englishName: 1, companyId: 1, startDate: 1, designationId: 1, gradeId: 1, workEmail: 1, costCenterId: 1, costCenterReason: 1,
   nationalityCode: 2, dob: 2, mobileNational: 2, personalEmail: 2, arabicName: 2, preferredName: 2,
-  idNumber: 3, idExpiry: 3, passportNumber: 3, passportExpiry: 3, probationEndDate: 3, iban: 3, molId: 3, workLocation: 3, basic: 3, housing: 3, transport: 3, other: 3, allowances: 3, contractEndDate: 3,
+  idNumber: 3, idExpiry: 3, noticePeriodDays: 3, gosiFirstRegisteredOn: 3, passportNumber: 3, passportExpiry: 3, probationEndDate: 3, iban: 3, molId: 3, workLocation: 3, basic: 3, housing: 3, transport: 3, other: 3, allowances: 3, contractEndDate: 3,
 };
 
 /** CD26: the server's own limits (EmployeeCreateRequest MaxLength, payroll bounds), so a too-long value names its field and its limit. */
@@ -137,6 +138,11 @@ export function validateHire(form: HireForm, ctx: ValidationContext, _scope: Hir
   if (!blank(form.passportNumber) && !/^[A-Z0-9]{6,20}$/.test(normalizeDigits(form.passportNumber).toUpperCase())) add('passportNumber', 'Enter 6 to 20 letters or digits.');
   if (!blank(form.passportExpiry) && !isRealDate(form.passportExpiry)) add('passportExpiry', 'Enter a valid date.');
   if (!blank(form.probationEndDate) && !isRealDate(form.probationEndDate)) add('probationEndDate', 'Enter a valid date.');
+  if (!blank(form.noticePeriodDays) && !isValidNoticeDays(form.noticePeriodDays)) add('noticePeriodDays', 'Enter the notice period as a whole number of days, from 0 to 365.');
+  if (!blank(form.gosiFirstRegisteredOn) && nationalityClass(form.nationalityCode) === 'saudi') {
+    if (!isRealDate(form.gosiFirstRegisteredOn)) add('gosiFirstRegisteredOn', 'Enter a valid date.');
+    else if (form.gosiFirstRegisteredOn > ctx.today) add('gosiFirstRegisteredOn', 'The first GOSI registration date cannot be in the future.');
+  }
 
   if (!blank(form.iban)) {
     const r = validateIban(form.iban, ctx.companyCountry);

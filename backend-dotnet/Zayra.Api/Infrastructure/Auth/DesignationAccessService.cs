@@ -49,9 +49,12 @@ public static class PrivilegedAccessGuard
 /// own access through their own designation. An employee without a login is left alone: the login gets the mapped roles when it is made.
 /// Every grant and revoke is audited and ends the person's sessions.</para>
 ///
-/// <para>Behind the opt-in <see cref="FeatureKeys.DesignationAccess"/> flag (default OFF): while it is off, nothing here configures, applies or
-/// revokes anything. Only a caller who holds <c>security.manage</c> may configure a mapping, and only for roles inside their own access, so
-/// designation edit rights alone are never a route to more permissions.</para>
+/// <para>Behind the opt-in <see cref="FeatureKeys.DesignationAccess"/> flag (default OFF): while it is off, nothing here configures or GIVES
+/// access, and the flag is a kill switch for what was already given: a reconcile with the flag off only TAKES AWAY what this service
+/// granted, a leaver's grants are removed whatever the flag says, and <see cref="RevokeAllGrantedAsync"/> sweeps the lot when the flag is
+/// switched off. Only a caller who holds <c>security.manage</c> may configure a mapping, and only for roles inside their own access.
+/// A mapped role is only given when the person MAKING the change holds everything that role carries (the actor ceiling), so the right to
+/// edit an employee's designation is never a route to more permissions than the editor has.</para>
 ///
 /// <para>Saves nothing: the caller's unit of work commits it with the employee change that caused it.</para>
 /// </summary>
@@ -65,6 +68,8 @@ public sealed class DesignationAccessService
     public const string TriggerAssigned = "designation_changed";
     public const string TriggerMappingChanged = "mapping_changed";
     public const string TriggerLeft = "employee_left";
+    public const string TriggerFeatureOff = "feature_off";
+    public const string TriggerLoginCreated = "login_created";
 
     private const string Why =
         "Designation-driven access: the employee's own login and company-scoped designation are read across legal entities; the tenant is re-applied in the predicate and the employee was already authorised for the caller.";
@@ -219,9 +224,10 @@ public sealed class DesignationAccessService
         string trigger = TriggerAssigned)
     {
         if (employee.TenantId != tenantId || employee.Id == 0) return DesignationAccessOutcome.NoLogin;
-        if (!await IsEnabledAsync(tenantId, ct)) return DesignationAccessOutcome.NoLogin;
+        var enabled = await IsEnabledAsync(tenantId, ct);
         var leaving = employee.IsDeleted || EmployeeAccessStates.IsFormerStatus(employee.Status);
         if (leaving) trigger = TriggerLeft;
+        else if (!enabled) trigger = TriggerFeatureOff;
 
         var linkedUserId = await ScopedBypass.TenantWide(_db.EmployeeUserAccounts, tenantId, Why)
             .Where(x => x.EmployeeId == employee.Id && !x.IsDeleted && x.UserId != null)
@@ -234,20 +240,34 @@ public sealed class DesignationAccessService
             .FirstOrDefaultAsync(u => u.Id == userId.Value && !u.IsDeleted, ct);
         if (user is null) return DesignationAccessOutcome.NoLogin;
 
-        var desired = leaving ? new Desired([], [], null) : await DesiredAsync(tenantId, employee.DesignationId, employee.CompanyId, ct);
+        var desired = leaving || !enabled ? new Desired([], [], null) : await DesiredAsync(tenantId, employee.DesignationId, employee.CompanyId, ct);
         var held = user.UserRoles.Where(ur => ur.Role is { IsDeleted: false }).ToDictionary(ur => ur.RoleId);
         var desiredIds = desired.Roles.Select(r => r.Id).ToHashSet();
         var toRemove = held.Values.Where(ur => ur.GrantedByDesignationId != null && !desiredIds.Contains(ur.RoleId)).ToList();
         var toAdd = desired.Roles.Where(r => !held.ContainsKey(r.Id)).ToList();
+        var skipped = desired.Skipped.ToList();
+        if (toAdd.Count > 0 && actor.UserId != user.Id)
+        {
+            // The actor ceiling: whoever makes this change must themselves hold everything the role carries. The mapping was checked against its
+            // CONFIGURER when it was saved, but the person setting the designation (an HR officer, a transfer, a rehire) is somebody else and
+            // can only apply a designation whose roles they hold themselves, so applying a designation never grants more than the actor already has. An unknown actor (a job with no user) gives nothing.
+            var actorCeiling = actor.UserId is Guid actorId ? await ConfigurerAsync(tenantId, actorId, ct) : null;
+            foreach (var role in toAdd.ToList())
+            {
+                if (actorCeiling is not null && PrivilegeCeiling.AssignRefusal(actorCeiling, Facts(role)) is null) continue;
+                toAdd.Remove(role);
+                skipped.Add(new SkippedRole(role.Name, "above_actor"));
+            }
+        }
 
         var now = DateTime.UtcNow;
         var context = actor with { TenantId = tenantId };
         var addedNames = toAdd.Select(r => r.Name).OrderBy(x => x, StringComparer.Ordinal).ToList();
         var removedNames = toRemove.Where(ur => ur.Role!.NormalizedName != "EMPLOYEE").Select(ur => ur.Role!.Name).OrderBy(x => x, StringComparer.Ordinal).ToList();
 
-        if (desired.Skipped.Count > 0 && !await SkipAlreadyAuditedAsync(tenantId, user.Id, desired.Skipped, ct))
+        if (skipped.Count > 0 && !await SkipAlreadyAuditedAsync(tenantId, user.Id, skipped, ct))
             _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), now, SkippedAction, "User", user.Id.ToString(), context,
-                JsonSerializer.Serialize(new { employeeId = employee.Id, trigger, reason = "role_not_applied", skipped = desired.Skipped })));
+                JsonSerializer.Serialize(new { employeeId = employee.Id, trigger, reason = "role_not_applied", skipped })));
 
         if ((addedNames.Count > 0 || removedNames.Count > 0) && actor.UserId == user.Id)
         {
@@ -279,21 +299,43 @@ public sealed class DesignationAccessService
     }
 
     /// <summary>
-    /// The mapped roles a login created NOW for this employee should carry besides the baseline Employee role (privileged, platform-wide and
-    /// above-the-configurer roles excluded). Empty while the feature is off, or when the designation maps to no role.
+    /// The mapped roles a login created NOW (<paramref name="newUserId"/>) for this employee should carry besides the baseline Employee role:
+    /// privileged, platform-wide and above-the-configurer roles excluded, and, as in <see cref="ReconcileAsync"/>, every role above the
+    /// ACTOR's own access left off and audited as <c>above_actor</c> (an unknown actor gives nothing). Empty while the feature is off, or when
+    /// the designation maps to no role.
     /// </summary>
-    public async Task<IReadOnlyList<Role>> MappedRolesForNewLoginAsync(Guid tenantId, Employee employee, CancellationToken ct)
+    public async Task<IReadOnlyList<Role>> MappedRolesForNewLoginAsync(Guid tenantId, Employee employee, Guid newUserId, RequestContext actor, CancellationToken ct)
     {
         if (!await IsEnabledAsync(tenantId, ct) || employee.DesignationId is not Guid designationId) return [];
-        return (await DesiredAsync(tenantId, designationId, employee.CompanyId, ct)).Roles;
+        var desired = await DesiredAsync(tenantId, designationId, employee.CompanyId, ct);
+        var roles = desired.Roles.ToList();
+        var skipped = desired.Skipped.ToList();
+        if (roles.Count > 0)
+        {
+            var actorCeiling = actor.UserId is Guid actorId ? await ConfigurerAsync(tenantId, actorId, ct) : null;
+            foreach (var role in roles.ToList())
+            {
+                if (actorCeiling is not null && PrivilegeCeiling.AssignRefusal(actorCeiling, Facts(role)) is null) continue;
+                roles.Remove(role);
+                skipped.Add(new SkippedRole(role.Name, "above_actor"));
+            }
+        }
+        if (skipped.Count > 0)
+            _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, SkippedAction, "User", newUserId.ToString(), actor with { TenantId = tenantId },
+                JsonSerializer.Serialize(new { employeeId = employee.Id, trigger = TriggerLoginCreated, reason = "role_not_applied", skipped })));
+        return roles;
     }
 
-    /// <summary>The names of <see cref="MappedRolesForNewLoginAsync"/> for an employee that is already saved (the invitation path).</summary>
+    /// <summary>
+    /// The names of the roles the employee's designation maps to, before any actor ceiling (the invitation path). The invitation holds these
+    /// to the INVITER's own access itself and reports the ones left off (<c>DesignationRolesNotGranted</c>).
+    /// </summary>
     public async Task<IReadOnlyList<string>> MappedRoleNamesForEmployeeAsync(Guid tenantId, int employeeId, CancellationToken ct)
     {
         var employee = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, Why).AsNoTracking()
             .FirstOrDefaultAsync(e => e.Id == employeeId && !e.IsDeleted, ct);
-        return employee is null ? [] : (await MappedRolesForNewLoginAsync(tenantId, employee, ct)).Select(r => r.Name).ToList();
+        if (employee is null || employee.DesignationId is not Guid designationId || !await IsEnabledAsync(tenantId, ct)) return [];
+        return (await DesiredAsync(tenantId, designationId, employee.CompanyId, ct)).Roles.Select(r => r.Name).ToList();
     }
 
     /// <summary>
@@ -302,11 +344,33 @@ public sealed class DesignationAccessService
     /// </summary>
     public async Task<int> RevokeGrantedForLeaversAsync(Guid tenantId, IReadOnlyCollection<Guid> userIds, RequestContext actor, CancellationToken ct)
     {
-        if (userIds.Count == 0 || !await IsEnabledAsync(tenantId, ct)) return 0;
+        // Whatever the flag says: taking access away from someone who has left must never depend on the feature being on.
+        if (userIds.Count == 0) return 0;
         var ids = userIds.ToList();
         var marked = await _db.UserRoles.Include(ur => ur.Role)
             .Where(ur => ids.Contains(ur.UserId) && ur.GrantedByDesignationId != null && ur.User!.TenantId == tenantId).ToListAsync(ct);
         return StageRevocations(tenantId, marked, TriggerLeft, null, actor, DateTime.UtcNow);
+    }
+
+    /// <summary>
+    /// The kill switch: the feature has been switched off for the tenant, so every role this service granted is taken away and the sessions
+    /// of those people end. Roles given by hand are untouched. Returns how many role grants were removed. Saves nothing.
+    /// </summary>
+    public async Task<int> RevokeAllGrantedAsync(Guid tenantId, RequestContext actor, CancellationToken ct)
+    {
+        var holderIds = await ScopedBypass.TenantWide(_db.Users, tenantId, Why)
+            .Where(u => u.UserRoles.Any(ur => ur.GrantedByDesignationId != null)).Select(u => u.Id).ToListAsync(ct);
+        if (holderIds.Count == 0) return 0;
+        var marked = await _db.UserRoles.Include(ur => ur.Role)
+            .Where(ur => holderIds.Contains(ur.UserId) && ur.GrantedByDesignationId != null).ToListAsync(ct);
+        var now = DateTime.UtcNow;
+        var removed = StageRevocations(tenantId, marked, TriggerFeatureOff, null, actor, now);
+        foreach (var userId in marked.Select(ur => ur.UserId).Distinct())
+        {
+            var user = _db.Users.Local.FirstOrDefault(u => u.Id == userId) ?? await ScopedBypass.TenantWide(_db.Users, tenantId, Why).FirstOrDefaultAsync(u => u.Id == userId, ct);
+            if (user is not null) await EndSessionsAsync(user, now, actor, ct);
+        }
+        return removed;
     }
 
     // ── internals ────────────────────────────────────────────────────────────────────────────────────

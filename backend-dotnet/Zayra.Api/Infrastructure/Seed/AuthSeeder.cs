@@ -222,6 +222,15 @@ public class AuthSeeder : IAuthSeeder
             x.Key is "onboarding.templates.manage" or "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
             "payroll.read" or "payroll.slips.read" or "payroll.write" or "payroll.approve" or "payroll.rules.manage" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage" ||
             x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
+            // Recruitment, by name and without recruitment.delete (owner decision 2026-11-12): HR Manager runs the pipeline and
+            // the whole offer lifecycle, and is one of the two audiences that may decide an offer approval (OfferAccess.CanApprove).
+            // Existing tenants: migration GrantHrManagerRecruitment. Deleting recruitment records stays with HR Director and Admin.
+            x.Key is "recruitment.read" or "recruitment.write" or "recruitment.approve" ||
+            // Compliance, READ only (owner decision 2026-11-12): the visa, Iqama, passport, work-permit and contract registers, the
+            // expiry alerts and the compliance dashboard. Never compliance.write/approve: changing a compliance record stays with
+            // Compliance Officer and HR Director. Data scope and company scope still limit which employees' rows are returned.
+            // Existing tenants: migration GrantHrManagerComplianceRead. HR Officer is deliberately not included.
+            x.Key is "compliance.read" ||
             // CMP: runs merit cycles and is the default first approval step (never on a worksheet carrying their own pay).
             x.Key is "compensation.read" or "compensation.manage" or "compensation.approve" or "compensation.benchmarks.manage" or "compensation.equity.read" ||
             // Engagement surveys, by name: runs surveys and reads comments; NOT identified per-person answers.
@@ -244,7 +253,9 @@ public class AuthSeeder : IAuthSeeder
             "approvals.read", "approvals.decide", "reports.read", "notifications.read",
             // Phase 2 GL + non-statutory rates (NOT statutory_override / author_predicates — higher trust).
             "finance.gl.read", "finance.gl.manage", "finance.gl.export", "finance.gl.drivers.manage",
-            "payroll.rates.read", "payroll.rates.manage"
+            "payroll.rates.read", "payroll.rates.manage",
+            // M2: prepares the bank file and nothing else. It confirms nothing and moves no cash: no WPS status, no settle, no remit.
+            "payroll.payment_batch.manage"
         }), 4, true, cancellationToken);
 
         // Level 5 — HR Officer: HR operations specialist
@@ -272,6 +283,8 @@ public class AuthSeeder : IAuthSeeder
         await EnsureRole(tenantId, "Finance", "Processes separate employee loan payments and receipts", Ps(new[] {
             "dashboard.read", "employees.read", "loans.read", "loans.write", "loans.approve",
             "approvals.read", "approvals.decide", "finance.gl.read", "reports.read", "notifications.read",
+            // Imports the opening-balance loans and advances (rows that post an opening journal), and no other import section.
+            "finance.opening_balances.import",
             // CMP: Finance sees merit budgets and totals and may decide a worksheet step routed to it.
             "compensation.read", "compensation.approve"
         }), 7, true, cancellationToken);
@@ -286,6 +299,11 @@ public class AuthSeeder : IAuthSeeder
             "dashboard.read", "employees.read", "payroll.read", "payroll.approve", "payroll.lock",
             "loans.read", "loans.approve", "approvals.read", "approvals.decide",
             "finance.gl.read", "payroll.rates.read", "finance.erp.confirm",
+            // Imports the opening-balance loans and advances (rows that post an opening journal), and no other import section.
+            "finance.opening_balances.import",
+            // M2: pays and confirms. WPS status, settle and remit; deliberately NOT payroll.payment_batch.manage, so no single built-in role
+            // both prepares the bank file and pays it.
+            "payroll.wps_status.update", "payroll.payment.settle", "payroll.remit.manage",
             // CMP: the default final step of a merit worksheet (HR Manager → Finance Approver) and the cycle approver.
             "compensation.read", "compensation.approve"
         }), 8, true, cancellationToken);
@@ -439,6 +457,11 @@ public class AuthSeeder : IAuthSeeder
             ("payroll.write", "Payroll", "Create and process payroll runs"),
             ("payroll.approve", "Payroll", "Approve payroll runs"),
             ("payroll.export", "Payroll", "Export payroll and WPS files"),
+            // M2: the payment actions, one narrow key per family (payroll.export still opens them all; see PaymentPermissions).
+            ("payroll.payment_batch.manage", "Payroll", "Create payment batches and generate or download their bank or WPS files"),
+            ("payroll.wps_status.update", "Payroll", "Record the WPS or bank file status (submitted, accepted, rejected) and attach bank evidence"),
+            ("payroll.payment.settle", "Payroll", "Settle net pay to the general ledger, record payments made outside the bank file, and reverse them"),
+            ("payroll.remit.manage", "Payroll", "Remit statutory and loan liabilities and reverse a remittance"),
             ("payroll.slips.read", "Payroll", "Read the payroll register and payslips (does not allow exporting payroll or WPS files)"),
             ("payroll.structure_manage", "Payroll", "Manage salary structures and components"),
             ("payroll.rules.manage", "Payroll", "Propose changes to a company's payroll rules (rest-day pay, leave payout, probation, absence base); a change that lowers pay is approved by a different payroll approver"),
@@ -534,6 +557,7 @@ public class AuthSeeder : IAuthSeeder
             // Finance — GL / ERP hand-off checker. Separate from finance.gl.manage (which produces the export)
             // so the person who exports a journal is not the person who attests the ERP posted it.
             ("finance.erp.confirm", "Finance", "Confirm or reject that the client's ERP imported a GL journal export"),
+            ("finance.opening_balances.import", "Finance", "Import carried-in loan and advance opening balances (posts their opening journals); no other import section"),
             // Payroll — client rate configuration (Phase 2)
             ("payroll.rates.read", "Payroll", "View company and statutory rate configuration"),
             ("payroll.rates.manage", "Payroll", "Manage non-statutory company rate policies"),

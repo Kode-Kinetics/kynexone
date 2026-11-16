@@ -16,6 +16,7 @@
  */
 
 import { translate, type MessageParams } from '../i18n/translations';
+import { isModelBindingText } from './modelBindingText';
 
 type Translator = (key: string, params?: MessageParams) => string;
 const EN: Translator = (key, params) => translate('en', key, params);
@@ -45,7 +46,7 @@ function validationDetails(errors: unknown): string | null {
   const msgs = Object.values(errors as Record<string, unknown>)
     .flatMap((v) => (Array.isArray(v) ? v : [v]))
     .map(text)
-    .filter((m): m is string => !!m);
+    .filter((m): m is string => !!m && !isModelBindingText(m));
   return msgs.length ? [...new Set(msgs)].slice(0, 3).join(' ') : null;
 }
 

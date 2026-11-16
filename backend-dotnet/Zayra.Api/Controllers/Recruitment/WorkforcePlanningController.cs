@@ -67,13 +67,25 @@ public class WorkforcePlanningController : ControllerBase
     {
         var tid = GetTenantId();
         var year = req.PlanYear > 0 ? req.PlanYear : DateTime.UtcNow.Year;
-        var count = await _db.WorkforcePlans.CountAsync(x => x.TenantId == tid && x.PlanYear == year, ct);
+        // Plan codes are unique per tenant: count every company's plans (and any removed one still holds its code).
+        var count = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.WorkforcePlans, tid,
+            "Plan codes are unique per tenant: the next code must count every company's plans, not the caller's company only.")
+            .CountAsync(x => x.PlanYear == year, ct);
         var code = $"WFP-{year}-{(count + 1):D3}";
         var planCurrency = !string.IsNullOrWhiteSpace(req.CurrencyCode) ? req.CurrencyCode : await _db.ResolveTenantCurrencyAsync(tid, ct);
+
+        // The plan belongs to the company that owns its department; a plan without one names its company (req.CompanyId) or
+        // leaves it to the write guard (a one-company actor resolves, an ambiguous group actor is asked).
+        var department = req.DepartmentId.HasValue
+            ? await _db.Departments.AsNoTracking().FirstOrDefaultAsync(d => d.Id == req.DepartmentId.Value && d.TenantId == tid, ct)
+            : null;
+        if (req.CompanyId is Guid named && department?.CompanyId is Guid owner && named != owner)
+            return BadRequest(new { message = "The department belongs to a different company than the one named." });
 
         var plan = new WorkforcePlan
         {
             TenantId = tid,
+            CompanyId = department?.CompanyId ?? req.CompanyId,
             PlanCode = code,
             PlanYear = year,
             PlanName = req.PlanName,
@@ -173,6 +185,6 @@ public class WorkforcePlanningController : ControllerBase
 public record CreateWorkforcePlanRequest(
     string PlanName, int PlanYear, Guid? DepartmentId, string? DepartmentName,
     int CurrentHeadcount, int PlannedHeadcount, decimal BudgetAllocated,
-    string? CurrencyCode, string? Notes);
+    string? CurrencyCode, string? Notes, Guid? CompanyId = null);
 
 public record UpdateStatusRequest(string Status);

@@ -35,7 +35,10 @@ public static class ProfileChangeApprovalRules
         // The national ID and the four identity-card expiries take the same route as the passport and visa beside
         // them: they identify the person and gate activation/payroll, so a change is approved before it applies.
         // Creating an employee is not a change and still sets them directly.
-        "idNumber", "iqamaExpiryDate", "emiratesIdExpiryDate", "qidExpiryDate", "civilIdExpiryDate"
+        "idNumber", "iqamaExpiryDate", "emiratesIdExpiryDate", "qidExpiryDate", "civilIdExpiryDate",
+        // The Qiwa block references, writable through PUT since they gained an applier case: the same route as the Qiwa
+        // contract number beside them. EstablishmentId decides whether the Saudi bank file accepts the person.
+        "establishmentId", "occupationCode", "workLocationId", "contractReference", "workPermitReference"
     };
 
     // Policy names whose camelCase counterpart differs by more than underscores.

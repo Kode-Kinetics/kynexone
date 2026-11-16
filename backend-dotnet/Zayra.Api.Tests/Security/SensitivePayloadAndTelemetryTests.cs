@@ -204,6 +204,8 @@ public class SensitivePayloadAndTelemetryTests
     {
         await using var db = InMemory();
         var tenantId = Guid.NewGuid();
+        // The list is read through the employee's company, so the log belongs to a real employee.
+        db.Employees.Add(new Employee { Id = 1, TenantId = tenantId, EmployeeCode = "QW-1", FullName = "Qiwa Person", Status = EmployeeStatuses.Active });
         db.QiwaSyncLogs.Add(new QiwaSyncLog
         {
             TenantId = tenantId, EmployeeId = 1, Status = QiwaSyncLogStatuses.Failed,

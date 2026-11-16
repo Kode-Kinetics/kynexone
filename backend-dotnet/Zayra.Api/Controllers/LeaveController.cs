@@ -47,7 +47,9 @@ public class LeaveController : ControllerBase
 
         var total = await query.CountAsync(cancellationToken);
         var items = await query.OrderByDescending(l => l.CreatedAtUtc).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
-        return Ok(new PagedResult<LeaveRequest>(items, total, page, pageSize));
+        // The attachment key is the handle to a medical document: only the leave's employee and HR see it.
+        var shown = items.Select(i => Zayra.Api.Infrastructure.Leave.LeaveFileKeyExposure.ForReader(_db, i, User, scope)).ToList();
+        return Ok(new PagedResult<LeaveRequest>(shown, total, page, pageSize));
     }
 
     [HttpPost]

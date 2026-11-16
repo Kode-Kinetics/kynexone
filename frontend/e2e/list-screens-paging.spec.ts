@@ -92,7 +92,7 @@ test.describe('compliance expiry registers read every row', () => {
     for (const what of ['"Contracts"', '"Renewals"', '"Expiry alerts"']) expect(page).toContain(`<ListLoadError what=${what}`);
     expect(page).toContain("'Visa and iqama records'");
     // The dashboard preview says it is a preview of a longer list.
-    expect(page).toContain("pageWindowText(alerts.length, alertsTotal, 'expirations')");
+    expect(page).toContain("t('Showing {shown} of {total} expirations'");
     // The passport KPIs drill down to a tab that renders the passport register, not a blank page.
     expect(page).toContain("(tab === 'visa' || tab === 'passports') && <VisaPassportTab");
   });
@@ -230,7 +230,7 @@ test.describe('AI assistant lists say when they are a window', () => {
     expect(ai).toContain('total={insightList.total} noun="insights"');
     expect(ai).toContain('total={historyList.total} noun="queries"');
     // The risk endpoint returns at most 100 rows and no total (AIAssistantController.RiskScores).
-    expect(read('../backend-dotnet/Zayra.Api/Controllers/AIAssistantController.cs')).toMatch(/OrderByDescending\(r => r\.ChurnRiskScore\)\s*\.Take\(100\)/);
+    expect(read('../backend-dotnet/Zayra.Api/Controllers/AIAssistantController.cs')).toMatch(/OrderByDescending\(r => (?:\(double\))?r\.ChurnRiskScore\)\s*\.Take\(100\)/);
     expect(ai).toContain('const RISK_SCORE_LIMIT = 100;');
     expect(ai).toContain('riskScores.length >= RISK_SCORE_LIMIT');
   });

@@ -38,6 +38,9 @@ public class FinanceLedgerWriterSweepTests
         ["Controllers/Finance/LoansController.Corrections.cs"] = (0, 1, 0, 0),
         // Advance disbursement posting.
         ["Controllers/Finance/AdvancesController.cs"] = (1, 0, 0, 1),
+        // A carried-in loan's or advance's opening journal from the opening-balance import (inserts only: the first posting, then
+        // only a restatement's difference), driven by OpeningBalanceLoanImportPostgresTests and OpeningBalanceAdvanceImportPostgresTests.
+        ["Infrastructure/Finance/OpeningBalanceJournal.cs"] = (1, 0, 0, 1),
         // Bonus accrual, cancel contra (+ origin.IsReversed = true only when the contra closes the accrual), payment.
         ["Controllers/Finance/BonusesController.cs"] = (3, 1, 0, 2),   // accrual now built by BonusCostSplit; driven by BonusCostingPostgresTests
         // Manual GL adjustments (inserts only).
@@ -47,9 +50,10 @@ public class FinanceLedgerWriterSweepTests
         // Lock accrual, settle, remit, bonus clearing, settlement discharge and their contras; four IsReversed flips
         // (outside-payment reversal, settlement reversal, remittance reversal, final-settlement cancel); the hand
         // erp-posting-status loop (4 entry stamps) plus three PayrollRun.ErpPostingStatus assignments.
-        ["Controllers/PayrollController.cs"] = (10, 4, 7, 15),   // C2: lines built with At(new FinanceGlEntry ...), one construction fewer
+        ["Controllers/PayrollController.cs"] = (10, 4, 7, 16),   // C2: lines built with At(new FinanceGlEntry ...), one construction fewer; +1: the loan recovery credit line (an Accrual INSERT, the same door as every accrual line)
         ["Infrastructure/Payroll/BonusCostSplit.cs"] = (0, 0, 0, 1),            // costed bonus accrual rows (inserts), BonusCostingPostgresTests + oracle
         ["Infrastructure/Payroll/EosbProvisionAccrual.cs"] = (0, 0, 0, 1),      // EOSB provision lines (inserts), inside the Lock journal
+        ["Infrastructure/Payroll/LeaveProvisionAccrual.cs"] = (0, 0, 0, 1),     // annual-leave provision lines (inserts), inside the Lock journal
         ["Infrastructure/Payroll/FinalSettlementGlLedger.cs"] = (0, 0, 0, 1),   // settlement accrual lines (inserts), oracle ApproveFinalSettlement
         // StampAsync / StampRejectionAsync: 8 ledger-line stamps and one PayrollRun stamp.
         ["Infrastructure/Finance/ErpPostingEvidence.cs"] = (0, 0, 9, 0),

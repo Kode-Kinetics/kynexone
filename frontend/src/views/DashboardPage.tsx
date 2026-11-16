@@ -144,7 +144,7 @@ function CompanyDashboard() {
   // Payroll readiness items link to /payroll, so they are only raised for someone who can open it.
   const showPayrollAttention = payrollEnabled && canReadPayroll;
   const attention = useMemo(
-    () => buildAttention(data, findings.insights, Date.now(), { payroll: showPayrollAttention, t, relative: (iso) => f.relative(iso) }),
+    () => buildAttention(data, findings.insights, Date.now(), { payroll: showPayrollAttention, t, relative: (iso) => f.relative(iso), period: (ym) => f.period(ym, 'long') }),
     [data, findings.insights, showPayrollAttention, t, f],
   );
   // Payroll validation errors for this month: asked only of someone who can open payroll. A failed

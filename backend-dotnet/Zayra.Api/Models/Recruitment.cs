@@ -27,15 +27,19 @@ public static class RecruitmentStages
 
 // ── Manpower Requisition ───────────────────────────────────────────────────────
 
-public class ManpowerRequisition : ITenantOwned
+public class ManpowerRequisition : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Stamped from the requisition's department (or the explicit company) on create; backfilled by migration.</summary>
+    public Guid? CompanyId { get; set; }
     public string RequisitionNumber { get; set; } = string.Empty;       // MRQ-2026-0001
     public Guid? DepartmentId { get; set; }
     public string DepartmentName { get; set; } = string.Empty;
     public Guid? DesignationId { get; set; }
     public string DesignationTitle { get; set; } = string.Empty;
+    /// <summary>The grade the role is budgeted at, picked from the organisation's grades (null = not stated).</summary>
+    public Guid? GradeId { get; set; }
     public int HeadCount { get; set; } = 1;
     public string EmploymentType { get; set; } = "Full-Time";           // Full-Time/Part-Time/Contract/Internship
     public string Priority { get; set; } = "Medium";                    // Low/Medium/High/Critical
@@ -60,10 +64,12 @@ public class ManpowerRequisition : ITenantOwned
 
 // ── Job Opening ────────────────────────────────────────────────────────────────
 
-public class JobOpening : ITenantOwned
+public class JobOpening : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Stamped from the source requisition (or the explicit company) on create; backfilled by migration.</summary>
+    public Guid? CompanyId { get; set; }
     public string JobCode { get; set; } = string.Empty;                 // JOB-2026-0001
     public Guid? RequisitionId { get; set; }
     public string Title { get; set; } = string.Empty;
@@ -71,6 +77,8 @@ public class JobOpening : ITenantOwned
     public string DepartmentName { get; set; } = string.Empty;
     public Guid? DesignationId { get; set; }
     public string DesignationTitle { get; set; } = string.Empty;
+    /// <summary>The grade the opening hires at (inherited from its requisition when not stated); its pay band is the offer's guideline.</summary>
+    public Guid? GradeId { get; set; }
     public string EmploymentType { get; set; } = "Full-Time";
     public int HeadCount { get; set; } = 1;
     public int FilledCount { get; set; }
@@ -153,6 +161,10 @@ public class ApplicationEvent : ITenantOwned
     public Guid ApplicationId { get; set; }
     public string EventType { get; set; } = string.Empty;              // StageAdvanced/Rejected/NoteAdded/InterviewScheduled/FeedbackRecorded/OfferGenerated/OfferSent/OfferAccepted/OfferDeclined/OnboardingStarted
     public string Stage { get; set; } = string.Empty;
+    /// <summary>On a stage move: the stage the application left. Null on older events and on events that are not stage moves.</summary>
+    public string? FromStage { get; set; }
+    /// <summary>On a stage move: the stage it reached (the same as <see cref="Stage"/>).</summary>
+    public string? ToStage { get; set; }
     public string Notes { get; set; } = string.Empty;
     public Guid? PerformedByUserId { get; set; }
     public string PerformedByName { get; set; } = string.Empty;
@@ -161,10 +173,12 @@ public class ApplicationEvent : ITenantOwned
 
 // ── Interview Schedule ─────────────────────────────────────────────────────────
 
-public class InterviewSchedule : ITenantOwned
+public class InterviewSchedule : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Stamped from the parent application on create; backfilled by migration.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid ApplicationId { get; set; }
     public string InterviewType { get; set; } = "HR Screening";        // HR Screening/Technical/Manager/Panel/Final
     public string InterviewerNames { get; set; } = string.Empty;

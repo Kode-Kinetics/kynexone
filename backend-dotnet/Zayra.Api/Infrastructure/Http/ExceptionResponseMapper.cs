@@ -25,6 +25,9 @@ public static class ExceptionResponseMapper
         Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionUnavailableException fe => (fe.StatusCode, fe.Code, fe.SafeMessage),
         // Another writer saved the same organisation code first (the unique index refused this save): a conflict, not a fault.
         Zayra.Api.Application.Organization.OrgCodeConflictException taken => (StatusCodes.Status409Conflict, Zayra.Api.Application.Organization.OrgCodeConflictException.ErrorCode, taken.Message),
+        // An amount cannot be written for an employee with no company or a company with no currency: the stable code, not a bare bad_request.
+        Zayra.Api.Infrastructure.Payroll.CompanyCurrencyUnknownException noCurrency =>
+            (StatusCodes.Status400BadRequest, Zayra.Api.Infrastructure.Payroll.CompanyCurrencyUnknownException.Code, noCurrency.Message),
         UnauthorizedAccessException unauthorized => (StatusCodes.Status403Forbidden, "forbidden", unauthorized.Message),
         InvalidOperationException guard when CompanyGuardCodes.Any(c => guard.Message.StartsWith(c + ":", StringComparison.Ordinal))
             => (StatusCodes.Status409Conflict, guard.Message[..guard.Message.IndexOf(':')], guard.Message),

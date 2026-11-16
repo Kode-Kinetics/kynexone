@@ -63,33 +63,66 @@ public sealed class PayApprovalsController : ControllerBase
                 "Pay approval queue: candidates are resolved tenant-wide and then filtered by the caller's company scope below.")
             .AsNoTracking().Where(e => !e.IsDeleted && (ids.Contains(e.Id) || e.Status == EmployeeStatuses.Draft || e.Status == EmployeeStatuses.Invited))
             .OrderBy(e => e.Id).ToListAsync(ct);
+        // The scope and "in post" filters stay here, exactly as before; the pay rules (needs a second person? is the caller barred?) are then evaluated for
+        // every candidate from a fixed number of set-based reads (PayApprovalBatch) instead of about fifteen queries per employee.
+        var candidates = employees.Where(e => scope.CanAccessCompany(e.CompanyId) && !IsInPost(e)).ToList();
         var items = new List<object>();
         var hasMore = false;
         var requiresOtherReviewerCount = 0;
-        foreach (var e in employees)
+        if (candidates.Count > 0)
         {
-            if (!scope.CanAccessCompany(e.CompanyId) || IsInPost(e)) continue;
-            // The same conditions that block activation, not only an open gap row: a package can be unapproved through a path
-            // that never opened one, and it must still reach a reviewer.
-            if (!await CompensationApprovalGate.NeedsApprovalAsync(_db, tenantId, e, ct)) continue;
-            if (await CompensationApprovalGate.IsBarredAsync(_db, tenantId, e, caller.Value, ct)) { requiresOtherReviewerCount++; continue; }
-            if (items.Count >= MaxListed) { hasMore = true; continue; }
-            var view = await BuildAsync(tenantId, e, ct);
-            items.Add(new
+            var batch = await PayApprovalBatch.LoadAsync(_db, tenantId, candidates, ct);
+            var listed = new List<Employee>();
+            foreach (var e in candidates)
             {
-                employeeId = e.Id,
-                employeeCode = e.EmployeeCode,
-                name = DisplayName(e),
-                companyId = e.CompanyId,
-                companyName = view.CompanyName,
-                designation = view.Designation,
-                currency = view.Package.Currency,
-                gross = view.Gross,
-                ibanLast4 = view.IbanLast4,
-                enteredBy = view.EnteredBy,
-                lastChangedAtUtc = view.LastChanged?.AtUtc,
-                status = view.Rejection is null ? "pending" : "rejected",
-            });
+                if (!batch.NeedsApproval(e)) continue;
+                if (batch.IsBarred(e, caller.Value)) { requiresOtherReviewerCount++; continue; }
+                if (listed.Count >= MaxListed) { hasMore = true; continue; }
+                listed.Add(e);
+            }
+            var companyIds = listed.Where(e => e.CompanyId != null).Select(e => e.CompanyId!.Value).Distinct().ToList();
+            var companyNames = companyIds.Count == 0 ? new Dictionary<Guid, string>()
+                : await _db.Companies.AsNoTracking().Where(c => companyIds.Contains(c.Id))
+                    .Select(c => new { c.Id, Name = string.IsNullOrEmpty(c.TradeName) ? c.LegalNameEn : c.TradeName }).ToDictionaryAsync(c => c.Id, c => c.Name, ct);
+            var designationIds = listed.Where(e => e.DesignationId != null).Select(e => e.DesignationId!.Value).Distinct().ToList();
+            var designations = designationIds.Count == 0 ? new Dictionary<Guid, string?>()
+                : await _db.Designations.AsNoTracking().Where(d => designationIds.Contains(d.Id)).Select(d => new { d.Id, d.TitleEn }).ToDictionaryAsync(d => d.Id, d => (string?)d.TitleEn, ct);
+            var rowsByEmployee = listed.ToDictionary(e => e.Id, e => batch.RowsSinceApproval(e));
+            var userIds = rowsByEmployee.Values.SelectMany(r => r).Select(r => r.UserId).Distinct().ToList();
+            var names = userIds.Count == 0 ? new Dictionary<Guid, string>()
+                : await _db.Users.AsNoTracking().Where(u => userIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.FullName, ct);
+            Actor ToActor(Guid id, DateTime at) => new(names.GetValueOrDefault(id) ?? "", at);
+
+            foreach (var e in listed)
+            {
+                var package = batch.Package(e);
+                var gross = package.Basic + package.Housing + package.Transport + package.Food + package.Mobile + package.Other;
+                if (gross == 0m) gross = package.Salary ?? 0m;
+                var companyName = e.CompanyId is Guid cid ? companyNames.GetValueOrDefault(cid) ?? "" : "";
+                var designation = e.DesignationId is Guid did ? designations.GetValueOrDefault(did) : null;
+                if (string.IsNullOrWhiteSpace(designation)) designation = string.IsNullOrWhiteSpace(e.JobTitle) ? null : e.JobTitle;
+                var iban = Compact(package.Iban);
+                var rows = rowsByEmployee[e.Id];
+                var writes = rows.Where(r => r.Action != RejectedAction).ToList();
+                var entered = writes.FirstOrDefault();
+                var last = writes.LastOrDefault();
+                var rejected = rows.LastOrDefault(r => r.Action == RejectedAction) is { } rej && (last is null || rej.CreatedAtUtc >= last.CreatedAtUtc);
+                items.Add(new
+                {
+                    employeeId = e.Id,
+                    employeeCode = e.EmployeeCode,
+                    name = DisplayName(e),
+                    companyId = e.CompanyId,
+                    companyName,
+                    designation,
+                    currency = package.Currency,
+                    gross,
+                    ibanLast4 = iban.Length >= 4 ? iban[^4..] : null,
+                    enteredBy = entered is null ? null : ToActor(entered.UserId, entered.CreatedAtUtc),
+                    lastChangedAtUtc = last?.CreatedAtUtc,
+                    status = rejected ? "rejected" : "pending",
+                });
+            }
         }
         return Ok(new { items, count = items.Count, hasMore, requiresOtherReviewerCount });
     }

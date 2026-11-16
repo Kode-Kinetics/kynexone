@@ -942,6 +942,7 @@ public class RatesController : ControllerBase
     private static string[]? AllowedValuesFor(string key) =>
         ProrationRateKeys.AllowedValues.TryGetValue(key, out var a) ? a
         : EosbProvisioningRateKeys.AllowedValues.TryGetValue(key, out a) ? a
+        : LeaveProvisioningRateKeys.AllowedValues.TryGetValue(key, out a) ? a
         : BorderNumberRateAllowedValues.TryGetValue(key, out a) ? a : null;
 
     private async Task<IReadOnlyList<ClientRateDefinition>> LoadRegistryAsync(Guid tid, CancellationToken ct)
@@ -1005,6 +1006,7 @@ public class RatesController : ControllerBase
             if (value.Length == 0) return (BadRequest(new { message = $"'{key}' expects a non-empty value." }), null);
             if (ProrationRateKeys.AllowedValues.TryGetValue(key, out var allowed)
                 || EosbProvisioningRateKeys.AllowedValues.TryGetValue(key, out allowed)
+                || LeaveProvisioningRateKeys.AllowedValues.TryGetValue(key, out allowed)
                 || BorderNumberRateAllowedValues.TryGetValue(key, out allowed))
             {
                 if (!allowed.Contains(value, StringComparer.OrdinalIgnoreCase))

@@ -189,7 +189,12 @@ public class TableBudgetRatchetTests
         // table can carry it: a designation maps to several roles and a role to several designations, and the link needs its own foreign keys
         // so a deleted role or designation drops the mapping instead of leaving a dangling id. Opt-in, default off. Tenant data. Retention:
         // kept for the life of the designation (config, no personal data); removed with it and by whole-tenant erasure.
-        DeclaredDbSets().Should().HaveCount(385,
+        // Annual-leave provision (AddLeaveProvisioning; owner Payroll / Finance, owner-approved 2026-11-12). One table, 385 -> 386.
+        // LeaveProvisionSnapshots: per employee, per payroll month, the unused leave days, the day rate and the value the Lock journal's
+        // provision movement was measured on. The GL line says how much moved but not what was measured, and eosb_provision_snapshots
+        // cannot carry it (its columns are service years, wage base and the Art. 84 rule). Finance owns it; kept as long as the GL lines
+        // it explains; deleted with its run by a void; removed by whole-tenant erasure (it cascades from payroll_runs).
+        DeclaredDbSets().Should().HaveCount(386,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

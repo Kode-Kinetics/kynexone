@@ -730,6 +730,105 @@ public class TerminateSeparationLifecycleTests
         live!.LastWorkingDay.Should().Be(secondLwd);
     }
 
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+    // Owner rule 2026-11-13: after an approved or paid final settlement, service counts from the rehire
+    // date. Only Rehire moves JoiningDate, so the status route may not return the person to work.
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>A completed leaver whose settlement for the current service period was paid.</summary>
+    private static async Task<(EmployeeManagementService Svc, Employee Emp)> SettledLeaverAsync(
+        ZayraDbContext db, Guid tenantId, string settlementStatus, string finalEmployeeStatus = "Archived")
+    {
+        var (svc, emp) = Seed(db, tenantId);
+        var sep = Separation(tenantId, emp.Id, "Completed", Lwd);
+        db.EmployeeOffboardings.Add(sep);
+        var settlement = SettlementFor(tenantId, emp.Id, sep.Id, settlementStatus);
+        settlement.LastWorkingDay = Lwd;
+        settlement.ServiceStartDate = DateOnly.FromDateTime(emp.JoiningDate);
+        db.EmployeeFinalSettlements.Add(settlement);
+        emp.Status = finalEmployeeStatus;
+        await db.SaveChangesAsync();
+        return (svc, emp);
+    }
+
+    [Theory]
+    [InlineData("Paid", "Archived", "Active")]
+    [InlineData("Paid", "Exited", "Active")]
+    [InlineData("Paid", "Terminated", "Active")]
+    [InlineData("Approved", "Terminated", "Active")]
+    [InlineData("Disbursing", "Terminated", "Active")]
+    [InlineData("Paid", "Archived", "Suspended")]
+    public async Task ReturningToWorkOverASettledServicePeriod_IsRefused_AndPointsToRehire(
+        string settlementStatus, string fromStatus, string toStatus)
+    {
+        var store = Guid.NewGuid().ToString();
+        var tenantId = Guid.NewGuid();
+        int empId;
+        await using (var db = NewDb(store))
+            empId = (await SettledLeaverAsync(db, tenantId, settlementStatus, fromStatus)).Emp.Id;
+
+        await using (var db = NewDb(store))
+        {
+            var act = async () => await SvcFor(db).ChangeStatusAsync(tenantId, empId,
+                new EmployeeStatusChangeRequest(toStatus, new DateOnly(2026, 9, 1), "Back at work", null), Ctx, default);
+            var thrown = (await act.Should().ThrowAsync<SettledServiceReactivationException>()).Which;
+            thrown.SettledThrough.Should().Be(Lwd);
+            thrown.Message.Should().Contain("Rehire");
+            thrown.MessageAr.Should().Contain("إعادة التعيين");
+        }
+
+        await using var check = NewDb(store);
+        var stored = await check.Employees.AsNoTracking().SingleAsync(e => e.Id == empId);
+        stored.Status.Should().Be(fromStatus, "a refused transition changes nothing");
+        stored.JoiningDate.Should().Be(new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        (await check.EmployeeStatusHistories.CountAsync(h => h.EmployeeId == empId)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ActivateEndpointPath_IsRefusedTheSameWay()
+    {
+        await using var db = NewDb(Guid.NewGuid().ToString());
+        var tenantId = Guid.NewGuid();
+        var (svc, emp) = await SettledLeaverAsync(db, tenantId, FinalSettlementStatuses.Paid);
+
+        var act = async () => await svc.ActivateAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Active", new DateOnly(2026, 9, 1), "Rehired"), Ctx, default);
+
+        await act.Should().ThrowAsync<SettledServiceReactivationException>();
+    }
+
+    /// <summary>A settlement that closed an EARLIER service period (its last working day is before the current joining date,
+    /// because the person was already rehired once) does not block a mistaken termination from being reversed.</summary>
+    [Fact]
+    public async Task ASettlementForAnEarlierServicePeriod_DoesNotBlockReinstatement()
+    {
+        await using var db = NewDb(Guid.NewGuid().ToString());
+        var tenantId = Guid.NewGuid();
+        var (svc, emp) = await SettledLeaverAsync(db, tenantId, FinalSettlementStatuses.Paid, "Terminated");
+        emp.JoiningDate = new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc);   // the rehire date
+        await db.SaveChangesAsync();
+
+        await svc.ActivateAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Active", new DateOnly(2026, 10, 1), "Termination entered by mistake"), Ctx, default);
+
+        (await db.Employees.AsNoTracking().SingleAsync(e => e.Id == emp.Id)).Status.Should().Be("Active");
+    }
+
+    /// <summary>A mistaken termination with no closed settlement is still reversible through the status route.</summary>
+    [Fact]
+    public async Task AMistakenTerminationWithNoClosedSettlement_CanStillBeReversed()
+    {
+        await using var db = NewDb(Guid.NewGuid().ToString());
+        var tenantId = Guid.NewGuid();
+        var (svc, emp) = Seed(db, tenantId);
+        await svc.TerminateAsync(tenantId, emp.Id, TerminateCmd(), Ctx, default);
+
+        await svc.ActivateAsync(tenantId, emp.Id,
+            new EmployeeStatusChangeRequest("Active", new DateOnly(2026, 8, 1), "Termination entered by mistake"), Ctx, default);
+
+        (await db.Employees.AsNoTracking().SingleAsync(e => e.Id == emp.Id)).Status.Should().Be("Active");
+    }
+
     /// <summary>
     /// The counterpart: an employee who was NEVER rehired after a completed separation still must not get
     /// a second one, however many times the remediation sweep runs over them.

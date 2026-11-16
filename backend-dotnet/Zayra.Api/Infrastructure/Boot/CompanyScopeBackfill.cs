@@ -161,6 +161,16 @@ public static class CompanyScopeBackfill
         n += await SystemScope(db.Candidates).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
         n += await SystemScope(db.JobApplications).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
         n += await SystemScope(db.OfferLetters).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
+        // Recruitment scheduling records and compliance renewals: the AddRecruitmentSchedulingCompanyScope migration attributes each
+        // row to its parent's company (application, interview, requisition, department, employee). A row with no resolvable parent
+        // belongs, as the rows above do, to the default company, so it does not stay invisible to company-scoped users.
+        n += await SystemScope(db.ManpowerRequisitions).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
+        n += await SystemScope(db.JobOpenings).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
+        n += await SystemScope(db.InterviewSchedules).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
+        n += await SystemScope(db.InterviewFeedbacks).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
+        n += await SystemScope(db.CandidateAssessments).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
+        n += await SystemScope(db.WorkforcePlans).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
+        n += await SystemScope(db.ComplianceRenewals).Where(x => x.TenantId == tenantId && x.CompanyId == null).ExecuteUpdateAsync(s => s.SetProperty(x => x.CompanyId, defaultCompanyId), ct);
         return n;
     }
 

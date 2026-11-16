@@ -19,6 +19,7 @@ import { useLocale } from '../contexts/LocaleContext';
 import { useFormat } from '../hooks/useFormat';
 import { enumLabel } from '../i18n/enumLabel';
 import { StatusChip } from '../components/StatusChip';
+import { leaveBalanceTotal } from '../lib/leaveBalanceDisplay';
 import { useCanWriteEss } from '../components/ess/EssParts';
 
 /**
@@ -157,15 +158,16 @@ function LeaveBar({ name, available, entitled, statutoryDays }: { name: string; 
     );
   }
   const days = useDays();
-  const pct = entitled > 0 ? Math.round((available / entitled) * 100) : 0;
+  const total = leaveBalanceTotal({ available, entitled });
+  const pct = total ? Math.round((available / total) * 100) : 0;
   const color = pct >= 60 ? 'bg-emerald-500' : pct >= 30 ? 'bg-amber-500' : 'bg-rose-500';
   return (
     <div className="rounded-xl border border-slate-100 p-3 dark:border-white/[0.06]">
       <div className="flex items-baseline justify-between gap-2">
         <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{name}</p>
         <p className="shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400">
-          {entitled > 0
-            ? t('{available} of {entitled} days', { available: days(available), entitled: days(entitled) })
+          {total
+            ? t('{available} of {entitled} days', { available: days(available), entitled: days(total) })
             : t('{available} days', { available: days(available) })}
         </p>
       </div>
@@ -568,7 +570,7 @@ export function EmployeeSelfServicePage() {
           icon={CalendarOff} tone="emerald" label={t('Leave Balance')}
           value={primaryLeave ? t('{days} days', { days: days(primaryLeave.available) }) : undefined}
           detail={primaryLeave ? leaveName(primaryLeave.leaveTypeId, primaryLeave.leaveTypeName) : undefined}
-          note={primaryLeave ? t('Out of {days} days entitled', { days: days(primaryLeave.entitled) }) : undefined}
+          note={primaryLeave && leaveBalanceTotal(primaryLeave) != null ? t('Out of {days} days entitled', { days: days(leaveBalanceTotal(primaryLeave)!) }) : undefined}
           note2={primaryLeave ? t('After approved and pending leave') : undefined}
           empty={primaryLeave ? undefined : t('No leave balances set up yet')}
           href={ESS_LEAVE_PATH} linkLabel={t('Open my leave')}

@@ -6,6 +6,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Notifications;
+using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Recruitment;
@@ -85,33 +86,49 @@ public class OpeningsController : ControllerBase
         var userId = this.GetUserId();
         var code = await _svc.GenerateJobCodeAsync(tenantId, ct);
 
-        // Mark source requisition as Converted
+        // The opening belongs to the company that raised the requisition; a requisition outside the caller's company scope is not found,
+        // so an opening can never be linked to another company's requisition.
+        Guid? companyId = req.CompanyId;
+        ManpowerRequisition? requisition = null;
         if (req.RequisitionId.HasValue)
         {
-            var requisition = await _db.ManpowerRequisitions
+            requisition = await _db.ManpowerRequisitions
                 .FirstOrDefaultAsync(r => r.Id == req.RequisitionId && r.TenantId == tenantId, ct);
-            if (requisition is not null && requisition.Status == "Approved")
-            {
-                requisition.Status = "Converted";
-                await _db.SaveChangesAsync(ct);
-            }
+            if (requisition is null) return BadRequest(new { message = "Requisition not found." });
+            if (req.CompanyId is Guid named && requisition.CompanyId is Guid owner && named != owner)
+                return BadRequest(new { message = "The requisition belongs to a different company than the one named." });
+            companyId = requisition.CompanyId ?? req.CompanyId;
         }
+
+        // An opening starts from its requisition: placement, budget range and skills carry over unless the request states its own.
+        var terms = OpeningTerms.Inherit(req, requisition);
+        var (catalogueDepartment, catalogueDesignation, placementError) = await CataloguePlacementAsync(tenantId, terms.DepartmentId, terms.DesignationId, terms.GradeId, ct);
+        if (placementError is not null) return placementError;
+
+        // The source requisition becomes Converted in the same save as the opening, so a refusal above leaves it Approved (the only
+        // status Create Opening is offered for) and never Converted with no opening.
+        if (requisition?.Status == "Approved")
+            requisition.Status = "Converted";
 
         var j = new JobOpening
         {
             TenantId = tenantId,
+            CompanyId = companyId,
             JobCode = code,
             RequisitionId = req.RequisitionId,
             Title = req.Title,
-            DepartmentName = req.DepartmentName,
-            DesignationTitle = req.DesignationTitle,
+            DepartmentId = terms.DepartmentId,
+            DepartmentName = catalogueDepartment?.NameEn ?? terms.DepartmentName,
+            DesignationId = terms.DesignationId,
+            DesignationTitle = catalogueDesignation?.TitleEn ?? terms.DesignationTitle,
+            GradeId = terms.GradeId,
             EmploymentType = req.EmploymentType,
             HeadCount = req.HeadCount,
             Description = req.Description,
-            Requirements = req.Requirements,
+            Requirements = terms.Requirements,
             Responsibilities = req.Responsibilities,
-            SalaryFrom = req.SalaryFrom,
-            SalaryTo = req.SalaryTo,
+            SalaryFrom = terms.SalaryFrom,
+            SalaryTo = terms.SalaryTo,
             Location = req.Location,
             Status = "Open",
             AssignedHrUserId = userId,
@@ -131,9 +148,17 @@ public class OpeningsController : ControllerBase
         var j = await _db.JobOpenings.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         if (j is null) return NotFound();
 
+        // The same placement rules as Create: an id the request names must be an active record of this organisation.
+        var (catalogueDepartment, catalogueDesignation, placementError) = await CataloguePlacementAsync(tenantId, req.DepartmentId, req.DesignationId, req.GradeId, ct);
+        if (placementError is not null) return placementError;
+
         j.Title = req.Title;
-        j.DepartmentName = req.DepartmentName;
-        j.DesignationTitle = req.DesignationTitle;
+        // The opening's own placement (a recruitment record, not an employee's attribution): an id the request names replaces the stored one.
+        _db.Entry(j).CurrentValues.SetValues(new { DepartmentId = req.DepartmentId ?? j.DepartmentId, DesignationId = req.DesignationId ?? j.DesignationId, GradeId = req.GradeId ?? j.GradeId });
+        // A name is taken from the record, never typed: a newly named record names it, a kept record keeps its name, and free text only
+        // stands where there is no record at all.
+        j.DepartmentName = catalogueDepartment?.NameEn ?? (j.DepartmentId is null ? req.DepartmentName : j.DepartmentName);
+        j.DesignationTitle = catalogueDesignation?.TitleEn ?? (j.DesignationId is null ? req.DesignationTitle : j.DesignationTitle);
         j.EmploymentType = req.EmploymentType;
         j.HeadCount = req.HeadCount;
         j.Description = req.Description;
@@ -145,6 +170,13 @@ public class OpeningsController : ControllerBase
         j.AssignedHrName = req.AssignedHrName;
         await _db.SaveChangesAsync(ct);
         return Ok(j);
+    }
+
+    private async Task<(Department? Department, Designation? Designation, IActionResult? Error)> CataloguePlacementAsync(
+        Guid tenantId, Guid? departmentId, Guid? designationId, Guid? gradeId, CancellationToken ct)
+    {
+        var p = await RecruitmentPlacement.ResolveAsync(_db, tenantId, departmentId, designationId, gradeId, ct);
+        return (p.Department, p.Designation, p.Error is null ? null : BadRequest(new { message = p.Error }));
     }
 
     [HttpPost("{id:guid}/close")]
@@ -235,6 +267,7 @@ public class OpeningsController : ControllerBase
             _db.JobOpenings.Add(new JobOpening
             {
                 TenantId = tenantId,
+                CompanyId = req.CompanyId,
                 JobCode = code,
                 Title = title,
                 DepartmentName = dept,
@@ -258,10 +291,11 @@ public class OpeningsController : ControllerBase
     }
 }
 
-public record ImportJobOpeningsRequest(string CsvContent);
+public record ImportJobOpeningsRequest(string CsvContent, Guid? CompanyId = null);
 
 public record CreateOpeningRequest(
     Guid? RequisitionId, string Title, string DepartmentName, string DesignationTitle,
     string EmploymentType, int HeadCount, string Description, string Requirements,
     string Responsibilities, decimal? SalaryFrom, decimal? SalaryTo,
-    string Location, string AssignedHrName);
+    string Location, string AssignedHrName, Guid? CompanyId = null,
+    Guid? DepartmentId = null, Guid? DesignationId = null, Guid? GradeId = null);

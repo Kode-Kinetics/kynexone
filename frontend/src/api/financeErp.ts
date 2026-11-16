@@ -50,6 +50,48 @@ export interface JournalExportScope {
   includePreviouslyConfirmed?: boolean;
   replacesExportId?: string;
   options?: Record<string, string>;
+  /** C7: send anyway while a file in another format over the same rows still awaits the ERP's result (the server audits it). */
+  acknowledgeOtherFormatLive?: boolean;
+}
+
+/**
+ * The refusal for an export in a second format while another live file covers the same unconfirmed rows (HTTP 409, error
+ * other_format_export_live). Returns the live file the server names (first one), or null for any other error.
+ */
+/** A live file (still waiting for the ERP's result) that already holds some of an export's rows. */
+export interface JournalExportLiveOverlap {
+  exportId: string;
+  fileName: string;
+  format: string;
+  rows: number;
+  /** other_scope: creating is refused (409 entries_in_live_export) until that file's ERP result is recorded. */
+  relation: 'other_scope' | 'same_scope_other_format' | 'superseded_by_this_export';
+  message: string;
+  messageAr: string;
+}
+
+/**
+ * The manifest's warnings for display: the waiting-file notices in the viewer's language, and every other warning with the
+ * English copy of those notices taken out, so each is shown once.
+ */
+export function splitManifestWarnings(
+  m: { warnings: string[]; liveExportOverlaps?: JournalExportLiveOverlap[] }, locale: string,
+): { liveOverlaps: string[]; others: string[] } {
+  const overlaps = m.liveExportOverlaps ?? [];
+  const english = new Set(overlaps.map(o => o.message));
+  return {
+    liveOverlaps: overlaps.map(o => (locale === 'ar' ? o.messageAr || o.message : o.message || o.messageAr)),
+    others: m.warnings.filter(w => !english.has(w)),
+  };
+}
+
+export function readOtherFormatLive(err: unknown): { format: string; fileName: string } | null {
+  const response = (err as { response?: { status?: number; data?: unknown } } | null)?.response;
+  if (response?.status !== 409) return null;
+  const data = response.data as { error?: unknown; liveExports?: Array<{ format?: unknown; fileName?: unknown }> } | null;
+  if (data?.error !== 'other_format_export_live') return null;
+  const first = Array.isArray(data.liveExports) ? data.liveExports[0] : undefined;
+  return { format: typeof first?.format === 'string' ? first.format : '', fileName: typeof first?.fileName === 'string' ? first.fileName : '' };
 }
 
 export interface CompanyBalance {
@@ -78,7 +120,27 @@ export interface JournalExportManifest {
   byCompany: CompanyBalance[];
   journalCount: number;
   previouslyConfirmedExcluded: { count: number; total: number; exportIds: string[] };
+  /**
+   * Opening-balance ledger rows (balances carried in from the previous system) left out of every ERP export, because the
+   * client's ERP already holds those balances. Absent from an older API.
+   */
+  openingBalanceExcluded?: {
+    count: number;
+    /** Increases less reductions of the receivables (never the gross sum of the lines). */
+    net: number;
+    /** Lines that debit a receivable (balances carried in, restatements up). */
+    debits: number;
+    /** Lines that credit a receivable (restatements down). */
+    credits: number;
+    message: string | null;
+    messageAr: string | null;
+  };
   warnings: string[];
+  /**
+   * C-1: files still waiting for the ERP's result that already hold some of these rows, in both languages. The English
+   * sentence is also in `warnings`; show it through {@link splitManifestWarnings}. Absent from an older API.
+   */
+  liveExportOverlaps?: JournalExportLiveOverlap[];
   unattributedExcluded?: { excluded: boolean; count: number | null; total: number | null; note: string | null };
   outOfPeriodEntryDateCount: number;
   downloadUrl: string | null;
@@ -191,6 +253,7 @@ function scopeParams(scope: JournalExportScope): Record<string, string | boolean
   if (scope.includeUnattributed) p.includeUnattributed = true;
   if (scope.includePreviouslyConfirmed) p.includePreviouslyConfirmed = true;
   if (scope.replacesExportId) p.replacesExportId = scope.replacesExportId;
+  if (scope.acknowledgeOtherFormatLive) p.acknowledgeOtherFormatLive = true;
   for (const [k, v] of Object.entries(scope.options ?? {})) if (v.trim()) p[`options[${k}]`] = v.trim();
   return p;
 }

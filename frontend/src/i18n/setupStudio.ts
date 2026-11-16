@@ -125,7 +125,6 @@ const ar: Record<string, string> = {
   "Tax policies": "السياسات الضريبية",
   "Documents and renewals": "المستندات والتجديدات",
   "Saudi compliance": "الامتثال السعودي",
-  "GOSI filing": "إقرارات التأمينات الاجتماعية",
   "Administrative audit logs": "سجلات التدقيق الإداري"
 };
 

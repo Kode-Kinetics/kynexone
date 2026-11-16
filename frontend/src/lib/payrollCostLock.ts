@@ -49,7 +49,10 @@ export interface LockGroup {
 }
 
 export interface JournalCosting {
+  /** The PREVIEW plan: always off for a run that has already posted. */
   enabled: boolean;
+  /** Posted run only: whether any posted line carries a cost centre (read from the ledger, not the plan). */
+  postedWithCostCentres?: boolean;
   blockers: LockBlocker[];
   groups: LockGroup[];
   roundingBlocked: boolean;

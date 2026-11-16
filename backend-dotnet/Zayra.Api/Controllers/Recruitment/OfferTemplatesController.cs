@@ -31,7 +31,17 @@ public class OfferTemplatesController(ZayraDbContext db, IRequestEntityScopeReso
 
     [HttpGet("defaults")]
     [HasPermission("recruitment.read")]
-    public IActionResult Defaults() => Ok(new { design = OfferLetterDesign.DynamicDefault(), tokens = OfferLetterDesign.Tokens });
+    public IActionResult Defaults([FromQuery] string? variant = null) => Ok(new
+    {
+        // "ksa-en" and "ksa-ar" are the default Saudi letters (contract term, probation, working hours, leave, notice, GOSI); anything else is the generic letter.
+        design = variant switch
+        {
+            "ksa-en" => OfferLetterDesign.KsaDefault(false, dynamicCompensation: true),
+            "ksa-ar" => OfferLetterDesign.KsaDefault(true, dynamicCompensation: true),
+            _ => OfferLetterDesign.DynamicDefault(),
+        },
+        tokens = OfferLetterDesign.Tokens,
+    });
 
     [HttpGet]
     [HasPermission("recruitment.read")]

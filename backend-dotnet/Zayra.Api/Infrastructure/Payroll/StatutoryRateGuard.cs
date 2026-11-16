@@ -116,6 +116,8 @@ public static class StatutoryRateGuard
         Def(tenantId, BorderNumberRule.UseAsWageFileIdRateKey,  "PayParameter", "string",  "enum", null, null,
             "Use the Border Number as the employee ID in the Saudi wage file until the Iqama is issued: On (default) | Off (such an employee is held from the file)"),
         Def(tenantId, EosbProvisioningRateKeys.Mode,             "PayParameter", "string",  "enum",  null, null, "Monthly end-of-service provision at payroll Lock: Off (default) | StatutoryMonthly"),
+        Def(tenantId, LeaveProvisioningRateKeys.Mode,            "PayParameter", "string",  "enum",  null, null, "Monthly annual-leave provision at payroll Lock: Off (default) | BalanceMonthly"),
+        Def(tenantId, ProvisionCatchUpRoute.Key,                 "PayParameter", "string",  "enum",  null, null, "Where the go-live catch-up of the EOSB and leave provisions is booked: Expense (default) | OpeningBalance (opening balance equity, not profit and loss)"),
     };
 
     /// <summary>
@@ -137,6 +139,10 @@ public static class StatutoryRateGuard
         ProrationRateKeys.ProratedComponents,
         // POD-C2 — read by PayrollController.BuildEosbProvisionAsync at every Lock.
         EosbProvisioningRateKeys.Mode,
+        // Read by PayrollController.BuildLeaveProvisionAsync at every Lock.
+        LeaveProvisioningRateKeys.Mode,
+        // Read by BuildEosbProvisionAsync and BuildLeaveProvisionAsync at every Lock.
+        ProvisionCatchUpRoute.Key,
         BorderNumberRule.GraceDaysRateKey,
         BorderNumberRule.UseAsWageFileIdRateKey,
     };

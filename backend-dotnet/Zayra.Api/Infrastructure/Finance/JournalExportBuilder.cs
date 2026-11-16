@@ -49,6 +49,16 @@ public sealed class JournalExportSelection
     public int PreviouslyConfirmedExcludedCount { get; init; }
     public decimal PreviouslyConfirmedExcludedTotal { get; init; }
     public IReadOnlyList<Guid> PreviouslyConfirmedExportIds { get; init; } = Array.Empty<Guid>();
+    /// <summary>Opening-balance rows (<see cref="GlEventTypes.OpeningBalance"/>: balances carried in from the client's previous
+    /// system) left out of every ERP export, because the client's ERP already holds those balances. Reported, never silent.</summary>
+    public int OpeningBalanceExcludedCount { get; init; }
+    /// <summary>What the excluded opening lines put on the receivables: increases (the receivable debited, opening balance equity
+    /// credited) less reductions (a restatement down). Never the gross sum of the lines, which would count a restatement twice.</summary>
+    public decimal OpeningBalanceExcludedNet { get; init; }
+    /// <summary>The excluded opening lines that debit a receivable (opening balances carried in, restatements up).</summary>
+    public decimal OpeningBalanceExcludedDebits { get; init; }
+    /// <summary>The excluded opening lines that credit a receivable (restatements down).</summary>
+    public decimal OpeningBalanceExcludedCredits { get; init; }
 }
 
 /// <summary>Which ERP-confirmed rows the selection must leave out. <see cref="ExceptExportId"/> is the one
@@ -58,6 +68,81 @@ public sealed record ConfirmedExclusion(Guid? ExceptExportId = null);
 /// <summary>One ledger row the ERP already confirmed: through which export, which journal (null = the whole file
 /// was confirmed) and under which ERP document number.</summary>
 public sealed record ConfirmedHit(Guid EntryId, Guid ExportId, string? DocumentRef, string? ErpDocumentNumber);
+
+/// <summary>A live (<c>Exported</c>) export whose file already carries <see cref="Rows"/> of a new selection's ledger rows,
+/// in journals the ERP has not answered for yet.</summary>
+public sealed record LiveExportHolder(
+    Guid ExportId, string FileName, string FormatKey, string Currency, string Period, Guid? PayrollRunId, Guid? CompanyId,
+    DateTime ExportedAtUtc, int Rows);
+
+/// <summary>How a new export relates to a live file that already holds some of its rows, in both languages.</summary>
+public sealed record LiveExportOverlap(LiveExportHolder Holder, string Relation, string Message, string MessageAr);
+
+/// <summary>
+/// C-1: one ledger row, one live file. A row inside an export that is still waiting for the ERP's result is in circulation:
+/// a second file of ANOTHER scope (the whole month while a payroll-run file waits, the group while a company file waits) would
+/// put it in front of the ERP twice. Same-scope files keep their own rules in the controller (same format supersedes, another
+/// format needs an acknowledgement).
+/// </summary>
+public static class JournalExportLiveOverlaps
+{
+    /// <summary>Another scope's file holds the rows: the new export is refused until that file's ERP result is recorded.</summary>
+    public const string OtherScope = "other_scope";
+    /// <summary>The same scope in another format holds the rows (the existing other-format rule applies).</summary>
+    public const string SameScopeOtherFormat = "same_scope_other_format";
+    /// <summary>The same scope, format and currency: creating the new file supersedes the waiting one.</summary>
+    public const string SupersededByThisExport = "superseded_by_this_export";
+
+    /// <summary>True when <paramref name="holder"/> was taken for the same company, payroll run and (for a period export)
+    /// month as <paramref name="filter"/>.</summary>
+    public static bool SameScope(LiveExportHolder holder, JournalExportFilter filter) =>
+        holder.CompanyId == filter.CompanyId && holder.PayrollRunId == filter.PayrollRunId
+        && (filter.PayrollRunId is not null || string.Equals(holder.Period, filter.Period ?? string.Empty, StringComparison.Ordinal));
+
+    public static LiveExportOverlap Describe(LiveExportHolder h, JournalExportFilter filter, string formatKey, string currency)
+    {
+        var rows = h.Rows.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var be = h.Rows == 1 ? "is" : "are";
+        if (!SameScope(h, filter))
+            return new(h, OtherScope,
+                $"{rows} of these ledger rows {be} already in export {h.FileName}, which is waiting for its ERP result. This file cannot be "
+                + "created until that export's ERP result is recorded (posted or rejected), or that export's own scope is exported again "
+                + "in the same format to supersede it.",
+                $"{rows} من قيود دفتر الأستاذ هذه موجودة بالفعل في ملف التصدير {h.FileName} الذي ما زال بانتظار نتيجة نظام تخطيط الموارد. "
+                + "لا يمكن إنشاء هذا الملف حتى تُسجَّل نتيجة ذلك الملف (مرحّل أو مرفوض)، أو يُصدَّر نطاق ذلك الملف نفسه مجددًا بالصيغة نفسها ليحلّ محله.");
+        if (string.Equals(h.FormatKey, formatKey, StringComparison.Ordinal) && string.Equals(h.Currency, currency, StringComparison.Ordinal))
+            return new(h, SupersededByThisExport,
+                $"{rows} of these ledger rows {be} in export {h.FileName}, which is waiting for its ERP result. This file of the same "
+                + "scope and format supersedes it: send only the new file to your ERP.",
+                $"{rows} من قيود دفتر الأستاذ هذه موجودة في ملف التصدير {h.FileName} الذي ما زال بانتظار نتيجة نظام تخطيط الموارد. "
+                + "هذا الملف للنطاق والصيغة نفسيهما يحلّ محله: أرسل الملف الجديد فقط إلى نظام تخطيط الموارد.");
+        return new(h, SameScopeOtherFormat,
+            $"{rows} of these ledger rows {be} already in the {h.FormatKey} export {h.FileName}, which is waiting for its ERP result. "
+            + "Record that export's ERP result (posted or rejected) before sending these rows in another format: two files of the same "
+            + "rows could make your ERP post them twice.",
+            $"{rows} من قيود دفتر الأستاذ هذه موجودة بالفعل في ملف التصدير {h.FileName} بصيغة {h.FormatKey} الذي ما زال بانتظار نتيجة نظام تخطيط الموارد. "
+            + "سجّل نتيجة ذلك الملف (مرحّل أو مرفوض) قبل إرسال هذه القيود بصيغة أخرى: ملفان للقيود نفسها قد يجعلان النظام يرحّلها مرتين.");
+    }
+
+    /// <summary>The create refusal (409 <see cref="JournalExportErrors.EntriesInLiveExport"/>) for files of other scopes that
+    /// already hold some of the rows, oldest first. Names the first; says how many more there are.</summary>
+    public static (string Message, string MessageAr) Refusal(IReadOnlyList<LiveExportHolder> holders)
+    {
+        var h = holders[0];
+        var rows = h.Rows.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var be = h.Rows == 1 ? "is" : "are";
+        var more = holders.Count - 1;
+        return (
+            $"{rows} of these ledger rows {be} already in export {h.FileName}, which is waiting for its ERP result. Sending them in a "
+            + "second file could make your ERP post them twice. Record that export's ERP result (posted or rejected) first, or export "
+            + "that export's own scope again in the same format to supersede it."
+            + (more > 0 ? $" {more} other waiting export(s) also hold some of these rows." : string.Empty),
+            $"{rows} من قيود دفتر الأستاذ هذه موجودة بالفعل في ملف التصدير {h.FileName} الذي ما زال بانتظار نتيجة نظام تخطيط الموارد. "
+            + "إرسالها في ملف ثانٍ قد يجعل النظام يرحّلها مرتين. سجّل أولًا نتيجة ذلك الملف (مرحّل أو مرفوض)، أو صدّر نطاق ذلك الملف نفسه مجددًا "
+            + "بالصيغة نفسها ليحلّ محله."
+            + (more > 0 ? $" كما توجد بعض هذه القيود في {more} من ملفات التصدير الأخرى التي ما زالت بانتظار النتيجة." : string.Empty));
+    }
+}
 
 public static class JournalExportErrors
 {
@@ -83,6 +168,8 @@ public static class JournalExportErrors
     public const string CostCentreTotalMismatch = "cost_centre_total_mismatch";
     public const string UncostedRequiredLines = "uncosted_required_lines";
     public const string UnsafeCompanyCode = "unsafe_company_code";
+    public const string OtherFormatLive = "other_format_export_live";
+    public const string EntriesInLiveExport = "entries_in_live_export";
 }
 
 /// <summary>Rounded DR/CR of one company inside an export — every company must balance on its own.</summary>
@@ -173,6 +260,28 @@ public static class JournalExportBuilder
         if (!string.IsNullOrWhiteSpace(filter.Currency))
             scoped = scoped.Where(e => string.Equals(e.Currency, filter.Currency, StringComparison.OrdinalIgnoreCase)).ToList();
 
+        // OPENING BALANCES NEVER GO TO THE ERP. A balance carried in from the client's previous system (the opening journal of an
+        // imported loan or advance, against 3900 Opening Balance Equity) is already in the client's ERP, which ran alongside
+        // that system: sending it would book the receivable twice. The ledger keeps the line (the receivable tie-outs need it);
+        // the export leaves it out and says how many and how much. The provision catch-up booked to 3900 is not affected: it is
+        // part of the Lock journal (EosbProvisionAccrual / LeaveProvisionAccrual) and is this product's own accrual.
+        var openingBalances = scoped.Where(e => e.EventType == GlEventTypes.OpeningBalance).ToList();
+        decimal openingDebits = 0m, openingCredits = 0m;
+        if (openingBalances.Count > 0)
+        {
+            scoped = scoped.Where(e => e.EventType != GlEventTypes.OpeningBalance).ToList();
+            // A line increases the receivable when opening balance equity is on its credit side, and reduces it when equity is on
+            // its debit side (OpeningBalanceJournal posts only those two shapes), resolved per company as the writer resolved it.
+            foreach (var company in openingBalances.GroupBy(e => e.CompanyId))
+            {
+                var glCtx = await Payroll.GlAccountResolver.LoadAsync(db, tenantId, company.Key, ct);
+                var equity = Payroll.GlAccountResolver.AccountLabel(Payroll.ProvisionCatchUpRoute.EquityDriverKey, glCtx);
+                foreach (var line in company)
+                    if (line.DebitAccount == equity) openingCredits += line.Amount;
+                    else openingDebits += line.Amount;
+            }
+        }
+
         // THE DOUBLE-POST GUARD. A row an ERP has already confirmed is in the client's books; sending it
         // again in a re-export of the month (taken because one late loan posted) books it twice. Applied
         // BEFORE reversal-pair suppression so a confirmed original whose contra arrived later is never
@@ -236,6 +345,10 @@ public static class JournalExportBuilder
             PreviouslyConfirmedExcludedCount = confirmedExcluded.Count,
             PreviouslyConfirmedExcludedTotal = confirmedExcluded.Sum(e => e.Amount),
             PreviouslyConfirmedExportIds = confirmedExportIds,
+            OpeningBalanceExcludedCount = openingBalances.Count,
+            OpeningBalanceExcludedNet = openingDebits - openingCredits,
+            OpeningBalanceExcludedDebits = openingDebits,
+            OpeningBalanceExcludedCredits = openingCredits,
         };
     }
 
@@ -306,6 +419,46 @@ public static class JournalExportBuilder
                     result.Add(new ConfirmedHit(l.FinanceGlEntryId, p.Id, c.DocumentRef, c.ErpDocumentNumber));
         }
         return result.DistinctBy(h => (h.EntryId, h.ExportId)).ToList();
+    }
+
+    /// <summary>
+    /// The live (<c>Exported</c>) exports, of any scope, format or currency, whose frozen lines carry any of
+    /// <paramref name="entryIds"/>, with how many of those rows each holds. Rows in a journal the ERP has already answered for
+    /// (confirmed or rejected, per journal) are not counted: a confirmed one is excluded from any new selection anyway, and a
+    /// rejected one is owed again. Oldest first.
+    /// </summary>
+    public static async Task<List<LiveExportHolder>> LiveHoldersAsync(
+        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<Guid> entryIds, CancellationToken ct)
+    {
+        var result = new List<LiveExportHolder>();
+        if (entryIds.Count == 0) return result;
+        var ids = entryIds.Distinct().ToList();
+        var live = await ScopedBypass.TenantWide(db.GlJournalExports, tenantId,
+                "live-file guard: a ledger row waiting in any export's file is in circulation, whichever legal entity's export carried it")
+            .AsNoTracking()
+            .Where(x => x.Status == GlJournalExportStatuses.Exported)
+            .Select(x => new { x.Id, x.FileName, x.FormatKey, x.Currency, x.Period, x.PayrollRunId, x.CompanyId, x.ExportedAtUtc, x.JournalConfirmationsJson })
+            .ToListAsync(ct);
+        if (live.Count == 0) return result;
+        var liveIds = live.Select(x => x.Id).ToList();
+        var hits = await ScopedBypass.TenantWide(db.GlJournalExportLines, tenantId,
+                "live-file guard: frozen lines of waiting exports, matched only against rows already in the caller's selection")
+            .AsNoTracking()
+            .Where(l => liveIds.Contains(l.GlJournalExportId) && ids.Contains(l.FinanceGlEntryId))
+            .Select(l => new { l.GlJournalExportId, l.FinanceGlEntryId, l.CompanyCode, l.JournalRef })
+            .ToListAsync(ct);
+        if (hits.Count == 0) return result;
+
+        foreach (var x in live.OrderBy(x => x.ExportedAtUtc).ThenBy(x => x.Id))
+        {
+            var decided = ParseConfirmations(x.JournalConfirmationsJson)
+                .SelectMany(c => c.JournalRefs.Select(r => c.CompanyCode + "|" + r)).ToHashSet(StringComparer.Ordinal);
+            var rows = hits.Where(h => h.GlJournalExportId == x.Id && !decided.Contains(h.CompanyCode + "|" + h.JournalRef))
+                .Select(h => h.FinanceGlEntryId).Distinct().Count();
+            if (rows > 0)
+                result.Add(new LiveExportHolder(x.Id, x.FileName, x.FormatKey, x.Currency, x.Period, x.PayrollRunId, x.CompanyId, x.ExportedAtUtc, rows));
+        }
+        return result;
     }
 
     /// <summary>The (company code, journal ref) keys of an export's journals the ERP REJECTED — their rows are
@@ -424,6 +577,7 @@ public static class JournalExportBuilder
     public static string ExportReference(FinanceGlEntry e)
     {
         if (e.SourceModule != FinalSettlementGlDescriptions.SourceModule || !int.TryParse(e.SourceEntityRef, out _)) return e.SourceEntityRef;
+        if (e.EventType == GlEventTypes.LeaveProvisionAccrual) return $"LEAVE-{e.Period}";
         return e.EventType == GlEventTypes.EosbProvisionAccrual
             ? $"EOSB-{e.Period}"
             : $"SETTLEMENT-{e.SourceEntityId.ToString("N")[..12].ToUpperInvariant()}";
@@ -437,8 +591,18 @@ public static class JournalExportBuilder
     public static DateOnly DeriveAccountingDate(FinanceGlEntry e)
     {
         if (!TryParsePeriod(e.Period, out var start, out var end)) return e.EntryDate;
+        // Everything posted as part of a payroll period's Lock (the accrual, the bonus / settlement payable
+        // clearings inside it, the EOSB provision movement) is a month-end journal: it recognises the month's
+        // cost and liabilities whatever day the run happened to be locked, so it always carries the last day of
+        // its period. (A November run locked on 12 November exported as 2026-11-12 and read as a mid-month
+        // document.) Payment, remittance, reversal and contra journals are dated by when they actually
+        // happened, so they keep the rule below.
+        if (IsPayrollLockJournal(e)) return end;
         return e.EntryDate >= start && e.EntryDate <= end ? e.EntryDate : end;
     }
+
+    private static bool IsPayrollLockJournal(FinanceGlEntry e) =>
+        e.SourceModule == "Payroll" && GlEventTypes.IsPayrollLockEvent(e.EventType);
 
     public static bool TryParsePeriod(string? period, out DateOnly start, out DateOnly end)
     {
@@ -580,5 +744,14 @@ public static class JournalExportBuilder
         company is null ? "GROUP"
         : !string.IsNullOrWhiteSpace(company.ErpCompanyCode) ? company.ErpCompanyCode.Trim()
         : !string.IsNullOrWhiteSpace(company.RegistrationNumber) ? company.RegistrationNumber.Trim()
+        : company.Id.ToString("N")[..8].ToUpperInvariant();
+
+    /// <summary>The company token in a journal FILE NAME: the ERP company code when set, otherwise a neutral short id
+    /// fragment. Unlike <see cref="CompanyCodeOf"/> it never falls back to the registration (CR) number, which is not
+    /// something to print in a file name that is shared with the ERP team. The CompanyCode column inside the file is
+    /// unaffected. <c>null</c> company ⇒ "GROUP".</summary>
+    public static string FileNameCompanyTokenOf(Company? company) =>
+        company is null ? "GROUP"
+        : !string.IsNullOrWhiteSpace(company.ErpCompanyCode) ? company.ErpCompanyCode.Trim()
         : company.Id.ToString("N")[..8].ToUpperInvariant();
 }

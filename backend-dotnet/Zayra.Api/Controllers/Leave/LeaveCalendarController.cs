@@ -46,7 +46,7 @@ public class LeaveCalendarController : ControllerBase
 
         var query = _db.LeaveRequests
             .Where(r => r.TenantId == tenantId
-                && (r.Status == "Approved" || r.Status == "Submitted" || r.Status == "PendingManagerApproval" || r.Status == "PendingHRApproval")
+                && Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.ShownOnCalendar.Contains(r.Status)
                 && r.StartDate <= to
                 && r.EndDate >= from);
 
@@ -100,7 +100,7 @@ public class LeaveCalendarController : ControllerBase
 
         var query = _db.LeaveRequests
             .Where(r => r.TenantId == tenantId
-                && (r.Status == "Approved" || r.Status == "Submitted")
+                && Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.ShownOnCalendar.Contains(r.Status)
                 && r.StartDate <= to
                 && r.EndDate >= from);
 
@@ -147,7 +147,7 @@ public class LeaveCalendarController : ControllerBase
 
         var query = _db.LeaveRequests
             .Where(r => r.TenantId == tenantId
-                && r.Status == "Approved"
+                && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(r.Status)
                 && r.StartDate <= today
                 && r.EndDate >= today);
 

@@ -60,6 +60,7 @@ public partial class PayrollController : ControllerBase
     private readonly PayrollRunProcessor _processor;
     // Null means the registry defaults (both approval relaxations OFF).
     private readonly Zayra.Api.Infrastructure.Policy.IPolicySettings? _policySettings;
+    private readonly Microsoft.Extensions.Configuration.IConfiguration? _configuration;
 
     public PayrollController(ZayraDbContext db, IDataScopeService scopeService, IHttpContextAccessor http,
         INotificationService notifications, ICountryPackResolver packResolver, IStatutoryRuleReader ruleReader,
@@ -69,9 +70,12 @@ public partial class PayrollController : ControllerBase
         IProrationPolicyResolver? prorationPolicy = null,
         Zayra.Api.Application.WorkWeek.IWorkWeekService? workWeek = null,
         Zayra.Api.Infrastructure.Payroll.SalaryChangeDecisionService? salaryDecisions = null,
-        Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null)
+        Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null,
+        Microsoft.Extensions.Configuration.IConfiguration? configuration = null)
     {
         _policySettings = policySettings;
+        // Read only for the Saudi bank-export activation (the operator's kill switch and allow-list); DI always supplies it.
+        _configuration = configuration;
         _db = db;
         _scopeService = scopeService;
         _http = http;
@@ -1393,6 +1397,8 @@ public partial class PayrollController : ControllerBase
         decimal lockRounding = 0m;
         decimal lockEosbMovement = 0m;
         var lockEosbEmployees = 0;
+        decimal lockLeaveMovement = 0m;
+        int lockLeaveEmployees = 0, lockLeaveCatchUp = 0, lockLeaveUnmeasured = 0;
         if (!alreadyPosted)
         {
             // POD-B1 — a closed GL period rejects NEW postings. Dated into the accrual (run) period, so
@@ -1464,12 +1470,14 @@ public partial class PayrollController : ControllerBase
                     : currencyMismatch ? "gl_currency_mismatch"
                     : readiness.EmptySidedEntryIds.Count > 0 ? "gl_invalid_entry"
                     : companyOff ? "gl_company_unbalanced"
+                    : readiness.UncostedRequiredEntryIds.Count > 0 && readiness.Difference <= 0.01m ? PayrollCostStamper.RequiredCode
                     : "gl_unbalanced";
                 var message = error switch
                 {
                     "gl_mapping_missing" => "Payroll GL contains unmapped accounts. Complete the company GL mappings before locking.",
                     "gl_currency_mismatch" => "Payroll GL must be denominated solely in the legal entity's company currency before locking.",
                     "gl_invalid_entry" => "Payroll GL contains an entry with neither a debit nor a credit account.",
+                    PayrollCostStamper.RequiredCode => "A posting account that requires a cost centre received a journal line with none (for example the annual leave provision expense for an employee who resolves to no cost centre). Give that employee a cost centre, or set the account's cost-centre rule to Optional, then lock again.",
                     "gl_company_unbalanced" => "Payroll GL balances in total but not for each legal entity: " +
                         string.Join("; ", readiness.CompanyBalances.Where(c => c.Difference > 0.01m)
                             .Select(c => $"{(c.CompanyId is Guid cid ? $"company {cid}" : "lines with no company")} has debits {c.Debits:0.00} and credits {c.Credits:0.00}")) +
@@ -1503,6 +1511,12 @@ public partial class PayrollController : ControllerBase
             if (plan.EosbSnapshots.Count > 0) _db.EosbProvisionSnapshots.AddRange(plan.EosbSnapshots);
             lockEosbMovement = plan.EosbSnapshots.Sum(x => x.Movement);
             lockEosbEmployees = plan.EosbSnapshots.Count;
+            // The annual-leave provision's witnesses commit with the journal they explain, or not at all.
+            if (plan.LeaveSnapshots.Count > 0) _db.LeaveProvisionSnapshots.AddRange(plan.LeaveSnapshots);
+            lockLeaveMovement = plan.LeaveSnapshots.Sum(x => x.Movement);
+            lockLeaveEmployees = plan.LeaveSnapshots.Count;
+            lockLeaveCatchUp = plan.LeaveCatchUpEmployees;
+            lockLeaveUnmeasured = plan.LeaveUnmeasuredEmployees;
         }
 
         run.Status = "Locked";
@@ -1540,6 +1554,10 @@ public partial class PayrollController : ControllerBase
             catchAllComponents = lockCatchAlls.Select(c => new { componentCode = c.ComponentCode, label = c.Label, driverKey = c.DriverKey, amount = c.Amount }).ToList(),
             roundingAdjustment = lockRounding,
             eosbProvisionMovement = lockEosbMovement, eosbProvisionEmployees = lockEosbEmployees,
+            // The annual-leave provision: the net movement booked, who was measured, how many of them were the opening catch-up
+            // (the first month books everything owed to date), and who could not be measured (no salary record).
+            leaveProvisionMovement = lockLeaveMovement, leaveProvisionEmployees = lockLeaveEmployees,
+            leaveProvisionCatchUpEmployees = lockLeaveCatchUp, leaveProvisionUnmeasuredEmployees = lockLeaveUnmeasured,
             costing = CostingSummary(lockCostPlan),
         }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
@@ -1570,6 +1588,10 @@ public partial class PayrollController : ControllerBase
             // POD-C2 — the end-of-service provision movement this Lock booked (0 when provisioning is off).
             eosbProvisionMovement = lockEosbMovement,
             eosbProvisionEmployees = lockEosbEmployees,
+            // The annual-leave provision movement this Lock booked (0 when provisioning is off) and how many employees were its opening catch-up.
+            leaveProvisionMovement = lockLeaveMovement,
+            leaveProvisionEmployees = lockLeaveEmployees,
+            leaveProvisionCatchUpEmployees = lockLeaveCatchUp,
             // Cost accounting (WP-C2): whether the journal was costed, and the W-1 / W-2 warnings (counts and aggregates only).
             costing = CostingSummary(lockCostPlan),
         }), true, run);
@@ -2851,7 +2873,7 @@ public partial class PayrollController : ControllerBase
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (run is null) return NotFound();
 
-        var entries = new List<(string Code, string Name, string Account, string AccountName, string EntryType, decimal Amount, string? CostCentreCode, string? CostCentreName)>();
+        var entries = new List<(string Code, string Name, string Account, string AccountName, string EntryType, decimal Amount, string? CostCentreCode, string? CostCentreName, string? CostCentreErp)>();
         PayrollCostPlan previewCostPlan = PayrollCostPlan.Off;
         RoundingCostBlock? previewRoundingBlock = null;
 
@@ -2892,30 +2914,49 @@ public partial class PayrollController : ControllerBase
         IReadOnlyList<PayrollGlCatchAll> previewCatchAlls = Array.Empty<PayrollGlCatchAll>();
         IReadOnlyList<GlResolutionProblem> previewProblems = Array.Empty<GlResolutionProblem>();
         decimal previewRounding = 0m;
+        List<object> postedJourneys = new();
+        var postedWithCostCentres = false;
         if (isPosted)
         {
-            foreach (var e in posted)
-            {
-                var (compCode, compName) = DescribePostedLine(e.Description);
-                // FinanceGlEntry deliberately supports both historical two-sided rows and newer
-                // one-sided ledger rows. A two-sided row is TWO journal lines. Choosing the debit side
-                // when it exists drops the paired credit and turns a balanced ledger into the exact
-                // DR>0/CR=0 false imbalance observed in the client pilot.
-                if (!string.IsNullOrWhiteSpace(e.DebitAccount))
+            // A settled and remitted run holds SEVERAL journals in the ledger (accrual, net-pay settlement,
+            // remittances, void). The tab used to merge them: 2100 then showed as both a debit and a credit
+            // and the headline total doubled. The headline is the ACCRUAL journal alone; every other event
+            // is reported as its own journal in `journals`, each with its own balanced totals.
+            var postedNames = await ResolvePostedByNamesAsync(tenantId, posted, cancellationToken);
+            var accrualRows = posted.Where(e => PostedJournalKindOf(e.EventType).Kind == "accrual").ToList();
+            // A posted run with no recognisable accrual rows (legacy tags) falls back to everything it holds.
+            var headlineRows = accrualRows.Count > 0 ? accrualRows : posted;
+            entries = ExpandPostedLines(headlineRows);
+            postedWithCostCentres = posted.Any(e => e.CostCenterId != null || !string.IsNullOrWhiteSpace(e.CostCenterCode));
+            postedJourneys = posted
+                .GroupBy(e => PostedJournalKindOf(e.EventType))
+                .Select(g =>
                 {
-                    var (code, name) = SplitAccountLabel(e.DebitAccount);
-                    entries.Add((compCode, compName, code, name, "DR", e.Amount, e.CostCenterCode, e.CostCenterName));
-                }
-                if (!string.IsNullOrWhiteSpace(e.CreditAccount))
-                {
-                    var (code, name) = SplitAccountLabel(e.CreditAccount);
-                    // A two-sided row's cost centre belongs to its expense side only.
-                    entries.Add((compCode, compName, code, name, "CR", e.Amount,
-                        string.IsNullOrWhiteSpace(e.DebitAccount) ? e.CostCenterCode : null, string.IsNullOrWhiteSpace(e.DebitAccount) ? e.CostCenterName : null));
-                }
-            }
-            // Deterministic display order: debits first, then credits, each by account code.
-            entries = entries.OrderByDescending(x => x.EntryType).ThenBy(x => x.Account, StringComparer.Ordinal).ToList();
+                    var lines = ExpandPostedLines(g);
+                    var dr = lines.Where(l => l.EntryType == "DR").Sum(l => l.Amount);
+                    var cr = lines.Where(l => l.EntryType == "CR").Sum(l => l.Amount);
+                    var first = g.OrderBy(x => x.CreatedAtUtc).First();
+                    var by = g.Select(x => postedNames(x)).FirstOrDefault(n => n.Length > 0) ?? string.Empty;
+                    return (Rank: PostedJournalRank(g.Key.Kind, g.Key.Group), Created: first.CreatedAtUtc, Journal: (object)new
+                    {
+                        kind = g.Key.Kind,
+                        group = g.Key.Group,
+                        eventType = g.First().EventType,
+                        period = g.Select(x => x.Period).Distinct(StringComparer.Ordinal).OrderBy(x => x, StringComparer.Ordinal).FirstOrDefault() ?? string.Empty,
+                        entryDate = g.Min(x => x.EntryDate).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+                        postedAtUtc = first.CreatedAtUtc,
+                        postedByName = by,
+                        isReversed = g.All(x => x.IsReversed),
+                        hasCostCentres = lines.Any(l => !string.IsNullOrWhiteSpace(l.CostCentreCode)),
+                        entries = lines.Select(l => new { componentCode = l.Code, componentName = l.Name, glAccount = l.Account, glAccountName = l.AccountName, entryType = l.EntryType, amount = l.Amount, costCentreCode = l.CostCentreCode, costCentreName = l.CostCentreName, costCentreErpCode = l.CostCentreErp }),
+                        totalDebits = dr,
+                        totalCredits = cr,
+                        isBalanced = Math.Abs(dr - cr) < 0.01m,
+                    });
+                })
+                .OrderBy(x => x.Rank).ThenBy(x => x.Created)
+                .Select(x => x.Journal)
+                .ToList();
         }
         else
         {
@@ -2936,13 +2977,13 @@ public partial class PayrollController : ControllerBase
                 if (!string.IsNullOrWhiteSpace(line.DebitAccount))
                 {
                     var (code, name) = SplitAccountLabel(line.DebitAccount);
-                    entries.Add((compCode, compName, code, name, "DR", line.Amount, line.CostCenterCode, line.CostCenterName));
+                    entries.Add((compCode, compName, code, name, "DR", line.Amount, line.CostCenterCode, line.CostCenterName, null));
                 }
                 if (!string.IsNullOrWhiteSpace(line.CreditAccount))
                 {
                     var (code, name) = SplitAccountLabel(line.CreditAccount);
                     entries.Add((compCode, compName, code, name, "CR", line.Amount,
-                        string.IsNullOrWhiteSpace(line.DebitAccount) ? line.CostCenterCode : null, string.IsNullOrWhiteSpace(line.DebitAccount) ? line.CostCenterName : null));
+                        string.IsNullOrWhiteSpace(line.DebitAccount) ? line.CostCenterCode : null, string.IsNullOrWhiteSpace(line.DebitAccount) ? line.CostCenterName : null, null));
                 }
             }
             previewCostPlan = plan.CostPlan;
@@ -2991,11 +3032,14 @@ public partial class PayrollController : ControllerBase
             period   = $"{run.Year}-{run.Month:D2}",
             currency = journalCurrency,
             isPosted, // true = immutable as-posted ledger; false = live preview through current mappings
-            entries  = entries.Select(e => new { componentCode = e.Code, componentName = e.Name, glAccount = e.Account, glAccountName = e.AccountName, entryType = e.EntryType, amount = e.Amount, costCentreCode = e.CostCentreCode, costCentreName = e.CostCentreName }),
+            entries  = entries.Select(e => new { componentCode = e.Code, componentName = e.Name, glAccount = e.Account, glAccountName = e.AccountName, entryType = e.EntryType, amount = e.Amount, costCentreCode = e.CostCentreCode, costCentreName = e.CostCentreName, costCentreErpCode = e.CostCentreErp }),
             // Cost accounting (WP-C2, for the Lock-preview screen): what Lock would refuse and warn about, in the same shapes Lock answers with.
             costing = new
             {
                 enabled = previewCostPlan.Enabled,
+                // `enabled` is the PREVIEW plan and is always Off for a posted run, so it cannot say whether the
+                // posted lines carry cost centres. For a posted run that is read from the posted entries.
+                postedWithCostCentres,
                 blockers = previewCostPlan.Blockers.Select(b => new
                 {
                     employeeId = b.EmployeeId, employeeCode = b.EmployeeCode, level = b.Level, departmentId = b.DepartmentId, positionId = b.PositionId,
@@ -3008,6 +3052,9 @@ public partial class PayrollController : ControllerBase
             },
             totalDebits, totalCredits,
             isBalanced = Math.Abs(totalDebits - totalCredits) < 0.01m,
+            // Posted run only: every journal the ledger holds for it, one per event (accrual, net-pay settlement,
+            // remittance per group, reversals, void), each with its own lines, date, poster and balanced totals.
+            journals = postedJourneys,
             // Readiness, as Lock will judge it (preview only; empty once posted). Non-blocking warning:
             // pay items that will land in a catch-all account because no posting rule names them.
             catchAllComponents = previewCatchAlls.Select(c => new { componentCode = c.ComponentCode, label = c.Label, driverKey = c.DriverKey, amount = c.Amount }),
@@ -3133,7 +3180,7 @@ public partial class PayrollController : ControllerBase
     [HttpPost("runs/{id:guid}/payment-batches")]
     public async Task<IActionResult> CreatePaymentBatch(Guid id, PayrollPaymentBatchRequest req, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.Batch)) return Forbid();
 
         var tenantId = GetTenantId();
         // PAY-04: the "no live batch yet?" probe and the insert run as ONE serialized unit per run (same
@@ -3286,9 +3333,9 @@ public partial class PayrollController : ControllerBase
     private static string KsaWageFileEmployeeId(
         Employee? emp, IReadOnlyDictionary<int, Zayra.Api.Infrastructure.Employees.BorderNumberRule.WageFileBorderId> borderIds)
     {
+        // The same resolution WpsSifValidator checks, so the register carries exactly the ID that was validated.
         if (emp is null) return string.Empty;
-        if (!string.IsNullOrWhiteSpace(emp.IdNumber)) return emp.IdNumber;
-        return borderIds.TryGetValue(emp.Id, out var b) && b.Allowed ? b.BorderNumber : string.Empty;
+        return Zayra.Api.Infrastructure.Employees.WageFileGovernmentId.Resolve(emp, borderIds).Value ?? string.Empty;
     }
 
     /// <summary>
@@ -3300,7 +3347,7 @@ public partial class PayrollController : ControllerBase
     [HttpPost("runs/{id:guid}/wps-validation")]
     public async Task<IActionResult> WpsValidation(Guid id, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.Batch)) return Forbid();
 
         var tenantId = GetTenantId();
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
@@ -3315,7 +3362,16 @@ public partial class PayrollController : ControllerBase
         var (hardBlocked, driftWarn) = await ComputePayReadinessAsync(tenantId, employees, cancellationToken, wpsPeriodEnd);
         var borderIds = await Zayra.Api.Infrastructure.Employees.BorderNumberRule.ResolveWageFileIdsAsync(
             _db, tenantId, employees, wpsPeriodEnd, cancellationToken, _ruleReader);
-        var result = Infrastructure.Payroll.WpsSifValidator.Validate(run, slips, profiles, employees, hardBlocked, borderIds);
+        // The same register GenerateWps writes: the KSA ID rules apply only where the company files the KSA register.
+        var validationCompany = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.Id == run.CompanyId)
+            .Select(c => new { c.CountryCode, c.Jurisdiction })
+            .FirstOrDefaultAsync(cancellationToken);
+        var validatesKsaRegister = _packResolver.ResolveWageProtectionExporter(
+            validationCompany?.CountryCode ?? string.Empty, validationCompany?.Jurisdiction ?? string.Empty)
+            is Infrastructure.CountryPack.Ksa.KsaWageProtectionExporter;
+        var result = Infrastructure.Payroll.WpsSifValidator.Validate(run, slips, profiles, employees, hardBlocked, borderIds,
+            saudiCompany: validatesKsaRegister);
 
         return Ok(new
         {
@@ -3345,7 +3401,7 @@ public partial class PayrollController : ControllerBase
     [HttpPost("payment-batches/{id:guid}/wps-file")]
     public async Task<IActionResult> GenerateWps(Guid id, [FromQuery] bool acknowledgeReadinessDrift, [FromQuery] bool acknowledgeSiblingWpsExport, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.Batch)) return Forbid();
 
         var tenantId = GetTenantId();
         // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
@@ -3482,7 +3538,9 @@ public partial class PayrollController : ControllerBase
         var (hardBlocked, driftWarn) = await ComputePayReadinessAsync(tenantId, employees, cancellationToken, wpsPeriodEnd);
         var borderIds = await Zayra.Api.Infrastructure.Employees.BorderNumberRule.ResolveWageFileIdsAsync(
             _db, tenantId, employees, wpsPeriodEnd, cancellationToken, _ruleReader);
-        var validation = Infrastructure.Payroll.WpsSifValidator.Validate(runForFile, fileSlips, profiles, employees, hardBlocked, borderIds);
+        var isKsaRegister = exporter is Infrastructure.CountryPack.Ksa.KsaWageProtectionExporter;
+        var validation = Infrastructure.Payroll.WpsSifValidator.Validate(runForFile, fileSlips, profiles, employees, hardBlocked, borderIds,
+            saudiCompany: isKsaRegister);
         if (!validation.CanExport)
             return BadRequest(new
             {
@@ -3506,7 +3564,6 @@ public partial class PayrollController : ControllerBase
         // The establishment / WPS employer id is REQUIRED. It used to fall back to "0000000000", which
         // printed a placeholder as if it were an establishment into every file of a tenant that had not
         // configured one. Now a missing or placeholder id refuses the export with a stable code.
-        var isKsaRegister = exporter is Infrastructure.CountryPack.Ksa.KsaWageProtectionExporter;
         var (agentId, agentConflict) = await ResolveWpsEstablishmentIdAsync(tenantId, run.CompanyId, isKsaRegister, cancellationToken);
         if ((agentConflict ?? WpsEstablishmentError(agentId, isKsaRegister)) is { } estError)
             return UnprocessableEntity(new { error = estError.Code, message = estError.Message, field = estError.Field });
@@ -3669,7 +3726,7 @@ public partial class PayrollController : ControllerBase
     [HttpPost("payment-batches/{batchId:guid}/wps-status")]
     public async Task<IActionResult> UpdateWpsStatus(Guid batchId, [FromBody] WpsStatusRequest req, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.WpsStatus)) return Forbid();
 
         var tenantId = GetTenantId();
         // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
@@ -3949,7 +4006,7 @@ public partial class PayrollController : ControllerBase
     [RequestFormLimits(MultipartBodyLengthLimit = Infrastructure.Payroll.WpsAcceptanceEvidenceService.MaxBytes + Infrastructure.Documents.EssUploadPolicy.MultipartOverheadBytes)]
     public async Task<IActionResult> UploadWpsEvidence(Guid batchId, [FromForm] WpsEvidenceUploadForm form, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.WpsStatus)) return Forbid();
         var tenantId = GetTenantId();
         if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
             return batchScopeErr;
@@ -3996,7 +4053,7 @@ public partial class PayrollController : ControllerBase
     [HttpGet("payment-batches/{batchId:guid}/wps-evidence")]
     public async Task<IActionResult> ListWpsEvidence(Guid batchId, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.WpsStatus)) return Forbid();
         var tenantId = GetTenantId();
         if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
             return batchScopeErr;
@@ -4008,7 +4065,7 @@ public partial class PayrollController : ControllerBase
     [HttpGet("payment-batches/{batchId:guid}/wps-evidence/{evidenceId:guid}/download")]
     public async Task<IActionResult> DownloadWpsEvidence(Guid batchId, Guid evidenceId, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.WpsStatus)) return Forbid();
         var tenantId = GetTenantId();
         if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
             return batchScopeErr;
@@ -4145,7 +4202,7 @@ public partial class PayrollController : ControllerBase
     [HttpPost("payment-batches/{batchId:guid}/settle")]
     public async Task<IActionResult> SettlePaymentBatch(Guid batchId, [FromBody] SettlePaymentBatchRequest req, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.Settle)) return Forbid();
 
         var tenantId = GetTenantId();
         // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
@@ -4154,10 +4211,39 @@ public partial class PayrollController : ControllerBase
         // cross-company (PayrollRun is company-filtered, so the run reads back null).
         if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
             return batchScopeErr;
+        // M2 maker-checker: someone who created this batch or generated its bank file may not settle it with only the narrow settle key.
+        // payroll.export holders (Admin) are exempt, as they always were, so a single-admin tenant still works. An unknown caller cannot
+        // prove separation, so is refused too.
+        if (!HasPermission(PaymentPermissions.Export) && await SettlementMakerCheckerRefusalAsync(tenantId, batchId, cancellationToken) is { } makerRefusal)
+            return makerRefusal;
         // The already-settled check and the journal it guards run as ONE serialized unit per batch, so two
         // concurrent settles cannot both pass the check and post two journals.
         return await Infrastructure.Finance.FinanceDecisionSerializer.SerializeAsync(_db, BatchPaymentLockScope, tenantId, batchId,
             () => SettlePaymentBatchCoreAsync(tenantId, batchId, req, cancellationToken), cancellationToken);
+    }
+
+    private async Task<IActionResult?> SettlementMakerCheckerRefusalAsync(Guid tenantId, Guid batchId, CancellationToken ct)
+    {
+        var caller = GetUserId();
+        var makers = new HashSet<Guid>();
+        var batchKey = batchId.ToString();
+        foreach (var u in await _db.PayrollAuditLogs.AsNoTracking()
+                     .Where(a => a.TenantId == tenantId && a.EntityName == "PayrollPaymentBatch" && a.EntityId == batchKey
+                              && a.Action == Infrastructure.Payroll.PaymentBatchExclusions.CreatedAuditAction && a.UserId != null)
+                     .Select(a => a.UserId!.Value).ToListAsync(ct)) makers.Add(u);
+        foreach (var u in await _db.WPSFileBatches.AsNoTracking()
+                     .Where(x => x.TenantId == tenantId && x.PaymentBatchId == batchId && x.GeneratedByUserId != null)
+                     .Select(x => x.GeneratedByUserId!.Value).ToListAsync(ct)) makers.Add(u);
+        if ((await new Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService(_db)
+                .InstructionGeneratorsAsync(tenantId, new[] { batchId }, ct)).GetValueOrDefault(batchId) is Guid instructionMaker)
+            makers.Add(instructionMaker);
+        if (caller is Guid c && !makers.Contains(c)) return null;
+        return StatusCode(StatusCodes.Status403Forbidden, new
+        {
+            error = "settlement_needs_second_person",
+            message = "The person who created this payment batch or generated its bank file cannot also settle it. Ask a second person (the Finance Approver) to settle it.",
+            messageAr = "لا يجوز لمن أنشأ دفعة الرواتب أو أصدر ملفها البنكي أن يقوم أيضًا بتسويتها. اطلب من شخص آخر (المعتمد المالي) تسويتها.",
+        });
     }
 
     /// <summary>Advisory-lock scope shared by every net-pay posting against one payment batch: the bank
@@ -4169,7 +4255,16 @@ public partial class PayrollController : ControllerBase
     {
         var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
-        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
+        // FOR UPDATE on the run row: the same lock Void (and Lock, Approve, remit) takes. The per-batch advisory
+        // lock the caller holds only serialises settles of THIS batch, so a settle could read the run as Locked
+        // and post its cash journal after a concurrent void of the run had committed. Waiting on the run row
+        // makes the two strictly sequential: this settle then reads the committed status (Voided -> refused
+        // below) and the void, if it comes second, sees the settlement and asks for its cash election.
+        // Lock order is batch advisory lock -> run row -> the leaver's loan, then advance, locks (FinalizePaidSettlementsAsync);
+        // no path takes the run row and then a batch lock, and none takes a debt lock and then a run row or a batch lock.
+        // The full order is documented on FinanceDecisionSerializer.AcquireDebtLocksAsync.
+        var run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
         if (run is null) return NotFound();
 
         if (run.Status != "Locked")
@@ -4218,8 +4313,6 @@ public partial class PayrollController : ControllerBase
         var netLines = accrualLines
             .Where(l => string.IsNullOrEmpty(l.DebitAccount) && l.Description == PayrollGlDescriptions.NetPayable)
             .ToList();
-        if (netLines.Count == 0 || netLines.Sum(l => l.Amount) <= 0m)
-            return BadRequest(new { error = "nothing_to_settle", message = "No open net-pay liability was found on the accrual to settle." });
 
         // The bank batch settles ONLY what it carries. Employees left out of it (cash/cheque, zero net)
         // stay open in 2100 until their payment outside the bank file is recorded against this batch —
@@ -4229,10 +4322,40 @@ public partial class PayrollController : ControllerBase
         var batchEmployeeIds = (await _db.PayrollPaymentRecords.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.PaymentBatchId == batch.Id && x.Status != PaymentRecordStatuses.Cancelled)
             .Select(x => x.EmployeeId).ToListAsync(cancellationToken)).ToHashSet();
+        // A leaver whose final pay was all taken by the debts the run recovered has a ZERO net: the batch leaves them out because
+        // there is nothing to send, and no payment record is made for zero. Their settlement is nonetheless complete once the
+        // run's payment is settled — nothing else will ever pay it — so it is completed here with everyone the batch paid, and
+        // what the final pay could not cover moves to 1420 like any other leaver's. (Before, they were never seen: the
+        // settlement stayed Disbursing and the leftover stayed on an ex-employee's loan or advance.)
+        var zeroNetEmployeeIds = batchExclusions
+            .Where(x => x.ReasonCode == Infrastructure.Payroll.PaymentBatchExclusions.ZeroNetCode)
+            .Select(x => x.EmployeeId).ToHashSet();
+        var completedEmployeeIds = batchEmployeeIds.Union(zeroNetEmployeeIds).ToHashSet();
+
+        // A run whose payslips are ALL zero still has nothing to settle here (no cash journal to post); completing its zero-net
+        // leavers' settlements without a paying batch is an open decision, not made in this change.
+        if (netLines.Count == 0 || netLines.Sum(l => l.Amount) <= 0m)
+            return BadRequest(new { error = "nothing_to_settle", message = "No open net-pay liability was found on the accrual to settle." });
+
         var toSettle = netLines.Sum(l => l.Amount) - excludedOpen;
         if (toSettle <= 0m)
             return BadRequest(new { error = "nothing_to_settle", message = "Every payslip in this run is paid outside the bank file; record those payments instead of settling the batch." });
         var clearing = TakeFromAccrual(netLines, toSettle);
+
+        // The amount about to leave Cash/Bank must be exactly what this batch pays. The batch total is the sum
+        // of the payslips it carries; the clearing is the accrued net liability less what is left outside the
+        // bank file. If the two ever disagree, the bank file and the books describe different payments: refuse
+        // rather than settle "whatever the ledger holds".
+        var clearedTotal = clearing.Sum(l => l.Amount);
+        if (clearedTotal != batch.TotalAmount)
+            return UnprocessableEntity(new
+            {
+                error = "settlement_amount_mismatch",
+                message = $"Settling this batch would clear {clearedTotal:N2} from Salaries Payable, but the batch pays {batch.TotalAmount:N2}. " +
+                          "The bank file and the accrued net pay disagree; nothing was posted. Investigate the difference before settling.",
+                clearedAmount = clearedTotal,
+                batchTotal = batch.TotalAmount,
+            });
 
         var glCtx = await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken);
         var (cashCode, cashName) = ResolveGlAccount("CASH_BANK", glCtx.Overrides, glCtx.DriverDefaults);
@@ -4254,7 +4377,7 @@ public partial class PayrollController : ControllerBase
         // This is the ONLY place a settlement reaches Paid, and it is the ordinary net-pay settlement
         // journal that does it — no second payment mechanism anywhere in the pipeline.
         var settlementResult = await FinalizePaidSettlementsAsync(
-            tenantId, run, batch, glCtx, settlementPeriod, batchEmployeeIds, cancellationToken);
+            tenantId, run, batch, glCtx, settlementPeriod, completedEmployeeIds, cancellationToken);
 
         await PayrollAudit("payroll.batch.settled", "PayrollPaymentBatch", batch.Id.ToString(),
             new
@@ -4310,10 +4433,13 @@ public partial class PayrollController : ControllerBase
     [HttpPost("payment-batches/{batchId:guid}/outside-payments")]
     public async Task<IActionResult> RecordOutsidePayment(Guid batchId, [FromBody] OutsidePaymentRequest req, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.Settle)) return Forbid();
         var tenantId = GetTenantId();
         if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
             return batchScopeErr;
+        // Same duty split as settle: whoever created the batch or generated its bank file does not also record its payments.
+        if (!HasPermission(PaymentPermissions.Export) && await SettlementMakerCheckerRefusalAsync(tenantId, batchId, cancellationToken) is { } makerRefusal)
+            return makerRefusal;
 
         var method = req.Method?.Trim();
         if (method is null || !Infrastructure.Payroll.PaymentBatchExclusions.OutsidePaymentMethods.Contains(method))
@@ -4412,10 +4538,13 @@ public partial class PayrollController : ControllerBase
     [HttpPost("payment-batches/{batchId:guid}/outside-payments/{employeeId:int}/reverse")]
     public async Task<IActionResult> ReverseOutsidePayment(Guid batchId, int employeeId, [FromBody] PayrollReasonRequest req, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.Settle)) return Forbid();
         var tenantId = GetTenantId();
         if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
             return batchScopeErr;
+        // A reversal posts to Cash/Bank too, so it follows the same duty split as recording the payment.
+        if (!HasPermission(PaymentPermissions.Export) && await SettlementMakerCheckerRefusalAsync(tenantId, batchId, cancellationToken) is { } makerRefusal)
+            return makerRefusal;
         if (string.IsNullOrWhiteSpace(req.Reason))
             return BadRequest(new { error = "reason_required", message = "A reason is required to reverse a recorded payment." });
 
@@ -4557,7 +4686,7 @@ public partial class PayrollController : ControllerBase
     /// </list>
     /// </summary>
     private async Task<PaidSettlementResult> FinalizePaidSettlementsAsync(
-        Guid tenantId, PayrollRun run, PayrollPaymentBatch batch, GlResolutionContext glCtx,
+        Guid tenantId, PayrollRun run, PayrollPaymentBatch? batch, GlResolutionContext glCtx,
         string settlementPeriod, IReadOnlySet<int> paidEmployeeIds, CancellationToken ct)
     {
         // Only the leavers whose money actually moved: in the settled bank batch, or with a payment
@@ -4581,10 +4710,35 @@ public partial class PayrollController : ControllerBase
         var advanceReceivableAccount = GlAccountResolver.AccountLabel("ADVANCE_RECEIVABLE", glCtx);
         var employeeReceivableAccount = GlAccountResolver.AccountLabel(
             GlControlAccounts.EmployeeReceivableDriver, glCtx);
+        // The leaver's loans and advances are LOCKED before their balances are read. A payroll run that includes the same leaver
+        // collects an instalment from them under the same finance.loan / finance.advance locks; without these, one write overwrote
+        // the other and the employee repaid through payroll while the whole residual also moved to 1420. The unlocked look only
+        // names the candidates; the tracked rows are read after the locks, so the residual is what payroll left, and payroll, if
+        // it comes second, sees the debt already moved. Lock order: the caller holds the batch-payment lock (and, for the bank
+        // settlement, the run row); the debt locks come next, loans then advances, each ascending (AcquireDebtLocksAsync).
+        System.Linq.Expressions.Expression<Func<EmployeeLoan, bool>> openLoan = l =>
+            l.TenantId == tenantId && l.CompanyId == run.CompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null
+            && employeeIds.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0;
+        // Only the paying company's advances, as for loans: an advance another legal entity paid (an employee who moved) is that
+        // entity's 1410 receivable; this company's settlement neither reclassifies nor reports it. A legacy advance with no company
+        // is still dispositioned here, as payroll still collects it (PayrollRunProcessor, collectableAdvance).
+        System.Linq.Expressions.Expression<Func<SalaryAdvance, bool>> openAdvance = a =>
+            a.EmployeeIntId != null && employeeIds.Contains(a.EmployeeIntId.Value);
+        var loanIds = await _db.EmployeeLoans.AsNoTracking().Where(openLoan).Select(l => l.Id).ToListAsync(ct);
+        var advanceIds = await Infrastructure.Payroll.AdvanceRecoveryScope.Query(_db, tenantId, run.CompanyId).AsNoTracking().Where(openAdvance).Select(a => a.Id).ToListAsync(ct);
+        await Infrastructure.Finance.FinanceDecisionSerializer.AcquireDebtLocksAsync(_db, tenantId, loanIds, advanceIds, ct);
+        var loans = loanIds.Count == 0 ? new List<EmployeeLoan>() : await _db.EmployeeLoans
+            .Where(openLoan).Where(l => loanIds.Contains(l.Id))
+            .ToListAsync(ct);
+        var advances = advanceIds.Count == 0 ? new List<SalaryAdvance>() : await Infrastructure.Payroll.AdvanceRecoveryScope.Query(_db, tenantId, run.CompanyId)
+            .Where(openAdvance).Where(a => advanceIds.Contains(a.Id))
+            .ToListAsync(ct);
+
         // AvailableForRelief, never the raw scoped balance: the unattributed (CompanyId == null) pool sits
         // inside every company's view while the relief posted against it is stamped with the relieving
         // company, so two entities reading the same pool would each relieve it in full and drive the ASSET
-        // into credit. Same clamp POD-B1b's loan remittance uses.
+        // into credit. Same clamp POD-B1b's loan remittance uses. Read after the debt locks, so a cash
+        // settlement of one of these loans that committed first is already in the balance.
         var loanBalance    = await GlControlAccounts.LoadAsync(_db, tenantId, run.CompanyId, loanReceivableAccount, ct);
         var advanceBalance = await GlControlAccounts.LoadAsync(_db, tenantId, run.CompanyId, advanceReceivableAccount, ct);
         var reclassBudget = new Dictionary<string, decimal>(StringComparer.Ordinal)
@@ -4592,15 +4746,6 @@ public partial class PayrollController : ControllerBase
             [loanReceivableAccount]    = Math.Max(0m, loanBalance.AvailableForRelief),
             [advanceReceivableAccount] = Math.Max(0m, advanceBalance.AvailableForRelief),
         };
-
-        var loans = await _db.EmployeeLoans
-            .Where(l => l.TenantId == tenantId && l.CompanyId == run.CompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null
-                     && employeeIds.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0)
-            .ToListAsync(ct);
-        var advances = await _db.SalaryAdvances
-            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null
-                     && employeeIds.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0)
-            .ToListAsync(ct);
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         decimal totalReclassed = 0m, totalUnbooked = 0m;
@@ -4656,7 +4801,8 @@ public partial class PayrollController : ControllerBase
         foreach (var s in settlements)
         {
             s.Status = FinalSettlementStatuses.Paid;
-            s.PaymentBatchId = batch.Id;
+            // Null when the settlement paid nothing and was completed without a batch (CompleteFinalSettlementWithoutPayment).
+            s.PaymentBatchId = batch?.Id;
             s.PaidAtUtc = DateTime.UtcNow;
             s.UpdatedAtUtc = DateTime.UtcNow;
 
@@ -4676,20 +4822,33 @@ public partial class PayrollController : ControllerBase
                 if (moved <= 0m) continue;
                 l.OutstandingBalance = Math.Round(l.OutstandingBalance - moved, 2);
                 l.TotalRepaid = Math.Round(l.TotalRepaid, 2);   // unchanged: a reclass is not a repayment
-                if (l.OutstandingBalance <= 0m) l.Status = "Closed";
+                if (l.OutstandingBalance <= 0m)
+                {
+                    l.Status = "Closed";
+                    await CloseRemainingInstalmentsAsync(tenantId, loanId: l.Id, advanceId: null, ct);
+                }
             }
             foreach (var a in advances.Where(a => a.EmployeeIntId == s.EmployeeId && a.OutstandingBalance > 0m))
             {
                 var moved = Reclass(s, advanceReceivableAccount, Math.Round(a.OutstandingBalance, 2), "advance");
                 if (moved <= 0m) continue;
+                var before = a.OutstandingBalance;
                 a.OutstandingBalance = Math.Round(a.OutstandingBalance - moved, 2);
-                if (a.OutstandingBalance <= 0m) a.Status = "Closed";
+                if (a.OutstandingBalance <= 0m)
+                {
+                    a.Status = "Closed";
+                    await CloseRemainingInstalmentsAsync(tenantId, loanId: null, advanceId: a.Id, ct);
+                }
+                // On the advance's own trail, with the amount: the advance audit counts it (a move to 1420 is not a repayment, so
+                // TotalRepaid is unchanged and only this row explains the drop in the balance).
+                _db.AdvanceAuditLogs.Add(Infrastructure.Payroll.AdvanceResidualAudit.Entry(
+                    tenantId, a, moved, before, s.Id, run.Id, batch?.Id, GetUserId(), GetUserName()));
             }
 
             await PayrollAudit("payroll.final_settlement.paid", "EmployeeFinalSettlement", s.Id.ToString(), new
             {
                 s.EmployeeId, s.EmployeeCode, s.NetPayable, s.Currency,
-                runId = run.Id, batchId = batch.Id, period = settlementPeriod,
+                runId = run.Id, batchId = batch?.Id, period = settlementPeriod,
                 residualReclassed = s.ResidualDebtReclassed, residualUnbooked = s.ResidualDebtUnbooked,
             }, ct);
         }
@@ -4700,6 +4859,183 @@ public partial class PayrollController : ControllerBase
     }
 
     /// <summary>
+    /// A loan or advance a final settlement closed by moving its leftover to 1420 keeps no Pending instalments. A row the final pay
+    /// paid part of is cut to what was paid and marked Paid; every other open row is Cancelled, the status a schedule closed without
+    /// payment already takes (a cancelled advance's or loan's rows): nothing was paid on it, the debt now lives in the 1420
+    /// sub-ledger. Marking those Paid would claim a repayment the deduction statement would then show.
+    ///
+    /// <para>Not witnessed, on purpose: a void of the settlement run leaves the 1420 move standing, so what the move closed stays
+    /// closed. The void reopens only what the run itself took (its own instalment witnesses), and the cut row reopens at the amount
+    /// the run took, so the reopened schedule adds up to exactly the balance the void gives back.</para>
+    /// </summary>
+    private async Task CloseRemainingInstalmentsAsync(Guid tenantId, Guid? loanId, Guid? advanceId, CancellationToken ct)
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        if (loanId is Guid lid)
+            foreach (var row in await _db.LoanInstallments.Where(i => i.TenantId == tenantId && i.LoanId == lid && i.Status == "Pending").ToListAsync(ct))
+            {
+                if (row.AmountPaid > 0m) { row.AmountDue = row.AmountPaid; row.Status = "Paid"; row.PaidDate ??= today; }
+                else row.Status = "Cancelled";
+            }
+        if (advanceId is Guid aid)
+            foreach (var row in await _db.AdvanceInstallments.Where(i => i.TenantId == tenantId && i.AdvanceId == aid && i.Status == "Pending").ToListAsync(ct))
+            {
+                if (row.AmountPaid > 0m) { row.AmountDue = row.AmountPaid; row.Status = "Paid"; row.PaidDate ??= today; }
+                else row.Status = AdvanceStatuses.Cancelled;
+            }
+    }
+
+    /// <summary>
+    /// Completes a final settlement that pays nothing. When the leaver's debts took all of the final pay the settlement run's
+    /// payslip nets to zero, so no payment batch will ever pay it (a run whose only payslip is zero has nothing to settle, and a
+    /// batch leaves a zero net out), and the settlement used to wait in Disbursing for ever with the leftover debt still on the
+    /// ex-employee's loan or advance. This is the explicit step that closes it, through the same finalisation a paid batch runs
+    /// (<see cref="FinalizePaidSettlementsAsync"/>): the settlement becomes Paid with no batch and no bank payment, the
+    /// offboarding's settlement tick is set, and the residual loan and advance debt moves to 1420 exactly as it does in a batch.
+    ///
+    /// <para>Only for a settlement awaiting payment (Disbursing) on its Locked run whose payslip nets to exactly zero. Same
+    /// permission as settling a payment batch (payroll.payment.settle, or payroll.export). Maker-checker as for approval: whoever
+    /// calculated or submitted the settlement may not complete it, nor may the leaver. Idempotent: asking again for a settlement
+    /// already completed answers alreadyCompleted and changes nothing. Lock order as the batch settlement: the payment lock of every
+    /// batch of the run, the run row FOR UPDATE, then (inside the finalisation) the leaver's loans and advances. Audited.</para>
+    /// </summary>
+    [HttpPost("final-settlements/{id:guid}/complete-without-payment")]
+    public async Task<IActionResult> CompleteFinalSettlementWithoutPayment(Guid id, [FromBody] PayrollReasonRequest? req, CancellationToken cancellationToken)
+    {
+        if (!HasPaymentPermission(PaymentPermissions.Settle)) return Forbid();
+        var tenantId = GetTenantId();
+        if (GetUserId() is not Guid actorId)
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "actor_unidentified",
+                message = "A settlement can only be completed by an identified user.",
+                messageAr = "لا يمكن إتمام التسوية إلا من قبل مستخدم معروف الهوية.",
+            });
+        var reason = string.IsNullOrWhiteSpace(req?.Reason) ? null : req!.Reason!.Trim();
+        if (reason is { Length: > 500 })
+            return BadRequest(new { error = "reason_too_long", message = "The reason can be at most 500 characters.", messageAr = "يجب ألا يتجاوز السبب 500 حرف." });
+
+        // Company-scoped read: a settlement outside the caller's companies reads back null.
+        var runId = await _db.EmployeeFinalSettlements.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.Id == id)
+            .Select(s => new { s.PayrollRunId })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (runId is null) return NotFound();
+        if (runId.PayrollRunId is not Guid settlementRunId) return SettlementNotAwaitingPayment(null);
+        var batchIds = await _db.PayrollPaymentBatches.AsNoTracking()
+            .Where(b => b.TenantId == tenantId && b.PayrollRunId == settlementRunId)
+            .Select(b => b.Id).ToListAsync(cancellationToken);
+
+        return await InRunRowLockTransactionAsync(async () =>
+        {
+            // Step 1 of the shared lock order: the payment lock of every batch of this run, ascending key, so a concurrent settle
+            // of one of them (which finalises this run's zero-net leavers too) runs strictly before or after this.
+            foreach (var batchId in batchIds.OrderBy(b => Infrastructure.Finance.FinanceDecisionSerializer.ComputeLockKey(BatchPaymentLockScope, tenantId, b)))
+                await Infrastructure.Finance.FinanceDecisionSerializer.AcquireAsync(_db, BatchPaymentLockScope, tenantId, batchId, cancellationToken);
+            return await CompleteFinalSettlementWithoutPaymentCoreAsync(tenantId, id, settlementRunId, actorId, reason, cancellationToken);
+        }, cancellationToken);
+    }
+
+    private async Task<IActionResult> CompleteFinalSettlementWithoutPaymentCoreAsync(
+        Guid tenantId, Guid id, Guid runId, Guid actorId, string? reason, CancellationToken cancellationToken)
+    {
+        // Step 2: the run row FOR UPDATE (as the batch settlement, the void and Lock take it), then everything is re-read under it.
+        var run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Id == runId, cancellationToken);
+        if (run is null) return NotFound();
+        var s = await _db.EmployeeFinalSettlements.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (s is null) return NotFound();
+
+        if (s.Status == FinalSettlementStatuses.Paid && s.PayrollRunId == runId)
+            return Ok(new
+            {
+                settlementId = s.Id, status = s.Status, alreadyCompleted = true,
+                residualDebtReclassed = s.ResidualDebtReclassed, residualDebtUnbooked = s.ResidualDebtUnbooked,
+            });
+        if (s.Status != FinalSettlementStatuses.Disbursing || s.PayrollRunId != runId) return SettlementNotAwaitingPayment(s.Status);
+        if (run.Status != "Locked")
+            return Conflict(new
+            {
+                error = "run_not_locked",
+                message = $"The settlement run is '{run.Status}'. A settlement can be completed only once its run is Locked.",
+                messageAr = "لا يمكن إتمام التسوية إلا بعد قفل مسير الرواتب الخاص بها.",
+                runStatus = run.Status,
+            });
+
+        // Duties: never the leaver, never whoever calculated or submitted the settlement (the approval's maker-checker).
+        if (await _db.Employees.AsNoTracking().AnyAsync(e => e.TenantId == tenantId && e.Id == s.EmployeeId && e.UserAccountId == actorId, cancellationToken))
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "subject_is_recorder",
+                message = "You cannot complete your own final settlement. Another finance user must do it.",
+                messageAr = "لا يمكنك إتمام تسوية نهاية خدمتك بنفسك. يجب أن يقوم بذلك مستخدم مالي آخر.",
+            });
+        if (await SettlementMakerRoleAsync(tenantId, s, actorId, cancellationToken) is { } makerRole)
+            return Conflict(new
+            {
+                error = "segregation_of_duties",
+                message = $"You {makerRole} this settlement, so you cannot also complete it. A different user who settles payments must complete it.",
+                messageAr = "لا يمكنك إتمام تسوية قمت بحسابها أو تقديمها. يجب أن يتمها مستخدم آخر مخوّل بتسوية المدفوعات.",
+                settlementId = s.Id,
+            });
+
+        // Exactly zero, from the run's own payslip: anything to pay goes through the bank batch or a recorded outside payment.
+        var nets = await _db.PayrollSlips.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.RunId == runId && x.EmployeeId == s.EmployeeId && x.Status != "Voided")
+            .Select(x => x.NetSalary).ToListAsync(cancellationToken);
+        if (nets.Count == 0)
+            return UnprocessableEntity(new
+            {
+                error = "settlement_payslip_missing",
+                message = "The settlement run has no payslip for this leaver, so there is nothing to show the final pay is zero.",
+                messageAr = "لا توجد قسيمة راتب لهذا الموظف في مسير التسوية، فلا يمكن التحقق من أن صافي المستحق صفر.",
+            });
+        if (nets.Any(n => n != 0m))
+            return UnprocessableEntity(new
+            {
+                error = "settlement_net_not_zero",
+                message = $"This leaver's final pay is {nets.Sum():N2}, not zero. Pay it through the payment batch (or record the payment made outside the bank file); only a settlement with nothing to pay is completed this way.",
+                messageAr = "صافي المستحق النهائي لهذا الموظف ليس صفرًا. ادفعه عبر دفعة الرواتب (أو سجّل الدفعة خارج الملف البنكي)؛ هذا الإجراء مخصص فقط للتسويات التي لا يوجد فيها مبلغ للدفع.",
+                netPay = nets.Sum(),
+            });
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var period = $"{today.Year}-{today.Month:D2}";
+        if (await PeriodCloseGuard.IsClosedAsync(_db, tenantId, run.CompanyId, period, cancellationToken))
+            return UnprocessableEntity(new
+            {
+                error = "gl_period_closed",
+                message = $"GL period {period} is closed. Reopen it before completing this settlement.",
+                messageAr = $"الفترة المحاسبية {period} مقفلة. أعد فتحها قبل إتمام هذه التسوية.",
+                period,
+            });
+
+        var glCtx = await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken);
+        var result = await FinalizePaidSettlementsAsync(
+            tenantId, run, null, glCtx, period, new HashSet<int> { s.EmployeeId }, cancellationToken);
+        await PayrollAudit("payroll.final_settlement.completed_without_payment", "EmployeeFinalSettlement", s.Id.ToString(), new
+        {
+            s.EmployeeId, s.EmployeeCode, runId, period, reason,
+            residualDebtReclassed = result.ResidualReclassed, residualDebtUnbooked = result.ResidualUnbooked,
+        }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(new
+        {
+            settlementId = s.Id, status = FinalSettlementStatuses.Paid, alreadyCompleted = false, reason,
+            residualDebtReclassed = result.ResidualReclassed, residualDebtUnbooked = result.ResidualUnbooked,
+        });
+    }
+
+    private IActionResult SettlementNotAwaitingPayment(string? status) => Conflict(new
+    {
+        error = "settlement_not_awaiting_payment",
+        message = $"Only a settlement awaiting payment on its locked run (Disbursing) can be completed{(status is null ? "" : $" (this one is '{status}')")}.",
+        messageAr = "لا يمكن إتمام إلا تسوية بانتظار الدفع في مسير رواتب مقفل.",
+        status,
+    });
+
+    /// <summary>
     /// Reverses a net-pay settlement via contra entries (re-opening 2100) and reverts the batch to
     /// Accepted so operational state matches the ledger. Blocks if the settlement period is closed
     /// (P0-3 — force an audited reopen). Requires payroll.export.
@@ -4707,7 +5043,7 @@ public partial class PayrollController : ControllerBase
     [HttpPost("payment-batches/{batchId:guid}/settle/reverse")]
     public async Task<IActionResult> ReverseSettlement(Guid batchId, [FromBody] PayrollReasonRequest req, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.Settle)) return Forbid();
         var tenantId = GetTenantId();
         // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
         // entity comes from batch -> run -> PayrollRun.CompanyId, never from the request. Without
@@ -4715,6 +5051,9 @@ public partial class PayrollController : ControllerBase
         // cross-company (PayrollRun is company-filtered, so the run reads back null).
         if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, cancellationToken) is { } batchScopeErr)
             return batchScopeErr;
+        // A reversal posts to Cash/Bank too, so it follows the same duty split as the settlement it undoes.
+        if (!HasPermission(PaymentPermissions.Export) && await SettlementMakerCheckerRefusalAsync(tenantId, batchId, cancellationToken) is { } makerRefusal)
+            return makerRefusal;
 
         // Validated AFTER the entity check, for the same reason as wps-status above.
         if (string.IsNullOrWhiteSpace(req.Reason))
@@ -4771,10 +5110,24 @@ public partial class PayrollController : ControllerBase
     [HttpPost("runs/{id:guid}/remit")]
     public async Task<IActionResult> RemitStatutory(Guid id, [FromBody] RemitStatutoryRequest req, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.Remit)) return Forbid();
 
+        // ONE remittance per group, even under concurrent requests. The "already remitted" probe below and
+        // the insert it guards used to run with no transaction and no lock, so two simultaneous "Remit GOSI"
+        // calls both passed the probe and both posted DR 2101/2106 / CR Cash/Bank — a double payment that
+        // still balanced, so nothing flagged it. The whole remit now runs in one transaction that first
+        // takes FOR UPDATE on the payroll_runs row (the same row lock Lock, Void and settle take): the second
+        // caller waits, then sees the committed remittance and gets the 409. It also serialises a remit
+        // against a concurrent void of the same run.
         var tenantId = GetTenantId();
-        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        return await InRunRowLockTransactionAsync(
+            () => RemitStatutoryCoreAsync(id, tenantId, req, cancellationToken), cancellationToken);
+    }
+
+    private async Task<IActionResult> RemitStatutoryCoreAsync(Guid id, Guid tenantId, RemitStatutoryRequest req, CancellationToken cancellationToken)
+    {
+        var run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (run is null) return NotFound();
         if (run.Status != "Locked")
             return BadRequest(new { error = "run_not_locked", message = "Only a Locked run can be remitted." });
@@ -4799,7 +5152,7 @@ public partial class PayrollController : ControllerBase
         // drifts, and that is exactly what clearing-by-stored-account defends against.
         var deductions = await _db.PayrollDeductions.AsNoTracking()
             .Where(d => d.TenantId == tenantId && d.PayrollRunId == id)
-            .Select(d => new { d.ComponentCode, d.Source })
+            .Select(d => new { d.ComponentCode, d.Source, d.EmployeeId, d.Amount })
             .ToListAsync(cancellationToken);
         var groupByCode = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var d in deductions)
@@ -4831,9 +5184,14 @@ public partial class PayrollController : ControllerBase
         // carry an operational balance with NO 1400/1410 debit behind it. Crediting them anyway drove an
         // ASSET into a credit balance, and BuildLiabilityClearingGl being balanced by construction meant
         // the gl_unbalanced 422 below could never catch it. So: CAP the receivable credit at the account's
-        // real carrying balance and route the EXCESS to Cash/Bank — which is exactly the pre-B1b treatment
-        // for the uncovered portion. Metered across the whole remittance by the splitter (the P0-1 lesson:
+        // real carrying balance. Metered across the whole remittance by the splitter (the P0-1 lesson:
         // never re-read an immutable balance per iteration).
+        //
+        // The uncovered EXCESS used to be routed to Cash/Bank, as the pre-B1b code did. That books a bank
+        // outflow that never happened (the EMI was withheld from pay; the loan was never lent through the
+        // ledger), so the remittance is now REFUSED with the shortfall named (loan_receivable_shortfall).
+        // Only a component that is not an employer loan/advance (a third-party garnishment routed to
+        // DED:LOAN) is a genuine cash payment and still credits Cash/Bank.
         var loanReceivableAccount    = GlAccountResolver.AccountLabel("LOAN_RECEIVABLE", glCtx);
         var advanceReceivableAccount = GlAccountResolver.AccountLabel("ADVANCE_RECEIVABLE", glCtx);
         var loanContraByCode = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -4856,6 +5214,22 @@ public partial class PayrollController : ControllerBase
             new KeyValuePair<string, decimal>(loanReceivableAccount,    loanBalance.AvailableForRelief),
             new KeyValuePair<string, decimal>(advanceReceivableAccount, advanceBalance.AvailableForRelief),
         });
+        // The 1400 receivable is ONE account shared by every loan, so the account balance alone would let a loan that was never
+        // booked clear its instalment against ANOTHER loan's debit. LOAN_EMI therefore credits 1400 only up to what this run's loans'
+        // OWN disbursement journals back (LoanReliefEligibility, the same bound Lock applies), less what Lock already relieved
+        // directly for LOAN_EMI. Advances keep the account-level cap.
+        var loanEmiByEmployee = deductions.Where(d => d.ComponentCode == "LOAN_EMI")
+            .GroupBy(d => d.EmployeeId).ToDictionary(g => g.Key, g => g.Sum(d => d.Amount));
+        var loanEligibleByEmployee = loanEmiByEmployee.Count == 0
+            ? new Dictionary<int, decimal>()
+            : await LoanReliefEligibility.LoadAsync(_db, tenantId, id, loanReceivableAccount, cancellationToken);
+        var relievedAtLock = accrualLines
+            .Where(l => l.CreditAccount == loanReceivableAccount && string.IsNullOrEmpty(l.DebitAccount)
+                     && l.Description == $"{PayrollGlDescriptions.LoanRecoveryPrefix}LOAN_EMI")
+            .Sum(l => l.Amount);
+        var loanJournalBackedLeft = Math.Max(0m,
+            loanEmiByEmployee.Sum(kv => Math.Min(kv.Value, loanEligibleByEmployee.GetValueOrDefault(kv.Key))) - relievedAtLock);
+        var loanNotJournalBacked = 0m;
         IReadOnlyList<(string Account, decimal Amount)> LoanContraFor(FinanceGlEntry accrual)
         {
             var code = accrual.Description.StartsWith(PayrollGlDescriptions.DeductionPrefix, StringComparison.Ordinal)
@@ -4865,7 +5239,16 @@ public partial class PayrollController : ControllerBase
             // is a real cash payout — null tells the splitter to send the whole line to Cash/Bank rather
             // than guess a receivable. (Dispatch mechanism unchanged; only the amount routing is capped.)
             var receivable = loanContraByCode.TryGetValue(code, out var r) ? r : null;
-            return receivableSplitter.Split(receivable, accrual.Amount);
+            if (code != "LOAN_EMI") return receivableSplitter.Split(receivable, accrual.Amount);
+            // The part no loan journal backs never credits 1400. It is routed to Cash/Bank only so the (never saved) draft balances;
+            // the remittance below is refused while it is above zero.
+            var backed = Math.Min(accrual.Amount, loanJournalBackedLeft);
+            loanJournalBackedLeft -= backed;
+            var unbacked = accrual.Amount - backed;
+            loanNotJournalBacked += unbacked;
+            var split = receivableSplitter.Split(receivable, backed).ToList();
+            if (unbacked > 0m) split.Add((cashAccount, unbacked));
+            return split;
         }
 
         var posted = new List<object>();
@@ -4894,6 +5277,27 @@ public partial class PayrollController : ControllerBase
                 g == RemitGroups.Loan ? LoanContraFor : null);
             if (Math.Abs(dr - cr) > 0.01m)
                 return UnprocessableEntity(new { error = "gl_unbalanced", group = g, message = "Statutory remittance GL is not balanced.", totalDebits = dr, totalCredits = cr });
+
+            // A loan / advance instalment the receivable cannot cover is REFUSED, never sent to Cash/Bank:
+            // the cash left (or never left) at disbursement, so crediting the bank for the uncovered part
+            // books an outflow that never happened. Nothing from this request has been saved, so the whole
+            // request (every group) is refused together. Finance posts or reclasses the missing receivable,
+            // then remits.
+            if (g == RemitGroups.Loan && receivableSplitter.UncoveredByReceivable + loanNotJournalBacked > 0m)
+            {
+                var shortfall = receivableSplitter.UncoveredByReceivable + loanNotJournalBacked;
+                return UnprocessableEntity(new
+                {
+                    error = "loan_receivable_shortfall",
+                    group = g,
+                    shortfall,
+                    notJournalBacked = loanNotJournalBacked,
+                    message = $"The loan / advance instalments withheld ({cr:N2}) exceed by {shortfall:N2} what the receivable accounts " +
+                              "hold for these loans' own disbursement journals. Remitting would credit the receivable with another loan's " +
+                              "balance, or Cash/Bank for money that never left the bank. Nothing was posted. Record the missing " +
+                              "disbursement (or reclassify the receivable), then remit again.",
+                });
+            }
 
             _db.FinanceGlEntries.AddRange(lines);
             // POD-B1b-FIX (P0-2) — surface the cap-and-route-excess split explicitly: how much of the LOAN
@@ -4925,7 +5329,7 @@ public partial class PayrollController : ControllerBase
     [HttpPost("runs/{id:guid}/remit/reverse")]
     public async Task<IActionResult> ReverseRemittance(Guid id, [FromBody] RemitReverseRequest req, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.Remit)) return Forbid();
         if (string.IsNullOrWhiteSpace(req.Reason))
             return BadRequest(new { error = "reason_required", message = "A reason is required to reverse a remittance." });
 
@@ -5077,7 +5481,7 @@ public partial class PayrollController : ControllerBase
     [HttpGet("payment-batches/{batchId:guid}/wps-file/download")]
     public async Task<IActionResult> DownloadWpsFile(Guid batchId, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.Batch)) return Forbid();
 
         var tenantId = GetTenantId();
         // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
@@ -5242,7 +5646,7 @@ public partial class PayrollController : ControllerBase
     [HttpGet("payment-batches/{batchId:guid}/wps-export-history")]
     public async Task<IActionResult> WpsExportHistory(Guid batchId, CancellationToken cancellationToken)
     {
-        if (!HasPermission("payroll.export")) return Forbid();
+        if (!HasPaymentPermission(PaymentPermissions.Batch)) return Forbid();
 
         var tenantId = GetTenantId();
         // D3: company authorization BEFORE any read, body parse or mutation of this batch. The
@@ -5356,6 +5760,12 @@ public partial class PayrollController : ControllerBase
                                 where r.TenantId == tenantId && batchRunIds.Contains(r.Id)
                                       && (c.CountryCode == "SA" || c.CountryCode == "SAU" || c.CountryCode == "KSA")
                                 select r.Id).ToListAsync(cancellationToken)).ToHashSet();
+        // Where the Saudi bank export applies, ITS file is the bank file and the generated XML above is only the internal
+        // register (which still sets WpsStatus to Generated). The run pipeline needs both facts per batch, so they ride on
+        // this page: which runs' companies have the export open (one set-based read), and which batches have an export
+        // (instructionMakers, already read above for the whole page).
+        var bankExportRunIds = await Infrastructure.Payroll.SaudiBankExports.SaudiBankExportActivation.OpenRunIdsAsync(
+            _db, _configuration, tenantId, batchRunIds, cancellationToken);
         var d4Records = d4BatchIds.Count == 0
             ? new List<PayrollPaymentRecord>()
             : await _db.PayrollPaymentRecords.AsNoTracking()
@@ -5406,6 +5816,8 @@ public partial class PayrollController : ControllerBase
                 generatedFileLabel = ksaRunIds.Contains(b.PayrollRunId)
                     ? Infrastructure.Payroll.WpsConformance.KsaPayrollRegisterLabel
                     : "WPS/SIF file (not verified with any gateway)",
+                bankFileAvailable = bankExportRunIds.Contains(b.PayrollRunId),
+                bankFileGenerated = hasInstruction,
             };
         }).ToList());
     }
@@ -5433,14 +5845,24 @@ public partial class PayrollController : ControllerBase
         var d4Confirmations = await _db.BankPaymentConfirmations.AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.PaymentBatchId == id)
             .ToListAsync(cancellationToken);
+        // Names for the screen (it used to show "Emp #226"). Read through the caller's own company scope, so an employee the
+        // caller may not see is listed by id only and no name is disclosed.
+        var recordEmployeeIds = records.Select(r => r.EmployeeId).Distinct().ToList();
+        var names = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && recordEmployeeIds.Contains(e.Id))
+            .Select(e => new { e.Id, e.FullName, e.EmployeeCode })
+            .ToDictionaryAsync(e => e.Id, cancellationToken);
         return Ok(records.Select(r =>
         {
             var latest = d4Confirmations.Where(c => c.PaymentRecordId == r.Id)
                 .OrderByDescending(c => c.ImportedAtUtc).FirstOrDefault();
+            names.TryGetValue(r.EmployeeId, out var who);
             return new
             {
                 r.Id,
                 r.EmployeeId,
+                employeeName = who?.FullName,
+                employeeCode = who?.EmployeeCode,
                 r.Amount,
                 r.Status,
                 r.WpsReference,
@@ -5972,13 +6394,24 @@ public partial class PayrollController : ControllerBase
     /// worker's accrued rights, end-of-service included. Either way the award is measured from the earlier
     /// date, once.</para>
     ///
+    /// <para><b>A SETTLED EXIT ENDS THE CARRIED SERVICE (owner decision, 2026-11-13).</b> After an approved or
+    /// paid final settlement, end of service for a rehired employee counts from the current joining date (the
+    /// rehire date), for every employee, including one with a carried service start, so an award already paid
+    /// is never paid twice. A carried start is therefore ignored when a closed settlement's last working day is
+    /// on or after it and before the current joining date (a settlement of an EARLIER service period). A
+    /// settlement of the current period (its last working day on or after the joining date) leaves the start
+    /// unchanged, so the first exit's own figure never moves. The provision (<c>BuildEosbProvisionAsync</c>),
+    /// <c>/eosb/calculate</c> and the final-settlement calculation all go through
+    /// <see cref="PickEosbServiceStart"/>, so the second exit is settled on the same start it was provided on.</para>
+    ///
     /// <para>[COUNSEL] Prior service at a DIFFERENT legal entity that is NOT an Art. 18 transfer — an
-    /// intra-group move between two commercial registrations under a fresh contract, or a re-hire after a
-    /// settled exit — is honoured here exactly as carried, because the importer cannot tell the cases apart.
-    /// If the earlier employer already paid an end-of-service award for that period, counting it again
-    /// double-pays it. Counsel to confirm: (a) whether intra-group service without an Art. 18 transfer
-    /// counts toward Art. 84 absent a contractual undertaking, and (b) whether the carried row needs a
-    /// "prior award settled through" date that the calculation must start after.</para>
+    /// intra-group move between two commercial registrations under a fresh contract — is honoured here
+    /// exactly as carried, because the importer cannot tell the cases apart. If the earlier employer already
+    /// paid an end-of-service award for that period, counting it again double-pays it. Counsel to confirm:
+    /// (a) whether intra-group service without an Art. 18 transfer counts toward Art. 84 absent a contractual
+    /// undertaking, and (b) whether the carried row needs a "prior award settled through" date that the
+    /// calculation must start after when that award was paid outside this product. (A re-hire after an exit
+    /// settled IN this product is no longer a counsel question: see the owner decision above.)</para>
     /// </summary>
     private async Task<(DateOnly Start, DateOnly? Carried)> ResolveEosbServiceStartAsync(
         Guid tenantId, Employee employee, CancellationToken ct)
@@ -5989,14 +6422,39 @@ public partial class PayrollController : ControllerBase
             .ThenBy(x => x.PriorServiceStartDate)
             .Select(x => x.PriorServiceStartDate)
             .FirstOrDefaultAsync(ct);
-        return PickEosbServiceStart(employee, carried);
+        var settledDays = carried is null
+            ? new List<DateOnly>()
+            : await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.EmployeeFinalSettlements, tenantId,
+                    "EOSB service start: a final settlement approved under ANY legal entity closed the service it paid; " +
+                    "counting that service again for a rehire would pay the same end-of-service award twice.")
+                .AsNoTracking()
+                .Where(s => s.EmployeeId == employee.Id && SettlementStatusesThatConsumedProvision.Contains(s.Status))
+                .Select(s => s.LastWorkingDay)
+                .ToListAsync(ct);
+        return PickEosbServiceStart(employee, carried, SettledBefore(settledDays, employee));
+    }
+
+    /// <summary>The latest last working day among an employee's closed settlements that ended BEFORE the current joining date — the
+    /// exit that closed an earlier service period — or null when there is none.</summary>
+    private static DateOnly? SettledBefore(IEnumerable<DateOnly> lastWorkingDays, Employee employee)
+    {
+        var joining = DateOnly.FromDateTime(employee.JoiningDate);
+        var earlier = lastWorkingDays.Where(d => d < joining).ToList();
+        return earlier.Count == 0 ? null : earlier.Max();
     }
 
     /// <summary>The rule of <see cref="ResolveEosbServiceStartAsync"/> once the carried date is known:
-    /// the EARLIER of the two, never the sum.</summary>
-    private static (DateOnly Start, DateOnly? Carried) PickEosbServiceStart(Employee employee, DateOnly? carried)
+    /// the EARLIER of the two, never the sum — unless <paramref name="settledThrough"/> (the latest last working day of an
+    /// approved, disbursing or paid final settlement that ended before the current joining date; see <see cref="SettledBefore"/>)
+    /// shows the carried service was settled at an earlier exit, in which case the current joining date (the rehire date) is
+    /// the start.</summary>
+    private static (DateOnly Start, DateOnly? Carried) PickEosbServiceStart(
+        Employee employee, DateOnly? carried, DateOnly? settledThrough = null)
     {
         var joining = DateOnly.FromDateTime(employee.JoiningDate);
+        if (carried is DateOnly settledPrior && settledThrough is DateOnly lastWorkingDay
+            && lastWorkingDay >= settledPrior && lastWorkingDay < joining)
+            return (joining, carried);
         return carried is DateOnly prior && prior < joining ? (prior, prior) : (joining, carried);
     }
 
@@ -6118,7 +6576,9 @@ public partial class PayrollController : ControllerBase
     public async Task<IActionResult> ListEosb([FromQuery] int? employeeId, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
-        var query = _db.EOSBCalculations.AsNoTracking().Where(x => x.TenantId == tenantId);
+        // Company scope follows the employee (the employee query carries the caller's company filter).
+        var query = _db.EOSBCalculations.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && _db.Employees.Any(e => e.Id == x.EmployeeId && e.TenantId == tenantId));
         if (employeeId.HasValue) query = query.Where(x => x.EmployeeId == employeeId.Value);
         var eosbList = await query.OrderByDescending(x => x.CalculationDate).ToListAsync(cancellationToken);
         return Ok(eosbList.Select(EosbCalculationDto.Project).ToList());
@@ -6129,6 +6589,8 @@ public partial class PayrollController : ControllerBase
     public async Task<IActionResult> AiValidation([FromQuery] Guid runId, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
+        // The run is looked up through the company filter: a run of a company the caller does not work for is not found.
+        if (!await _db.PayrollRuns.AsNoTracking().AnyAsync(r => r.Id == runId && r.TenantId == tenantId, cancellationToken)) return NotFound();
         var warnings = await _db.PayrollValidationResults.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == runId).ToListAsync(cancellationToken);
         return Ok(new { advisoryOnly = true, warnings, summary = "AI payroll validation is advisory. It does not approve payroll or change salaries automatically." });
     }
@@ -6210,12 +6672,12 @@ public partial class PayrollController : ControllerBase
         var tenantId = GetTenantId();
         var q = _db.PayrollEmployeeReceivables.AsNoTracking().Where(r => r.TenantId == tenantId);
         if (companyId.HasValue) q = q.Where(r => r.CompanyId == companyId || r.CompanyId == null);
-        if (!includeRecovered) q = q.Where(r => r.Status != PayrollReceivableStatuses.Recovered);
+        if (!includeRecovered) q = q.Where(r => r.Status != PayrollReceivableStatuses.Recovered && r.Status != PayrollReceivableStatuses.WrittenOff);
         var rows = await q.OrderBy(r => r.CreatedAtUtc).ToListAsync(cancellationToken);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         return Ok(new
         {
-            outstandingTotal = Math.Round(rows.Sum(r => r.Amount - r.RecoveredAmount), 2),
+            outstandingTotal = Math.Round(rows.Where(r => r.Status != PayrollReceivableStatuses.WrittenOff).Sum(r => r.Amount - r.RecoveredAmount), 2),
             unattributedTotal = Math.Round(rows.Where(r => r.Status == PayrollReceivableStatuses.Unattributed)
                                                .Sum(r => r.Amount - r.RecoveredAmount), 2),
             note = "Recovery is netted into a run only when that run sets netsPriorReceivable=true, capped at the " +
@@ -6270,12 +6732,92 @@ public partial class PayrollController : ControllerBase
         return idx < 0 ? (label, string.Empty) : (label[..idx], label[(idx + 3)..]);
     }
 
+    /// <summary>
+    /// Expands as-posted ledger rows into journal lines. A two-sided row is TWO lines (dropping the paired
+    /// credit turns a balanced ledger into a false imbalance); its cost centre belongs to the expense side only.
+    /// Debits first, then credits, each by account code.
+    /// </summary>
+    private static List<(string Code, string Name, string Account, string AccountName, string EntryType, decimal Amount, string? CostCentreCode, string? CostCentreName, string? CostCentreErp)>
+        ExpandPostedLines(IEnumerable<FinanceGlEntry> rows)
+    {
+        var lines = new List<(string Code, string Name, string Account, string AccountName, string EntryType, decimal Amount, string? CostCentreCode, string? CostCentreName, string? CostCentreErp)>();
+        foreach (var e in rows)
+        {
+            var (compCode, compName) = DescribePostedLine(e.Description);
+            var segment = string.IsNullOrWhiteSpace(e.CostCenterGlSegment) ? null : e.CostCenterGlSegment;
+            if (!string.IsNullOrWhiteSpace(e.DebitAccount))
+            {
+                var (code, name) = SplitAccountLabel(e.DebitAccount);
+                lines.Add((compCode, compName, code, name, "DR", e.Amount, e.CostCenterCode, e.CostCenterName, segment));
+            }
+            if (!string.IsNullOrWhiteSpace(e.CreditAccount))
+            {
+                var (code, name) = SplitAccountLabel(e.CreditAccount);
+                var creditCarriesCostCentre = string.IsNullOrWhiteSpace(e.DebitAccount);
+                lines.Add((compCode, compName, code, name, "CR", e.Amount,
+                    creditCarriesCostCentre ? e.CostCenterCode : null, creditCarriesCostCentre ? e.CostCenterName : null, creditCarriesCostCentre ? segment : null));
+            }
+        }
+        return lines.OrderByDescending(x => x.EntryType).ThenBy(x => x.Account, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>
+    /// Which journal a posted payroll row belongs to. Everything Lock writes (the payroll accrual and the bonus,
+    /// settlement and EOSB lines inside it, plus legacy untagged rows) is the ACCRUAL; settlement, remittance,
+    /// their reversals, the disbursed-funds reclassification and the void are journals of their own.
+    /// </summary>
+    internal static (string Kind, string? Group) PostedJournalKindOf(string? eventType)
+    {
+        var e = eventType ?? string.Empty;
+        if (e == GlEventTypes.NetSettlement) return ("settlement", null);
+        if (e == GlEventTypes.NetSettlementReversal) return ("settlementReversal", null);
+        if (e == GlEventTypes.NetSettlementReclass || e == GlEventTypes.SettlementResidualReclass) return ("reclass", null);
+        if (e == GlEventTypes.Void) return ("void", null);
+        if (e.StartsWith(GlEventTypes.RemitReversalPrefix, StringComparison.Ordinal)) return ("remittanceReversal", e[GlEventTypes.RemitReversalPrefix.Length..]);
+        if (e.StartsWith(GlEventTypes.RemitReclassPrefix, StringComparison.Ordinal)) return ("reclass", e[GlEventTypes.RemitReclassPrefix.Length..]);
+        if (e.StartsWith(GlEventTypes.RemitPrefix, StringComparison.Ordinal)) return ("remittance", e[GlEventTypes.RemitPrefix.Length..]);
+        if (e == GlEventTypes.SettlementAccrualReversal || e == GlEventTypes.EosbProvisionConsumptionReversal) return ("other", null);
+        return ("accrual", null);
+    }
+
+    private static int PostedJournalRank(string kind, string? group) => kind switch
+    {
+        "accrual" => 0,
+        "settlement" => 10,
+        "remittance" => 20 + (group switch { "GOSI" => 0, "TAX" => 1, "LOAN" => 2, _ => 3 }),
+        "settlementReversal" => 30,
+        "remittanceReversal" => 31,
+        "reclass" => 40,
+        "void" => 50,
+        _ => 60,
+    };
+
+    /// <summary>
+    /// Who posted each ledger row. Rows posted by an older build, or by a caller whose token carried no
+    /// display-name claim of the expected type, hold a blank or "Unknown" name even though posted_by is set;
+    /// the name is then resolved from the posting user.
+    /// </summary>
+    private async Task<Func<FinanceGlEntry, string>> ResolvePostedByNamesAsync(Guid tenantId, IEnumerable<FinanceGlEntry> rows, CancellationToken ct)
+    {
+        static bool Missing(string? n) => string.IsNullOrWhiteSpace(n) || string.Equals(n.Trim(), "Unknown", StringComparison.OrdinalIgnoreCase);
+        var ids = rows.Where(r => Missing(r.PostedByName) && r.PostedBy != null).Select(r => r.PostedBy!.Value).Distinct().ToList();
+        var byId = ids.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await _db.Users.AsNoTracking().Where(u => u.TenantId == tenantId && ids.Contains(u.Id))
+                .ToDictionaryAsync(u => u.Id, u => u.FullName, ct);
+        return r => !Missing(r.PostedByName) ? r.PostedByName
+            : r.PostedBy is Guid id && byId.TryGetValue(id, out var full) && !string.IsNullOrWhiteSpace(full) ? full
+            : string.Empty;
+    }
+
     /// <summary>Best-effort (componentCode, componentName) for an as-posted ledger line, derived
     /// from its stored Description ("Payroll earning: X" / "Payroll deduction: X" / balancing lines).</summary>
     private static (string Code, string Name) DescribePostedLine(string description)
     {
         const string earnPrefix = "Payroll earning: ";
         const string dedPrefix   = "Payroll deduction: ";
+        if (description.StartsWith(PayrollGlDescriptions.LoanRecoveryPrefix, StringComparison.Ordinal))
+            return (description[PayrollGlDescriptions.LoanRecoveryPrefix.Length..], description);
         if (description.StartsWith(earnPrefix, StringComparison.Ordinal)) return (description[earnPrefix.Length..], description);
         if (description.StartsWith(dedPrefix, StringComparison.Ordinal))   return (description[dedPrefix.Length..], description);
         return (string.Empty, description);
@@ -6390,6 +6932,10 @@ public partial class PayrollController : ControllerBase
         public IReadOnlyList<EosbProvisionSnapshot> EosbSnapshots { get; init; } = Array.Empty<EosbProvisionSnapshot>();
         /// <summary>POD-C2 — set when provisioning is on but cannot be measured; Lock refuses rather than skip it.</summary>
         public EosbProvisionRefusal? EosbRefusal { get; init; }
+        /// <summary>The per-employee annual-leave measurements Lock persists beside the leave provision lines.</summary>
+        public IReadOnlyList<LeaveProvisionSnapshot> LeaveSnapshots { get; init; } = Array.Empty<LeaveProvisionSnapshot>();
+        public int LeaveCatchUpEmployees { get; init; }
+        public int LeaveUnmeasuredEmployees { get; init; }
         /// <summary>Cost accounting (WP-C2): the cost-centre decisions made in the SAME pass that built <see cref="Lines"/>.</summary>
         public PayrollCostPlan CostPlan { get; init; } = PayrollCostPlan.Off;
         /// <summary>The approval fingerprint of everything this journal depends on (null when costing is off).</summary>
@@ -6440,6 +6986,16 @@ public partial class PayrollController : ControllerBase
             SettlementClearings = await FinalSettlementGlLedger.BuildPayrollClearingAsync(
                 _db, tenantId, id, settlementEarningTotal, ct),
         };
+        // Loan / advance recovery: relieve the receivable at Lock, up to what it carries (see LoanRecoveryBudgets).
+        var loanRecoveryBudgets = await LoadLoanRecoveryBudgetsAsync(tenantId, run, dedxns, glCtx, ct);
+        glCtx = glCtx with { LoanRecoveryBudgets = loanRecoveryBudgets };
+        // ...and only up to what each loan's own disbursement journal put on the receivable (the account is shared by every loan).
+        if (loanRecoveryBudgets.Count > 0)
+            glCtx = glCtx with
+            {
+                LoanRecoveryEligibleByEmployee = await LoanReliefEligibility.LoadAsync(
+                    _db, tenantId, id, GlAccountResolver.AccountLabel(GlControlAccounts.LoanReceivableDriver, glCtx), ct),
+            };
         // Cost accounting (WP-C2): ONE resolution pass. The plan stamps the in-memory rows, and the builder below reads those same
         // lists — nothing is re-queried between the decision and the journal (AM-8, C-1). Costing off: no plan, nothing stamped.
         var costPlan = run.CompanyId is Guid costCompanyId
@@ -6456,6 +7012,12 @@ public partial class PayrollController : ControllerBase
         var used = new HashSet<string>(routed.Select(r => r.DriverKey), StringComparer.Ordinal) { "NET_PAYABLE" };
         foreach (var r in routed.Where(r => r.IsEmployerSide)) used.Add(r.PairKey);
 
+        if (lines.Any(l => l.Description.StartsWith(PayrollGlDescriptions.LoanRecoveryPrefix, StringComparison.Ordinal)))
+        {
+            used.Add("LOAN_RECEIVABLE");
+            used.Add("ADVANCE_RECEIVABLE");
+        }
+
         var employeeCount = earnings.Select(e => e.EmployeeId).Concat(dedxns.Select(d => d.EmployeeId)).Distinct().Count();
         var (rounding, roundingBlock) = AppendRoundingLine(lines, employeeCount, glCtx, tenantId, id, period, currency, postedBy, postedByName);
         if (rounding != 0m) used.Add(PayrollRoundingDriverKey);
@@ -6468,6 +7030,18 @@ public partial class PayrollController : ControllerBase
             lines.AddRange(eosb.Lines);
             used.Add(EosbProvisionExpenseDriver);
             used.Add(EosbProvisionLedger.ProvisionDriverKey);
+            if (eosb.Lines.Any(l => l.Description == EosbProvisionPlanner.OpeningBalanceLabel)) used.Add(ProvisionCatchUpRoute.EquityDriverKey);
+        }
+
+        // The monthly annual-leave provision movement, when the company has switched it on. Also balanced on its own, so it never
+        // moves the rounding line.
+        var leave = await BuildLeaveProvisionAsync(tenantId, run, period, currency, glCtx, earnings, postedBy, postedByName, costPlan, ct);
+        if (leave.Lines.Count > 0)
+        {
+            lines.AddRange(leave.Lines);
+            used.Add(LeaveProvisioningRateKeys.ExpenseDriverKey);
+            used.Add(LeaveProvisioningRateKeys.ProvisionDriverKey);
+            if (leave.Lines.Any(l => l.Description == LeaveProvisionPlanner.OpeningBalanceLabel)) used.Add(ProvisionCatchUpRoute.EquityDriverKey);
         }
 
         // A switched-off SYSTEM rule blocks only when this run would have used it: route the run again
@@ -6503,15 +7077,76 @@ public partial class PayrollController : ControllerBase
         {
             var accountMasters = await PayrollCostStamper.LoadAccountMastersAsync(_db, tenantId, run.CompanyId!.Value, ct);
             var extra = problems.Select(p => $"problem:{p.DriverKey}:{p.Kind}")
-                .Concat(new[] { $"rounding:{(roundingBlock is null ? "ok" : "blocked")}", $"eosb:{eosb.Refusal?.Code ?? "ok"}" });
-            costHash = PayrollCostStamper.ComputeHash(costPlan, lines, glCtx, accountMasters, extra);
+                .Concat(new[] { $"rounding:{(roundingBlock is null ? "ok" : "blocked")}", $"eosb:{eosb.Refusal?.Code ?? "ok"}" })
+                // The annual-leave provision's switch and its opening catch-up count are sealed (amounts are not: they follow the live
+                // balances). Added only when the switch is on, so a company that never switched it on keeps its hash byte for byte.
+                .Concat(leave.On ? new[] { $"leave:on:catchup={leave.CatchUpEmployees}" } : Array.Empty<string>());
+            // The leave provision lines are left out of the approval fingerprint: their amounts follow the live leave balances, which move
+            // whenever a leave request is approved or accrues, and a balance change between Approve and Lock is not a cost-centre or
+            // posting-rule decision. The cost-centre resolution, the accounts and the mappings they post through ARE still sealed.
+            //
+            // A loan / advance instalment is sealed by its TOTAL, not by how it splits between the receivable (1400 / 1410) and the 2107
+            // clearing liability: the split follows the live receivable balance, which moves whenever any loan is paid out or settled, and
+            // a balance change between Approve and Lock is not a cost-centre or posting-rule decision. Both halves are left out of the lines
+            // and one total per component goes in instead, so a changed instalment still sends the run back.
+            var instalmentTotals = lines
+                .Select(l => (Code: LoanInstalmentCode(l), l.Amount))
+                .Where(x => x.Code is not null)
+                .GroupBy(x => x.Code!, StringComparer.Ordinal)
+                .Select(g => $"instalment:{g.Key}:{g.Sum(x => x.Amount).ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)}");
+            costHash = PayrollCostStamper.ComputeHash(
+                costPlan,
+                lines.Where(l => l.EventType != GlEventTypes.LeaveProvisionAccrual && LoanInstalmentCode(l) is null).ToList(),
+                glCtx, accountMasters, extra.Concat(instalmentTotals));
         }
         return new PayrollLockJournal(lines, totalDebits, totalCredits, catchAlls, problems, rounding, earnings, dedxns)
         {
             EosbSnapshots = eosb.Snapshots,
             EosbRefusal = eosb.Refusal,
+            LeaveSnapshots = leave.Snapshots,
+            LeaveCatchUpEmployees = leave.CatchUpEmployees,
+            LeaveUnmeasuredEmployees = leave.UnmeasuredEmployees,
             CostPlan = costPlan, CostHash = costHash, RoundingBlock = roundingBlock, Context = glCtx,
         };
+    }
+
+    /// <summary>The component (LOAN_EMI / ADVANCE_EMI) of a journal line that carries a loan / advance instalment, whether it relieved the
+    /// receivable directly or credited the clearing liability; null for every other line.</summary>
+    private static string? LoanInstalmentCode(FinanceGlEntry line)
+    {
+        foreach (var prefix in new[] { PayrollGlDescriptions.LoanRecoveryPrefix, PayrollGlDescriptions.DeductionPrefix })
+            if (line.Description.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                var code = line.Description[prefix.Length..];
+                if (code is "LOAN_EMI" or "ADVANCE_EMI") return code;
+            }
+        return null;
+    }
+
+    /// <summary>True for the aggregate loan / advance instalment lines that credit the 2107 clearing liability by default.</summary>
+    internal static bool IsLoanRecoveryComponent(string componentCode, string source) =>
+        source == "Loan" && (componentCode == "LOAN_EMI" || componentCode == "ADVANCE_EMI");
+
+    /// <summary>
+    /// What the Lock may relieve on each receivable: <c>AvailableForRelief</c> (company scope clamped to the tenant-wide balance, so
+    /// two companies sharing the unattributed pool can never drive the asset negative), read once before posting. Empty when no
+    /// loan / advance instalment on the run routes to the clearing liability.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, decimal>> LoadLoanRecoveryBudgetsAsync(
+        Guid tenantId, PayrollRun run, IReadOnlyList<PayrollDeduction> deductions, GlResolutionContext glCtx, CancellationToken ct)
+    {
+        var budgets = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        var routesToClearing = deductions
+            .Where(d => IsLoanRecoveryComponent(d.ComponentCode, d.Source))
+            .GroupBy(d => (d.ComponentCode, d.Source))
+            .Any(g => ResolveDeductionRouting(glCtx.Drivers, g.Key.ComponentCode, g.Key.Source, PinnedGlDriver(g.Select(d => d.GlDriverKey))).Driver == "DED:LOAN");
+        if (!routesToClearing) return budgets;
+        foreach (var driver in new[] { GlControlAccounts.LoanReceivableDriver, GlControlAccounts.AdvanceReceivableDriver })
+        {
+            var balance = await GlControlAccounts.LoadAsync(_db, tenantId, run.CompanyId, GlAccountResolver.AccountLabel(driver, glCtx), ct);
+            budgets[driver] = Math.Max(0m, balance.AvailableForRelief);
+        }
+        return budgets;
     }
 
     /// <summary>The routing every earning/deduction group takes — the same calls BuildPayrollGlEntries makes.</summary>
@@ -6661,6 +7296,7 @@ public partial class PayrollController : ControllerBase
         if (line.EventType == GlEventTypes.BonusPayrollClearing) return ("BONUS_PAYABLE", line.Description);
         if (line.EventType == GlEventTypes.SettlementPayrollClearing) return ("SETTLEMENT_PAYABLE", line.Description);
         if (line.EventType == GlEventTypes.EosbProvisionAccrual) return ("EOSB_PROVISION", line.Description);
+        if (line.EventType == GlEventTypes.LeaveProvisionAccrual) return ("LEAVE_PROVISION", line.Description);
         if (line.Description == PayrollGlDescriptions.NetPayable) return ("NET_SALARY", "Net Salary Payable");
         if (line.Description == PayrollGlDescriptions.EmployerStatutory) return ("SOCIAL_INS_ER_DR", "Employer Social Insurance Expense");
         if (line.Description == PayrollGlDescriptions.Rounding) return ("ROUNDING", "Payroll rounding difference");
@@ -6668,6 +7304,7 @@ public partial class PayrollController : ControllerBase
         const string unaccrued = " (un-accrued)";
         string? code = line.Description.StartsWith(earnPrefix, StringComparison.Ordinal) ? line.Description[earnPrefix.Length..]
             : line.Description.StartsWith(PayrollGlDescriptions.DeductionPrefix, StringComparison.Ordinal) ? line.Description[PayrollGlDescriptions.DeductionPrefix.Length..]
+            : line.Description.StartsWith(PayrollGlDescriptions.LoanRecoveryPrefix, StringComparison.Ordinal) ? line.Description[PayrollGlDescriptions.LoanRecoveryPrefix.Length..]
             : null;
         if (code is null) return (string.Empty, line.Description);
         var isUnaccrued = code.EndsWith(unaccrued, StringComparison.Ordinal);
@@ -6969,6 +7606,8 @@ public partial class PayrollController : ControllerBase
         // Employer-expense pairs accumulate per paired-expense driver key (and cost centre) so a client-defined pair
         // (via a custom driver) balances the same way the system DED:STATUTORY_ER row does.
         var employerExpenseByPair = new Dictionary<(string PairKey, Guid? CcId, string? Cls), decimal>();
+        ReceivableClearingSplitter? loanSplitter = null;
+        Dictionary<int, decimal>? loanEligibleLeft = null;
         foreach (var grp in deductions.GroupBy(d => new { d.ComponentCode, d.Source }))
         {
             // Pinned driver → persisted driver store → compiled switch (see ResolveDeductionRouting).
@@ -6983,16 +7622,58 @@ public partial class PayrollController : ControllerBase
             var creditCosted = costed && !isEmployerSide && PayrollCostStamper.IsCostableDriver(driver, gl);
             foreach (var sub in creditCosted ? grp.GroupBy(d => RouteOf(d.Id, d.CostCenterId)).OrderBy(g => RouteSort(g.Key), StringComparer.Ordinal).ToList()
                                               : new[] { grp.GroupBy(_ => ((Guid?)null, (string?)null)).Single() }.ToList())
+            {
+                var subAmount = sub.Sum(d => d.Amount);
+                // A loan / advance instalment relieves its receivable first, up to what the receivable carries (metered across
+                // the whole run); only the uncovered excess keeps the 2107 clearing line below.
+                if (driver == "DED:LOAN" && gl.LoanRecoveryBudgets.Count > 0 && IsLoanRecoveryComponent(grp.Key.ComponentCode, grp.Key.Source))
+                {
+                    var receivableDriver = grp.Key.ComponentCode == "LOAN_EMI" ? "LOAN_RECEIVABLE" : "ADVANCE_RECEIVABLE";
+                    loanSplitter ??= new ReceivableClearingSplitter(Account("DED:LOAN"), gl.LoanRecoveryBudgets
+                        .Select(kv => new KeyValuePair<string, decimal>(Account(kv.Key), kv.Value)));
+                    var receivableLabel = Account(receivableDriver);
+                    // LOAN_EMI relieves the receivable only up to each employee's own booked loans (advances keep the account-level cap).
+                    var relievable = subAmount;
+                    if (gl.LoanRecoveryEligibleByEmployee is { } eligibleByEmployee && grp.Key.ComponentCode == "LOAN_EMI")
+                    {
+                        loanEligibleLeft ??= new Dictionary<int, decimal>(eligibleByEmployee);
+                        relievable = 0m;
+                        foreach (var loanRow in sub)
+                        {
+                            var take = Math.Min(loanRow.Amount, loanEligibleLeft.GetValueOrDefault(loanRow.EmployeeId));
+                            if (take <= 0m) continue;
+                            loanEligibleLeft[loanRow.EmployeeId] -= take;
+                            relievable += take;
+                        }
+                    }
+                    var direct = loanSplitter.Split(receivableLabel, relievable).Where(p => p.Account == receivableLabel).Sum(p => p.Amount);
+                    if (direct > 0m)
+                    {
+                        lines.Add(At(new FinanceGlEntry
+                        {
+                            TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
+                            SourceEntityRef = period, EventType = GlEventTypes.Accrual,
+                            DebitAccount = string.Empty, CreditAccount = receivableLabel,
+                            Amount = direct, Currency = currency,
+                            EntryDate = today, Period = period,
+                            Description = $"{PayrollGlDescriptions.LoanRecoveryPrefix}{grp.Key.ComponentCode}",
+                            PostedBy = postedBy, PostedByName = postedByName,
+                        }, null, receivableDriver, grp.Key.ComponentCode, grp.Key.Source));
+                        subAmount -= direct;
+                    }
+                    if (subAmount <= 0m) continue;
+                }
                 lines.Add(At(new FinanceGlEntry
                 {
                     TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
                     SourceEntityRef = period, EventType = GlEventTypes.Accrual,
                     DebitAccount = string.Empty, CreditAccount = creditCosted ? AccountAt(driver, sub.Key.Item1, sub.Key.Item2) : Account(driver),
-                    Amount = sub.Sum(d => d.Amount), Currency = currency,
+                    Amount = subAmount, Currency = currency,
                     EntryDate = today, Period = period,
                     Description = $"{PayrollGlDescriptions.DeductionPrefix}{grp.Key.ComponentCode}",
                     PostedBy = postedBy, PostedByName = postedByName,
                 }, sub.Key.Item1, driver, grp.Key.ComponentCode, grp.Key.Source));
+            }
         }
 
         // Employer statutory contribution: DR expense to balance the CR liability above.
@@ -7367,7 +8048,8 @@ public partial class PayrollController : ControllerBase
     /// <item><b>NotRecorded</b> (locked before cost centres existed): one honest bucket. Never the live employee row.</item>
     /// <item><b>Preview</b> (any run not yet locked): a dry-run resolution, labelled so.</item>
     /// </list>
-    /// For a stamped run it also returns <c>journalNet</c> per cost centre (the run's own profit-and-loss ledger lines),
+    /// For a stamped run it also returns <c>journalNet</c> per cost centre (the run's own profit-and-loss ledger lines, excluding the EOSB and
+    /// leave provision accruals, which are not payroll cost),
     /// <c>clearedAgainstAccrual</c> (bonus and settlement amounts the payroll cleared against an earlier accrual instead of expensing again) and a top-level
     /// <c>reconciles</c>: per cost centre <c>journalNet == earnings − contra deductions + employer statutory − clearedAgainstAccrual (+ rounding line)</c> (T-025).
     /// Needs <c>finance.gl.read</c> and company scope (S-038).
@@ -7395,8 +8077,11 @@ public partial class PayrollController : ControllerBase
         List<FinanceGlEntry> ledger = new();
         if (basis == "Stamped")
         {
+            // C-2: the month's EOSB and leave provision accruals post under the run (Payroll / run id, 5110 / 5115) but are not
+            // payroll cost and the stamps carry no provision term, so they stay out: journalNet compares like with like.
             ledger = await _db.FinanceGlEntries.AsNoTracking()
-                .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == id && x.ReversalOfEntryId == null)
+                .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == id && x.ReversalOfEntryId == null
+                         && x.EventType != GlEventTypes.EosbProvisionAccrual && x.EventType != GlEventTypes.LeaveProvisionAccrual)
                 .ToListAsync(cancellationToken);
             foreach (var l in ledger.Where(l => l.CostCenterId != null && l.CostCenterCode != null))
                 names.TryAdd(l.CostCenterId!.Value, (l.CostCenterCode!, l.CostCenterName ?? l.CostCenterCode!));
@@ -7736,6 +8421,25 @@ public partial class PayrollController : ControllerBase
             var held = heldBy.Where(h => h.EmployeeId == s.EmployeeId && h.CompanyId == s.CompanyId).OrderByDescending(h => h.CreatedAtUtc).FirstOrDefault();
             return held is null ? (null, null) : (held.RunId, held.Status);
         }
+        // A Disbursing settlement whose Locked run's payslip nets to exactly zero has no batch that will pay it: Finance completes it
+        // with nothing to pay (CompleteFinalSettlementWithoutPayment, which checks all of this again). Flagged so the register can
+        // offer that step.
+        var disbursingRunIds = rows.Where(r => r.Status == FinalSettlementStatuses.Disbursing && r.PayrollRunId != null)
+            .Select(r => r.PayrollRunId!.Value).Distinct().ToList();
+        var lockedRunIds = disbursingRunIds.Count == 0 ? new HashSet<Guid>() : (await _db.PayrollRuns.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && disbursingRunIds.Contains(r.Id) && r.Status == "Locked")
+            .Select(r => r.Id).ToListAsync(cancellationToken)).ToHashSet();
+        var lockedRunList = lockedRunIds.ToList();
+        var settlementNets = lockedRunList.Count == 0
+            ? new Dictionary<(Guid RunId, int EmployeeId), List<decimal>>()
+            : (await _db.PayrollSlips.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && lockedRunList.Contains(x.RunId) && employeeIds.Contains(x.EmployeeId) && x.Status != "Voided")
+                .Select(x => new { x.RunId, x.EmployeeId, x.NetSalary }).ToListAsync(cancellationToken))
+              .GroupBy(x => (x.RunId, x.EmployeeId))
+              .ToDictionary(g => g.Key, g => g.Select(x => x.NetSalary).ToList());
+        bool CompletableWithoutPayment(EmployeeFinalSettlement s) =>
+            s.Status == FinalSettlementStatuses.Disbursing && s.PayrollRunId is Guid r && lockedRunIds.Contains(r)
+            && settlementNets.TryGetValue((r, s.EmployeeId), out var nets) && nets.Count > 0 && nets.All(n => n == 0m);
         return Ok(new
         {
             outstandingTotal = Math.Round(rows
@@ -7763,6 +8467,7 @@ public partial class PayrollController : ControllerBase
                 linkedRunId = LinkedRun(s).RunId,
                 linkedRunStatus = LinkedRun(s).Status,
                 runDutyOpen = s.Status == FinalSettlementStatuses.Approved && LinkedRun(s).RunId is null,
+                completableWithoutPayment = CompletableWithoutPayment(s),
             }).ToList(),
         });
     }
@@ -8033,6 +8738,10 @@ public partial class PayrollController : ControllerBase
         // (It is a PER-EMPLOYEE positional sub-ledger, not ControlAccountBalance.AvailableForRelief: that
         // clamp is for receivables — on a credit-balance LIABILITY it is always 0, and a tenant-wide pool
         // would let one employee's settlement relieve another employee's provision.)
+        // Two settlements (or a settlement and a Lock) for the same company must not read the provision sub-ledger at the same moment: take the
+        // company's advisory lock BEFORE reading it, as Lock does. Released at commit or rollback.
+        if (s.CompanyId is Guid settlementLockCompany && _db.Database.IsRelational())
+            await Infrastructure.Finance.CostAccountingGuards.AcquireCompanyLockAsync(_db, tenantId, settlementLockCompany, cancellationToken);
         var provisionCursor = await EosbProvisionLedger.LoadCursorAsync(_db, tenantId, s.EmployeeId, cancellationToken);
         var (provisionPosition, provisionTaken) =
             provisionCursor.Take(s.EmployeeId, s.CompanyId, s.GratuityAmount);
@@ -8046,6 +8755,19 @@ public partial class PayrollController : ControllerBase
             if (releasedFrom is null || released <= 0m) break;
             provisionReleases.Add((releasedFrom.ProvisionAccount, released));
         }
+
+        // The annual-leave provision, consumed the same way: what was provided for this employee's leave relieves 2330 first, the rest of
+        // the encashment is expensed to 5111, and any provision left after the encashment is released back out of 5115. The provision
+        // may sit on more than one account (LEAVE_PROVISION remapped between months): every account that holds it is consumed, largest
+        // first and each up to its own balance, so only the true shortfall is expensed.
+        var leaveCursor = await LeaveProvisionLedger.LoadCursorAsync(_db, tenantId, s.EmployeeId, cancellationToken);
+        var leaveConsumptions = leaveCursor.TakeAcrossAccounts(s.EmployeeId, s.CompanyId, s.LeaveEncashmentAmount);
+        var leaveTaken = Math.Round(leaveConsumptions.Sum(c => c.Taken), 2);
+        // What is left is released, capped at what the employee still carries net across accounts (CarriedFor less what was
+        // taken). A per-position loop released a position's remainder even when another account sat below zero.
+        var leaveReleases = leaveCursor.TakeLeftover(s.EmployeeId, s.CompanyId)
+            .Select(r => (Account: r.Account, Amount: r.Taken))
+            .ToList();
 
         // Cost accounting (WP-C2): the leaver's cost centre AT THE APPROVAL DATE (contract 2.4). A Required expense account with no cost
         // centre for the leaver refuses the approval with M-1 and nothing is written.
@@ -8068,7 +8790,9 @@ public partial class PayrollController : ControllerBase
         }
         var (glLines, dr, cr) = FinalSettlementGlLedger.BuildAccrual(
             tenantId, s, lines, glPeriod, glCtx, actorId, GetUserName(),
-            provisionTaken, provisionPosition?.ProvisionAccount, provisionReleases, settlementCostCentre);
+            provisionTaken, provisionPosition?.ProvisionAccount, provisionReleases, settlementCostCentre,
+            leaveProvisionReleases: leaveReleases,
+            leaveProvisionConsumptions: leaveConsumptions);
         if (Math.Abs(dr - cr) > 0.01m)
             return UnprocessableEntity(new
             {
@@ -8102,6 +8826,9 @@ public partial class PayrollController : ControllerBase
             glPeriod, totalDebits = dr, totalCredits = cr,
             provisionConsumed = provisionTaken, provisionAccount = provisionPosition?.ProvisionAccount,
             provisionReleased = provisionReleases.Sum(r => r.Amount),
+            leaveProvisionConsumed = leaveTaken, leaveProvisionAccount = leaveConsumptions.Select(c => c.Account).FirstOrDefault(),
+            leaveProvisionConsumedByAccount = leaveConsumptions.Select(c => new { account = c.Account, amount = c.Taken }).ToList(),
+            leaveProvisionReleased = leaveReleases.Sum(r => r.Amount),
             wageBaseDelta = s.WageBaseDeltaAmount,
             wageBaseAcknowledged = req.AcknowledgeWageBaseFloor,
             wagesAcknowledgedUnpaid = s.WagesAcknowledgedUnpaid,
@@ -8126,6 +8853,7 @@ public partial class PayrollController : ControllerBase
             totalDebits = dr,
             totalCredits = cr,
             provisionConsumed = provisionTaken,
+            leaveProvisionConsumed = leaveTaken,
             netPayable = s.NetPayable,
             journal = glLines.Select(l => new
             {
@@ -8234,7 +8962,8 @@ public partial class PayrollController : ControllerBase
                      && x.SourceModule == FinalSettlementGlDescriptions.SourceModule
                      && x.SourceEntityId == s.Id && !x.IsReversed
                      && (x.EventType == GlEventTypes.SettlementAccrual
-                      || x.EventType == GlEventTypes.EosbProvisionConsumption))
+                      || x.EventType == GlEventTypes.EosbProvisionConsumption
+                      || x.EventType == GlEventTypes.LeaveProvisionConsumption))
             .ToListAsync(cancellationToken);
 
         // Do not silently rewrite closed books — every period the contra would write into is guarded.
@@ -8261,7 +8990,9 @@ public partial class PayrollController : ControllerBase
                     // provision position re-opens (LoadPositionsAsync filters !IsReversed on both legs).
                     EventType = orig.EventType == GlEventTypes.EosbProvisionConsumption
                         ? GlEventTypes.EosbProvisionConsumptionReversal
-                        : GlEventTypes.SettlementAccrualReversal,
+                        : orig.EventType == GlEventTypes.LeaveProvisionConsumption
+                            ? GlEventTypes.LeaveProvisionConsumptionReversal
+                            : GlEventTypes.SettlementAccrualReversal,
                     DebitAccount = orig.CreditAccount, CreditAccount = orig.DebitAccount,
                     Amount = orig.Amount, Currency = orig.Currency,
                     EntryDate = today, Period = orig.Period,
@@ -8590,8 +9321,7 @@ public partial class PayrollController : ControllerBase
         // the leaver's wages for the last month, the day rate for notice, and the full-package encashment base all include them.
         var cashAllowanceTotal = salary is null ? 0m
             : (await _db.EmployeeSalaryAllowances.AsNoTracking().Where(x => x.TenantId == tenantId && x.SalaryStructureId == salary.Id).Select(x => x.Amount).ToListAsync(ct)).Sum();
-        var monthlyGross = basicWage + (salary?.HousingAllowance ?? 0m) + (salary?.TransportAllowance ?? 0m)
-                         + (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m) + cashAllowanceTotal;
+        var monthlyGross = LeaveCashOutRate.MonthlyGross(salary, basicWage, cashAllowanceTotal);
         var currency = !string.IsNullOrWhiteSpace(salary?.Currency)
             ? salary!.Currency
             : await ResolveCurrencyAsync(tenantId, ct);
@@ -8655,21 +9385,14 @@ public partial class PayrollController : ControllerBase
 
         // ── K5: one authoritative encashable-days function ───────────────────────────────────────────
         var exitRules = await CompanyPayrollRules.ResolveAsync(_db, tenantId, companyId, ct, lastDay);
-        var cashOutBase = exitRules.LeaveCashOutBasis switch
-        {
-            CompanyPayrollRules.BasisBasic => basicWage,
-            CompanyPayrollRules.BasisBasicHousing => basicWage + (salary?.HousingAllowance ?? 0m),
-            _ => monthlyGross,
-        };
+        // The SAME rule the monthly leave provision values its days by (LeaveCashOutRate), so the two agree.
+        var cashOutBase = LeaveCashOutRate.BaseFor(exitRules.LeaveCashOutBasis, basicWage, salary?.HousingAllowance ?? 0m, monthlyGross);
         var encashment = await LeaveEncashmentCalculator.ComputeAsync(
             _db, tenantId, employee.Id, companyId, lastDay, cashOutBase, ct,
             statutoryAnnualLeaveCashOut: exitRules.LeaveCashOutOnExit,
-            basisLabel: exitRules.LeaveCashOutBasis switch
-            {
-                CompanyPayrollRules.BasisBasic => "basic/30",
-                CompanyPayrollRules.BasisBasicHousing => "(basic+housing)/30",
-                _ => LeaveEncashmentCalculator.DayRateBasis,
-            });
+            basisLabel: LeaveCashOutRate.LabelFor(exitRules.LeaveCashOutBasis),
+            // A day carried into a later year's row is paid once, exactly as the monthly provision counts it.
+            netCarriedForward: true);
         warnings.AddRange(encashment.Warnings);
 
         // ── K1: THE NOTICE RULES DEPEND ON WHO TERMINATED (Art. 75/76) ───────────────────────────────
@@ -8739,9 +9462,10 @@ public partial class PayrollController : ControllerBase
             .Where(l => l.TenantId == tenantId && l.CompanyId == companyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue")
                      && l.EmployeeIntId == employee.Id && l.OutstandingBalance > 0)
             .ToListAsync(ct);
-        var advances = await _db.SalaryAdvances.AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.Status == "Active"
-                     && a.EmployeeIntId == employee.Id && a.OutstandingBalance > 0)
+        // Exactly the advances the settlement run will recover (and the settlement payment will disposition): this company's, and
+        // legacy advances with no company. One shared rule, so the plan cannot count an advance another legal entity owns.
+        var advances = await Infrastructure.Payroll.AdvanceRecoveryScope.Query(_db, tenantId, companyId).AsNoTracking()
+            .Where(a => a.EmployeeIntId == employee.Id)
             .ToListAsync(ct);
         var receivables = await _db.PayrollEmployeeReceivables.AsNoTracking()
             .Where(r => r.TenantId == tenantId && r.EmployeeId == employee.Id
@@ -9453,17 +10177,21 @@ public partial class PayrollController : ControllerBase
                 .OrderBy(c => c.CreatedAtUtc).FirstOrDefaultAsync(ct);
 
         var emp = await _db.Employees.AsNoTracking()
-            .Select(e => new { e.Id, e.Designation })
-            .FirstOrDefaultAsync(e => e.Id == slip.EmployeeId, ct);
+            .Where(e => e.Id == slip.EmployeeId)
+            .Select(e => new { e.Id, e.Designation, e.DesignationId })
+            .FirstOrDefaultAsync(ct);
+        var designationTitle = await ResolvePayslipDesignationAsync(tenantId, emp?.Designation, emp?.DesignationId, ct);
 
         var profile = await _db.EmployeePayrollProfiles.AsNoTracking()
             .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == slip.EmployeeId && !p.IsDeleted, ct);
 
-        // Individual statutory EE deduction lines (GOSI-ANN-EE, GOSI-SANED-EE, etc.)
-        var statutoryLines = await _db.PayrollDeductions.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && d.PayrollRunId == payslip.PayrollRunId
-                        && d.EmployeeId == slip.EmployeeId && d.Source == "Statutory")
-            .Select(d => new { d.ComponentCode, d.ComponentName, d.Amount })
+        // The persisted per-line rows Process wrote (statutory EE lines, late/early, loss of pay, loans, overtime, ...).
+        // PayslipItemiser itemises the page from them instead of printing the two catch-all header buckets.
+        var deductionRows = await _db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == payslip.PayrollRunId && d.EmployeeId == slip.EmployeeId)
+            .ToListAsync(ct);
+        var earningRows = await _db.PayrollEarnings.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == payslip.PayrollRunId && d.EmployeeId == slip.EmployeeId)
             .ToListAsync(ct);
 
         var canSeeSalary = HasPermission("payroll.export");
@@ -9483,18 +10211,6 @@ public partial class PayrollController : ControllerBase
                 .OrderBy(a => a.CoveredYear).ThenBy(a => a.CoveredMonth).ThenBy(a => a.ComponentCode)
                 .ToListAsync(ct);
 
-        // The 1420 recovery, named rather than swallowed by the "Other Deductions" residual — without it
-        // a zero-net replacement payslip shows a gross, a residual lump, and no reason.
-        // Summed client-side over a handful of rows: SQLite (the test provider) cannot translate a decimal
-        // SUM, and the same client-side pattern is already used for statutoryLines just above.
-        var recoveryTotal = (await _db.PayrollDeductions.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && d.PayrollRunId == payslip.PayrollRunId
-                     && d.EmployeeId == slip.EmployeeId
-                     && (d.Source == PayrollRecoveryComponents.RecoverySource
-                         || d.ComponentCode == PayrollRecoveryComponents.ReceivableRecovery))
-            .Select(d => d.Amount)
-            .ToListAsync(ct)).Sum();
-
         // No run row ⇒ no period ⇒ no honest "joined on" test, so the narrative is skipped rather than
         // guessed. Unreachable in practice (the payslip carries PayrollRunId), and silent when it happens.
         var prorationNote = run is null
@@ -9502,36 +10218,9 @@ public partial class PayrollController : ControllerBase
             : ProrationCalculator.NarrativeFromSlip(slip, new DateOnly(run.Year, run.Month, 1));
         string Label(string name) => string.IsNullOrEmpty(prorationNote) ? name : $"{name} ({prorationNote})";
 
-        // Build items from stored slip fields (no recompute)
-        var items = new List<PayslipLineItem>();
-        if (slip.BasicSalary > 0)        items.Add(new(Label("Basic Salary"),  canSeeSalary ? slip.BasicSalary        : 0m, "Earning"));
-        if (slip.HousingAllowance > 0)   items.Add(new("Housing Allowance",    canSeeSalary ? slip.HousingAllowance   : 0m, "Earning"));
-        if (slip.TransportAllowance > 0) items.Add(new("Transport Allowance",  canSeeSalary ? slip.TransportAllowance : 0m, "Earning"));
-        // slip.OtherAllowances INCLUDES the arrears (PayrollController.cs:2316), so the arrears are lifted
-        // OUT of it before the residual is shown — itemising them on top of the unchanged bucket would
-        // overstate the gross on the page by exactly the arrears amount.
-        var otherAllowancesExArrears = slip.OtherAllowances - slip.ArrearsAmount;
-        if (otherAllowancesExArrears > 0) items.Add(new("Other Allowances", canSeeSalary ? otherAllowancesExArrears : 0m, "Earning"));
-        foreach (var a in arrearsLines)
-            items.Add(new($"Arrears — {PayrollArrearsComponents.Label(a.ComponentCode)} ({a.CoveredYear}-{a.CoveredMonth:D2})",
-                canSeeSalary ? a.Amount : 0m, "Earning"));
-        // Any arrears the slip carries that no line accounts for is still shown, never dropped silently.
-        var unitemisedArrears = slip.ArrearsAmount - arrearsLines.Sum(a => a.Amount);
-        if (unitemisedArrears > 0) items.Add(new("Arrears", canSeeSalary ? unitemisedArrears : 0m, "Earning"));
-
-        foreach (var line in statutoryLines.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase) && l.Amount > 0))
-            items.Add(new(line.ComponentName, canSeeSalary ? line.Amount : 0m, "Deduction"));
-
-        if (recoveryTotal > 0)
-            items.Add(new(PayrollRecoveryComponents.ReceivableRecoveryName, canSeeSalary ? recoveryTotal : 0m, "Deduction"));
-
-        // Non-statutory deductions (loans, advances, fixed)
-        var otherDeductions = slip.Deductions
-                            - statutoryLines.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase)).Sum(l => l.Amount)
-                            - recoveryTotal;
-        if (otherDeductions > 0) items.Add(new("Other Deductions", canSeeSalary ? otherDeductions : 0m, "Deduction"));
-
-        items.Add(new("Net Pay", canSeeSalary ? slip.NetSalary : 0m, "Net"));
+        // Build items from the persisted rows (no recompute). Every itemised amount is lifted out of its header
+        // bucket, so the page still adds up to the slip exactly; "Other …" holds only what no row explains.
+        var items = PayslipItemiser.Build(slip, Label("Basic Salary"), earningRows, deductionRows, arrearsLines, canSeeSalary);
 
         // Load the template version that was stamped at generate time, falling back to current default
         var templateId = payslip.PayslipTemplateId
@@ -9568,7 +10257,7 @@ public partial class PayrollController : ControllerBase
             EmployeeCode:  slip.EmployeeCode,
             EmployeeName:  slip.EmployeeName,
             Department:    slip.Department,
-            Designation:   emp?.Designation ?? string.Empty,
+            Designation:   designationTitle,
             PayYear:       run?.Year  ?? generatedOn.Year,
             PayMonth:      run?.Month ?? generatedOn.Month,
             Currency:      profile?.SalaryCurrency ?? company?.DefaultCurrency ?? "SAR",
@@ -9625,9 +10314,17 @@ public partial class PayrollController : ControllerBase
                 .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
                 .OrderBy(c => c.CreatedAtUtc).FirstOrDefaultAsync(ct);
 
-        var allStatutory = await _db.PayrollDeductions.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && d.PayrollRunId == id && d.Source == "Statutory")
-            .ToListAsync(ct);
+        // The persisted per-line rows, grouped per employee, so each bundle page is itemised exactly like the single download.
+        var allDeductions = (await _db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == id)
+            .ToListAsync(ct)).ToLookup(d => d.EmployeeId);
+        var allEarnings = (await _db.PayrollEarnings.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == id)
+            .ToListAsync(ct)).ToLookup(d => d.EmployeeId);
+        var allArrears = (await _db.PayrollArrearsLines.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.PayrollRunId == id && a.Status == PayrollArrearsStatuses.Settled)
+            .OrderBy(a => a.CoveredYear).ThenBy(a => a.CoveredMonth).ThenBy(a => a.ComponentCode)
+            .ToListAsync(ct)).ToLookup(a => a.EmployeeId);
 
         var profiles = await _db.EmployeePayrollProfiles.AsNoTracking()
             .Where(p => p.TenantId == tenantId && !p.IsDeleted)
@@ -9636,8 +10333,12 @@ public partial class PayrollController : ControllerBase
 
         var designations = await _db.Employees.AsNoTracking()
             .Where(e => e.TenantId == tenantId)
-            .Select(e => new { e.Id, e.Designation })
+            .Select(e => new { e.Id, e.Designation, e.DesignationId })
             .ToListAsync(ct);
+        var designationTitles = await _db.Designations.AsNoTracking()
+            .Where(d => d.TenantId == tenantId)
+            .Select(d => new { d.Id, d.TitleEn })
+            .ToDictionaryAsync(d => d.Id, d => d.TitleEn, ct);
 
         var canSeeSalary = HasPermission("payroll.export");
         var generatedOn = DateTime.UtcNow;
@@ -9701,20 +10402,10 @@ public partial class PayrollController : ControllerBase
 
                 var profile = profiles.FirstOrDefault(p => p.EmployeeId == slip.EmployeeId);
                 var desig = designations.FirstOrDefault(e => e.Id == slip.EmployeeId);
-                var empStatutory = allStatutory.Where(d => d.EmployeeId == slip.EmployeeId).ToList();
-
-                var items = new List<PayslipLineItem>();
-                if (slip.BasicSalary > 0)        items.Add(new("Basic Salary",        canSeeSalary ? slip.BasicSalary        : 0m, "Earning"));
-                if (slip.HousingAllowance > 0)   items.Add(new("Housing Allowance",   canSeeSalary ? slip.HousingAllowance   : 0m, "Earning"));
-                if (slip.TransportAllowance > 0) items.Add(new("Transport Allowance", canSeeSalary ? slip.TransportAllowance : 0m, "Earning"));
-                if (slip.OtherAllowances > 0)    items.Add(new("Other Allowances",    canSeeSalary ? slip.OtherAllowances    : 0m, "Earning"));
-
-                foreach (var line in empStatutory.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase) && l.Amount > 0))
-                    items.Add(new(line.ComponentName, canSeeSalary ? line.Amount : 0m, "Deduction"));
-
-                var otherDed = slip.Deductions - empStatutory.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase)).Sum(l => l.Amount);
-                if (otherDed > 0) items.Add(new("Other Deductions", canSeeSalary ? otherDed : 0m, "Deduction"));
-                items.Add(new("Net Pay", canSeeSalary ? slip.NetSalary : 0m, "Net"));
+                var prorationNote = ProrationCalculator.NarrativeFromSlip(slip, new DateOnly(run.Year, run.Month, 1));
+                var basicLabel = string.IsNullOrEmpty(prorationNote) ? "Basic Salary" : $"Basic Salary ({prorationNote})";
+                var items = PayslipItemiser.Build(slip, basicLabel, allEarnings[slip.EmployeeId].ToList(),
+                    allDeductions[slip.EmployeeId].ToList(), allArrears[slip.EmployeeId].ToList(), canSeeSalary);
 
                 var tmpl = payslip.PayslipTemplateId.HasValue
                     ? templateCache.GetValueOrDefault(payslip.PayslipTemplateId.Value, defaultTmpl!)
@@ -9737,7 +10428,7 @@ public partial class PayrollController : ControllerBase
                     EmployeeCode:  slip.EmployeeCode,
                     EmployeeName:  slip.EmployeeName,
                     Department:    slip.Department,
-                    Designation:   desig?.Designation ?? string.Empty,
+                    Designation:   PayslipDesignation(desig?.Designation, desig?.DesignationId, designationTitles),
                     PayYear:       run.Year,
                     PayMonth:      run.Month,
                     Currency:      profile?.SalaryCurrency ?? company?.DefaultCurrency ?? "SAR",
@@ -9771,11 +10462,33 @@ public partial class PayrollController : ControllerBase
         return File(ms.ToArray(), "application/zip", $"payslips-{period}.zip");
     }
 
+    /// <summary>
+    /// The designation a payslip prints: the employee's own title text, else the title of the designation they are linked to.
+    /// The text column can be blank while the link is set (records created through the master-data pickers), and a blank
+    /// Designation on a payslip reads as a missing contract detail.
+    /// </summary>
+    private static string PayslipDesignation(string? text, Guid? designationId, IReadOnlyDictionary<Guid, string> titles) =>
+        !string.IsNullOrWhiteSpace(text) ? text.Trim()
+        : designationId is Guid id && titles.TryGetValue(id, out var title) ? title
+        : string.Empty;
+
+    private async Task<string> ResolvePayslipDesignationAsync(Guid tenantId, string? text, Guid? designationId, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(text) || designationId is not Guid id) return text?.Trim() ?? string.Empty;
+        var title = await _db.Designations.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.Id == id).Select(d => d.TitleEn).FirstOrDefaultAsync(ct);
+        return title ?? string.Empty;
+    }
+
     private Guid GetTenantId() => Guid.Parse(User.FindFirstValue("tenant_id")!);
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
     private string GetUserName() => User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue("name") ?? "system";
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>M2 — a payment action is open to the narrow key of its own family OR to <c>payroll.export</c>, which opened every one of them before and
+    /// still does, so no existing holder loses anything. The narrow keys never open another family.</summary>
+    private bool HasPaymentPermission(string narrowKey) => HasPermission(narrowKey) || HasPermission(PaymentPermissions.Export);
 
 
     /// <summary>

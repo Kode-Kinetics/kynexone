@@ -688,16 +688,18 @@ public class BonusLifecycleGlTests
         var run = await SeedRun(db, tid, company.Id);
 
         // Employer-granted loan, disbursed (cash left the bank once), repaid via one payroll EMI.
-        db.EmployeeLoans.Add(new EmployeeLoan
+        var seededLoan = new EmployeeLoan
         {
             TenantId = tid, CompanyId = company.Id, EmployeeId = Guid.NewGuid(), EmployeeIntId = emp.Id,
             EmployeeName = emp.FullName, LoanNumber = "LN-1", LoanTypeName = "General",
             ApprovedAmount = 1_200m, ApprovedInstallments = 12, InstallmentAmount = 100m,
             OutstandingBalance = 1_200m, Status = "Active",
-        });
+        };
+        db.EmployeeLoans.Add(seededLoan);
         db.FinanceGlEntries.Add(new FinanceGlEntry
         {
-            TenantId = tid, CompanyId = company.Id, SourceModule = "Loan", SourceEntityId = Guid.NewGuid(),
+            // The loan's own disbursement journal (keyed on the loan): a loan relieves 1400 only up to what ITS journal put there.
+            TenantId = tid, CompanyId = company.Id, SourceModule = "Loan", SourceEntityId = seededLoan.Id,
             SourceEntityRef = "LN-1", EventType = "Disbursement",
             DebitAccount = "1400 - Employee Loans Receivable", CreditAccount = "1000 - Cash/Bank",
             Amount = 1_200m, Currency = "SAR", EntryDate = new DateOnly(2026, 5, 1), Period = "2026-05",
@@ -709,8 +711,9 @@ public class BonusLifecycleGlTests
         await LockRun(db, payroll, run);
 
         var cashAfterLock = Credits(await AllGl(db, tid), CashAcct);
+        // Lock already relieved the receivable, so the loan group has no 2107 line left to remit.
         (await payroll.RemitStatutory(run.Id, new RemitStatutoryRequest("LOAN", "EMI", new DateOnly(2026, 7, 5)), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+            .Should().BeOfType<ConflictObjectResult>();
         db.ChangeTracker.Clear();
 
         var gl = await AllGl(db, tid);

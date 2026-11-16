@@ -257,7 +257,8 @@ public class BankConfirmationsController : ControllerBase
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
 
-    private string UserName() => User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? "Unknown";
+    // Issued tokens carry the display name as "name"; ClaimTypes.Name only exists when something maps it.
+    private string UserName() => User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? User.FindFirst("name")?.Value ?? "Unknown";
 }
 
 public sealed class StructuredConfirmationPayload

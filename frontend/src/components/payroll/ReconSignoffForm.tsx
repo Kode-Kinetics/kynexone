@@ -13,6 +13,7 @@ import { requestFailureReason } from '../../lib/requestFailure';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Textarea } from '../ui/Field';
+import { payItemLabel } from '../../lib/payItemLabel';
 import { blockerText, categoryName, scopeReasonText, supersededText } from './reconWords';
 
 type T = ReturnType<typeof useT>;
@@ -149,7 +150,7 @@ export function ReconSignoffForm({ runId, runStatus, recon, mayApprove, priorRun
   };
 
   if (signed) {
-    const reasons = (recon.value.sections ?? []).flatMap(s => s.items.filter(i => i.explanation).map(i => ({ key: `${s.kind}-${i.code}`, label: i.label, text: i.explanation as string })));
+    const reasons = (recon.value.sections ?? []).flatMap(s => s.items.filter(i => i.explanation).map(i => ({ key: `${s.kind}-${i.code}`, label: payItemLabel(t, i.label), text: i.explanation as string })));
     return (
       <div className="space-y-3">
         <p className="flex items-start gap-2 text-body text-success-fg" data-testid="recon-signoff-status">
@@ -209,7 +210,7 @@ export function ReconSignoffForm({ runId, runStatus, recon, mayApprove, priorRun
             return (
               <div key={i.key} className="space-y-1">
                 <label htmlFor={id} className="block text-body-sm font-medium text-fg">
-                  {t('Why did {item} move?', { item: i.label })}{' '}
+                  {t('Why did {item} move?', { item: payItemLabel(t, i.label) })}{' '}
                   <span className="font-normal text-fg-muted"><bdi>{money(i.prior)} → {money(i.current)} ({signedAmount(i.delta, v => money(v))})</bdi></span>
                 </label>
                 <Textarea id={id} rows={2} className="w-full max-w-2xl" data-testid={`recon-explanation-${testKey('Item', i.key)}`} value={drafts[explanationId('Item', i.key)] ?? ''} onChange={e => setDraft('Item', i.key, e.target.value)} aria-describedby="recon-reason-hint" />

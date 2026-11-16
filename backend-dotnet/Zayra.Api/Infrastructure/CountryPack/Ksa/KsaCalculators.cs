@@ -30,6 +30,8 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
         decimal coveredWage = input.Salary.GosiCoveredWage;
         var bounds = await KsaGosiWageBounds.ResolveAsync(_rules, eff, null, ct);
         coveredWage = bounds.Clamp(coveredWage);
+        // L1.3 — every GOSI amount below is rounded per component, per employee, per side, by ONE rule: gosi.rounding_mode.
+        var rounding = await GosiRounding.ResolveAsync(_rules, eff, ct);
 
         // ── S1/A4: three classifications, not two ────────────────────────────────────────────────
         // The local IsSaudiNational matched only SAU/SA/Saudi, so a Bahraini fell through to the
@@ -74,15 +76,15 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
                             $"'{RuleKeys.GosiGccEmployerRate(home)}'), so no contribution was computed for {Month(eff)}.",
                 };
 
-            decimal gccEmpAmt = Math.Round(coveredWage * gccEmp.Value, 2);
+            decimal gccEmpAmt = Math.Round(coveredWage * gccEmp.Value, 2, rounding);
             // The employer's share under the extension scheme is capped at what it would pay for a
             // Saudi; any excess over that cap is borne by the employee, not the employer.
             decimal saudiErCap = await _rules.GetDecimalAsync(
                 CountryCodes.Saudi, Jurisdictions.KsaMainland,
                 RuleKeys.GosiSaudiEmployerRate, eff, null, ct) ?? 0.09m;
             decimal erRateApplied = Math.Min(gccEr.Value, saudiErCap);
-            decimal gccErAmt = Math.Round(coveredWage * erRateApplied, 2);
-            decimal excessToEmployee = Math.Round(coveredWage * Math.Max(0m, gccEr.Value - saudiErCap), 2);
+            decimal gccErAmt = Math.Round(coveredWage * erRateApplied, 2, rounding);
+            decimal excessToEmployee = Math.Round(coveredWage * Math.Max(0m, gccEr.Value - saudiErCap), 2, rounding);
 
             lines.Add(new($"GOSI-GCC-{home}-EE", $"GCC Unified Scheme — {home} (Employee)", gccEmpAmt + excessToEmployee, 0m)
                 { Rate = gccEmp.Value + Math.Max(0m, gccEr.Value - saudiErCap), ContributoryWage = coveredWage });
@@ -92,7 +94,7 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
             decimal gccOhRate = await _rules.GetDecimalAsync(
                 CountryCodes.Saudi, Jurisdictions.KsaMainland,
                 RuleKeys.GosiExpOhRate, eff, null, ct) ?? 0.02m;
-            decimal gccOh = Math.Round(coveredWage * gccOhRate, 2);
+            decimal gccOh = Math.Round(coveredWage * gccOhRate, 2, rounding);
             lines.Add(new("GOSI-OH-ER", "Occupational Hazard (Employer)", 0m, gccOh) { Rate = gccOhRate, ContributoryWage = coveredWage });
 
             return new(gccEmpAmt + excessToEmployee, gccErAmt + gccOh, lines)
@@ -125,16 +127,16 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
                 CountryCodes.Saudi, Jurisdictions.KsaMainland,
                 RuleKeys.GosiSanedRate, eff, null, ct) ?? 0.0075m;          // VERIFY: 0.75% each side
 
-            decimal annuityEmp = Math.Round(coveredWage * empAnnuity, 2);
-            decimal annuityEr  = Math.Round(coveredWage * erAnnuity, 2);
-            decimal sanedEmp   = Math.Round(coveredWage * sanedRate, 2);
-            decimal sanedEr    = Math.Round(coveredWage * sanedRate, 2);
+            decimal annuityEmp = Math.Round(coveredWage * empAnnuity, 2, rounding);
+            decimal annuityEr  = Math.Round(coveredWage * erAnnuity, 2, rounding);
+            decimal sanedEmp   = Math.Round(coveredWage * sanedRate, 2, rounding);
+            decimal sanedEr    = Math.Round(coveredWage * sanedRate, 2, rounding);
 
             decimal ohRate = await _rules.GetDecimalAsync(
                 CountryCodes.Saudi, Jurisdictions.KsaMainland,
                 RuleKeys.GosiExpOhRate, eff, null, ct) ?? 0.02m;            // VERIFY: 2% OH (employer pays for all employees)
 
-            decimal ohEr = Math.Round(coveredWage * ohRate, 2);
+            decimal ohEr = Math.Round(coveredWage * ohRate, 2, rounding);
 
             lines.Add(new("GOSI-ANN-EE", "GOSI Annuities (Employee)",    annuityEmp, 0m) { Rate = empAnnuity, ContributoryWage = coveredWage });
             lines.Add(new("GOSI-ANN-ER", "GOSI Annuities (Employer)",    0m, annuityEr) { Rate = erAnnuity, ContributoryWage = coveredWage });
@@ -159,7 +161,7 @@ public sealed class KsaDeductionCalculator : IStatutoryDeductionCalculator
                 CountryCodes.Saudi, Jurisdictions.KsaMainland,
                 RuleKeys.GosiExpOhRate, eff, null, ct) ?? 0.02m;            // VERIFY: 2% employer only
 
-            decimal oh = Math.Round(coveredWage * ohRate, 2);
+            decimal oh = Math.Round(coveredWage * ohRate, 2, rounding);
             lines.Add(new("GOSI-OH-ER", "Occupational Hazard (Employer)", 0m, oh) { Rate = ohRate, ContributoryWage = coveredWage });
             erTotal = oh;
 
@@ -596,6 +598,8 @@ internal static class RuleKeys
     public const string GosiMinContributoryWageAnnuitiesSar = "gosi.covered_wage_min_annuities_sar";
     public const string GosiMinContributoryWageOccupationalHazardsSar = "gosi.covered_wage_min_occupational_hazards_sar";
     public const string GosiSanedRate             = "gosi.saned_rate";
+    // L1.3 — HALF_UP (default) | HALF_EVEN, effective-dated, platform row only. See GosiRounding.
+    public const string GosiRoundingMode          = GosiRounding.RuleKey;
     public const string GosiExpOhRate             = "gosi.expat_occupational_hazard_rate";
     // S1/A4 — GCC Unified Insurance Extension Scheme. A GCC national employed in KSA is insured under
     // their HOME state's scheme at the HOME state's rates, collected by GOSI. There is no single "GCC

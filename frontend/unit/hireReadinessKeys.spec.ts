@@ -17,8 +17,11 @@ function emittedKeys(): { key: string; label: string }[] {
   const block = evaluator.slice(evaluator.indexOf('ImportGapLabels ='), evaluator.indexOf('};', evaluator.indexOf('ImportGapLabels =')));
   const gaps = [...block.matchAll(/\["([^"]+)"\]\s*=\s*"([^"]+)"/g)].map(m => ({ key: m[1], label: m[2] }));
   const noPolicy = evaluator.match(/NoPolicyKey\s*=\s*"([^"]+)"/)![1];
+  // The first-package approval blocker is evaluator-owned too: its key and the sentence the server sends with it.
+  const salaryKey = evaluator.match(/SalaryPackageKey\s*=\s*"([^"]+)"/)![1];
+  const salaryLabel = evaluator.match(/Key: SalaryPackageKey,\s*Label: "([^"]+)"/)![1];
   return [
-    ...registry, ...gaps,
+    ...registry, ...gaps, { key: salaryKey, label: salaryLabel },
     { key: noPolicy, label: 'No readiness policy configured' },
     { key: 'pay:compensationUnapproved', label: 'Pay package awaiting Finance approval' },
     { key: 'invalid:payrollProfile.iban', label: 'Invalid value: payrollProfile.iban' },

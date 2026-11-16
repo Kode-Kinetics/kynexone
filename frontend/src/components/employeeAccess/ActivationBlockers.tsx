@@ -8,6 +8,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { PAY_APPROVE_PERMISSION, PAY_GAP_KEY } from '../../lib/payApprovals';
 import { isolateName } from '../../lib/bidi';
+import { readinessLabel } from '../../lib/readinessLabel';
 
 export interface BlockerItem { key: string; label: string }
 
@@ -54,7 +55,7 @@ export function ActivationBlockers({
     return () => { cancelled = true; };
   }, [hasPayGap, companyId, canApprovePay, canManage, employeeId, user?.id]);
 
-  const label = labelOf ?? ((item: BlockerItem) => t(item.label));
+  const label = labelOf ?? ((item: BlockerItem) => readinessLabel(t, item.label));
   const setupHref = `/setup?tab=users${companyId ? `&companyId=${encodeURIComponent(companyId)}` : ''}`;
 
   return (

@@ -17,6 +17,7 @@ import type {
 import type { AIInsight } from '../../api/intelligence';
 import { msg, translate, type MessageParams } from '../../i18n/translations';
 import { createFormatter } from '../../lib/format';
+import { insightDetail, insightTitle } from '../../lib/insightText';
 
 /**
  * The translator the builders below write their copy with. Components pass `useT()`; tests and
@@ -513,9 +514,28 @@ export function pulseSummary(segments: PulseSegment[]): { tone: PulseState; text
 
 // ── Needs attention ───────────────────────────────────────────────────────────
 
+/**
+ * How loudly an item asks for attention. critical: blocks something or is already past a date.
+ * action: a person has to do something, nothing is broken yet. warning: coming up. notice: for review only.
+ * A payroll variance finding is always a notice: it is a figure to read, and the run it describes may
+ * already be locked.
+ */
+export type AttentionSeverity = 'critical' | 'action' | 'warning' | 'notice';
+
+const SEVERITY_ORDER: Record<AttentionSeverity, number> = { critical: 0, action: 1, warning: 2, notice: 3 };
+
+export function attentionSeverityLabel(t: Translator, severity: AttentionSeverity): string {
+  switch (severity) {
+    case 'critical': return t('Critical');
+    case 'action': return t('Action needed');
+    case 'notice': return t('For review');
+    default: return t('Warning');
+  }
+}
+
 export interface AttentionItem {
   id: string;
-  severity: 'critical' | 'warning';
+  severity: AttentionSeverity;
   title: string;
   detail: string;
   /** Where the number comes from, so a reader can judge it. */
@@ -528,7 +548,7 @@ export function buildAttention(
   data: DashboardFull | null,
   insights: AIInsight[] | null,
   now = Date.now(),
-  options: { payroll?: boolean; t?: Translator; relative?: (iso: string) => string } = {},
+  options: { payroll?: boolean; t?: Translator; relative?: (iso: string) => string; period?: (yearMonth: string) => string } = {},
 ): AttentionItem[] {
   const t = options.t ?? EN;
   const ago = options.relative ?? ((iso: string) => timeAgo(iso, now).toLowerCase());
@@ -554,7 +574,7 @@ export function buildAttention(
       source: t('Employee documents'), to: '/compliance?tab=employee-documents', cta: t('Review expired documents'),
     });
     if (k.missingDocuments > 0) items.push({
-      id: 'docs-missing', severity: 'critical',
+      id: 'docs-missing', severity: 'action',
       title: t('{count, plural, one {# employee missing required documents} other {# employees missing required documents}}', { count: k.missingDocuments }),
       detail: t('Each is missing at least one document type the policy requires'),
       source: t('Employee documents'), to: '/compliance?tab=employee-documents', cta: t('Review missing documents'),
@@ -602,17 +622,17 @@ export function buildAttention(
     if (sev === 'Info') continue;
     items.push({
       id: `insight-${i.insightType}-${i.id}`,
-      severity: sev === 'Critical' ? 'critical' : 'warning',
-      // The finding's title and summary are written by the rules engine (server-side, English
-      // today); they are shown as data. Localising them needs finding codes from the API.
-      title: i.title.replace(/employee\(s\)/g, 'employees'),
-      detail: i.summary,
+      severity: i.insightType === 'PayrollVariance' ? 'notice' : sev === 'Critical' ? 'critical' : 'warning',
+      // The engine writes the title and summary in English with the numbers baked in; insightType decides the
+      // sentence and the numbers are read back out of the text (lib/insightText.ts).
+      title: insightTitle(t, i),
+      detail: insightDetail(t, i, options.period ?? ((ym) => ym)),
       source: t('Rules check · {when} · all companies', { when: ago(i.createdAtUtc) }),
       to: insightRoute(i.insightType),
       cta: t(INSIGHT_CTA[i.insightType] ?? 'Open findings'),
     });
   }
-  return items.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'critical' ? -1 : 1));
+  return items.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 }
 
 // ── Activity ─────────────────────────────────────────────────────────────────

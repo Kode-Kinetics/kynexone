@@ -9,15 +9,18 @@ import {
 } from 'lucide-react';
 import client from '../api/client';
 import { useLocale } from '../contexts/LocaleContext';
-import { pluralize } from '../lib/plural';
 import { complianceActionLabel, resolveComplianceRoute } from '../lib/complianceRoutes';
 import {
   READINESS_UNKNOWN_LABEL, formatReadinessPercent, readinessCaption, readinessToneClass,
 } from '../lib/complianceDisplay';
 import { qiwaConnectionLabel, qiwaModeLabel } from '../lib/integrationDeliveryState';
+import { QIWA_WORK_LOCATION_NOTE, qiwaMissingText, qiwaNeedsWorkLocationNote } from '../lib/qiwaMissingFields';
 import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
 import { msg } from '../i18n/translations';
 import { NitaqatPanel } from './NitaqatPanel';
+import { useT } from '../hooks/useT';
+import { complianceActionText, gosiFindingLabel, gosiWarningText, moduleName } from '../lib/complianceCopy';
+import { useFormat } from '../hooks/useFormat';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -125,19 +128,17 @@ interface Dashboard {
 
 // ── Helper components ─────────────────────────────────────────────────────────
 
-function fmtDate(s: string | null): string {
-  if (!s) return '—';
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString();
-}
-
-function fmtDateTime(s: string | null): string {
-  if (!s) return '—';
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+/** The viewer's date and date-time formats (language, calendar and zone from the tenant settings). */
+function useDateFormats() {
+  const fx = useFormat();
+  return {
+    fmtDate: (s: string | null): string => (s ? fx.date(s) : '—'),
+    fmtDateTime: (s: string | null): string => (s ? fx.dateTime(s) : '—'),
+  };
 }
 
 function ConnectionBadge({ status, live }: { status: string; live?: boolean | null }) {
+  const t = useT();
   const map: Record<string, string> = {
     Connected:          'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400',
     // Amber, not green: a simulator completing is not a connection to Qiwa.
@@ -150,21 +151,23 @@ function ConnectionBadge({ status, live }: { status: string; live?: boolean | nu
   };
   return (
     <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${(status === 'Connected' && live !== true ? map.Simulated : map[status]) ?? 'bg-slate-100 text-slate-600'}`}>
-      {qiwaConnectionLabel(status, live)}
+      {t(qiwaConnectionLabel(status, live))}
     </span>
   );
 }
 
 function SeverityPill({ severity }: { severity: string }) {
+  const t = useT();
   const cls =
     severity === 'Critical' ? 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-400' :
     severity === 'High'     ? 'bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-400' :
     severity === 'Medium'   ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400' :
                               'bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-400';
-  return <span className={`rounded-full px-2 py-0.5 text-caption font-semibold uppercase ${cls}`}>{severity}</span>;
+  return <span className={`rounded-full px-2 py-0.5 text-caption font-semibold uppercase ${cls}`}>{t(severity)}</span>;
 }
 
 function ProgressBar({ percent, label }: { percent: number | null; label: string }) {
+  const t = useT();
   // An undefined readiness has no bar to fill. A full green track would claim "all done" and an
   // empty red one would claim "all failing"; both are assertions the data does not support, so an
   // empty dashed track is drawn instead and the caption beside it says why.
@@ -172,7 +175,7 @@ function ProgressBar({ percent, label }: { percent: number | null; label: string
     return (
       <div
         role="img"
-        aria-label={`${label}: not configured — nothing to measure yet`}
+        aria-label={t('{label}: not configured — nothing to measure yet', { label })}
         data-testid="readiness-bar-unavailable"
         className="h-2 w-full rounded-full border border-dashed border-slate-300 dark:border-slate-600"
       />
@@ -196,12 +199,14 @@ function ScoreRing({ score }: { score: number }) {
   return (
     <div className={`flex h-20 w-20 flex-col items-center justify-center rounded-full border-4 ${bgRing} ${score >= 90 ? 'border-emerald-200 dark:border-emerald-700' : score >= 70 ? 'border-amber-200 dark:border-amber-700' : 'border-rose-200 dark:border-rose-700'}`}>
       <span className={`text-2xl font-semibold ${colour}`}>{score}</span>
-      <span className="text-caption font-semibold text-slate-400">/ 100</span>
+      <span dir="ltr" className="text-caption font-semibold text-slate-400">/ 100</span>
     </div>
   );
 }
 
-function ModuleStatusChip({ label, enabled, score }: { label: string; enabled: boolean; score?: number | null }) {
+function ModuleStatusChip({ label: moduleKey, enabled, score }: { label: string; enabled: boolean; score?: number | null }) {
+  const t = useT();
+  const label = moduleName(t, moduleKey);
   // null score = there is nothing to measure yet. A green tick here is the same lie as a 100% bar.
   if (enabled && score === null) {
     return (
@@ -209,7 +214,7 @@ function ModuleStatusChip({ label, enabled, score }: { label: string; enabled: b
         title={`${label} readiness cannot be measured until there are employees to assess.`}
         className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-500 dark:border-slate-700 dark:bg-white/[0.04] dark:text-slate-400"
       >
-        <MinusCircle className="h-3 w-3" /> {label} · not measured
+        <MinusCircle className="h-3 w-3" /> {t('{label} · not measured', { label })}
       </span>
     );
   }
@@ -256,23 +261,24 @@ function SectionCard({ icon: Icon, title, badge, children }: {
  * set up told the customer nothing about where 70 came from or what would move it.
  */
 function ScoreBreakdown({ components, total }: { components: ScoreComponent[]; total: number }) {
+  const t = useT();
   return (
     <div
       data-testid="compliance-score-breakdown"
       className="mt-3 rounded-lg border border-slate-100 bg-slate-50/70 p-3 dark:border-white/[0.07] dark:bg-white/[0.03]"
     >
       <p className="text-xs text-slate-500 dark:text-slate-400">
-        The score is a weighted average of three checks. Each line shows what it scored and why.
+        {t('The score is a weighted average of three checks. Each line shows what it scored and why.')}
       </p>
       <ul className="mt-2">
         {components.map(c => (
           <li key={c.module} className="border-t border-slate-200/70 py-2 first:border-t-0 dark:border-white/[0.06]">
             <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-              <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{c.module}</span>
+              <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{moduleName(t, c.module)}</span>
               <span className="text-xs text-slate-500 dark:text-slate-400">
-                {c.measurable ? `${c.score} / 100` : 'nothing to measure yet'} · {c.weightPercent}% of the score ·{' '}
+                {c.measurable ? <bdi>{c.score} / 100</bdi> : t('Nothing to measure yet')} · {t('{percent}% of the score', { percent: c.weightPercent })} ·{' '}
                 <strong className="font-semibold text-slate-700 dark:text-slate-200">
-                  {c.pointsContributed} {c.pointsContributed === 1 ? 'point' : 'points'}
+                  {t('{count, plural, one {# point} other {# points}}', { count: c.pointsContributed })}
                 </strong>
               </span>
             </div>
@@ -281,20 +287,23 @@ function ScoreBreakdown({ components, total }: { components: ScoreComponent[]; t
         ))}
       </ul>
       <p className="border-t border-slate-200/70 pt-2 text-xs font-semibold text-slate-600 dark:border-white/[0.06] dark:text-slate-300">
-        Total {total} of 100, rounded to the nearest whole point.
+        {t('Total {total} of 100, rounded to the nearest whole point.', { total })}
       </p>
     </div>
   );
 }
 
-function OverallScoreCard({ overall, qiwa, wps, gosi }: {
+function OverallScoreCard({ overall, qiwa, wps, gosi, actionCount }: {
   overall: OverallSection; qiwa: QiwaSection; wps: WpsSection; gosi: GosiSection;
+  /** The number of open actions: the same number the Action Center badge shows, so the page gives one count. */
+  actionCount: number;
 }) {
-  const { locale } = useLocale();
+  const { fmtDateTime } = useDateFormats();
+  const t = useT();
   const [showWorking, setShowWorking] = useState(false);
-  const label = overall.complianceScore >= 90 ? 'Excellent' :
-                overall.complianceScore >= 75 ? 'Good' :
-                overall.complianceScore >= 60 ? 'Needs Attention' : 'At Risk';
+  const label = overall.complianceScore >= 90 ? t('Excellent') :
+                overall.complianceScore >= 75 ? t('Good') :
+                overall.complianceScore >= 60 ? t('Needs Attention') : t('At Risk');
 
   const labelCls = overall.complianceScore >= 90 ? 'text-emerald-600 dark:text-emerald-400' :
                    overall.complianceScore >= 75 ? 'text-amber-600 dark:text-amber-400' :
@@ -306,22 +315,19 @@ function OverallScoreCard({ overall, qiwa, wps, gosi }: {
         <ScoreRing score={overall.complianceScore} />
         <div className="flex-1 min-w-48">
           <div className="flex items-center gap-2">
-            <p className="text-lg font-semibold text-slate-900 dark:text-white">Compliance Score</p>
+            <p className="text-lg font-semibold text-slate-900 dark:text-white">{t('Compliance Score')}</p>
             <span className={`text-sm font-semibold ${labelCls}`}>{label}</span>
           </div>
           <p className="mt-0.5 text-xs text-slate-400">
-            Evaluated {fmtDateTime(overall.lastEvaluatedAt)}
+            {t('Evaluated {lastEvaluatedAt}', { lastEvaluatedAt: fmtDateTime(overall.lastEvaluatedAt) })}
           </p>
-          {overall.urgentActionCount > 0 && (
+          {actionCount > 0 && (
             <p
               data-testid="urgent-action-count"
               className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-rose-600 dark:text-rose-400"
             >
               <AlertCircle className="h-3.5 w-3.5" />
-              {pluralize(overall.urgentActionCount, {
-                one:   '{count} urgent action needs attention',
-                other: '{count} urgent actions need attention',
-              }, locale)}
+              {t('{count, plural, one {# action needs attention} other {# actions need attention}}', { count: actionCount })}
             </p>
           )}
           <button
@@ -331,7 +337,7 @@ function OverallScoreCard({ overall, qiwa, wps, gosi }: {
             className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-sapphire hover:underline dark:text-cyanAccent"
           >
             {showWorking ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-            {showWorking ? 'Hide how this is calculated' : 'How is this calculated?'}
+            {showWorking ? t('Hide how this is calculated') : t('How is this calculated?')}
           </button>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -366,9 +372,9 @@ function ActionCenter({ items }: { items: ActionItem[] }) {
   if (items.length === 0) {
     return (
       <div className="surface p-5">
-        <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-100">Action Center</h2>
+        <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Action Center')}</h2>
         <p className="flex items-center gap-2 text-sm text-emerald-600 dark:text-emerald-400">
-          <CheckCircle className="h-4 w-4" /> No outstanding compliance actions.
+          <CheckCircle className="h-4 w-4" /> {t('No outstanding compliance actions.')}
         </p>
       </div>
     );
@@ -377,13 +383,15 @@ function ActionCenter({ items }: { items: ActionItem[] }) {
   return (
     <div className="surface overflow-hidden">
       <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-white/[0.07]">
-        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Action Center</h2>
-        <span className="rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-700 dark:bg-rose-500/20 dark:text-rose-400">
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Action Center')}</h2>
+        <span data-testid="action-center-count" className="rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-700 dark:bg-rose-500/20 dark:text-rose-400">
           {items.length}
         </span>
       </div>
       <ul className="divide-y divide-slate-100 dark:divide-white/[0.05]">
-        {items.map(item => (
+        {items.map(rawItem => {
+          const item = { ...rawItem, ...complianceActionText(t, rawItem) };
+          return (
           <li key={item.id} className="px-4 py-3">
             <div className="flex items-start gap-3">
               <div className="mt-0.5 shrink-0">
@@ -391,11 +399,11 @@ function ActionCenter({ items }: { items: ActionItem[] }) {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">{item.module}</span>
+                  <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">{moduleName(t, item.module)}</span>
                   <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">{item.title}</span>
                   {item.affectedCount > 0 && (
                     <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600 dark:bg-white/10 dark:text-slate-300">
-                      {item.affectedCount} affected
+                      {t('{affectedCount} affected', { affectedCount: item.affectedCount })}
                     </span>
                   )}
                 </div>
@@ -414,7 +422,7 @@ function ActionCenter({ items }: { items: ActionItem[] }) {
                   onClick={() => setExpanded(expanded === item.id ? null : item.id)}
                   className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
                 >
-                  {expanded === item.id ? 'Less' : 'More'}
+                  {expanded === item.id ? t('Less') : t('More')}
                 </button>
                 {item.route && item.canAct && (
                   <Link
@@ -427,7 +435,8 @@ function ActionCenter({ items }: { items: ActionItem[] }) {
               </div>
             </div>
           </li>
-        ))}
+          );
+        })}
       </ul>
     </div>
   );
@@ -436,15 +445,17 @@ function ActionCenter({ items }: { items: ActionItem[] }) {
 // ── QIWA module card ──────────────────────────────────────────────────────────
 
 function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
+  const t = useT();
+  const { fmtDate } = useDateFormats();
   return (
     <SectionCard
       icon={Wifi}
-      title="Qiwa data check"
+      title={t('Qiwa data check')}
       badge={<ConnectionBadge status={qiwa.featureEnabled ? qiwa.connectionStatus : 'NotConfigured'} live={qiwa.isLiveIntegration} />}
     >
       <div className="space-y-4">
         {!qiwa.featureEnabled ? (
-          <p className="text-xs text-slate-400 italic">QIWA module is not enabled for this tenant.</p>
+          <p className="text-xs text-slate-400 italic">{t('QIWA module is not enabled for this tenant.')}</p>
         ) : (
           <>
             {qiwa.isLiveIntegration !== true && (
@@ -452,8 +463,7 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
                 data-testid="qiwa-simulation-notice"
                 className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/20"
               >
-                <strong>{qiwaModeLabel(qiwa.isLiveIntegration)}.</strong> This checks your employee records against
-                what Qiwa requires. Nothing is sent to Qiwa or MHRSD — record contract and employee changes in Qiwa itself.
+                <strong>{t(qiwaModeLabel(qiwa.isLiveIntegration))}.</strong> {t('This checks your employee records against what Qiwa requires. Nothing is sent to Qiwa or MHRSD — record contract and employee changes in Qiwa itself.')}
               </p>
             )}
             <dl className="grid grid-cols-2 gap-2 text-xs">
@@ -461,20 +471,20 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
                   invited customers to go and find secrets for a path that sends nothing. */}
               {qiwa.isLiveIntegration === true && (
                 <div>
-                  <dt className="text-slate-400">Partner API credentials</dt>
+                  <dt className="text-slate-400">{t('Partner API credentials')}</dt>
                   <dd className={`font-semibold ${qiwa.credentialConfigured ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                    {qiwa.credentialConfigured ? 'Recorded' : 'Not recorded'}
+                    {qiwa.credentialConfigured ? t('Recorded') : t('Not recorded')}
                   </dd>
                 </div>
               )}
               <div>
-                <dt className="text-slate-400">Failing the data check</dt>
+                <dt className="text-slate-400">{t('Failing the data check')}</dt>
                 <dd className={`font-semibold ${qiwa.blockedFromSync > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
                   {qiwa.blockedFromSync}
                 </dd>
               </div>
               <div>
-                <dt className="text-slate-400">Attempts needing attention</dt>
+                <dt className="text-slate-400">{t('Attempts needing attention')}</dt>
                 <dd className={`font-semibold ${qiwa.failedSyncCount > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-800 dark:text-slate-200'}`}>
                   {qiwa.failedSyncCount}
                 </dd>
@@ -483,15 +493,15 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
                   is not shown at all rather than showing an empty "last filed" date. */}
               {qiwa.isLiveIntegration === true && (
                 <div>
-                  <dt className="text-slate-400">Last update confirmed by the Qiwa partner API</dt>
+                  <dt className="text-slate-400">{t('Last update confirmed by the Qiwa partner API')}</dt>
                   <dd className="text-slate-600 dark:text-slate-300" data-testid="qiwa-last-filed">{fmtDate(qiwa.lastSuccessfulSync)}</dd>
                 </div>
               )}
               {qiwa.lastSimulatedSync && (
                 <div className="col-span-2">
-                  <dt className="text-slate-400">Last data check run</dt>
+                  <dt className="text-slate-400">{t('Last data check run')}</dt>
                   <dd className="text-amber-700 dark:text-amber-400">
-                    {fmtDate(qiwa.lastSimulatedSync)} · {qiwaModeLabel(false)}
+                    {fmtDate(qiwa.lastSimulatedSync)} · {t(qiwaModeLabel(false))}
                   </dd>
                 </div>
               )}
@@ -499,7 +509,7 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
 
             <div className="space-y-1">
               <div className="flex justify-between gap-2 text-xs text-slate-500">
-                <span>Passing the Qiwa data check</span>
+                <span>{t('Passing the Qiwa data check')}</span>
                 <span data-testid="qiwa-readiness-figure">
                   {readinessCaption(
                     qiwa.readinessPercent,
@@ -507,9 +517,9 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
                   )}
                 </span>
               </div>
-              <ProgressBar percent={qiwa.readinessPercent} label="QIWA readiness" />
+              <ProgressBar percent={qiwa.readinessPercent} label={t('QIWA readiness')} />
               {qiwa.readinessPercent == null && (
-                <p className="text-xs text-slate-400">No active employees yet, so there is nothing to check.</p>
+                <p className="text-xs text-slate-400">{t('No active employees yet, so there is nothing to check.')}</p>
               )}
             </div>
 
@@ -519,19 +529,25 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
                 the box itself in the tab order so arrow keys scroll it, and role="region" + a
                 name is what tells a screen-reader user what they landed in — a focusable box with
                 no accessible name would trade one violation for another. */}
+            {qiwaNeedsWorkLocationNote(qiwa.blockedEmployees) && (
+              <p className="flex items-start gap-1.5 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:bg-white/[0.04] dark:text-slate-300" data-testid="qiwa-work-location-note">
+                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>{t(QIWA_WORK_LOCATION_NOTE)}</span>
+              </p>
+            )}
             {qiwa.blockedEmployees.length > 0 && (
               <div
                 tabIndex={0}
                 role="region"
-                aria-label="Employees blocked from passing the Qiwa data check"
+                aria-label={t('Employees blocked from passing the Qiwa data check')}
                 className="max-h-40 overflow-auto rounded-lg border border-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 dark:border-white/[0.07]"
               >
                 <table className="w-full text-start text-xs">
                   <thead className="sticky top-0 bg-slate-50 text-slate-500 dark:bg-slate-800">
                     <tr>
-                      <th className="px-2 py-1.5">Code</th>
-                      <th className="px-2 py-1.5">Name</th>
-                      <th className="px-2 py-1.5">Missing</th>
+                      <th className="px-2 py-1.5">{t('Code')}</th>
+                      <th className="px-2 py-1.5">{t('Name')}</th>
+                      <th className="px-2 py-1.5">{t('Missing')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -539,7 +555,7 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
                       <tr key={e.employeeId} className="border-t border-slate-100 dark:border-white/[0.05]">
                         <td className="px-2 py-1.5 font-medium">{e.employeeCode}</td>
                         <td className="px-2 py-1.5">{e.fullName}</td>
-                        <td className="px-2 py-1.5 text-rose-600 dark:text-rose-400">{e.missingFields.join(', ')}</td>
+                        <td className="px-2 py-1.5 text-rose-600 dark:text-rose-400">{qiwaMissingText(e.missingFields, t)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -556,49 +572,52 @@ function QiwaCard({ qiwa }: { qiwa: QiwaSection }) {
 // ── WPS module card ───────────────────────────────────────────────────────────
 
 function WpsCard({ wps }: { wps: WpsSection }) {
+  const fx = useFormat();
+  const { fmtDateTime } = useDateFormats();
+  const t = useT();
   const runStatusOk = wps.lastRunStatus === 'Locked' || wps.lastRunStatus === 'Paid';
   return (
     <SectionCard
       icon={Banknote}
-      title="WPS"
+      title={moduleName(t, 'WPS')}
       badge={wps.lastRunStatus ? <ConnectionBadge status={wps.lastRunStatus} /> : undefined}
     >
       <div className="space-y-4">
         <dl className="grid grid-cols-2 gap-2 text-xs">
           <div>
-            <dt className="text-slate-400">Last run period</dt>
-            <dd className="font-semibold text-slate-800 dark:text-slate-200">{wps.lastRunPeriod ?? '—'}</dd>
+            <dt className="text-slate-400">{t('Last run period')}</dt>
+            <dd className="font-semibold text-slate-800 dark:text-slate-200">{wps.lastRunPeriod ? fx.period(wps.lastRunPeriod, 'long') : '—'}</dd>
           </div>
           <div>
-            <dt className="text-slate-400">Pending approvals</dt>
+            <dt className="text-slate-400">{t('Pending approvals')}</dt>
             <dd className={`font-semibold ${wps.pendingApprovals > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-800 dark:text-slate-200'}`}>
               {wps.pendingApprovals}
             </dd>
           </div>
           <div>
-            <dt className="text-slate-400">Missing IBANs</dt>
+            <dt className="text-slate-400">{t('Missing IBANs')}</dt>
             <dd className={`font-semibold ${wps.missingIbanCount > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
               {wps.missingIbanCount}
             </dd>
           </div>
           <div>
-            <dt className="text-slate-400">SIF exports</dt>
+            <dt className="text-slate-400">{t('SIF exports')}</dt>
             <dd className="font-semibold text-slate-800 dark:text-slate-200">{wps.exportHistoryCount}</dd>
           </div>
         </dl>
 
         {wps.lastExportDate && (
           <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 dark:border-white/[0.07] dark:bg-white/[0.03]">
-            <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">Last SIF Export</p>
-            <p className="text-xs text-slate-400">{fmtDateTime(wps.lastExportDate)} — {wps.lastExportStatus ?? '—'}</p>
+            <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">{t('Last SIF Export')}</p>
+            <p className="text-xs text-slate-400">{fmtDateTime(wps.lastExportDate)} — {wps.lastExportStatus ? t(wps.lastExportStatus) : '—'}</p>
           </div>
         )}
 
         <div>
-          <p className="mb-1.5 text-xs font-semibold text-slate-500">Blocking issues</p>
+          <p className="mb-1.5 text-xs font-semibold text-slate-500">{t('Blocking issues')}</p>
           {wps.blockingIssues.length === 0 ? (
             <p className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
-              <CheckCircle className="h-3.5 w-3.5" /> None
+              <CheckCircle className="h-3.5 w-3.5" /> {t('None')}
             </p>
           ) : (
             <ul className="space-y-1">
@@ -618,14 +637,15 @@ function WpsCard({ wps }: { wps: WpsSection }) {
 // ── GOSI module card ──────────────────────────────────────────────────────────
 
 function GosiCard({ gosi }: { gosi: GosiSection }) {
+  const t = useT();
   return (
     <SectionCard
       icon={Users}
-      title="GOSI"
+      title={moduleName(t, 'GOSI')}
       badge={
         <span
           data-testid="gosi-readiness-badge"
-          title={gosi.readinessPercent == null ? 'Readiness cannot be measured until there are employees to assess.' : undefined}
+          title={gosi.readinessPercent == null ? t('Readiness cannot be measured until there are employees to assess.') : undefined}
           className={`text-sm font-semibold ${readinessToneClass(gosi.readinessPercent)}`}
         >
           {formatReadinessPercent(gosi.readinessPercent)}
@@ -635,22 +655,22 @@ function GosiCard({ gosi }: { gosi: GosiSection }) {
       <div className="space-y-4">
         <div className="space-y-1">
           <div className="flex justify-between gap-2 text-xs text-slate-500">
-            <span>Readiness</span>
+            <span>{t('Readiness')}</span>
             <span data-testid="gosi-readiness-figure">
-              {readinessCaption(gosi.readinessPercent, `${gosi.readyCount} ready / ${gosi.blockedCount} blocked`)}
+              {readinessCaption(gosi.readinessPercent, t('{ready} ready / {blocked} blocked', { ready: gosi.readyCount, blocked: gosi.blockedCount }))}
             </span>
           </div>
-          <ProgressBar percent={gosi.readinessPercent} label="GOSI readiness" />
+          <ProgressBar percent={gosi.readinessPercent} label={t('GOSI readiness')} />
           {gosi.readinessPercent == null && (
             <p className="text-xs text-slate-400">
-              No active employees yet, so there is nothing to check. Add employees to see GOSI readiness.
+              {t('No active employees yet, so there is nothing to check. Add employees to see GOSI readiness.')}
             </p>
           )}
         </div>
 
         <dl className="grid grid-cols-2 gap-2 text-xs">
           <div>
-            <dt className="text-slate-400">Missing GOSI ref</dt>
+            <dt className="text-slate-400">{t('Missing GOSI ref')}</dt>
             <dd className={`font-semibold ${gosi.employeesMissingGosiRef > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
               {gosi.employeesMissingGosiRef}
             </dd>
@@ -659,20 +679,20 @@ function GosiCard({ gosi }: { gosi: GosiSection }) {
             {/* Driven by the company's own employer ID, not by how many employees it affects: a
                 tenant with no employees affects nobody, which used to print a reassuring "Set"
                 directly above the warning saying it was not set. */}
-            <dt className="text-slate-400">Company employer ID</dt>
+            <dt className="text-slate-400">{t('Company employer ID')}</dt>
             <dd className={`font-semibold ${gosi.gosiEmployerIdConfigured ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-              {gosi.gosiEmployerIdConfigured ? 'Set' : 'Not set'}
+              {gosi.gosiEmployerIdConfigured ? t('Set') : t('Not set')}
             </dd>
           </div>
           {gosi.gccEmployeeCount > 0 && (
             <div>
-              <dt className="text-slate-400">GCC employees</dt>
+              <dt className="text-slate-400">{t('GCC employees')}</dt>
               <dd className="font-semibold text-amber-600 dark:text-amber-400">{gosi.gccEmployeeCount} ⚠️</dd>
             </div>
           )}
           {gosi.varianceCount > 0 && (
             <div>
-              <dt className="text-slate-400">Variances (last run)</dt>
+              <dt className="text-slate-400">{t('Variances (last run)')}</dt>
               <dd className="font-semibold text-amber-600 dark:text-amber-400">{gosi.varianceCount}</dd>
             </div>
           )}
@@ -683,15 +703,15 @@ function GosiCard({ gosi }: { gosi: GosiSection }) {
           <div
             tabIndex={0}
             role="region"
-            aria-label="Employees blocked from GOSI reconciliation"
+            aria-label={t('Employees blocked from GOSI reconciliation')}
             className="max-h-36 overflow-auto rounded-lg border border-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 dark:border-white/[0.07]"
           >
             <table className="w-full text-start text-xs">
               <thead className="sticky top-0 bg-slate-50 text-slate-500 dark:bg-slate-800">
                 <tr>
-                  <th className="px-2 py-1.5">Code</th>
-                  <th className="px-2 py-1.5">Name</th>
-                  <th className="px-2 py-1.5">Issues</th>
+                  <th className="px-2 py-1.5">{t('Code')}</th>
+                  <th className="px-2 py-1.5">{t('Name')}</th>
+                  <th className="px-2 py-1.5">{t('Issues')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -699,7 +719,7 @@ function GosiCard({ gosi }: { gosi: GosiSection }) {
                   <tr key={e.employeeId} className="border-t border-slate-100 dark:border-white/[0.05]">
                     <td className="px-2 py-1.5 font-medium">{e.employeeCode}</td>
                     <td className="px-2 py-1.5">{e.fullName}</td>
-                    <td className="px-2 py-1.5 text-rose-600 dark:text-rose-400">{e.blockingIssueCodes.join(', ')}</td>
+                    <td className="px-2 py-1.5 text-rose-600 dark:text-rose-400">{e.blockingIssueCodes.map(code => gosiFindingLabel(t, code)).join(' · ')}</td>
                   </tr>
                 ))}
               </tbody>
@@ -711,7 +731,7 @@ function GosiCard({ gosi }: { gosi: GosiSection }) {
           <ul className="space-y-1">
             {gosi.warnings.map((w, i) => (
               <li key={i} className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
-                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> {w}
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> {gosiWarningText(t, w)}
               </li>
             ))}
           </ul>
@@ -724,6 +744,7 @@ function GosiCard({ gosi }: { gosi: GosiSection }) {
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
 
 function DashboardTab() {
+  const t = useT();
   const [data, setData] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -735,12 +756,13 @@ function DashboardTab() {
       const res = await client.get<Dashboard>('/api/saudi-compliance/dashboard');
       setData(res.data);
     } catch {
-      setError('Unable to load Saudi compliance data. You may not have access or the module is not enabled.');
+      setError(t('Unable to load Saudi compliance data. You may not have access or the module is not enabled.'));
     } finally {
       setLoading(false);
     }
   }
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- load once; `load` only reads the translator
   useEffect(() => { load(); }, []);
 
   if (loading) {
@@ -759,9 +781,9 @@ function DashboardTab() {
     return (
       <div className="surface flex flex-col items-center gap-3 p-10 text-center">
         <FileWarning className="h-8 w-8 text-amber-500" />
-        <p className="text-sm text-slate-600 dark:text-slate-300">{error ?? 'No data available.'}</p>
+        <p className="text-sm text-slate-600 dark:text-slate-300">{error ?? t('No data available.')}</p>
         <button type="button" onClick={load} className="rounded-lg bg-sapphire px-4 py-2 text-sm font-medium text-white">
-          Retry
+          {t('Retry')}
         </button>
       </div>
     );
@@ -777,12 +799,12 @@ function DashboardTab() {
           onClick={load}
           className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-white/[0.04]"
         >
-          <RefreshCw className="h-3.5 w-3.5" /> Refresh
+          <RefreshCw className="h-3.5 w-3.5" /> {t('Refresh')}
         </button>
       </div>
 
       {/* Executive Score Card */}
-      <OverallScoreCard overall={overall} qiwa={qiwa} wps={wps} gosi={gosi} />
+      <OverallScoreCard overall={overall} qiwa={qiwa} wps={wps} gosi={gosi} actionCount={actionItems.length} />
 
       {/* Action Center */}
       <ActionCenter items={actionItems} />
@@ -806,8 +828,8 @@ type Tab = 'dashboard' | 'nitaqat';
 // it into a fourth module card would reduce it to the single number this stream
 // exists to replace.
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
-  { id: 'dashboard', label: 'Dashboard',   icon: ShieldCheck },
-  { id: 'nitaqat',   label: 'Saudization', icon: Users },
+  { id: 'dashboard', label: msg('Dashboard'),   icon: ShieldCheck },
+  { id: 'nitaqat',   label: msg('Saudization'), icon: Users },
 ];
 
 export function SaudiComplianceDashboard() {
@@ -837,7 +859,7 @@ export function SaudiComplianceDashboard() {
             }`}
           >
             <Icon className="h-4 w-4" />
-            {label}
+            {t(label)}
           </button>
         ))}
       </div>

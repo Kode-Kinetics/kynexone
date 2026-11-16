@@ -155,7 +155,7 @@ public class MobileController : ControllerBase
 
         var pendingLeave = await _db.LeaveRequests
             .CountAsync(r => r.TenantId == tenantId && r.EmployeeId == employeeId
-                && (r.Status == "Submitted" || r.Status == "PendingManagerApproval"), ct);
+                && Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.NewRequests.Contains(r.Status), ct);
 
         var unreadNotifications = await _db.EmployeeNotifications
             .CountAsync(n => n.TenantId == tenantId && n.EmployeeId == employeeId && !n.IsRead, ct);

@@ -23,7 +23,9 @@ public sealed record JournalExportBuild(
     int OutOfPeriodEntryDateCount,
     string Kind = JournalExportKinds.Full,
     IReadOnlyDictionary<string, string>? Options = null,
-    IReadOnlyList<string>? Warnings = null);
+    IReadOnlyList<string>? Warnings = null,
+    // C-1: live files (any scope) already holding some of these rows. Create refuses the other-scope ones.
+    IReadOnlyList<LiveExportOverlap>? LiveOverlaps = null);
 
 /// <summary>
 /// Produces the journal artifact a client's ERP can actually ingest, and the evidence trail that lets
@@ -137,8 +139,15 @@ public sealed class JournalExportService
             return (null, new JournalExportRefusal(422, new
             {
                 error = JournalExportErrors.Empty,
-                message = "No posted GL rows match this filter.",
+                message = selection.OpeningBalanceExcludedCount > 0
+                    ? "No GL rows to export for this filter: the only rows in it are opening balances carried in from your previous " +
+                      "system, which your ERP already holds, so they are never exported."
+                    : "No posted GL rows match this filter.",
+                messageAr = selection.OpeningBalanceExcludedCount > 0
+                    ? "لا توجد قيود للتصدير لهذا النطاق: القيود الوحيدة فيه أرصدة افتتاحية مُرحّلة من نظامك السابق يحتفظ بها نظامك المحاسبي بالفعل، فلا تُصدَّر أبدًا."
+                    : null,
                 unattributedExcluded = new { count = selection.UnattributedExcludedCount, total = selection.UnattributedExcludedTotal },
+                openingBalanceExcluded = new { count = selection.OpeningBalanceExcludedCount, net = selection.OpeningBalanceExcludedNet, debits = selection.OpeningBalanceExcludedDebits, credits = selection.OpeningBalanceExcludedCredits },
                 hint = selection.UnattributedExcludedCount > 0
                     ? "Every pre-POD-B1b ledger row is unattributed (CompanyId is null). Re-run with includeUnattributed=true "
                     + "or without companyId to include them."
@@ -355,17 +364,45 @@ public sealed class JournalExportService
             warnings.Add($"{formatter.DisplayName} has no cost-centre field, so the cost centres on these lines are not in the file. "
                        + "Use the generic CSV, SAP, Oracle, Dynamics 365 or QuickBooks format to carry them.");
 
+        // C-3: an ERP value left unmapped falls back to our own code (ErpAccount, CompanyCodeOf, CostCentreErpCode). The file is still
+        // produced, but the ERP may not recognise the fallback: say so, once per account, company and cost centre. Codes only, no amounts.
+        foreach (var account in lines.Where(l => string.IsNullOrWhiteSpace(l.ExternalAccountCode)).Select(l => l.AccountCode)
+                     .Distinct(StringComparer.Ordinal).OrderBy(a => a, StringComparer.Ordinal))
+            warnings.Add($"GL account {account} has no ERP account code mapped, so the file carries the internal code {account}. "
+                       + "Set its ERP account code in the chart of accounts if your ERP numbers it differently.");
+        foreach (var unmappedCompany in present.Where(c => string.IsNullOrWhiteSpace(c.ErpCompanyCode))
+                     .OrderBy(c => c.LegalNameEn, StringComparer.Ordinal))
+            warnings.Add($"{unmappedCompany.LegalNameEn} has no ERP company code, so the file uses "
+                       + $"{JournalExportBuilder.CompanyCodeOf(unmappedCompany)} instead. Set the ERP company code in Company setup.");
+        foreach (var costCentre in lines.Where(l => !string.IsNullOrEmpty(l.CostCenterCode) && string.IsNullOrWhiteSpace(l.CostCenterGlSegment))
+                     .Select(l => l.CostCenterCode!).Distinct(StringComparer.Ordinal).OrderBy(c => c, StringComparer.Ordinal))
+            warnings.Add($"Cost centre {costCentre} has no ERP segment, so the file carries the internal code {costCentre}. "
+                       + "Set its ERP segment on the cost centre if your ERP uses a different value.");
+
+        // C-1: a row already in a file that is waiting for the ERP's result must not go into a second file unnoticed.
+        // Create runs this after it has locked the scope's ledger rows, so the answer cannot go stale before its insert.
+        var liveOverlaps = (await JournalExportBuilder.LiveHoldersAsync(_db, tenantId, selection.Entries.Select(e => e.Id).ToList(), ct))
+            .Select(h => JournalExportLiveOverlaps.Describe(h, filter, formatter.Key, currency))
+            .ToList();
+        warnings.AddRange(liveOverlaps.Select(o => o.Message));
+
         var bytes = formatter.Format(doc);
         var scopeTag = filter.PayrollRunId is { } rid ? "run-" + rid.ToString("N")[..8]
                      : string.IsNullOrWhiteSpace(period) ? "all" : period;
         var kindTag = kind == JournalExportKinds.Full ? string.Empty : "-" + kind.ToLowerInvariant();
-        var fileName = $"journal-{companyCode}-{scopeTag}-{currency}-{formatter.Key}{kindTag}-{doc.ExportShort}.{formatter.Extension}";
+        // The file name never carries the registration number: it uses the ERP code, else a neutral id fragment.
+        var fileCompany = company ?? (codes.Count == 1
+            ? present.Concat(liveCompanies.Count == 1 ? liveCompanies : new List<Company>())
+                .FirstOrDefault(c => string.Equals(JournalExportBuilder.CompanyCodeOf(c), companyCode, StringComparison.Ordinal))
+            : null);
+        var fileToken = fileCompany is null ? companyCode : JournalExportBuilder.FileNameCompanyTokenOf(fileCompany);
+        var fileName = $"journal-{fileToken}-{scopeTag}-{currency}-{formatter.Key}{kindTag}-{doc.ExportShort}.{formatter.Extension}";
 
         var outOfPeriod = selection.Entries.Count(e =>
             JournalExportBuilder.TryParsePeriod(e.Period, out var s, out var en) && (e.EntryDate < s || e.EntryDate > en));
 
         return (new JournalExportBuild(doc, formatter, selection, tieOut, bytes, Sha256(bytes), fileName,
-            companyCode, outOfPeriod, kind, validOptions, warnings), null);
+            companyCode, outOfPeriod, kind, validOptions, warnings, liveOverlaps), null);
     }
 
     /// <summary>Only keys the formatter declares, each bounded and free of control characters — the values
@@ -382,6 +419,9 @@ public sealed class JournalExportService
                 return (result, OptionRefusal(formatter, $"'{key}' is not a setting of {formatter.DisplayName}."));
             if (value.Length > spec.MaxLength || value.Any(char.IsControl))
                 return (result, OptionRefusal(formatter, $"{spec.Label} must be at most {spec.MaxLength} characters with no line breaks."));
+            if (spec.Key == GenericCsvJournalFormatter.BomOption && value.Length > 0
+                && !value.Equals("true", StringComparison.OrdinalIgnoreCase) && !value.Equals("false", StringComparison.OrdinalIgnoreCase))
+                return (result, OptionRefusal(formatter, $"{spec.Label} must be true or false."));
             if (spec.Key is "ledgerId" or "groupId" && value.Length > 0 && !value.All(char.IsAsciiDigit))
                 return (result, OptionRefusal(formatter, $"{spec.Label} must be a number."));
             if (value.Length > 0) result[spec.Key] = value;

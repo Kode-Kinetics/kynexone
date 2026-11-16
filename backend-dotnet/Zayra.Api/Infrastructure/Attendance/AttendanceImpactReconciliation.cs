@@ -139,7 +139,7 @@ public static class AttendanceImpactReconciliation
                 .Select(e => new Employee
                 {
                     Id = e.Id, TenantId = e.TenantId, AttendancePolicyCode = e.AttendancePolicyCode,
-                    BranchId = e.BranchId, DepartmentId = e.DepartmentId, GradeId = e.GradeId,
+                    BranchId = e.BranchId, DepartmentId = e.DepartmentId, GradeId = e.GradeId, CompanyId = e.CompanyId,
                 })
                 .ToListAsync(ct))
             .ToDictionary(e => e.Id);
@@ -156,6 +156,24 @@ public static class AttendanceImpactReconciliation
             .Concat(dated.Where(x => x.WorkDate >= from && x.WorkDate <= to).Select(x => (x.Event.EmployeeId, x.WorkDate)))
             .Distinct()
             .OrderBy(d => d.EmployeeId).ThenBy(d => d.WorkDate);
+
+        // Days with no required hours are the employing company's rest days and public holidays, resolved by the same
+        // functions the day processor uses: their late and early-exit minutes are judged as zero here exactly as the
+        // processor writes them.
+        var workWeekService = new Zayra.Api.Infrastructure.WorkWeek.WorkWeekService(db);
+        var weekByCompany = new Dictionary<Guid, Zayra.Api.Application.WorkWeek.WorkWeekConfig>();
+        var holidaysByCompany = new Dictionary<Guid, HashSet<DateOnly>>();
+        async Task<bool> NoRequiredHoursAsync(int employeeId, DateOnly workDate)
+        {
+            var companyId = employees.TryGetValue(employeeId, out var e) ? e.CompanyId : null;
+            var key = companyId ?? Guid.Empty;
+            if (!weekByCompany.TryGetValue(key, out var week))
+                weekByCompany[key] = week = await Zayra.Api.Infrastructure.WorkWeek.CompanyWorkWeek.ResolveAsync(workWeekService, tenantId, companyId, ct);
+            if (week.IsWeekend(workDate.DayOfWeek)) return true;
+            if (!holidaysByCompany.TryGetValue(key, out var holidays))
+                holidaysByCompany[key] = holidays = await Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.HolidayDatesAsync(db, tenantId, companyId, from, to, ct);
+            return holidays.Contains(workDate);
+        }
 
         var stale = new List<StaleAttendanceDay>();
         foreach (var (employeeId, workDate) in days)
@@ -207,7 +225,8 @@ public static class AttendanceImpactReconciliation
                 {
                     shifts.TryGetValue((employeeId, workDate), out var shift);
                     var (late, early) = AttendanceDerivedArtifacts.LateAndEarlyExit(firstIn, lastOut, workDate,
-                        shift?.StartTime, shift?.EndTime, timeZone, AttendanceService.ResolveAttendancePolicy(employee, policies));
+                        shift?.StartTime, shift?.EndTime, timeZone, AttendanceService.ResolveAttendancePolicy(employee, policies),
+                        restDay: await NoRequiredHoursAsync(employeeId, workDate));
                     if (late != record.LateMinutes || early != record.EarlyExitMinutes)
                     {
                         stale.Add(new StaleAttendanceDay(employeeId, workDate, MinutesDiffer, true));

@@ -70,6 +70,8 @@ public static class EmployeeWarningCodes
     public const string MobileForeignForCompany = "mobile_foreign_for_company";
     public const string IdPrefixNationalityMismatch = "id_prefix_nationality_mismatch";
     public const string DuplicateProbable = "duplicate_probable";
+    /// <summary>A typed nationality that matches nothing in the catalogue and carries no ISO code: classification would guess. Field <c>nationality</c>.</summary>
+    public const string NationalityUnresolved = "nationality_unresolved";
 
     /// <summary>The one hard-error code a caller holding the override permission may waive with a reason (CD5).</summary>
     public const string IdChecksumInvalid = "id_checksum_invalid";

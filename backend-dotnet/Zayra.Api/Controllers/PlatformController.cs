@@ -1176,13 +1176,14 @@ public class PlatformController : ControllerBase
             return BadRequest(new { code = "geofence_config_invalid", message = string.Join(" ", problems), problems });
         }
 
+        // A feature that is on by default and has no row yet was ON: the audit's "before" must say so, not the column default.
+        var oldEnabled = flag?.IsEnabled ?? PlatformDefaultOnFeatures.IsDefaultOn(featureKey);
         if (flag is null)
         {
             flag = new TenantFeatureFlag { TenantId = tenantId, FeatureKey = featureKey };
             _db.TenantFeatureFlags.Add(flag);
         }
 
-        var oldEnabled = flag.IsEnabled;
         flag.IsEnabled = req.IsEnabled;
         flag.ConfigJson = effectiveConfig;
         flag.UpdatedAtUtc = DateTime.UtcNow;
@@ -1202,6 +1203,10 @@ public class PlatformController : ControllerBase
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
+        // Designation-driven access is a kill switch: switching it off takes away every role it granted, in the same save.
+        if (featureKey == FeatureKeys.DesignationAccess && oldEnabled && !req.IsEnabled)
+            await new Zayra.Api.Infrastructure.Auth.DesignationAccessService(_db).RevokeAllGrantedAsync(tenantId,
+                new Zayra.Api.Application.Auth.RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), null, tenantId), ct);
         await _db.SaveChangesAsync(ct);
         FeatureFlagGuardFilter.InvalidateCache(_cache, tenantId, featureKey);
         // Release A: switching release_a on installs the renewal approval chains at once (insert-if-absent), rather
@@ -1840,6 +1845,7 @@ public class PlatformController : ControllerBase
             ApprovalStatus = CompanyApprovalStatuses.Active,
         };
         _db.Companies.Add(company);
+        await Zayra.Api.Infrastructure.Payroll.PayslipTemplateDefaults.EnsureSaudiBilingualDefaultForNewCompanyAsync(_db, tenantId, company.CountryCode, ct);
         AuditTenant(tenantId, "CompanyCreatedByPlatform", new { }, new { companyId = company.Id, code = company.LegalNameEn });
         await _db.SaveChangesAsync(ct);
         return Ok(new { companyId = company.Id, company.LegalNameEn, company.ApprovalStatus });
@@ -2609,6 +2615,14 @@ public class PlatformController : ControllerBase
                 code = "opt_in_bulk_enable_refused",
                 message = "Opt-in features are switched on per tenant. Choose the tenants, or use the tenant's Features tab.",
             });
+        // A default-on feature has explicit OFF rows that are deliberate closures: switching it ON for every tenant would silently
+        // reopen them. Switching it OFF everywhere stays possible (kill switch); naming the tenants is a deliberate choice.
+        if (req.ApplyToAll && req.IsEnabled && PlatformDefaultOnFeatures.IsDefaultOn(req.FeatureKey))
+            return UnprocessableEntity(new
+            {
+                code = "default_on_bulk_enable_refused",
+                message = "This feature is already on by default. Tenants the platform switched off stay off; choose the tenants to switch back on, or use the tenant's Features tab.",
+            });
         if (req.FeatureKey == FeatureKeys.PunchGeofence && PunchGeofenceConfig.Problems(req.ConfigJson) is { Count: > 0 } bulkProblems)
             return BadRequest(new { code = "geofence_config_invalid", message = string.Join(" ", bulkProblems), problems = bulkProblems });
 
@@ -2628,16 +2642,20 @@ public class PlatformController : ControllerBase
 
             var flag = await _db.TenantFeatureFlags
                 .FirstOrDefaultAsync(f => f.TenantId == id && f.FeatureKey == req.FeatureKey, ct);
+            var oldEnabled = flag?.IsEnabled ?? PlatformDefaultOnFeatures.IsDefaultOn(req.FeatureKey);
             if (flag is null)
             {
                 flag = new TenantFeatureFlag { TenantId = id, FeatureKey = req.FeatureKey };
                 _db.TenantFeatureFlags.Add(flag);
             }
 
-            var oldEnabled = flag.IsEnabled;
             flag.IsEnabled = req.IsEnabled;
             if (req.ConfigJson is not null) flag.ConfigJson = req.ConfigJson;
             flag.UpdatedAtUtc = DateTime.UtcNow;
+            // Designation-driven access is a kill switch: switching it off takes away every role it granted.
+            if (req.FeatureKey == FeatureKeys.DesignationAccess && oldEnabled && !req.IsEnabled)
+                await new Zayra.Api.Infrastructure.Auth.DesignationAccessService(_db).RevokeAllGrantedAsync(id,
+                    new Zayra.Api.Application.Auth.RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), null, id), ct);
 
             AuditTenant(id, req.IsEnabled ? "FeatureEnabled" : "FeatureDisabled",
                 new { featureKey = req.FeatureKey, isEnabled = oldEnabled },
@@ -4698,7 +4716,7 @@ public class PlatformController : ControllerBase
     public sealed record FeatureFlagDefinition(string Key, string Label, string Category)
     {
         /// <summary>What a tenant with no flag row gets: a module defaults ON, an opt-in feature OFF.</summary>
-        public bool DefaultEnabled => ModuleCatalog.TryGet(Key) is not null;
+        public bool DefaultEnabled => ModuleCatalog.TryGet(Key) is not null || PlatformDefaultOnFeatures.IsDefaultOn(Key);
     }
 
     /// <summary>
@@ -4726,6 +4744,8 @@ public class PlatformController : ControllerBase
         new(FeatureKeys.HrLetters,       "HR Letters",                "Core"),
         new(FeatureKeys.PayslipTemplateDesigner, "Payslip Template Designer", "Core"),
         new("mobile_app",                "Mobile App",                "Access"),
+        // On by default for a Saudi company; switching it off here is a kill switch for one tenant (PlatformDefaultOnFeatures).
+        new(FeatureKeys.SaudiBankExport, "Saudi bank file (ANB Connect)", "Compliance"),
         // Opt-in features: OFF for a tenant until switched on here (an absent row means off).
         new(FeatureKeys.Learning,                      "Learning",                              "Rollout (opt-in)"),
         new(FeatureKeys.Succession,                    "Succession & development",              "Rollout (opt-in)"),

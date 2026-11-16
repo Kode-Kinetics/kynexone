@@ -151,7 +151,7 @@ type Props = {
 };
 
 export function CustomBankTemplateEditor({ companyId, batchId, batchReference, paymentDate, canManage, canDecide, onChanged }: Props) {
-  const { locale } = useLocale();
+  const { locale, t: tr } = useLocale();
   const c = locale === 'ar' ? AR : EN;
   const { confirm, dialog } = useConfirm();
 
@@ -302,7 +302,7 @@ export function CustomBankTemplateEditor({ companyId, batchId, batchReference, p
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {(catalog?.starters ?? []).map((s) => (
               <Button key={s.id} size="sm" onClick={() => open(null, s.definition, s.id)}>
-                <Plus className="h-3.5 w-3.5" aria-hidden="true" />{c.newFromStarter}: {s.name}
+                <Plus className="h-3.5 w-3.5" aria-hidden="true" />{c.newFromStarter}: {tr(s.name)}
               </Button>
             ))}
             <Button size="sm" onClick={() => open(null)}><Plus className="h-3.5 w-3.5" aria-hidden="true" />{c.newBlank}</Button>

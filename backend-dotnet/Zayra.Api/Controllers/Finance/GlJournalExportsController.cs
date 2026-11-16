@@ -117,7 +117,8 @@ public class GlJournalExportsController : ControllerBase
         // Appended after ct so positional callers keep compiling; MVC binds by name.
         [FromQuery] bool includePreviouslyConfirmed = false, [FromQuery] Guid? replacesExportId = null,
         [FromQuery(Name = "options")] Dictionary<string, string>? options = null,
-        [FromQuery] bool acknowledgeUncostedRequired = false)
+        [FromQuery] bool acknowledgeUncostedRequired = false,
+        [FromQuery] bool acknowledgeOtherFormatLive = false)
     {
         if (!CanExport()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
@@ -172,6 +173,37 @@ public class GlJournalExportsController : ControllerBase
             var (build, refusal) = await _exports.BuildAsync(tid.Value, filter, format, ct, options);
             if (refusal is not null) return (StatusCode(refusal.Status, refusal.Payload), false);
 
+            // C-1: ONE LIVE FILE PER LEDGER ROW. The probe above sees only this exact scope; a file of ANOTHER scope (the run while
+            // the month is exported, a company while the group is) that is still waiting for the ERP's result may already hold
+            // some of these rows, and both files would be importable. The build found such files after step 2's ledger locks, so
+            // an overlapping create cannot commit in between: it queues on the same rows (JournalExportLiveOverlapPostgresTests).
+            // Not overridable, acknowledgeOtherFormatLive included: that covers another format of THIS scope only.
+            // Left to the rules below: the live files of this scope read in step 1, and a file of this exact scope, format and
+            // currency committed since (the live-scope index refuses that insert as a concurrent export, as before).
+            var sameScopeIds = scopeLive.Select(x => x.Id).ToHashSet();
+            var otherScopeLive = (build!.LiveOverlaps ?? Array.Empty<LiveExportOverlap>())
+                .Where(o => !sameScopeIds.Contains(o.Holder.ExportId) && o.Relation != JournalExportLiveOverlaps.SupersededByThisExport)
+                .Select(o => o.Holder).ToList();
+            if (otherScopeLive.Count > 0)
+            {
+                var (overlapMessage, overlapMessageAr) = JournalExportLiveOverlaps.Refusal(otherScopeLive);
+                return (Conflict(new
+                {
+                    error = JournalExportErrors.EntriesInLiveExport,
+                    code = JournalExportErrors.EntriesInLiveExport,
+                    message = overlapMessage,
+                    messageAr = overlapMessageAr,
+                    exportId = otherScopeLive[0].ExportId,
+                    fileName = otherScopeLive[0].FileName,
+                    rows = otherScopeLive[0].Rows,
+                    liveExports = otherScopeLive.Select(h => new
+                    {
+                        exportId = h.ExportId, fileName = h.FileName, format = h.FormatKey, rows = h.Rows,
+                        exportedAtUtc = h.ExportedAtUtc, status = GlJournalExportStatuses.Exported,
+                    }).ToList(),
+                }), false);
+            }
+
             var priorLive = scopeLive
                 .Where(x => x.FormatKey == build!.Formatter.Key && x.Currency == build.Document.Currency).ToList();
 
@@ -187,6 +219,25 @@ public class GlJournalExportsController : ControllerBase
                     message = "A group-level export of this company and month in this format is still waiting for your ERP's "
                             + "result (it also carries ledger rows that belong to no company). A group finance user must record "
                             + "that result or export again at group level first; until then the same rows would be in two files.",
+                }), false);
+
+            // C7: ONE live file per scope. A file in ANOTHER format over the same unconfirmed rows is a second thing someone could send, and
+            // only the confirmation step (after the ERP has booked both) used to notice. Refused until the operator records the ERP result of
+            // the file already waiting (confirm or reject it), or states they know (acknowledgeOtherFormatLive): the other file is then left
+            // exactly as it is, because it may already be at the ERP, and the acknowledgement is audited.
+            var otherFormatLive = scopeLive
+                .Where(x => !string.Equals(x.FormatKey, build!.Formatter.Key, StringComparison.Ordinal) && x.Currency == build.Document.Currency)
+                .ToList();
+            if (otherFormatLive.Count > 0 && !acknowledgeOtherFormatLive)
+                return (Conflict(new
+                {
+                    error = JournalExportErrors.OtherFormatLive,
+                    code = JournalExportErrors.OtherFormatLive,
+                    message = $"A {otherFormatLive[0].FormatKey} export of this period ({otherFormatLive[0].FileName}) is still waiting for your ERP's result and covers the same ledger rows. "
+                            + "Exporting them in another format as well would give you two files to send, and your ERP would book them twice. "
+                            + "Record whether your ERP posted or refused that file first (or reject it), then export again.",
+                    messageAr = "يوجد ملف تصدير آخر لهذه الفترة ما زال بانتظار نتيجة نظام ERP ويغطي البنود نفسها. تصديرها بصيغة أخرى يعني ملفين للإرسال وقد يرحّلهما النظام مرتين. سجّل أولًا ما إذا كان نظام ERP قد رحّل ذلك الملف أو رفضه (أو ارفضه)، ثم صدّر مجددًا.",
+                    liveExports = otherFormatLive.Select(x => new { exportId = x.Id, format = x.FormatKey, fileName = x.FileName, exportedAtUtc = x.ExportedAtUtc, status = x.Status }).ToList(),
                 }), false);
 
             // An export with some journals already decided is ERP evidence: superseding it would strand those outcomes and
@@ -205,6 +256,13 @@ public class GlJournalExportsController : ControllerBase
                 }), false);
 
             var export = _exports.Persist(tid.Value, filter, build!, this.GetUserId(), UserName(), priorLive);
+
+            if (otherFormatLive.Count > 0)
+                WriteAudit("finance.gl.journal_export.other_format_acknowledged", "GlJournalExport", export.Id.ToString(), companyId, new
+                {
+                    period, format = export.FormatKey,
+                    otherFormatLive = otherFormatLive.Select(x => new { x.Id, x.FormatKey, x.FileName }).ToList(),
+                });
 
             var stamp = await ErpPostingEvidence.StampAsync(
                 _db, tid.Value, build!.Document.Lines.Select(l => l.EntryId).Distinct().ToList(),
@@ -1039,6 +1097,28 @@ public class GlJournalExportsController : ControllerBase
             : BadRequest(new { error = "invalid_period", message = "period must be YYYY-MM." });
     }
 
+    /// <summary>The opening-balance rows a selection left out, with the sentence that explains it (null when there are none).</summary>
+    internal static object OpeningBalanceExclusion(JournalExportSelection selection)
+    {
+        var count = selection.OpeningBalanceExcludedCount;
+        var scale = JournalAmount.ScaleForAll(selection.Currencies);
+        var net = JournalAmount.Round(selection.OpeningBalanceExcludedNet, scale);
+        var debits = JournalAmount.Round(selection.OpeningBalanceExcludedDebits, scale);
+        var credits = JournalAmount.Round(selection.OpeningBalanceExcludedCredits, scale);
+        return new
+        {
+            count,
+            net,
+            debits,
+            credits,
+            message = count == 0 ? null
+                : $"{count} opening-balance ledger row(s) are not exported (net {net:N2}: {debits:N2} added to receivables, {credits:N2} reduced): " +
+                  "they carry balances brought in from your previous system, which your ERP already holds. Exporting them would book those balances twice.",
+            messageAr = count == 0 ? null
+                : $"لم يُصدَّر {count} من قيود الأرصدة الافتتاحية (الصافي {net:N2}: {debits:N2} إضافة إلى الذمم المدينة، {credits:N2} تخفيض): فهي تحمل أرصدة مُرحّلة من نظامك السابق يحتفظ بها نظامك المحاسبي بالفعل، وتصديرها يعني تسجيل هذه الأرصدة مرتين.",
+        };
+    }
+
     private object Manifest(JournalExportBuild build, GlJournalExport? export, bool sampleLines, ErpStampResult? stamp = null) => new
     {
         exportId = export?.Id,
@@ -1072,7 +1152,22 @@ public class GlJournalExportsController : ControllerBase
             total = JournalAmount.Round(build.Selection.PreviouslyConfirmedExcludedTotal, JournalAmount.ScaleForAll(build.Selection.Currencies)),
             exportIds = build.Selection.PreviouslyConfirmedExportIds,
         },
+        // Opening balances carried in from the previous system are never exported (the client's ERP already holds them):
+        // how many and how much this file leaves out, in both languages.
+        openingBalanceExcluded = OpeningBalanceExclusion(build.Selection),
         warnings = build.Warnings ?? Array.Empty<string>(),
+        // C-1: files still waiting for the ERP's result that already hold some of these rows, in both languages (the
+        // English sentence is also in warnings).
+        liveExportOverlaps = (build.LiveOverlaps ?? Array.Empty<LiveExportOverlap>()).Select(o => new
+        {
+            exportId = o.Holder.ExportId,
+            fileName = o.Holder.FileName,
+            format = o.Holder.FormatKey,
+            rows = o.Holder.Rows,
+            relation = o.Relation,
+            message = o.Message,
+            messageAr = o.MessageAr,
+        }).ToList(),
         tieOut = new
         {
             ok = build.TieOut.Ok,

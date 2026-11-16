@@ -124,6 +124,7 @@ export const READINESS_FLAG_LABELS: Record<string, string> = {
   'dup:strong': 'Possible duplicate (ID match)',
   'dup:possible': 'Possible duplicate (name+DOB)',
   ReadinessPolicy: 'No readiness policy applies to this employee',
+  SalaryPackageApproval: 'Salary package waiting for Finance approval — it must be approved by a different person before this employee can be activated',
   unknown: 'Some details need review',
 };
 

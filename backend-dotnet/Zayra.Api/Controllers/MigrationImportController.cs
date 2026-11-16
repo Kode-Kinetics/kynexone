@@ -9,6 +9,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Auth;
@@ -22,7 +23,11 @@ namespace Zayra.Api.Controllers;
 
 [ApiController]
 [Route("api/migrations")]
-[Authorize(Roles = "Admin,HR Manager")]
+// HR (Admin, HR Manager, and through employees.bulk_import HR Officer and HR Director) imports every section, except that the debt
+// rows posting an opening journal need Finance or an Admin (per row). Finance (the finance roles, through
+// finance.opening_balances.import) reaches only the package endpoints and, there, only the debt sections (ImportAccessRefusal);
+// the template and batch reads keep the employees.bulk_import gate the pipeline applies.
+[Authorize(Roles = "Admin,HR Manager,Finance,Finance Approver,Finance Controller")]
 public sealed partial class MigrationImportController : ControllerBase
 {
     /// <summary>
@@ -78,7 +83,7 @@ public sealed partial class MigrationImportController : ControllerBase
     }
 
     [HttpGet("template")]
-    public IActionResult Template() => Ok(new Dictionary<string, string>
+    public IActionResult Template() => !IsImporter ? Forbid() : Ok(new Dictionary<string, string>
     {
         ["companyCutover"] = "CompanyRegistrationNumber,CompanyLegalName,CutoverDate,SourceSystem,Status,Notes\n1010101010,,2026-09-01,SAP,Active,Wave 1 - KSA manufacturing\n",
         ["loans"] = "EmployeeCode,LoanNumber,LoanTypeCode,LoanTypeName,OriginalAmount,InstallmentAmount,TotalInstallments,InstallmentsPaid,OutstandingBalance,FirstUnpaidDueDate,DisbursementDate,Currency,SourceSystem,SourceRecordId\nEMP-001,LEG-LN-0001,PERSONAL,Personal Loan,24000,1000,24,7,17000,2026-09-25,2026-02-25,SAR,SAP,LN-001\n",
@@ -107,8 +112,10 @@ public sealed partial class MigrationImportController : ControllerBase
     });
 
     [HttpPost("preview")]
+    [HasPermission("employees.bulk_import", OpeningBalanceImportPermission)]
     public async Task<ActionResult<MigrationReconciliationDto>> Preview(MigrationPackageRequest request, CancellationToken ct)
     {
+        if (ImportAccessRefusal(request) is { } refused) return refused;
         var tenantId = RequireTenant();
         var validation = ValidatePackage(request);
         if (validation.Errors.Count > 0) return UnprocessableEntity(validation.Errors);
@@ -141,8 +148,11 @@ public sealed partial class MigrationImportController : ControllerBase
     }
 
     [HttpPost("commit")]
+    [HasPermission("employees.bulk_import", OpeningBalanceImportPermission)]
     public Task<ActionResult<MigrationReconciliationDto>> Commit(MigrationPackageRequest request, CancellationToken ct) =>
-        CommitCoreAsync(request, resumeBatchId: null, ct);
+        ImportAccessRefusal(request) is { } refused
+            ? Task.FromResult<ActionResult<MigrationReconciliationDto>>(refused)
+            : CommitCoreAsync(request, resumeBatchId: null, ct);
 
     internal const string AlreadyProcessingMessage = "This migration package is already being processed.";
 
@@ -314,8 +324,10 @@ public sealed partial class MigrationImportController : ControllerBase
     }
 
     [HttpPost("{batchId:guid}/resume")]
+    [HasPermission("employees.bulk_import", OpeningBalanceImportPermission)]
     public async Task<ActionResult<MigrationReconciliationDto>> Resume(Guid batchId, MigrationPackageRequest request, CancellationToken ct)
     {
+        if (ImportAccessRefusal(request) is { } refused) return refused;
         var batch = await _db.MigrationImportBatches.FirstOrDefaultAsync(x => x.TenantId == RequireTenant() && x.Id == batchId, ct);
         if (batch is null) return NotFound();
         if (!string.Equals(batch.PackageChecksum, PackageChecksum(request), StringComparison.OrdinalIgnoreCase))
@@ -328,6 +340,7 @@ public sealed partial class MigrationImportController : ControllerBase
     [HttpGet("{batchId:guid}")]
     public async Task<ActionResult<MigrationReconciliationDto>> Get(Guid batchId, CancellationToken ct)
     {
+        if (!IsImporter) return Forbid();
         var batch = await _db.MigrationImportBatches.FirstOrDefaultAsync(x => x.TenantId == RequireTenant() && x.Id == batchId, ct);
         return batch is null ? NotFound() : Ok(ToDto(batch, ReadCounts(batch.ReconciliationJson), ReadErrors(batch.ErrorJson)));
     }
@@ -407,8 +420,69 @@ public sealed partial class MigrationImportController : ControllerBase
     {
         if (!TryParseSection(section, csv, out var parsedRows, out var parseError))
             return new SectionResult { Received = 0, Skipped = 0, Errors = { parseError! } };
-        var result = new SectionResult { Received = parsedRows.Count, AmountTotal = SectionControlTotal(section, parsedRows) };
         if (dryRun) return (await ValidateSectionAsync(section, csv, tenantId, cutover, ct)).ToApplyResult();
+        if (section is "loans" or "advances" && _db.Database.IsRelational() && _db.Database.CurrentTransaction is null)
+            return await ApplyDebtSectionLockedAsync(section, parsedRows, tenantId, cutover, ct);
+        return await ApplyRowsAsync(section, parsedRows, tenantId, cutover, ct);
+    }
+
+    /// <summary>
+    /// Loans and advances carry balances other writers move under the finance.loan / finance.advance locks: payroll Process
+    /// collects an instalment, the settlement payment moves a leaver's leftover to 1420, the void gives an instalment back. A
+    /// restatement here read the row, overwrote OutstandingBalance / TotalRepaid / Status and saved without those locks, so a
+    /// payroll pass between the read and the save lost its instalment (or the restatement was lost). The section now runs in
+    /// one transaction that first takes the lock of every existing loan or advance its rows name — all at once, in the shared
+    /// order (FinanceDecisionSerializer.AcquireDebtLocksAsync, ascending key) — and holds them until its save commits, so each
+    /// row is read and written as the sole writer. A row for a new loan or advance needs no lock: nothing else can see it yet.
+    ///
+    /// <para>Retry-safe: a transient failure rolls the transaction back, everything this attempt started tracking is detached,
+    /// and the section is applied again from committed state.</para>
+    /// </summary>
+    private async Task<SectionResult> ApplyDebtSectionLockedAsync(
+        string section, List<Dictionary<string, string>> parsedRows, Guid tenantId, CutoverContext cutover, CancellationToken ct)
+    {
+        var trackedInAttempt = new List<object>();
+        void OnTracked(object? _, Microsoft.EntityFrameworkCore.ChangeTracking.EntityTrackedEventArgs e) => trackedInAttempt.Add(e.Entry.Entity);
+        _db.ChangeTracker.Tracked += OnTracked;
+        try
+        {
+            var strategy = _db.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
+            {
+                foreach (var entity in trackedInAttempt)
+                {
+                    var entry = _db.Entry(entity);
+                    if (entry.State != EntityState.Detached) entry.State = EntityState.Detached;
+                }
+                trackedInAttempt.Clear();
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
+                var numbers = parsedRows
+                    .Select(r => Val(r, section == "loans" ? "LoanNumber" : "AdvanceNumber").Trim())
+                    .Where(n => n.Length > 0).Distinct(StringComparer.Ordinal).ToList();
+                var loanIds = section == "loans"
+                    ? await _db.EmployeeLoans.AsNoTracking().Where(x => x.TenantId == tenantId && numbers.Contains(x.LoanNumber) && !x.IsDeleted)
+                        .Select(x => x.Id).ToListAsync(ct)
+                    : new List<Guid>();
+                var advanceIds = section == "advances"
+                    ? await _db.SalaryAdvances.AsNoTracking().Where(x => x.TenantId == tenantId && numbers.Contains(x.AdvanceNumber) && !x.IsDeleted)
+                        .Select(x => x.Id).ToListAsync(ct)
+                    : new List<Guid>();
+                await Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.AcquireDebtLocksAsync(_db, tenantId, loanIds, advanceIds, ct);
+                var result = await ApplyRowsAsync(section, parsedRows, tenantId, cutover, ct);
+                await tx.CommitAsync(ct);
+                return result;
+            });
+        }
+        finally
+        {
+            _db.ChangeTracker.Tracked -= OnTracked;
+        }
+    }
+
+    private async Task<SectionResult> ApplyRowsAsync(
+        string section, List<Dictionary<string, string>> parsedRows, Guid tenantId, CutoverContext cutover, CancellationToken ct)
+    {
+        var result = new SectionResult { Received = parsedRows.Count, AmountTotal = SectionControlTotal(section, parsedRows) };
         var seenKeys = new HashSet<string>(StringComparer.Ordinal);
         // Entities that START being tracked while a row runs, collected from the change tracker's Tracked event:
         // anything ADDED by a row that then fails is detached, so a half-built row is never inserted by the section's
@@ -446,10 +520,17 @@ public sealed partial class MigrationImportController : ControllerBase
             }
             catch (Exception ex)
             {
+                // A failed row leaves nothing behind: what it added is detached, and what it loaded and then changed or deleted is
+                // put back as it was read, so the section's save cannot write half a row (a restated balance without its journal).
                 foreach (var entity in trackedThisRow.ToList())
                 {
                     var entry = _db.Entry(entity);
                     if (entry.State == EntityState.Added) entry.State = EntityState.Detached;
+                    else if (entry.State is EntityState.Modified or EntityState.Deleted)
+                    {
+                        entry.CurrentValues.SetValues(entry.OriginalValues);
+                        entry.State = EntityState.Unchanged;
+                    }
                 }
                 result.Skipped++; result.Errors.Add($"{section} row {index}: {ex.Message}");
             }
@@ -474,14 +555,29 @@ public sealed partial class MigrationImportController : ControllerBase
                 RequireCutoverStatus(row);
                 return await _db.CompanyCutovers.AnyAsync(x => x.TenantId == tenantId && x.CompanyId == cutoverCompany.Id, ct)
                     ? "updated" : "created";
+            // The dry run refuses a loan or advance row for exactly the reasons the commit would (role, guards, the opening
+            // journal's closed-period and remap checks), so every refusal is visible before anything is committed.
             case "loans":
+            {
+                RequireOpeningJournalRole();
                 var loanPlan = await PlanLoanAsync(row, tenantId, cutover, ct);
-                return await _db.EmployeeLoans.AnyAsync(x => x.TenantId == tenantId && x.LoanNumber == loanPlan.LoanNumber && !x.IsDeleted, ct)
-                    ? "updated" : "created";
+                await RefuseOwnRecordAsync(loanPlan.Employee, loanPlan.LoanNumber, tenantId, ct);
+                var loan = await _db.EmployeeLoans.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.LoanNumber == loanPlan.LoanNumber && !x.IsDeleted, ct);
+                if (loan is not null && await GuardLoanRestatementAsync(loan, loanPlan, tenantId, ct)) return "skipped";
+                await PrepareLoanJournalAsync(loanPlan, loan, tenantId, ct);
+                await RequireLoanTypeAsync(loanPlan, tenantId, ct);
+                return loan is null ? "created" : "updated";
+            }
             case "advances":
+            {
+                RequireOpeningJournalRole();
                 var advancePlan = await PlanAdvanceAsync(row, tenantId, cutover, ct);
-                return await _db.SalaryAdvances.AnyAsync(x => x.TenantId == tenantId && x.AdvanceNumber == advancePlan.AdvanceNumber && !x.IsDeleted, ct)
-                    ? "updated" : "created";
+                await RefuseOwnRecordAsync(advancePlan.Employee, advancePlan.AdvanceNumber, tenantId, ct);
+                var advance = await _db.SalaryAdvances.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.AdvanceNumber == advancePlan.AdvanceNumber && !x.IsDeleted, ct);
+                if (advance is not null) await GuardAdvanceRestatementAsync(advance, advancePlan, tenantId, ct);
+                await PrepareAdvanceJournalAsync(advancePlan, advance, tenantId, ct);
+                return advance is null ? "created" : "updated";
+            }
             case "eosbOpeningProvision":
                 var eosbEmployee = await Employee(row, tenantId, ct);
                 RequireCutoverFor(eosbEmployee, cutover);
@@ -875,13 +971,23 @@ public sealed partial class MigrationImportController : ControllerBase
         return created ? "created" : "updated";
     }
 
+    /// <summary>
+    /// The currency of an imported money row: the column when the file states one, otherwise the currency of the company that employs the
+    /// person. Never a literal, and refused (the row is skipped with the reason) when neither is known.
+    /// </summary>
+    private async Task<string> ResolveRowCurrencyAsync(Dictionary<string, string> row, string column, Employee employee, CancellationToken ct)
+    {
+        var stated = Val(row, column).Trim();
+        return stated.Length > 0 ? stated.ToUpperInvariant() : await Zayra.Api.Infrastructure.Payroll.EmployeeCompanyCurrency.ResolveAsync(_db, employee, ct);
+    }
+
     private async Task<string> UpsertBenefitsEnrollmentAsync(Dictionary<string, string> row, Guid tenantId, SectionResult result, CancellationToken ct)
     {
         var employee = await Employee(row, tenantId, ct);
         var planCode = Require(row, "PlanCode").Trim();
         var effectiveDate = DateReq(row, "EffectiveDate");
         var endDate = DateOnlyNullable(row, "EndDate");
-        var currency = Val(row, "Currency", "AED");
+        var currency = await ResolveRowCurrencyAsync(row, "Currency", employee, ct);
         var employeeContribution = Dec(row, "EmployeeContribution");
         var employerContribution = Dec(row, "EmployerContribution");
         result.BenefitsEnrollmentHistory.Add(new BenefitEnrollmentHistoryLedgerRow(Require(row, "EmployeeCode"), planCode, Require(row, "PlanName"), Require(row, "CoverageTier"), effectiveDate, endDate, employeeContribution, employerContribution, currency, Val(row, "Status", "Active"), Val(row, "SourceSystem"), Val(row, "SourceRecordId")));
@@ -1065,7 +1171,7 @@ public sealed partial class MigrationImportController : ControllerBase
         item.StartDate = DateReq(row, "StartDate");
         item.EndDate = DateOnlyNullable(row, "EndDate");
         item.BasicSalary = Dec(row, "BasicSalary");
-        item.CurrencyCode = Val(row, "CurrencyCode", "AED");
+        item.CurrencyCode = await ResolveRowCurrencyAsync(row, "CurrencyCode", employee, ct);
         item.FileUrl = Val(row, "FileUrl");
         item.Version = Int(row, "Version", 1);
         item.CreatedByUserId = UserId();

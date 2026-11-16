@@ -6,7 +6,7 @@ export default defineConfig({
   testDir: '.',
   // Anchored on the file name: unanchored, `ess-workspace.spec.ts` also matched setup-consolidation/access-workspace.spec.ts
   // ("acc" + "ess-workspace"), pulling 45 Setup tests, which belong to playwright.setup-consolidation.config.ts, into this one.
-  testMatch: /(?:^|[\\/])(ess-workspace|attendance-selfie|loans-null-currency|login-workspace-skew)\.spec\.ts$/, workers: 1, retries: 0, reporter: 'list', timeout: 120_000,
+  testMatch: /(?:^|[\\/])(ess-workspace|ess-leave-attachment|attendance-selfie|loans-null-currency|login-workspace-skew)\.spec\.ts$/, workers: 1, retries: 0, reporter: 'list', timeout: 120_000,
   outputDir: '/tmp/kynex-ess-workspace-playwright-results',
   use: { baseURL: 'http://localhost:5184', trace: 'retain-on-failure', actionTimeout: 15_000 },
   webServer: { command: 'npx next dev -p 5184', url: 'http://localhost:5184/login', cwd: path.resolve(__dirname, '..'), reuseExistingServer: true, timeout: 180_000 },

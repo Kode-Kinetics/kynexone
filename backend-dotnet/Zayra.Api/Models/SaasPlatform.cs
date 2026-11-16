@@ -192,6 +192,12 @@ public static class FeatureKeys
     /// a request carrying a definition field is refused. See OptInFeatures.
     /// </summary>
     public const string BenefitDefinitionV1 = "benefit_definition_v1";
+    /// <summary>
+    /// The Saudi bank-instruction export (ANB Connect). DEFAULT ON for a Saudi company, so an absent row means ON — the reverse of
+    /// every opt-in. The platform team can switch it OFF for one tenant (an explicit row with IsEnabled = false); Tenant Admin never
+    /// can. It owns no route: SaudiBankExportActivation reads it. See PlatformDefaultOnFeatures.
+    /// </summary>
+    public const string SaudiBankExport = "saudi_bank_export";
 }
 
 // ── Tenant Subscription ───────────────────────────────────────────────────────

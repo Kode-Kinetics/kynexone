@@ -182,7 +182,7 @@ public class AdvanceRepaymentControlTests
 
         var over = await Advances(db, f, Guid.NewGuid(), Roles("HR Manager")).Create(Request(f, 5_000.01m), Ct);
         var bad = Assert.IsType<BadRequestObjectResult>(over);
-        Assert.Contains("50% of monthly salary", bad.Value as string);
+        Assert.Contains("50% of monthly salary", Msg(bad.Value));
         Assert.Empty(await db.SalaryAdvances.ToListAsync());
 
         var atCap = await Advances(db, f, Guid.NewGuid(), Roles("HR Manager")).Create(Request(f, 5_000m), Ct);
@@ -198,7 +198,7 @@ public class AdvanceRepaymentControlTests
         var result = await Advances(db, f, Guid.NewGuid(), Roles("HR Manager")).Create(Request(f, 100m), Ct);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Contains("salary structure", bad.Value as string);
+        Assert.Contains("salary structure", Msg(bad.Value));
     }
 
     [Fact]
@@ -269,7 +269,7 @@ public class AdvanceRepaymentControlTests
         var result = await Advances(db, f, Guid.NewGuid(), Roles("HR Manager")).Create(Request(f, 1_000m), Ct);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Contains("service month", bad.Value as string);
+        Assert.Contains("service month", Msg(bad.Value));
         Assert.Empty(await db.SalaryAdvances.ToListAsync());
     }
 
@@ -290,7 +290,7 @@ public class AdvanceRepaymentControlTests
         var result = await Advances(db, f, Guid.NewGuid(), Roles("HR Manager")).Create(Request(f, 1_000m), Ct);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Contains("wait", bad.Value as string);
+        Assert.Contains("wait", Msg(bad.Value));
     }
 
     // ── Approve ───────────────────────────────────────────────────────────────────────────────────
@@ -306,7 +306,7 @@ public class AdvanceRepaymentControlTests
             .Approve(advanceId, new AdvanceApproveRequest(2_500m, 2, null), Ct);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Contains("requested amount", bad.Value as string);
+        Assert.Contains("requested amount", Msg(bad.Value));
         await AssertStillPendingAsync(db, advanceId);
     }
 
@@ -338,7 +338,7 @@ public class AdvanceRepaymentControlTests
             .Approve(advanceId, new AdvanceApproveRequest(8_000m, 2, null), Ct);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Contains("50% of monthly salary", bad.Value as string);
+        Assert.Contains("50% of monthly salary", Msg(bad.Value));
         await AssertStillPendingAsync(db, advanceId);
 
         // The checker may lower it to the cap.
@@ -374,7 +374,7 @@ public class AdvanceRepaymentControlTests
             .Approve(advanceId, new AdvanceApproveRequest(2_000m, 2, null), Ct);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Contains("Maker-checker", bad.Value as string);
+        Assert.Contains("Maker-checker", Msg(bad.Value));
         await AssertStillPendingAsync(db, advanceId);
     }
 
@@ -389,7 +389,7 @@ public class AdvanceRepaymentControlTests
             .Approve(advanceId, new AdvanceApproveRequest(2_000m, 2, null), Ct);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Contains("Segregation of duties", bad.Value as string);
+        Assert.Contains("Segregation of duties", Msg(bad.Value));
         await AssertStillPendingAsync(db, advanceId);
     }
 
@@ -412,7 +412,7 @@ public class AdvanceRepaymentControlTests
             .Approve(advanceId, new AdvanceApproveRequest(2_000m, 2, null), Ct);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Contains("Segregation of duties", bad.Value as string);
+        Assert.Contains("Segregation of duties", Msg(bad.Value));
         await AssertStillPendingAsync(db, advanceId);
     }
 
@@ -445,8 +445,10 @@ public class AdvanceRepaymentControlTests
     }
 
     [Fact]
-    public async Task Approve_ByAnIndependentApprover_WithinPolicy_Disburses()
+    public async Task Approve_ByAnIndependentApprover_WithinPolicy_AgreesTheTerms_AndPaysNothing()
     {
+        // Approval no longer disburses: the advance waits for Finance to record the payout (AdvancePayoutLifecycleTests),
+        // which is where the balance is set and the disbursement journal is posted.
         await using var db = CreateDb();
         var f = await SeedAsync(db);
         var advanceId = await SeedPendingAdvanceAsync(db, f, requested: 3_000m);
@@ -456,10 +458,11 @@ public class AdvanceRepaymentControlTests
 
         Assert.IsType<OkObjectResult>(result);
         var adv = await db.SalaryAdvances.SingleAsync(x => x.Id == advanceId);
-        Assert.Equal("Active", adv.Status);
-        Assert.Equal(2_400m, adv.OutstandingBalance);
+        Assert.Equal("Approved", adv.Status);
+        Assert.Equal(2_400m, adv.ApprovedAmount);
+        Assert.Equal(0m, adv.OutstandingBalance);
         Assert.Equal(3, await db.AdvanceInstallments.CountAsync(x => x.AdvanceId == advanceId));
-        Assert.Single(await db.FinanceGlEntries.Where(x => x.SourceEntityId == advanceId && x.EventType == "Disbursement").ToListAsync());
+        Assert.Empty(await db.FinanceGlEntries.Where(x => x.SourceEntityId == advanceId).ToListAsync());
     }
 
     // ── Fixture ───────────────────────────────────────────────────────────────────────────────────
@@ -585,6 +588,10 @@ public class AdvanceRepaymentControlTests
             },
         };
     }
+
+    /// <summary>The English sentence of a coded refusal body ({ error, message, messageAr }).</summary>
+    private static string? Msg(object? body) =>
+        body is null ? null : System.Text.Json.JsonSerializer.SerializeToElement(body).GetProperty("message").GetString();
 
     private sealed class FixedScope(int[]? allowed) : IDataScopeService
     {

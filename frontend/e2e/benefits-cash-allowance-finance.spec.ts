@@ -186,6 +186,7 @@ for (const locale of ['en', 'ar'] as const) {
       await expect(panel.locator('#finance-correct-month-error')).toBeVisible();
       await expect(panel.getByLabel(say(locale, 'Change starts from'))).toHaveValue('2027-01-01');
       await panel.getByRole('button', { name: say(locale, 'Save the correction') }).click();
+      await expect.poll(() => calls.length, 'the retried correction is sent').toBe(2);
       expect(calls[1].body).toEqual({ effectiveFrom: '2027-01-01', reason: 'Posted to the wrong account', glDriverKey: 'EARN:PHONE' });
       // Draft runs calculated with the old setting are named, oldest first.
       const stale = page.getByTestId('stale-runs');

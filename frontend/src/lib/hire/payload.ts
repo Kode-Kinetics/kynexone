@@ -5,6 +5,9 @@ import { normalizeDigits } from './saudiId';
 import { normalizeIban } from './iban';
 import { decodeValue, requestLines } from '../salaryAllowances';
 import { createCostCentreFields } from '../employeeCostCentre';
+import type { GradeFill } from './gradePackage';
+import { effectiveNoticeDays } from './gosiNotice';
+import { nationalityClass } from './nationality';
 
 export interface AcknowledgedWarning { code: string; reason: string }
 /** The create request plus the additive fields of 40-ARCHITECTURE 3.2. */
@@ -21,12 +24,18 @@ export type HireCreateRequest = Omit<EmployeeCreateRequest, 'payrollProfile'> & 
   acknowledgedWarnings?: AcknowledgedWarning[];
   /** P3: the hire template the wizard applied; the server uses it only to raise the onboarding checklist. */
   hireTemplateId?: string;
+  /** Saudi nationals only (F02): when GOSI first registered the person. The server ignores it for anyone else. */
+  gosiFirstRegisteredOn?: string;
 };
 export interface PayloadContext {
   companyCountry: string;
   currency: string;
   /** Unused for the work email since OD7 (any domain is allowed); kept so existing callers still compile. */
   emailDomain?: string;
+  /** What the grade adds to each blank allowance (lib/hire/gradePackage): sent as the amount, so the saved pay is the total the person confirmed. */
+  gradeFill?: GradeFill;
+  /** The company's default notice period (days): a blank notice field is sent as this, so the saved record equals what the form showed. */
+  defaultNoticeDays?: number | null;
   /** Wave A: the cost centre is sent only with this (organization.costcenter.manage); without it nothing about it goes out. */
   costCentre?: { canManage: boolean; departmentCostCentreId: string; hadOverride?: boolean; /** The override the saved draft holds (null = none). */ overrideId?: string | null };
 }
@@ -64,8 +73,14 @@ export function newIdempotencyKey(): string {
 export function buildCreateRequest(form: HireForm, ctx: PayloadContext, extras: PayloadExtras = {}): HireCreateRequest {
   const mobile = blank(form.mobileNational) ? undefined : parseMobile(form.mobileNational, form.mobileCountry || ctx.companyCountry)?.e164;
   const num = (v: string) => { const n = parseAmount(v); return n && n > 0 ? n : undefined; };
-  const salary = { basicSalary: num(form.basic), housingAllowance: num(form.housing), transportAllowance: num(form.transport), otherAllowance: num(form.other) };
-  const hasAmounts = Object.values(salary).some(v => v !== undefined);
+  // An allowance the person typed as 0 is their answer ("none"): it goes out as 0, because the server fills only a BLANK from the grade. A blank
+  // one goes out as the amount the grade gives (shown and counted on screen), or not at all when the grade gives nothing.
+  const allowance = (v: string, given: number | undefined) => { const n = parseAmount(v); return n !== undefined && n >= 0 ? n : given; };
+  // The server fills only a salary that already has figures, so a fill with nothing typed is not sent either.
+  const typedAny = [form.basic, form.housing, form.transport, form.other].some(v => (parseAmount(v) ?? 0) > 0);
+  const fill = typedAny ? ctx.gradeFill ?? {} : {};
+  const salary = { basicSalary: num(form.basic), housingAllowance: allowance(form.housing, fill.housing), transportAllowance: allowance(form.transport, fill.transport), otherAllowance: allowance(form.other, fill.other) };
+  const hasAmounts = Object.values(salary).some(v => v !== undefined && v > 0);
   // Untouched (''): no `allowances` property at all, so the server fills the first package from the grade. Only an edit sends a list; [] removes them all.
   const allowanceRows = decodeValue(form.allowances);
   const hasSalary = hasAmounts || allowanceRows !== null;
@@ -101,6 +116,8 @@ export function buildCreateRequest(form: HireForm, ctx: PayloadContext, extras: 
     contractEndDate: isFixedTerm(form.contractType) ? opt(form.contractEndDate) : undefined,
     probationEndDate: form.probationWaived ? undefined : opt(form.probationEndDate),
     probationWaived: form.probationWaived ? true : undefined,
+    noticePeriodDays: effectiveNoticeDays(form.noticePeriodDays, ctx.defaultNoticeDays),
+    gosiFirstRegisteredOn: nationalityClass(form.nationalityCode) === 'saudi' ? opt(form.gosiFirstRegisteredOn) : undefined,
     workEmail: composeWorkEmail(form.workEmail),
     joiningDate: opt(form.startDate),
     workLocation: opt(form.workLocation),

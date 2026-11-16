@@ -158,7 +158,9 @@ public sealed class QiwaIntegrationService : IQiwaIntegrationService
         Guid tenantId, int? employeeId, int page, int pageSize,
         CancellationToken cancellationToken = default)
     {
-        var q = _db.QiwaSyncLogs.AsNoTracking().Where(l => l.TenantId == tenantId);
+        // Company scope follows the employee (the employee query carries the caller's company filter).
+        var q = _db.QiwaSyncLogs.AsNoTracking()
+            .Where(l => l.TenantId == tenantId && _db.Employees.Any(e => e.Id == l.EmployeeId && e.TenantId == tenantId));
         if (employeeId.HasValue) q = q.Where(l => l.EmployeeId == employeeId.Value);
         return q.OrderByDescending(l => l.CreatedAtUtc)
                 .Skip((page - 1) * pageSize)
@@ -216,13 +218,26 @@ public sealed class QiwaIntegrationService : IQiwaIntegrationService
             DateTime.UtcNow);
     }
 
+    /// <summary>The primary government ID Qiwa is told about, read the way the wage file reads it: the recorded ID number (with its type) when there is one,
+    /// else the Iqama, else the Border Number (a person with no Iqama yet). An expatriate whose identity is held as an Iqama has no ID number, and is not
+    /// "missing" one. Empty when no identity is recorded at all.</summary>
+    public static (string Type, string Number) PrimaryIdentity(Employee emp)
+    {
+        if (!string.IsNullOrWhiteSpace(emp.IdNumber))
+            return (Zayra.Api.Infrastructure.Employees.GovernmentIdTypes.Canonical(emp.IdType) ?? Zayra.Api.Infrastructure.Employees.GovernmentIdTypes.NationalId, emp.IdNumber);
+        if (!string.IsNullOrWhiteSpace(emp.IqamaNumber)) return (Zayra.Api.Infrastructure.Employees.GovernmentIdTypes.Iqama, emp.IqamaNumber);
+        if (!string.IsNullOrWhiteSpace(emp.BorderNumber)) return (Zayra.Api.Infrastructure.Employees.GovernmentIdTypes.BorderNumber, emp.BorderNumber);
+        return (string.Empty, string.Empty);
+    }
+
     /// <summary>Returns snake_case field names for all Qiwa-required fields that are empty on an employee.</summary>
     public static List<string> MissingQiwaFields(Employee emp)
     {
         var missing = new List<string>();
         if (string.IsNullOrWhiteSpace(emp.SaudiOrNonSaudi))    missing.Add("saudi_or_non_saudi");
-        if (string.IsNullOrWhiteSpace(emp.IdType))             missing.Add("id_type");
-        if (string.IsNullOrWhiteSpace(emp.IdNumber))           missing.Add("id_number");
+        var identity = PrimaryIdentity(emp);
+        if (string.IsNullOrWhiteSpace(identity.Type))          missing.Add("id_type");
+        if (string.IsNullOrWhiteSpace(identity.Number))        missing.Add("id_number");
         if (string.IsNullOrWhiteSpace(emp.Nationality))        missing.Add("nationality");
         if (string.IsNullOrWhiteSpace(emp.OccupationCode))     missing.Add("occupation_code");
         if (string.IsNullOrWhiteSpace(emp.EstablishmentId))    missing.Add("establishment_id");
@@ -401,7 +416,9 @@ public sealed class QiwaIntegrationService : IQiwaIntegrationService
 
     public async Task RetryDeadLetterAsync(Guid tenantId, Guid syncLogId, Guid triggeredBy, CancellationToken ct = default)
     {
-        var log = await _db.QiwaSyncLogs.FirstOrDefaultAsync(l => l.TenantId == tenantId && l.Id == syncLogId, ct)
+        // Company scope follows the employee, exactly as the sync-log list does (the employee query carries the caller's company filter).
+        var log = await _db.QiwaSyncLogs.FirstOrDefaultAsync(l => l.TenantId == tenantId && l.Id == syncLogId
+                && _db.Employees.Any(e => e.Id == l.EmployeeId && e.TenantId == tenantId), ct)
             ?? throw new InvalidOperationException($"Sync log {syncLogId} not found in this tenant.");
 
         log.Status           = QiwaSyncLogStatuses.Pending;

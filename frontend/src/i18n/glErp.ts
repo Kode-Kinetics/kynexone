@@ -2,6 +2,11 @@
 // (components/gl/GlPeriodsPanel.tsx), the chart's ERP account code, and statutory-rule approvals (StatutoryRulesPanel.tsx). Keys already translated elsewhere (Company, Open, Closed, Try again, …) are
 // reused, not redefined here.
 const ar: Record<string, string> = {
+  "A {format} export of this period ({file}) is still waiting for your ERP's result and covers the same ledger rows. Sending them in another format as well would give your ERP two files and could post them twice.":
+    'يوجد ملف تصدير بصيغة {format} لهذه الفترة ({file}) ما زال بانتظار نتيجة نظام تخطيط الموارد ويغطي القيود نفسها. إرسالها بصيغة أخرى أيضًا يعني ملفين لنظامكم وقد تُرحَّل القيود مرتين.',
+  'Record whether your ERP posted or refused that file first, or create the new file anyway.':
+    'سجّل أولًا ما إذا كان نظام تخطيط الموارد قد رحّل ذلك الملف أو رفضه، أو أنشئ الملف الجديد على أي حال.',
+  'Create anyway — the other file is still awaiting ERP confirmation': 'أنشئ على أي حال — الملف الآخر ما زال بانتظار تأكيد النظام',
   'Send journal to your ERP': 'إرسال القيد إلى نظام تخطيط الموارد',
   'Create the posting file for a month, import it into your ERP, then record the ERP document number here. Rows your ERP already posted are never sent twice.':
     'أنشئ ملف الترحيل للشهر، واستورده إلى نظام تخطيط الموارد، ثم سجّل رقم المستند هنا. لا تُرسل القيود التي رحّلها النظام مرتين أبدًا.',
@@ -26,12 +31,16 @@ const ar: Record<string, string> = {
   'Check only: nothing has been saved yet.': 'تحقق فقط: لم يُحفظ أي شيء بعد.',
   '{count} ledger rows already posted in your ERP are left out, so nothing is posted twice.':
     'تم استبعاد {count} من قيود الأستاذ المرحّلة مسبقًا في نظامك، حتى لا يُرحّل شيء مرتين.',
+  '{count} opening-balance ledger rows are not exported (net {net}: {debits} added to receivables, {credits} reduced): your ERP already holds those balances from your previous system.':
+    'لم يُصدَّر {count} من قيود الأرصدة الافتتاحية (الصافي {net}: {debits} إضافة إلى الذمم المدينة، {credits} تخفيض): نظامك المحاسبي يحتفظ بهذه الأرصدة بالفعل من نظامك السابق.',
   '{journals} journals, debits {debits}, credits {credits}': '{journals} قيود، المدين {debits}، الدائن {credits}',
   'Download file': 'تنزيل الملف',
   'Export history for this month': 'سجل التصدير لهذا الشهر',
   'Loading export history…': 'جارٍ تحميل سجل التصدير…',
   'No export files for this month yet.': 'لا توجد ملفات تصدير لهذا الشهر بعد.',
   'Exported by {name} on {date}': 'صدّره {name} في {date}',
+  '{count} line': '{count} سطر',
+  '{count} lines': '{count} أسطر',
   'Hide ERP result': 'إخفاء نتيجة النظام',
   'Record ERP result': 'تسجيل نتيجة النظام',
   'Company code': 'رمز الشركة',

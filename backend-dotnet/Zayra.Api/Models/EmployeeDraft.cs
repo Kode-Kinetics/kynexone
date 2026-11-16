@@ -60,6 +60,8 @@ public class EmployeeDraft : ITenantOwned
     public string VisaNumber { get; set; } = string.Empty;
     public DateOnly? VisaExpiryDate { get; set; }
     public string IqamaNumber { get; set; } = string.Empty;
+    /// <summary>The Saudi National ID (Hawiyya) of a Saudi hire — what Employee.IdNumber holds. Encrypted at rest like the other draft identity numbers.</summary>
+    public string IdNumber { get; set; } = string.Empty;
     /// <summary>KSA Border Number — carried from the draft onto the employee (see Employee.BorderNumber).</summary>
     public string BorderNumber { get; set; } = string.Empty;
     public string MuqeemNumber { get; set; } = string.Empty;

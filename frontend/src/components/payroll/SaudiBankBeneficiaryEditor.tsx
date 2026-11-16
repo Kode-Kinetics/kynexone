@@ -10,6 +10,7 @@ import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Loader2, RefreshCw, Send } from 'lucide-react';
 import { employeesApi } from '../../api/employees';
+import { employeeLabel } from '../../lib/employeeLabel';
 import { extractApiError } from '../../api/saudiBankExports';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -84,7 +85,7 @@ const riyadhToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Riy
 
 type Loaded = { id: number; label: string; parsed: Parsed };
 
-export function SaudiBankBeneficiaryEditor({ employeeIds, onChange }: { employeeIds: number[]; onChange?: () => void }) {
+export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChange }: { employeeIds: number[]; /** "CODE · Name" by employee id, from the batch's records. */ employeeLabels?: Record<number, string>; onChange?: () => void }) {
   const { locale } = useLocale();
   const c = locale === 'ar' ? AR : EN;
   const { hasPermission } = useAuth();
@@ -197,7 +198,7 @@ export function SaudiBankBeneficiaryEditor({ employeeIds, onChange }: { employee
               <label htmlFor={fid('emp')} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{c.employee}</label>
               <select id={fid('emp')} className="input w-full" value={selected ?? ''} onChange={(e) => onSelect(e.target.value)} disabled={busy}>
                 <option value="">{c.choose}</option>
-                {ids.map((id) => <option key={id} value={id}>#{id}{loaded?.id === id ? ` — ${loaded.label}` : ''}</option>)}
+                {ids.map((id) => <option key={id} value={id}>{loaded?.id === id ? loaded.label : employeeLabel(id, employeeLabels, (n) => `#${n}`)}</option>)}
               </select>
             </div>
             {selected != null && (

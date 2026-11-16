@@ -174,6 +174,8 @@ public sealed class OfferDraftHireMakersTests
             await DraftStatutoryIdentity.ApplyAsync(db, draftId, "SA");
         await using (var db = _fixture.CreateDb())
             await OfferWorkflowTestSupport.ConfirmCompensationAsync(db, draftId, acceptor);
+        // The hire's pay waits for a second approver with pay-approval rights who made nothing of the hire.
+        await PayApprover.SeedAsync(_fixture, tenantId);
         return new World(tenantId, draftId, sender, acceptor, checker);
     }
 

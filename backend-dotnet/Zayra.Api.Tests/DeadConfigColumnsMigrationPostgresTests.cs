@@ -82,8 +82,10 @@ public sealed class DeadConfigColumnsMigrationPostgresTests
 
         // The new model never names the 16 columns, so these inserts only work because of the defaults.
         db.TenantHrConfigs.Add(new TenantHrConfig { TenantId = Guid.NewGuid() });
-        db.AttendancePolicies.Add(new AttendancePolicy { TenantId = Guid.NewGuid(), Code = "NEW", Name = "New policy" });
         await db.SaveChangesAsync();
+        // The schema sits at THIS migration and later migrations add attendance_policies columns the current model maps,
+        // so the second row is inserted without naming any column that has a default: the same shape the model writes.
+        await Exec(container, await InsertRowSql(container, "attendance_policies", new() { ["tenant_id"] = "'10000000-0000-0000-0000-0000000000d4'", ["code"] = "'NEW'", ["name"] = "'New policy'" }));
 
         foreach (var (table, column, expected) in Expected)
             (await Scalar<string?>(container, $"SELECT column_default FROM information_schema.columns WHERE table_name = '{table}' AND column_name = '{column}'"))

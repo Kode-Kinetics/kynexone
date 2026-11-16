@@ -26,14 +26,14 @@ test.beforeEach(async ({ page }) => {
 });
 test.afterEach(async ({ page }) => { expect(errorsByPage.get(page), 'No application runtime errors').toEqual([]); });
 
-interface Boot { arabic?: boolean; permissions?: string[]; detail?: typeof DETAIL; decideStatus?: number; decideCode?: string; empty?: boolean; requiresOtherReviewerCount?: number;
+interface Boot { arabic?: boolean; permissions?: string[]; detail?: typeof DETAIL; decideStatus?: number; decideCode?: string; empty?: boolean; requiresOtherReviewerCount?: number; listHangs?: boolean;
   /** Overrides for GET /api/pay-approvals/setup (the dead-end card reads strandedCount, items and hasMore). */
   setup?: Record<string, unknown> }
 
 async function boot(page: Page, url: string, options: Boot = {}) {
   const decisions: Array<Record<string, unknown>> = [];
   // Flip `control.setupFails` to make GET /api/pay-approvals/setup answer 503, and `control.setupCalls` counts the asks.
-  const control = { setupFails: false, setupCalls: 0 };
+  const control = { setupFails: false, setupCalls: 0, listHangs: options.listHangs ?? false, listCalls: 0 };
   await page.addInitScript(({ arabic }) => {
     localStorage.setItem('zayra_access_token', 'fixture');
     localStorage.setItem('kynexone-locale-choice-v2', arabic ? 'ar' : 'en');
@@ -48,6 +48,7 @@ async function boot(page: Page, url: string, options: Boot = {}) {
       permissions: options.permissions ?? ['payroll.approve', 'payroll.read', 'dashboard.read'], accountType: 'Company', isGroupScope: false,
       companies: [{ id: 'c1', name: 'Workspace Fixture LLC', code: 'c1', countryCode: 'SA', isActive: true }],
     });
+    if (path === '/api/pay-approvals' && request.method() === 'GET' && (control.listCalls++, control.listHangs)) return new Promise<void>(() => { /* never answers */ });
     if (path === '/api/pay-approvals' && request.method() === 'GET') return reply({ items: options.empty ? [] : [ITEM, { ...ITEM, employeeId: 42, employeeCode: 'EMP-0042', name: 'Omar Al-Qahtani', status: 'rejected', ibanLast4: '1234' }], count: options.empty ? 0 : 2, hasMore: false, requiresOtherReviewerCount: options.requiresOtherReviewerCount ?? 0 });
     if (path === '/api/pay-approvals/41' && request.method() === 'GET') return reply(options.detail ?? DETAIL);
     if (path === '/api/pay-approvals/41/decision') {
@@ -139,6 +140,21 @@ test.describe('Pay approvals queue', () => {
     await page.getByRole('link', { name: 'Review pay package for Layla Al-Harbi' }).click();
     await expect(page).toHaveURL(/\/pay-approvals\/41$/);
   });
+  test('a queue request that never answers ends in a retryable error, not an endless Loading', async ({ page }) => {
+    await page.clock.install();
+    const { control } = await boot(page, '/pay-approvals', { listHangs: true });
+    await expect(page.getByText('Loading…')).toBeVisible({ timeout: 30_000 });
+    await expect.poll(() => control.listCalls, { timeout: 30_000 }).toBeGreaterThan(0);
+    await page.clock.fastForward(90_000);
+    await expect(page.getByText('Could not load the pay approvals.')).toBeVisible();
+    await expect(page.getByText('Loading…')).toHaveCount(0);
+    await shot(page, 'queue-timeout-en-1440');
+    control.listHangs = false;
+    await page.getByRole('button', { name: 'Reload' }).click();
+    await expect(page.getByTestId('pay-approvals-list')).toBeVisible();
+    await shot(page, 'queue-after-reload-en-1440');
+  });
+
   test('says so when nothing is waiting', async ({ page }) => {
     await boot(page, '/pay-approvals', { empty: true });
     await expect(page.getByTestId('pay-approvals-empty')).toBeVisible({ timeout: 30_000 });

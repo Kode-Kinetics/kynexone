@@ -7,12 +7,16 @@
  */
 
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import type { DashboardFull } from '../../api/dashboard';
 import { todayAttendance } from './dashboardModel';
 import { Gauge } from './charts/Visuals';
 import { useT } from '../../hooks/useT';
 import { useFormat } from '../../hooks/useFormat';
 import { EnumLabel } from '../EnumLabel';
+import { useAuth } from '../../contexts/AuthContext';
+import { nitaqatApi, type NitaqatStandingResponse } from '../../api/nitaqat';
+import { nitaqatTileBand } from '../../lib/nitaqatTile';
 
 const TILE = 'wg-card wg-press flex w-[84%] shrink-0 min-w-0 flex-col sm:w-auto gap-2 p-5 [.kx-dense_&]:gap-1.5 [.kx-dense_&]:p-4 outline-none hover:border-[color:var(--wg-line-strong)] focus-visible:ring-2 focus-visible:ring-sapphire';
 
@@ -37,6 +41,20 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
   const a = data.analytics;
   const days = (count: number) => t('{count} days', { count });
   const today = todayAttendance(data, hour);
+
+  // The Saudization tile names a band only when the Saudization screen would: its own live standing, with verified
+  // thresholds. The stored snapshot band alone read "Platinum" where the screen said no band is shown.
+  const { hasPermission } = useAuth();
+  const canSeeStanding = hasPermission('compliance.read') || hasPermission('qiwa.read');
+  const snapshotBand = a?.nationality?.nitaqatBand ?? null;
+  const [live, setLive] = useState<NitaqatStandingResponse | 'failed' | null>(null);
+  useEffect(() => {
+    if (!snapshotBand || !canSeeStanding) return;
+    let cancelled = false;
+    nitaqatApi.standing().then((r) => { if (!cancelled) setLive(r); }).catch(() => { if (!cancelled) setLive('failed'); });
+    return () => { cancelled = true; };
+  }, [snapshotBand, canSeeStanding]);
+  const tileBand = canSeeStanding ? nitaqatTileBand(snapshotBand, live) : ({ state: 'none' } as const);
 
   // 1 · Attendance today
   const att = (
@@ -159,7 +177,8 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
       <span className="flex items-baseline justify-between gap-2">
         <span className="text-sm font-semibold text-slate-900 dark:text-white">{t('Saudization')}</span>
         {!n.nitaqatBand && <span title={t('No Nitaqat snapshot has been calculated yet')} className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700 dark:bg-white/10 dark:text-slate-300">{t('Band not calculated')}</span>}
-        {n.nitaqatBand && <span title={t('Latest Nitaqat snapshot')} className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300"><EnumLabel enum="NitaqatBand" value={n.nitaqatBand} /></span>}
+        {tileBand.state === 'unverified' && <span title={t('No band is shown: the MHRSD thresholds for this activity are not loaded or not verified.')} className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700 dark:bg-white/10 dark:text-slate-300">{t('Band not verified')}</span>}
+        {tileBand.state === 'band' && <span title={t('Latest Nitaqat snapshot')} className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300"><EnumLabel enum="NitaqatBand" value={tileBand.band} /></span>}
       </span>
       <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">
         {n.saudizationPct != null ? f.percent(n.saudizationPct, 1) : t('Not set')}

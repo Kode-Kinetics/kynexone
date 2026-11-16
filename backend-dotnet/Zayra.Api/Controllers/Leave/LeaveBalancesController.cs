@@ -359,6 +359,26 @@ public class LeaveBalancesController : ControllerBase
         return Ok(items);
     }
 
+    [HttpPost("open-year")]
+    [HasPermission("leave.policy_manage")]
+    public async Task<IActionResult> OpenYear([FromBody] OpenYearRequest? req, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+
+        // Back-dating a year's accruals is a money path (leave converts to cash through encashment): only the current year is opened here.
+        var year = req?.Year ?? DateTime.UtcNow.Year;
+        if (year != DateTime.UtcNow.Year)
+            return BadRequest(new { error = "year_out_of_range", message = "Balances can only be created for the current year." });
+
+        var result = await _leaveService.OpenYearBalancesAsync(tenantId.Value, year, ct);
+        var performedBy = User.Identity?.Name ?? this.GetUserId()?.ToString() ?? "HR";
+        await _leaveService.LogAuditAsync(tenantId.Value, "LeaveBalance", year.ToString(), "YearOpened", string.Empty,
+            $"balances created: {result.BalancesCreated}; accrual entries: {result.AccrualEntries}; allocation entries: {result.AllocationEntries}",
+            "Created the year's leave balances from the leave policies", performedBy, ct);
+        return Ok(result);
+    }
+
     [HttpPost("accrue")]
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> TriggerAccrual(CancellationToken ct)
@@ -370,6 +390,8 @@ public class LeaveBalancesController : ControllerBase
         return Ok(new { message = "Monthly accrual completed." });
     }
 }
+
+public record OpenYearRequest(int? Year);
 
 public record BalanceAdjustmentRequest(
     int EmployeeId,

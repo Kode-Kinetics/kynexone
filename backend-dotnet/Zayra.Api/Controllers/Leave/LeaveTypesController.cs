@@ -20,11 +20,13 @@ public class LeaveTypesController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly ILeaveService _leaveService;
+    private readonly IDataScopeService? _scopeService;
 
-    public LeaveTypesController(ZayraDbContext db, ILeaveService leaveService)
+    public LeaveTypesController(ZayraDbContext db, ILeaveService leaveService, IDataScopeService? scopeService = null)
     {
         _db = db;
         _leaveService = leaveService;
+        _scopeService = scopeService;
     }
 
     /// <summary>
@@ -43,23 +45,33 @@ public class LeaveTypesController : ControllerBase
         var showAll = includeInactive == true && (User.IsInRole("Admin") || User.IsInRole("HR Manager"));
 
         IQueryable<LeaveType> query = _db.LeaveTypes.Where(t => t.TenantId == tenantId);
+        // The employee the list is for (a named employee, or the caller in self service): types meant for another gender are left out.
+        (string? Gender, Guid? CompanyId)? forWhom = null;
         if (employeeId is int forEmployee)
         {
+            // The list is filtered by this employee's gender, so asking for it reveals something about them: only a caller
+            // whose data scope reaches the employee may ask (the employee themself, their manager, HR). Out of scope answers
+            // exactly as an unknown employee does. No scope service (a hand-built controller) refuses.
+            if (_scopeService is null
+                || !(await _scopeService.ResolveAsync(User, tenantId.Value, ct)).CanAccessEmployee(forEmployee))
+                return NotFound();
             // Visible only when the caller can see the employee (the employee query filter applies).
             var employee = await _db.Employees.AsNoTracking()
                 .Where(e => e.TenantId == tenantId && e.Id == forEmployee && !e.IsDeleted)
-                .Select(e => new { e.CompanyId }).FirstOrDefaultAsync(ct);
+                .Select(e => new { e.CompanyId, e.Gender }).FirstOrDefaultAsync(ct);
             if (employee is null) return NotFound();
             query = LeaveCompanyScope.UsableBy(_db, tenantId.Value, employee.CompanyId);
+            forWhom = (employee.Gender, employee.CompanyId);
         }
         else if (string.IsNullOrWhiteSpace(companyId) && !IsLeaveAdministrator()
                  && await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId.Value, ct) is int self)
         {
             // Self service (web ESS and the mobile app call this with no filter): an employee sees the leave types of
             // their own company only, never a sister company's.
-            var ownCompany = await _db.Employees.AsNoTracking()
-                .Where(e => e.TenantId == tenantId && e.Id == self).Select(e => e.CompanyId).FirstOrDefaultAsync(ct);
-            query = LeaveCompanyScope.UsableBy(_db, tenantId.Value, ownCompany);
+            var own = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && e.Id == self).Select(e => new { e.CompanyId, e.Gender }).FirstOrDefaultAsync(ct);
+            query = LeaveCompanyScope.UsableBy(_db, tenantId.Value, own?.CompanyId);
+            if (own is not null) forWhom = (own.Gender, own.CompanyId);
         }
         else if (string.Equals(companyId, "unassigned", StringComparison.OrdinalIgnoreCase))
             query = query.Where(t => t.CompanyId == null);
@@ -76,6 +88,12 @@ public class LeaveTypesController : ControllerBase
             .OrderBy(t => t.SortOrder)
             .ThenBy(t => t.NameEn)
             .ToListAsync(ct);
+
+        if (forWhom is { } who)
+        {
+            var ineligible = await LeaveTypeEligibility.IneligibleTypeIdsAsync(_db, tenantId.Value, who.Gender, who.CompanyId, items, ct);
+            if (ineligible.Count > 0) items = items.Where(t => !ineligible.Contains(t.Id)).ToList();
+        }
 
         return Ok(items);
     }

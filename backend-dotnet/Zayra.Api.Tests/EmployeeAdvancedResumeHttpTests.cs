@@ -88,7 +88,8 @@ public class EmployeeAdvancedResumeHttpTests : IClassFixture<EmployeeDraftCreate
         payroll.GetProperty("payrollGroup").GetString().Should().Be("Monthly");
         payroll.GetProperty("salaryStructureReference").GetString().Should().Be("Reviewed");
         payroll.GetProperty("molId").GetString().Should().Be("MOL-42");
-        saved.GetProperty("wpsBankDetails").GetString().Should().Be("BankTransfer");
+        // The method lives on the payroll profile (above); WpsBankDetails holds the bank-file beneficiary details and is not overwritten.
+        saved.GetProperty("wpsBankDetails").GetString().Should().BeEmpty();
         saved.GetProperty("salary").GetDecimal().Should().Be(6750);
     }
 
@@ -226,12 +227,13 @@ public class EmployeeAdvancedResumeHttpTests : IClassFixture<EmployeeDraftCreate
         var baseline = await EmployeeChangeBaseline.CaptureAsync(db, employee, profile, keys, default);
         baseline.Should().NotBeNull();
         EmployeeChangeBaseline.Drifted(baseline!, await EmployeeChangeBaseline.CaptureAsync(db, employee, profile, keys, default)).Should().BeEmpty();
-        var previousMirror = employee.WpsBankDetails;
+        // WpsBankDetails holds the approved bank-file beneficiary details, not the payment method: editing it is not payment-method drift.
+        var previousDetails = employee.WpsBankDetails;
         employee.WpsBankDetails = "Changed outside the profile";
         await db.SaveChangesAsync();
         EmployeeChangeBaseline.Drifted(baseline!, await EmployeeChangeBaseline.CaptureAsync(db, employee, profile, keys, default))
-            .Should().BeEquivalentTo(["paymentMethod"]);
-        employee.WpsBankDetails = previousMirror;
+            .Should().BeEmpty();
+        employee.WpsBankDetails = previousDetails;
         (await db.EmployeeSalaryStructures.SingleAsync(s => s.EmployeeId == id && s.IsActive)).HousingAllowance = 1100;
         profile.PaymentMethod = "WPS";
         await db.SaveChangesAsync();

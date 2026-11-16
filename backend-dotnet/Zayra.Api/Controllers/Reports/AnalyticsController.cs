@@ -76,7 +76,7 @@ public class AnalyticsController : ControllerBase
         int? pendingLeave = null, onLeaveToday = null;
         if (Shows("leave", ["pendingLeave", "onLeaveToday"], DataDomains.Leave))
         {
-            pendingLeave = await _db.LeaveRequests.CountAsync(x => x.TenantId == tid && (x.Status == "Submitted" || x.Status == "Pending"), ct);
+            pendingLeave = await _db.LeaveRequests.CountAsync(x => x.TenantId == tid && Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.NewRequests.Contains(x.Status), ct);
             onLeaveToday = await _db.LeaveRequests.CountAsync(x => x.TenantId == tid && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(x.Status)
                 && x.StartDate <= today && x.EndDate >= today, ct);
         }

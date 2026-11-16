@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Zayra.Api.Infrastructure.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Audit;
@@ -170,7 +171,7 @@ public class OnboardingController : ControllerBase
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var tid = GetTenantId();
-        var q = _db.OnboardingTasks.Where(x => x.TenantId == tid);
+        var q = TasksInScope(tid);
 
         if (employeeId.HasValue) q = q.Where(x => x.EmployeeId == employeeId.Value);
         if (applicationId.HasValue) q = q.Where(x => x.ApplicationId == applicationId.Value);
@@ -325,7 +326,7 @@ public class OnboardingController : ControllerBase
     public async Task<IActionResult> UpdateTaskStatus(Guid id, [FromBody] UpdateTaskStatusRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
-        var task = await _db.OnboardingTasks.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
+        var task = await TasksInScope(tid).FirstOrDefaultAsync(x => x.Id == id, ct);
         if (task == null) return NotFound();
 
         var old = task.Status;
@@ -354,7 +355,7 @@ public class OnboardingController : ControllerBase
     public async Task<IActionResult> Summary([FromQuery] Guid? employeeId = null, [FromQuery] Guid? applicationId = null, CancellationToken ct = default)
     {
         var tid = GetTenantId();
-        var q = _db.OnboardingTasks.Where(x => x.TenantId == tid);
+        var q = TasksInScope(tid);
         if (employeeId.HasValue) q = q.Where(x => x.EmployeeId == employeeId.Value);
         if (applicationId.HasValue) q = q.Where(x => x.ApplicationId == applicationId.Value);
 
@@ -371,6 +372,19 @@ public class OnboardingController : ControllerBase
             mandatoryCompleted = tasks.Count(t => t.IsMandatory && t.Status == "Completed"),
             completionPct = tasks.Count > 0 ? (double)tasks.Count(t => t.Status == "Completed") / tasks.Count * 100 : 0,
         });
+    }
+
+    /// <summary>
+    /// Onboarding tasks the caller may see. A task belongs to the person it is for: the employee (or the application of a candidate not yet hired),
+    /// both read through the caller's company filter. A task with neither is a group-level record, shown only to a caller with group authority.
+    /// The request scope is used (not the token's base grant), so a group user who has selected one company sees that company only.
+    /// </summary>
+    private IQueryable<OnboardingTask> TasksInScope(Guid tid)
+    {
+        var q = _db.OnboardingTasks.Where(x => x.TenantId == tid);
+        if (this.GetEntityScope().IsGroupLevel) return q;
+        return q.Where(x => (x.EmployeeId != null && _db.Employees.Any(e => e.PublicId == x.EmployeeId && e.TenantId == tid))
+            || (x.ApplicationId != null && _db.JobApplications.Any(a => a.Id == x.ApplicationId && a.TenantId == tid)));
     }
 
     private async Task<int> NextTemplateOrderAsync(Guid tenantId, Guid checklistId, CancellationToken ct)

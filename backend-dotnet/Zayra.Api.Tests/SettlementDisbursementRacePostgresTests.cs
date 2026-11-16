@@ -77,6 +77,69 @@ public sealed class SettlementDisbursementRacePostgresTests
         await AssertExactlyOneOutcomeAsync(w, expectPaidOutside: false);
     }
 
+    /// <summary>
+    /// The run takes the encashed days off the leave-balance rows the settlement names. Those rows are read FOR UPDATE inside the
+    /// run's transaction, so the outside-payroll payment or an encashment approval writing the same rows waits instead of losing
+    /// an increment.
+    /// </summary>
+    [Fact]
+    public async Task Process_ReadsTheEncashedLeaveBalanceRowsForUpdate()
+    {
+        var w = await SeedAsync();
+        Guid balanceId;
+        await using (var db = _fx.CreateDb())
+        {
+            var settlement = await db.EmployeeFinalSettlements.SingleAsync(x => x.Id == w.SettlementId);
+            var row = new EmployeeLeaveBalance
+            {
+                TenantId = w.TenantId, EmployeeId = settlement.EmployeeId, EmployeeName = settlement.EmployeeName,
+                LeaveTypeId = Guid.NewGuid(), LeaveTypeName = "Annual leave", Year = 2026, Accrued = 10m,
+            };
+            db.EmployeeLeaveBalances.Add(row);
+            db.FinalSettlementLines.Add(new FinalSettlementLine
+            {
+                TenantId = w.TenantId, SettlementId = settlement.Id, ComponentCode = FinalSettlementComponents.LeaveEncashment,
+                ComponentName = "Leave encashment — Annual leave", LineType = FinalSettlementLineTypes.Earning,
+                Source = FinalSettlementComponents.SettlementSource, Amount = 0m, Quantity = 2m, SourceEntityId = row.Id, SortOrder = 1,
+            });
+            await db.SaveChangesAsync();
+            balanceId = row.Id;
+        }
+
+        var capture = new SqlCapture();
+        IActionResult result;
+        await using (var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(_fx.ConnectionString, o => o.EnableRetryOnFailure(5, TimeSpan.FromSeconds(5), null))
+            .AddInterceptors(RowLockingInterceptor.Instance, capture)
+            .Options))
+        {
+            result = await FinalSettlementMakerCheckerTests.Controller(db, w.TenantId, Guid.NewGuid(), "Payroll Operator")
+                .Process(w.RunId, CancellationToken.None);
+        }
+
+        result.Should().BeOfType<OkObjectResult>(System.Text.Json.JsonSerializer.Serialize((result as ObjectResult)?.Value));
+        var balanceReads = capture.Commands
+            .Where(c => c.Contains("FROM employee_leave_balances", StringComparison.Ordinal) && c.Contains("SELECT", StringComparison.Ordinal)
+                     && c.Contains("balanceIds", StringComparison.Ordinal))
+            .ToList();
+        balanceReads.Should().NotBeEmpty();
+        balanceReads.Should().OnlyContain(c => c.Contains("FOR UPDATE"));
+        await using var verify = _fx.CreateDb();
+        (await verify.EmployeeLeaveBalances.AsNoTracking().SingleAsync(x => x.Id == balanceId)).Encashed.Should().Be(2m);
+    }
+
+    /// <summary>Records every reader command's text, after <see cref="RowLockingInterceptor"/> has rewritten it.</summary>
+    private sealed class SqlCapture : DbCommandInterceptor
+    {
+        public System.Collections.Concurrent.ConcurrentQueue<string> Commands { get; } = new();
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            Commands.Enqueue(command.CommandText);
+            return ValueTask.FromResult(result);
+        }
+    }
+
     private async Task AssertExactlyOneOutcomeAsync(World w, bool expectPaidOutside)
     {
         await using var db = _fx.CreateDb();

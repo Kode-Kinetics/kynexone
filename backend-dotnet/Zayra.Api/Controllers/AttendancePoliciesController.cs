@@ -188,6 +188,8 @@ public class AttendancePoliciesController : ControllerBase
         if (req.StandardWorkMinutes is < 60 or > 960) return "The standard working day must be between 60 and 960 minutes.";
         if (req.BreakMinutes < 0 || req.BreakMinutes >= req.StandardWorkMinutes) return "The break must be at least 0 minutes and shorter than the working day.";
         if (req.HalfDayThresholdMinutes < 1 || req.HalfDayThresholdMinutes > req.StandardWorkMinutes) return "The half-day threshold must be above 0 and no more than the working day.";
+        if (!string.IsNullOrEmpty(req.DefaultShiftStart) && !TimeOnly.TryParseExact(req.DefaultShiftStart, "HH:mm", out _))
+            return "The time a day starts must look like 08:00.";
         if (req.BranchId is { } branch && !await _db.Branches.AnyAsync(x => x.TenantId == tenantId && x.Id == branch && !x.IsDeleted, ct)) return "That branch does not exist.";
         if (req.DepartmentId is { } dept && !await _db.Departments.AnyAsync(x => x.TenantId == tenantId && x.Id == dept && !x.IsDeleted, ct)) return "That department does not exist.";
         if (req.GradeId is { } grade && !await _db.Grades.AnyAsync(x => x.TenantId == tenantId && x.Id == grade && !x.IsDeleted, ct)) return "That grade does not exist.";
@@ -221,10 +223,13 @@ public class AttendancePoliciesController : ControllerBase
         policy.HalfDayThresholdMinutes = req.HalfDayThresholdMinutes;
         policy.StandardWorkMinutes = req.StandardWorkMinutes;
         policy.BreakMinutes = req.BreakMinutes;
+        if (req.DefaultShiftStart is not null)
+            policy.DefaultShiftStart = req.DefaultShiftStart.Length == 0 ? null : TimeOnly.ParseExact(req.DefaultShiftStart, "HH:mm");
     }
 
     private static AttendancePolicyDto Project(AttendancePolicy p) => new(p.Id, p.Code, p.Name, p.BranchId, p.DepartmentId, p.GradeId,
-        p.GraceMinutes, p.EarlyExitThresholdMinutes, p.HalfDayThresholdMinutes, p.StandardWorkMinutes, p.BreakMinutes, p.IsActive);
+        p.GraceMinutes, p.EarlyExitThresholdMinutes, p.HalfDayThresholdMinutes, p.StandardWorkMinutes, p.BreakMinutes, p.IsActive,
+        p.DefaultShiftStart?.ToString("HH:mm"));
 
     private static AttendancePolicyDto Snapshot(AttendancePolicy p) => Project(p);
 

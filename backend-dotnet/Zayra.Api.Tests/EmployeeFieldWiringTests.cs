@@ -143,6 +143,12 @@ public class EmployeeFieldWiringTests
     [InlineData("KW", "civilIdExpiryDate", "2027-03-01")]
     [InlineData("SA", "iqamaExpiryDate", "2027-03-01")]
     [InlineData("SA", "idNumber", "1012345678")]
+    // The Qiwa block references: the bank export checks EstablishmentId (establishment_mismatch), so a wrong value must be correctable.
+    [InlineData("SA", "establishmentId", "7001234567")]
+    [InlineData("SA", "occupationCode", "2421")]
+    [InlineData("SA", "workLocationId", "WL-9")]
+    [InlineData("SA", "contractReference", "CONTRACT-9")]
+    [InlineData("SA", "workPermitReference", "WP-9")]
     public async Task IdentityValues_RouteThroughApproval_AndPersistOnceApproved(string country, string editKey, string value)
     {
         await using var db = CreateDb();
@@ -189,6 +195,11 @@ public class EmployeeFieldWiringTests
         "iqamaExpiryDate" => e.IqamaExpiryDate?.ToString("yyyy-MM-dd") ?? "",
         "emiratesIdExpiryDate" => e.EmiratesIdExpiryDate?.ToString("yyyy-MM-dd") ?? "",
         "qidExpiryDate" => e.QidExpiryDate?.ToString("yyyy-MM-dd") ?? "",
+        "establishmentId" => e.EstablishmentId,
+        "occupationCode" => e.OccupationCode,
+        "workLocationId" => e.WorkLocationId,
+        "contractReference" => e.ContractReference,
+        "workPermitReference" => e.WorkPermitReference,
         _ => e.CivilIdExpiryDate?.ToString("yyyy-MM-dd") ?? "",
     };
 

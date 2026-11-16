@@ -74,8 +74,9 @@ async function bootNavigationFixture(page: Page, options: { locale?: 'en' | 'ar'
 }
 
 async function makeDirty(page: Page, value = 'Retain navigation draft') {
-  const input = page.getByPlaceholder('Task title', { exact: true });
-  if (!await input.isVisible()) await page.getByRole('button', { name: 'Checklist Templates', exact: true }).click();
+  // The checklist form is translated, so the Arabic fixture renders these two labels in Arabic.
+  const input = page.getByPlaceholder(/^(Task title|عنوان المهمة)$/);
+  if (!await input.isVisible()) await page.getByRole('button', { name: /^(Checklist Templates|قوالب قوائم المهام)$/ }).click();
   await input.fill(value);
   return input;
 }
@@ -493,6 +494,16 @@ test('workspace destination mapping renders one addressable record surface and o
   await expect(page.getByRole('heading', { name: 'Pay & Benefits' })).toBeVisible();
 });
 
+test('workspace renders exactly one main landmark and keeps the heading labelling', async ({ page }) => {
+  await bootEmployeeWorkspaceFixture(page);
+  await page.goto('/people/901?section=employment&panel=details');
+
+  await expect(page.locator('#employee-workspace-heading')).toBeVisible();
+  // The app shell owns the only <main>; the employee workspace must not nest another landmark.
+  await expect(page.locator('main, [role="main"]')).toHaveCount(1);
+  await expect(page.locator('.employee-workspace')).toHaveAttribute('aria-labelledby', 'employee-workspace-heading');
+});
+
 test('workspace overview distinguishes blockers from recommendations and presents the next action', async ({ page }) => {
   await bootEmployeeWorkspaceFixture(page);
   await page.goto('/people/901?section=overview');
@@ -705,7 +716,10 @@ test('Arabic workspace keeps RTL direction, logical navigation, and focus', asyn
   await page.addInitScript(() => localStorage.setItem('kynexone-locale-choice-v2', 'ar'));
   await page.goto('/people/901?section=employment');
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
-  const employment = page.getByRole('navigation', { name: /Employee record sections|أقسام/ }).getByRole('link', { name: /Employment|التوظيف/ });
+  // The record's Employment section must not read as the Recruitment menu item (both were "التوظيف").
+  const sections = page.getByRole('navigation', { name: /Employee record sections|أقسام/ });
+  await expect(sections.getByRole('link', { name: 'التوظيف', exact: true })).toHaveCount(0);
+  const employment = sections.getByRole('link', { name: 'بيانات الوظيفة', exact: true });
   await employment.focus();
   await expect(employment).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);

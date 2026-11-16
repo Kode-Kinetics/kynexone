@@ -585,8 +585,10 @@ public class AttendanceController : ControllerBase
     public async Task<IActionResult> GeofenceMockUnsupportedReport([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken ct)
     {
         var tenantId = RequireTenant();
-        var end = (to ?? DateOnly.FromDateTime(DateTime.UtcNow)).AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
-        var start = (from ?? DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-30))).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        // "Today" is the tenant's own day, the way attendance dates a punch: not the UTC date.
+        var tenantToday = TenantTimeZone.LocalDate(await AttendanceWorkDate.TenantTimeZoneAsync(_db, tenantId, ct), DateTime.UtcNow);
+        var end = (to ?? tenantToday).AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var start = (from ?? tenantToday.AddDays(-30)).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
         if (end <= start || end - start > TimeSpan.FromDays(370))
             return BadRequest(new { message = "Choose a date range of at most one year, with 'from' before 'to'." });
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);

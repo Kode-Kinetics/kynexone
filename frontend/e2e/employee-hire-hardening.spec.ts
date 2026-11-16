@@ -174,6 +174,26 @@ test.describe('CD26 duplicate panel and rehire copy', () => {
   });
 });
 
+test.describe('rehire after a settled exit', () => {
+  for (const locale of ['en', 'ar'] as const) {
+    test(`a start date on or before the settled last working day is shown on the start date (${locale})`, async ({ page }) => {
+      const l = L[locale];
+      const api = await bootHire(page, { locale, rehireBeforeSettlement: true, duplicate: { status: 'Terminated', matchType: 'strong' } });
+      await basics(page, l);
+      await page.getByLabel(l.name).blur();
+      const panel = page.locator('section[aria-label]').first();
+      await panel.getByRole('button', { name: locale === 'en' ? 'Rehire this person' : 'إعادة تعيين هذا الشخص' }).click();
+      await panel.getByRole('textbox').fill('Returning after the settled exit');
+      await page.getByRole('button', { name: locale === 'en' ? 'Confirm rehire' : 'تأكيد إعادة التعيين' }).click();
+      await expect.poll(() => api.rehires.length).toBe(1);
+      await expect(page.getByText(locale === 'en'
+        ? 'The start date must be after the last working day that was already settled.'
+        : 'يجب أن يكون تاريخ البدء بعد آخر يوم عمل تمت تسويته.').first()).toBeVisible();
+      await expect(page.getByText(locale === 'en' ? 'Check your connection' : 'تحقق من الاتصال')).toHaveCount(0);
+    });
+  }
+});
+
 test.describe('lead review: refresh resumes the same draft', () => {
   test('after the first save the URL carries ?draft=<id>; a reload hydrates that draft and posts no second create', async ({ page }) => {
     const detail = realDraft({ id: 901, designationId: 'desig-1', gradeId: 'grade-g5' });

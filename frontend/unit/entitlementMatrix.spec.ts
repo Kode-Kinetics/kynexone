@@ -1,10 +1,12 @@
 import { expect, test } from '@playwright/test';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { MatrixCell, MatrixComponent, MatrixGrade } from '../src/api/entitlements';
 import { LOCALE_DICTS } from '../src/i18n/translations';
 import {
   FLOOR_PROBLEM, applyFromGradeUpward, applySameForAll, blankDraft, cellKey, dependantKeys, draftFromCell, draftProblem, groupKeys,
   inputFromDraft, markRestNotOffered, monthStarts, percentFromRate, periodChoiceKeys, amountPeriodKeys, quantityPeriodKeys, plainQuantityPeriodKeys, summarise, tierKeys, type CellDraft,
-  guideProgress, restoreDrafts, savedFrom, draftStorageKey, gridToCsv, importGrid, parseCellText, splitTable,
+  guideProgress, restoreDrafts, savedFrom, defaultEffectiveFrom, draftStorageKey, gridToCsv, importGrid, parseCellText, splitTable,
 } from '../src/lib/entitlementMatrix';
 
 // Release A R1 — the pure rules behind Benefits by grade, with the Masar Holding demo values (plan §5).
@@ -235,4 +237,26 @@ test('a value the benefit does not allow is reported with its row and column, ne
   expect(parseCellText('B', MEDICAL).patch).toEqual({ state: 'offered', valueType: 'CoverageTier', coverageTier: 'B' });
   expect(parseCellText('3x First', TICKET).error).toBe('That class does not apply to this benefit.');
   expect(splitTable('"A, B",C\n"x ""y""",\n')).toEqual([['A, B', 'C'], ['x "y"', '']]);
+});
+
+// ── Demo R1 F1: Publish must never send a blank date ──────────────────────────────────────────
+test('F1: with no date chosen yet, a publish starts today', () => {
+  expect(defaultEffectiveFrom('', { asOf: '2026-11-12', today: '2026-11-12' })).toBe('2026-11-12');
+});
+
+test('F1: viewing the grid as of a later date publishes from that date', () => {
+  expect(defaultEffectiveFrom('', { asOf: '2027-01-01', today: '2026-11-12' })).toBe('2027-01-01');
+  expect(defaultEffectiveFrom('2026-11-12', { asOf: '2027-01-01', today: '2026-11-12' })).toBe('2027-01-01');
+});
+
+test('F1: a date already chosen is kept while it is not before the floor, and a stale one is lifted', () => {
+  expect(defaultEffectiveFrom('2026-12-01', { asOf: '2026-11-12', today: '2026-11-12' })).toBe('2026-12-01');
+  expect(defaultEffectiveFrom('2026-10-01', { asOf: '2026-11-12', today: '2026-11-12' })).toBe('2026-11-12');
+});
+
+test('F1: the matrix screen sets the default before it returns (the old early return skipped it)', () => {
+  const src = fs.readFileSync(path.resolve(process.cwd(), 'src', 'components', 'entitlements', 'EntitlementMatrix.tsx'), 'utf8');
+  const body = src.slice(src.indexOf('const apply = useCallback'), src.indexOf('const load = useCallback'));
+  expect(body.indexOf('setEffectiveFrom(')).toBeGreaterThan(-1);
+  expect(body.indexOf('setEffectiveFrom(')).toBeLessThan(body.indexOf('return kept.restored'));
 });

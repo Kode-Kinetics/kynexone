@@ -6,7 +6,7 @@ const MAP: Record<string, keyof HireForm> = {
   nationality: 'nationalityCode', nationalityCode: 'nationalityCode', mobileNumber: 'mobileNational', personalEmail: 'personalEmail',
   workEmail: 'workEmail', companyId: 'companyId', branchId: 'branchId', departmentId: 'departmentId', designationId: 'designationId',
   gradeId: 'gradeId', reportingManagerEmployeeId: 'managerId', joiningDate: 'startDate', contractEndDate: 'contractEndDate',
-  probationEndDate: 'probationEndDate', contractType: 'contractType', employmentType: 'employmentType', workLocation: 'workLocation', employeeCode: 'employeeCode',
+  probationEndDate: 'probationEndDate', noticePeriodDays: 'noticePeriodDays', gosiFirstRegisteredOn: 'gosiFirstRegisteredOn', contractType: 'contractType', employmentType: 'employmentType', workLocation: 'workLocation', employeeCode: 'employeeCode',
   idNumber: 'idNumber', costCenterId: 'costCenterId', costCenterReason: 'costCenterReason', 'payrollProfile.iban': 'iban', 'payrollProfile.molId': 'molId',
   'salaryBreakdown.basicSalary': 'basic', 'salaryBreakdown.housingAllowance': 'housing',
   'salaryBreakdown.transportAllowance': 'transport', 'salaryBreakdown.otherAllowance': 'other',

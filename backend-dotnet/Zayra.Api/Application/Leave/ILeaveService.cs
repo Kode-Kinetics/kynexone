@@ -2,11 +2,34 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Application.Leave;
 
+/// <summary>What one "open the year" run changed.</summary>
+public sealed record LeaveYearOpenResult(int Year, int BalancesCreated, int AccrualEntries, int AllocationEntries);
+
+/// <summary>What one year rollover moved: the closed balance rows and the days carried into the next year.</summary>
+public sealed record LeaveYearRolloverResult(int FromYear, int RowsClosed, decimal DaysCarried);
+
+/// <summary>What one scheduled monthly run posted for a tenant.</summary>
+public sealed record LeaveScheduledAccrualResult(int AccrualYear, int AccrualEntries, int AllocationEntries, LeaveYearRolloverResult Rollover);
+
 public interface ILeaveService
 {
     // Balance engine
     Task<EmployeeLeaveBalance> GetOrCreateBalanceAsync(Guid tenantId, int employeeId, Guid leaveTypeId, int year, CancellationToken ct = default);
     Task AccrueMonthlyAsync(Guid tenantId, CancellationToken ct = default);
+    /// <summary>
+    /// Gets a leave year going for the tenant (within the caller's company scope) from the configured leave policies:
+    /// a monthly policy is accrued for every month of the year so far, a front-loaded ("Yearly") policy grants its
+    /// whole entitlement. Idempotent: every grant is guarded by its own ledger entry, and a balance that already
+    /// holds a figure (imported or entered by hand) is left alone.
+    /// </summary>
+    Task<LeaveYearOpenResult> OpenYearBalancesAsync(Guid tenantId, int year, CancellationToken ct = default);
+    /// <summary>
+    /// The monthly job for one tenant on its own calendar day: accrues the months that have ended, front-loads yearly policies, and rolls last
+    /// year's unused annual leave into this year, closing the old row. Idempotent.
+    /// </summary>
+    Task<LeaveScheduledAccrualResult> RunScheduledAccrualAsync(Guid tenantId, DateOnly tenantToday, CancellationToken ct = default);
+    /// <summary>Carries the unused annual-leave days of <paramref name="fromYear"/> into the next year and closes the old rows. Idempotent.</summary>
+    Task<LeaveYearRolloverResult> RolloverYearAsync(Guid tenantId, int fromYear, CancellationToken ct = default);
     Task<decimal> CalculateWorkingDaysAsync(Guid tenantId, DateOnly start, DateOnly end, Guid? policyId, CancellationToken ct = default);
     /// <summary>
     /// As above, but with the employee's employing company so the tenant's configured rest days are
@@ -24,6 +47,13 @@ public interface ILeaveService
     Task<LeaveRequest> ApproveRequestAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string? notes, CancellationToken ct = default);
     Task<LeaveRequest> RejectRequestAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string reason, CancellationToken ct = default);
     Task<LeaveRequest> CancelRequestAsync(Guid tenantId, Guid requestId, string cancelledByName, string reason, CancellationToken ct = default);
+    /// <summary>
+    /// Withdraws an UNAPPROVED request (Draft, Submitted, PendingManagerApproval, PendingHRApproval) on the employee's behalf
+    /// or HR's: under the employee's leave lock, releases the reservations recorded at submission, closes the pending approval
+    /// rows and the Approval Center projection, and writes the audit row, in one transaction. A request that was decided
+    /// since the caller read it is refused with <see cref="LeaveDecisionConflictException"/>.
+    /// </summary>
+    Task<LeaveRequest> WithdrawRequestAsync(Guid tenantId, Guid requestId, string withdrawnByName, string reason, CancellationToken ct = default);
     /// <summary>Approves a pending cancellation of an approved leave: cancels the leave and records the decision in one transaction.</summary>
     Task<LeaveRequest> ApproveCancellationAsync(Guid tenantId, Guid requestId, string reviewerName, string notes, CancellationToken ct = default);
     /// <summary>Refuses a pending cancellation of an approved leave: the leave stays Approved, the refusal is recorded.</summary>

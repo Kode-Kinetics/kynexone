@@ -498,9 +498,12 @@ public class CustomBankTemplateServiceTests
     }
 
     [Fact]
-    public async Task Controller_TemplateRoutes_AreOffUnlessTheCompanyIsActivated()
+    public async Task Controller_TemplateRoutes_AreOffWhenThePlatformSwitchesTheTenantOff()
     {
         var w = await ArrangeAsync();
+        // A Saudi company is on by default; the platform's per-tenant switch is what closes it.
+        w.Db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = w.Tenant, FeatureKey = FeatureKeys.SaudiBankExport, IsEnabled = false });
+        await w.Db.SaveChangesAsync();
         var claims = new List<Claim> { new("tenant_id", w.Tenant.ToString()), new(ClaimTypes.NameIdentifier, Maker.ToString()), new("permission", "payroll.export"), new("is_group_scope", "true") };
         var ctrl = new SaudiBankExportsController(w.Db, null, configuration: null)
         { ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")) } } };

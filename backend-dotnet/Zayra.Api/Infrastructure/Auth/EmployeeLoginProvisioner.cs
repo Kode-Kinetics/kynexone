@@ -164,8 +164,8 @@ public sealed class EmployeeLoginProvisioner
             _db.Users.Add(user);
             _db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = employeeRole!.Id });
             // The access the employee's designation is meant to carry, besides the baseline: given with the login and marked so a later
-            // designation change can take it away again. Empty while designation-driven access is off.
-            var mapped = (await designationAccess.MappedRolesForNewLoginAsync(tenantId, employee, ct)).Where(r => r.Id != employeeRole.Id).ToList();
+            // designation change can take it away again. Empty while designation-driven access is off. Held to the actor's own access.
+            var mapped = (await designationAccess.MappedRolesForNewLoginAsync(tenantId, employee, user.Id, actor, ct)).Where(r => r.Id != employeeRole.Id).ToList();
             foreach (var role in mapped)
                 _db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id, GrantedByDesignationId = employee.DesignationId });
             if (employee.CompanyId is Guid companyId)

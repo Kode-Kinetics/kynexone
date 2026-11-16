@@ -18,6 +18,10 @@ const companySa = {
 interface Options {
   locale?: 'en' | 'ar';
   provisioningOn?: boolean;
+  /** Annual leave provisioning starts switched on. */
+  leaveOn?: boolean;
+  /** The leave provision lists a rehire whose only measurement is of the earlier, settled service. */
+  leaveRehire?: boolean;
   provisionDown?: boolean;
   legacyEmpty?: boolean;
   /** POST legacy reclass answers 422 gl_period_closed. */
@@ -36,7 +40,7 @@ const adjustment = (over: Record<string, unknown>) => ({
 async function boot(page: Page, options: Options = {}) {
   const writes: Recorded[] = [];
   const errors: string[] = [];
-  const state = { on: !!options.provisioningOn };
+  const state = { on: !!options.provisioningOn, leaveOn: !!options.leaveOn };
   page.on('pageerror', (e) => errors.push(e.message));
   await page.addInitScript(({ locale }) => {
     localStorage.setItem('zayra_access_token', 'gl-eosb-fixture');
@@ -93,20 +97,44 @@ async function boot(page: Page, options: Options = {}) {
         ],
       });
     }
+    // ── Annual leave provision ──
+    if (p === '/api/finance/gl/leave/provision') {
+      if (options.provisionDown) return reply({ code: 'internal_error', message: 'The leave provision service is unavailable.', traceId: 't-2' }, 500);
+      return reply({
+        companyId: 'co-sa', provisionAccount: '2330 - Accrued Annual Leave Provision', expenseAccount: '5115 - Annual Leave Provision Expense',
+        basis: { rule: 'BasicHousing', label: '(basic+housing)/30' },
+        provisioning: {
+          enabled: state.leaveOn, value: state.leaveOn ? 'BalanceMonthly' : 'Off', effectiveFrom: state.leaveOn ? '2026-06-01' : null,
+          rateKey: 'payparameter.leave_provisioning', currentRateId: state.leaveOn ? 'rate-leave' : null,
+          latestValue: state.leaveOn ? 'BalanceMonthly' : null, latestEffectiveFrom: state.leaveOn ? '2026-06-01' : null,
+          inheritedFromTenant: false,
+        },
+        glBalance: 7762.5, employeeObligation: 7762.5, employeeProvisionCarried: 7762.5, totalDays: 33.5,
+        employees: state.leaveOn ? [
+          { employeeId: 1, employeeCode: 'E001', employeeName: 'Sara Al-Qahtani', lastMeasuredPeriod: '2026-07', days: 9.25, dailyRate: 300,
+            obligation: 2775, lastMovement: -375, provisionCarried: 2775 },
+          { employeeId: 3, employeeCode: 'E003', employeeName: 'Khalid Al-Otaibi', lastMeasuredPeriod: '2026-07', days: 22.75, dailyRate: 200,
+            obligation: 4550, lastMovement: 350, provisionCarried: 4550 },
+          ...(options.leaveRehire ? [{ employeeId: 4, employeeCode: 'E004', employeeName: 'Nora Al-Harbi', lastMeasuredPeriod: '2026-07',
+            notYetMeasured: true, days: 0, dailyRate: 0, obligation: 0, lastMovement: 0, provisionCarried: 0 }] : []),
+        ] : [],
+        history: [],
+      });
+    }
     if (p === '/api/finance/gl/eosb/true-up' && method === 'POST') return reply(adjustment({ id: 'adj-new', requestedByMe: true, canApprove: false }));
     if (p === '/api/finance/gl/reclassifications/legacy-absence' && method === 'GET') {
       return reply({
         companyId: 'co-sa',
         accounts: options.legacyEmpty ? [] : [
           { account: '2104 - Attendance Adjustment Payable', code: '2104', debits: 0, credits: 1200, balance: 1200,
-            suggestedTarget: '5008 - Attendance & Late Deductions (contra)', pendingRequestId: null },
+            suggestedTarget: '5008 - Absence, Late & Early Deductions (contra)', pendingRequestId: null },
           { account: '2105 - Leave Deduction Payable', code: '2105', debits: 0, credits: 300, balance: 300,
-            suggestedTarget: '5009 - Unpaid Leave & LOP Deductions (contra)', pendingRequestId: 'adj-leave' },
+            suggestedTarget: '5009 - Unpaid Leave Deductions (contra)', pendingRequestId: 'adj-leave' },
         ],
         unattributed: options.legacyEmpty ? [] : [{ account: '2104 - Attendance Adjustment Payable', code: '2104', balance: 50 }],
         requests: options.legacyEmpty ? [] : [adjustment({
           id: 'adj-leave', kind: 'LegacyAbsenceReclass', amount: 300, sourceAccount: '2105 - Leave Deduction Payable',
-          targetAccount: '5009 - Unpaid Leave & LOP Deductions (contra)', accountingDate: '2026-10-10', reportReference: null,
+          targetAccount: '5009 - Unpaid Leave Deductions (contra)', accountingDate: '2026-10-10', reportReference: null,
           reason: 'Not owed to anyone', requestedByName: 'Omar Maker', requestedByMe: true, canApprove: false,
         })],
       });
@@ -119,7 +147,12 @@ async function boot(page: Page, options: Options = {}) {
     }
     if (p.startsWith('/api/finance/gl/adjustments/')) return reply({ ok: true });
     if (p.startsWith('/api/finance/rates/company') && method !== 'GET') {
-      state.on = (body as { rateValue?: string })?.rateValue === 'StatutoryMonthly';
+      const rate = body as { rateKey?: string; rateValue?: string };
+      if (rate?.rateKey === 'payparameter.leave_provisioning') {
+        state.leaveOn = rate.rateValue === 'BalanceMonthly';
+        return reply({ id: 'rate-leave', ...(body as object) });
+      }
+      state.on = rate?.rateValue === 'StatutoryMonthly';
       return reply({ id: 'rate-eosb', ...(body as object) });
     }
 
@@ -147,6 +180,7 @@ async function shot(page: Page, name: string) {
 }
 
 const provision = (page: Page) => page.getByRole('region', { name: 'End-of-service provision', exact: true });
+const leaveProvision = (page: Page) => page.getByRole('region', { name: 'Annual leave provision', exact: true });
 const legacy = (page: Page) => page.getByRole('region', { name: 'Move balances booked under the old absence-deduction accounts', exact: true });
 
 test('figures carry their definitions, drill down to employees, and Approve shows only where the server allows it', async ({ page }) => {
@@ -226,7 +260,7 @@ test('old 2104/2105 balances: a move is requested in plain words, and a closed p
   const s = await boot(page, { closedPeriod: true });
   const l = legacy(page);
   await expect(l.getByTestId('legacy-2104')).toContainText('still recorded as owed');
-  await expect(l.getByTestId('legacy-2104')).toContainText('Suggested destination: 5008 - Attendance & Late Deductions (contra)');
+  await expect(l.getByTestId('legacy-2104')).toContainText('Suggested destination: 5008 - Absence, Late & Early Deductions (contra)');
   await expect(l.getByTestId('legacy-2105')).toContainText('A move is waiting for approval');
   await expect(l.getByTestId('legacy-2105').getByRole('button')).toHaveCount(0);
   await expect(l.getByTestId('legacy-unattributed')).toContainText('without a company');
@@ -252,15 +286,86 @@ test('a failed load shows the reason and Try again; empty legacy accounts say th
   await expect(legacy(page).getByTestId('legacy-empty')).toContainText('Nothing to move');
 });
 
+for (const locale of ['en', 'ar'] as const) {
+  test(`annual leave provision (${locale}): a rehire before the first new lock reads as not yet measured, not the settled period`, async ({ page }) => {
+    const s = await boot(page, { leaveOn: true, leaveRehire: true, locale });
+    // The section's accessible name is translated, so this reaches its parts by test id in both languages.
+    await page.locator('button[aria-controls="leaveprov-employees"]').click();
+    const row = page.getByTestId('leaveprov-employees').getByRole('row').filter({ hasText: 'E004' });
+    await expect(row).toContainText(locale === 'en' ? 'Not yet measured' : 'لم يُقَس بعد');
+    await expect(row).not.toContainText('2026-07');
+    await shot(page, `leaveprov-rehire-${locale}`);
+    expect(s.writes).toEqual([]);
+    expect(s.errors).toEqual([]);
+  });
+}
+
+test('annual leave provision: figures carry their definitions, the basis is stated, and the employees behind them can be shown', async ({ page }) => {
+  const s = await boot(page, { leaveOn: true });
+  const l = leaveProvision(page);
+  await expect(l.getByText('Annual leave provisioning is on for Masar Trading KSA since', { exact: false })).toBeVisible();
+  await expect(l).toContainText('expense 5115 - Annual Leave Provision Expense, provision 2330 - Accrued Annual Leave Provision');
+  await expect(l.getByTestId('leaveprov-switch')).toContainText('(basic+housing)/30');
+  await expect(l.getByTestId('leaveprov-catchup-note')).toContainText('opening catch-up');
+  const figures = l.getByTestId('leaveprov-figures');
+  await expect(figures).toContainText('Provision in the books');
+  await expect(figures).toContainText('7,762.50');
+  await expect(figures).toContainText('Credits minus debits on 2330 - Accrued Annual Leave Provision for this company.');
+  await expect(figures).toContainText('Unused leave days');
+  await expect(figures).toContainText('33.5');
+
+  await l.getByRole('button', { name: 'Show the 2 employees behind these figures', exact: true }).click();
+  const employees = l.getByTestId('leaveprov-employees');
+  await expect(employees).toContainText('E001');
+  await expect(employees).toContainText('Sara Al-Qahtani');
+  await expect(employees).toContainText('9.25');
+  await expect(employees).toContainText('2,775.00');
+  await expect(employees).toContainText('Khalid Al-Otaibi');
+  await shot(page, 'leaveprov-on');
+  expect(s.writes).toEqual([]);
+  expect(s.errors).toEqual([]);
+});
+
+test('annual leave provision: switching on writes the leave rate from the first of the chosen month, independently of the end-of-service switch', async ({ page }) => {
+  const s = await boot(page);
+  const l = leaveProvision(page);
+  await expect(l.getByText('Annual leave provisioning is off for Masar Trading KSA.', { exact: false })).toBeVisible();
+  await expect(l.getByTestId('leaveprov-no-employees')).toContainText('Nobody has been measured yet.');
+  await l.getByTestId('leaveprov-switch-month').fill('2026-12');
+  await l.getByRole('button', { name: 'Start annual leave provisioning', exact: true }).click();
+  await expect(l.getByTestId('leaveprov-notice')).toContainText('Annual leave provisioning will start from 2026-12.');
+  const write = s.writes.find((w) => w.path === '/api/finance/rates/company');
+  expect(write?.method).toBe('POST');
+  expect(write?.search).toContain('companyId=co-sa');
+  expect(write?.body).toEqual({ rateKey: 'payparameter.leave_provisioning', rateValue: 'BalanceMonthly', effectiveFrom: '2026-12-01' });
+  await expect(l.getByRole('button', { name: 'Stop annual leave provisioning', exact: true })).toBeVisible();
+  // The end-of-service switch is untouched.
+  await expect(provision(page).getByRole('button', { name: 'Start monthly provisioning', exact: true })).toBeVisible();
+});
+
+test('annual leave provision: a failed load shows the reason and Try again', async ({ page }) => {
+  await boot(page, { provisionDown: true });
+  const l = leaveProvision(page);
+  await expect(l.getByTestId('leaveprov-load-error')).toContainText('The annual leave provision could not be loaded.');
+  await expect(l.getByRole('button', { name: 'Try again', exact: true })).toBeVisible();
+  await expect(l.getByTestId('leaveprov-figures')).toHaveCount(0);
+});
+
 test('the panel reads in Arabic, right to left, with no serious accessibility violations', async ({ page }) => {
-  await boot(page, { locale: 'ar', provisioningOn: true });
+  await boot(page, { locale: 'ar', provisioningOn: true, leaveOn: true });
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
   const p = page.getByRole('region', { name: 'مخصص مكافأة نهاية الخدمة', exact: true });
   await expect(p.getByText('المخصص المسجّل في الدفاتر')).toBeVisible();
   await expect(p.getByRole('button', { name: 'اعتماد وترحيل', exact: true })).toBeVisible();
   await expect(page.getByRole('region', { name: 'نقل الأرصدة المسجّلة في حسابات خصومات الغياب القديمة', exact: true })).toBeVisible();
+  const l = page.getByRole('region', { name: 'مخصص الإجازة السنوية', exact: true });
+  await expect(l.getByText('مخصص الإجازة السنوية مفعّل لـ', { exact: false })).toBeVisible();
+  await expect(l.getByTestId('leaveprov-figures')).toContainText('قيمة الإجازة غير المستخدمة');
+  await expect(l.getByRole('button', { name: 'إيقاف مخصص الإجازة السنوية', exact: true })).toBeVisible();
+  await l.getByRole('button', { name: /عرض/ }).click();
+  await expect(l.getByTestId('leaveprov-employees')).toContainText('أجر اليوم');
   await shot(page, 'eosb-ar');
-  const results = await new AxeBuilder({ page }).include('[data-testid="eosb-panel"]').include('[data-testid="legacy-absence"]').analyze();
+  const results = await new AxeBuilder({ page }).include('[data-testid="eosb-panel"]').include('[data-testid="leaveprov-panel"]').include('[data-testid="legacy-absence"]').analyze();
   const serious = results.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
   expect(serious.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`)).toEqual([]);
 });

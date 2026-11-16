@@ -155,6 +155,7 @@ public sealed class EmployeeCostCentreCacheReadRatchetTests
         ["Infrastructure/Payroll/BonusCostSplit.cs"] = (1, LedgerStamp),
         ["Infrastructure/Payroll/FinalSettlementGlLedger.cs"] = (1, LedgerStamp),
         ["Infrastructure/Payroll/EosbProvisionAccrual.cs"] = (1, LedgerStamp),
+        ["Infrastructure/Payroll/LeaveProvisionAccrual.cs"] = (1, LedgerStamp),
         ["Infrastructure/Payroll/PayrollCostStamper.cs"] = (3, LedgerStamp),
         ["Controllers/PayrollController.cs"] = (5, LedgerStamp),
         ["Controllers/Finance/GlAdjustmentsController.cs"] = (1, LedgerStamp),

@@ -84,7 +84,13 @@ public record SalaryAdvanceDto(
     string? RejectionReason,
     bool IsLockedByPayroll,
     DateTime CreatedAtUtc,
-    DateTime? UpdatedAtUtc)
+    DateTime? UpdatedAtUtc,
+    // The payout and cancellation evidence. All null on an unpaid advance; PaidAtUtc and PaymentReference are also null on an
+    // Active advance paid by the old approve-and-disburse flow.
+    DateTime? PaidAtUtc = null,
+    string? PaymentReference = null,
+    DateTime? CancelledAtUtc = null,
+    string? CancelReason = null)
 {
     public static SalaryAdvanceDto Project(SalaryAdvance e) => new(
         e.Id, e.EmployeeId, e.EmployeeName,
@@ -95,7 +101,8 @@ public record SalaryAdvanceDto(
         e.TotalRepaid, e.OutstandingBalance,
         e.Reason, e.Status, e.RejectionReason,
         e.IsLockedByPayroll,
-        e.CreatedAtUtc, e.UpdatedAtUtc);
+        e.CreatedAtUtc, e.UpdatedAtUtc,
+        e.PaidAtUtc, e.PaymentReference, e.CancelledAtUtc, e.CancelReason);
 }
 
 // ── Bonuses ───────────────────────────────────────────────────────────────────

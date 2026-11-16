@@ -16,9 +16,14 @@ export interface AttendancePolicy {
   standardWorkMinutes: number;
   breakMinutes: number;
   isActive: boolean;
+  /** "HH:mm": when a day starts for an employee with no shift assigned. null = the 09:00 default. */
+  defaultShiftStart?: string | null;
 }
 
-export type AttendancePolicyRequest = Omit<AttendancePolicy, 'id' | 'isActive'>;
+export type AttendancePolicyRequest = Omit<AttendancePolicy, 'id' | 'isActive' | 'defaultShiftStart'> & {
+  /** '' clears it (back to 09:00); omitted leaves it as stored. */
+  defaultShiftStart?: string;
+};
 
 /** The day an attendance exception is about (GET /api/attendance/exceptions). */
 export interface AttendanceExceptionDay {

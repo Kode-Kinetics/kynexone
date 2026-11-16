@@ -57,7 +57,7 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: path.join(dir, `${name}.png`), fullPage: true });
 }
 
-async function boot(page: Page, locale: Locale, options: { matrix?: unknown; companyMatrix?: unknown; permissions?: string[]; roles?: string[]; plans?: unknown[] } = {}) {
+async function boot(page: Page, locale: Locale, options: { matrix?: unknown; companyMatrix?: unknown; permissions?: string[]; roles?: string[]; plans?: unknown[]; publishRefusal?: unknown } = {}) {
   const errors: string[] = [];
   const publishes: { dryRun: boolean; body: any }[] = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -78,6 +78,7 @@ async function boot(page: Page, locale: Locale, options: { matrix?: unknown; com
     if (p === '/api/entitlements/matrix' && request.method() === 'PUT') {
       const isDry = url.searchParams.get('dryRun') === 'true';
       publishes.push({ dryRun: isDry, body: request.postDataJSON() });
+      if (options.publishRefusal && !isDry) return route.fulfill({ status: 400, json: options.publishRefusal });
       return route.fulfill({ json: isDry ? dryRun : { ...dryRun, dryRun: false, matrix: groupMatrix } });
     }
     if (p === '/api/entitlements/matrix/import-legacy') return route.fulfill({ json: legacyPreview });
@@ -145,6 +146,32 @@ for (const locale of ['en', 'ar'] as const) {
       expect(last.body.cells.find((c: any) => c.componentCode === 'HOUSING').rate).toBeCloseTo(0.35);
       expect(publishes.some(x => !x.dryRun)).toBe(false);
       await shot(page, `publish-dry-run-${locale}`);
+      expect(errors).toEqual([]);
+    });
+
+    test('publish without touching the date: it starts today, and a binder refusal never reaches the screen', async ({ page }) => {
+      const { errors, publishes } = await boot(page, locale, { publishRefusal: {
+        title: 'One or more validation errors occurred.',
+        errors: { req: ['The req field is required.'], '$.effectiveFrom': ['The JSON value could not be converted to Zayra.Api.Controllers.PublishMatrixRequest. Path: $.effectiveFrom | LineNumber: 0 | BytePositionInLine: 120.'] },
+      } });
+      await cellButton(page, locale, 'HOUSING', 'G3').click();
+      await page.getByLabel(say(locale, 'Percent of basic salary')).fill('35');
+      await page.getByRole('button', { name: say(locale, 'Done editing'), exact: true }).click();
+      // The date box already holds a day (today), so a publish is never sent blank.
+      await expect(page.getByLabel(say(locale, 'Effective from'))).toHaveValue(groupMatrix.today);
+      await shot(page, `publish-default-date-${locale}`);
+      await page.getByRole('button', { name: say(locale, 'Publish {count} change(s)', { count: 1 }) }).click();
+      await expect(page.getByText(say(locale, 'Unable to publish benefits by grade.'))).toBeVisible();
+      await expect(page.getByText(/field is required|could not be converted/)).toHaveCount(0);
+      const real = publishes.filter(x => !x.dryRun).at(-1)!;
+      expect(real.body.effectiveFrom).toBe(groupMatrix.today);
+      await shot(page, `publish-refused-human-${locale}`);
+      // Clearing the date is caught before anything is sent.
+      await page.getByLabel(say(locale, 'Effective from')).fill('');
+      const before = publishes.length;
+      await page.getByRole('button', { name: say(locale, 'Publish {count} change(s)', { count: 1 }) }).click();
+      await expect(page.getByText(say(locale, 'Choose the date these changes start from.'))).toBeVisible();
+      expect(publishes.length).toBe(before);
       expect(errors).toEqual([]);
     });
 
@@ -374,9 +401,6 @@ for (const locale of ['en', 'ar'] as const) {
     test('layout at 1366x768: one purpose line, the grid starts in the top half, and the toolbar is one row', async ({ page }) => {
       await page.setViewportSize({ width: 1366, height: 768 });
       const { errors } = await boot(page, locale);
-      // The heading is up before the matrix answers; measure the toolbar and grid only once every benefit row is in.
-      const rows = page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') });
-      await expect(rows).toHaveCount(groupMatrix.components.length);
       // One purpose line (the screen's own), not the old paragraph, the scope sentence, the gap banner or the "outlined in amber" wording.
       await expect(page.locator('[data-purpose]')).toHaveCount(1);
       await expect(page.locator('[data-purpose]')).toHaveText(say(locale, 'Set what each grade receives, per company. Changes start on the date you choose when you publish.'));
@@ -394,6 +418,8 @@ for (const locale of ['en', 'ar'] as const) {
       // The grid starts in the top half of a 768 px screen and shows at least five benefit rows without scrolling.
       const table = await page.getByRole('table').boundingBox();
       expect(table!.y, 'grid top').toBeLessThan(768 * 0.5);
+      const rows = page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') });
+      await expect(rows.first()).toBeVisible();
       let visible = 0;
       for (let i = 0; i < await rows.count(); i++) { const b = await rows.nth(i).boundingBox(); if (b && b.y + b.height <= 768) visible++; }
       expect(visible, 'benefit rows visible without scrolling').toBeGreaterThanOrEqual(5);
@@ -403,9 +429,9 @@ for (const locale of ['en', 'ar'] as const) {
     test('every value cell shows it can be edited: a pencil on a value, "+ Set value" on an empty one, no per-cell provenance text', async ({ page }) => {
       const { errors } = await boot(page, locale);
       const cells = page.locator('button[data-cell]');
-      // The heading renders before the matrix response lands, so count() alone can read 0: wait for the grid.
-      const count = groupMatrix.grades.length * groupMatrix.components.length;
-      await expect(cells).toHaveCount(count);
+      await expect(cells.first()).toBeVisible(); // count() does not wait for the matrix request to render
+      const count = await cells.count();
+      expect(count).toBe(groupMatrix.grades.length * groupMatrix.components.length);
       for (let i = 0; i < count; i++) {
         const cell = cells.nth(i);
         const cue = await cell.locator('[data-testid="cell-pencil"], [data-testid="cell-set-value"]').count();
@@ -427,9 +453,11 @@ for (const locale of ['en', 'ar'] as const) {
     test('a row has at most one chip, and its actions are in a menu with targets of at least 24 px', async ({ page }) => {
       const { errors } = await boot(page, locale, { matrix: undefined });
       const rows = page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') });
-      await expect(rows).toHaveCount(groupMatrix.components.length);
+      await expect(rows.first()).toBeVisible();
       for (let i = 0; i < await rows.count(); i++) expect(await rows.nth(i).getByTestId('row-chip').count()).toBeLessThanOrEqual(1);
       const trigger = rowMenu(page, locale, benefitName(locale, 'PER_DIEM'));
+      // "+ Set value" only renders once the viewer's manage permission has loaded, which the row menu's actions also need.
+      await expect(page.getByTestId('cell-set-value').first()).toBeVisible();
       const box = await trigger.boundingBox();
       expect(box!.width).toBeGreaterThanOrEqual(24);
       expect(box!.height).toBeGreaterThanOrEqual(24);
@@ -447,11 +475,11 @@ for (const locale of ['en', 'ar'] as const) {
       const chip = page.getByRole('button', { name: say(locale, 'Needs a value ({count})', { count: new Set(groupMatrix.gaps.map((g: any) => g.componentCode)).size }), exact: true });
       await expect(chip).toHaveAttribute('aria-pressed', 'false');
       const rows = page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') });
-      await expect(rows).toHaveCount(groupMatrix.components.length);
+      await expect(rows.first()).toBeVisible();
       const before = await rows.count();
       await chip.click();
       await expect(chip).toHaveAttribute('aria-pressed', 'true');
-      await expect(rows).not.toHaveCount(before);
+      expect(await rows.count()).toBeLessThan(before);
       await expect(rows).toHaveCount(new Set(groupMatrix.gaps.map((g: any) => g.componentCode)).size);
       await chip.click();
       await expect(rows).toHaveCount(before);

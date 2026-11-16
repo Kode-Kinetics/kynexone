@@ -99,6 +99,9 @@ export interface EmployeeDraftDetail {
   contractType: string;
   probationEndDate: string | null;
   salary: number | null;
+  /** Saudi National ID. Empty when not entered or when the caller may not see sensitive values. */
+  idNumber?: string;
+  iqamaNumber?: string;
 }
 
 export interface EmployeeDraftReview {
@@ -135,4 +138,8 @@ export const employeeDraftsApi = {
   /** Changes only the placement fields sent; every other draft field is left as it is. */
   updatePlacement: (id: string, placement: { department?: string; designation?: string; branch?: string }) =>
     client.put<EmployeeDraftDetail>(`/api/employees/drafts/${id}`, placement).then((r) => r.data),
+
+  /** Sets the draft's National ID (Saudi hire) or Iqama number; the server validates it with the employee identity rules. */
+  updateIdentity: (id: string, identity: { idNumber: string } | { iqamaNumber: string }) =>
+    client.put<EmployeeDraftDetail>(`/api/employees/drafts/${id}`, identity).then((r) => r.data),
 };

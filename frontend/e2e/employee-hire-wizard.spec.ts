@@ -240,6 +240,99 @@ test.describe('person, pickers and validation (desktop)', () => {
     await expect(page.locator('#hire-housing-error')).toHaveText('Amount cannot be negative.');
   });
 
+  test('a grade allowance left blank is shown, counted in the total the person confirms, and sent as that amount', async ({ page }) => {
+    // Rehearsal: basic 4,500 + housing 1,125 + transport 450 was saved as 6,275: the grade's other allowance of 200 was added behind the screen.
+    const cell = { gradeId: 'grade-g5', componentCode: 'OTHER_ALLOWANCES', cellId: 'c1', isCompanyOverride: false, inherited: false, eligible: true, valueType: 'Amount', amount: 200, rate: null, effectiveFrom: '2026-01-01' };
+    const api = await bootHire(page, { permissions: ['employees.read', 'employees.write', 'employees.override_validation', 'entitlements.read'], matrix: { cells: [cell] } });
+    await basics(page, { start: '2026-11-01' });
+    await next(page); await next(page);
+    await page.getByLabel('Basic salary').fill('4500');
+    await page.getByLabel('Housing allowance').fill('1125');
+    await page.getByLabel('Transport allowance').fill('450');
+    await expect(page.locator('#hire-other-hint')).toContainText('the grade adds');
+    await expect(page.getByTestId('hire-package-total')).toContainText('6,275');
+    await next(page);
+    const review = page.getByRole('region', { name: 'Job and pay' });
+    await expect(review).toContainText('Housing allowance');
+    await expect(review).toContainText('Other allowance');
+    await expect(review).toContainText('(from the grade)');
+    await expect(review).toContainText('Total monthly pay');
+    await expect(review).toContainText('6,275');
+    await saveDraft(page);
+    await expect(page.getByTestId('saved-indicator')).toBeVisible();
+    expect(api.creates[0].body.salaryBreakdown).toMatchObject({ basicSalary: 4500, housingAllowance: 1125, transportAllowance: 450, otherAllowance: 200 });
+  });
+
+  test('typing 0 in an allowance is the answer: nothing is added from the grade and 0 is sent', async ({ page }) => {
+    const cell = { gradeId: 'grade-g5', componentCode: 'OTHER_ALLOWANCES', cellId: 'c1', isCompanyOverride: false, inherited: false, eligible: true, valueType: 'Amount', amount: 200, rate: null, effectiveFrom: '2026-01-01' };
+    const api = await bootHire(page, { permissions: ['employees.read', 'employees.write', 'employees.override_validation', 'entitlements.read'], matrix: { cells: [cell] } });
+    await basics(page, { start: '2026-11-01' });
+    await next(page); await next(page);
+    await page.getByLabel('Basic salary').fill('4500');
+    await page.getByLabel('Other allowance').fill('0');
+    await expect(page.getByTestId('hire-package-total')).toContainText('4,500');
+    await next(page);
+    await saveDraft(page);
+    await expect(page.getByTestId('saved-indicator')).toBeVisible();
+    expect(api.creates[0].body.salaryBreakdown).toMatchObject({ basicSalary: 4500, otherAllowance: 0 });
+  });
+
+  test('the notice period shows the company default, is editable, and is sent as shown', async ({ page }) => {
+    const api = await bootHire(page, { noticeDefault: 60 });
+    await basics(page, { start: '2026-11-01' });
+    await next(page); await next(page);
+    const notice = page.getByLabel('Notice period (days)');
+    await expect(notice).toHaveValue('60');
+    await expect(page.locator('#hire-noticePeriodDays-hint')).toContainText('The company default is 60 days');
+    await next(page);
+    await saveDraft(page);
+    await expect(page.getByTestId('saved-indicator')).toBeVisible();
+    expect(api.creates[0].body.noticePeriodDays).toBe(60);
+  });
+
+  test('a changed notice period is sent as typed, not as the company default', async ({ page }) => {
+    const api = await bootHire(page, { noticeDefault: 60 });
+    await basics(page, { start: '2026-11-01' });
+    await next(page); await next(page);
+    await page.getByLabel('Notice period (days)').fill('30');
+    await next(page);
+    await saveDraft(page);
+    await expect(page.getByTestId('saved-indicator')).toBeVisible();
+    expect(api.creates[0].body.noticePeriodDays).toBe(30);
+  });
+
+  test('the first GOSI registration date is asked of a Saudi national only, names its schedule, and is sent', async ({ page }) => {
+    const api = await bootHire(page);
+    await basics(page, { start: '2026-11-01' });
+    await next(page);
+    const box = page.getByRole('combobox', { name: /Nationality/ });
+    await box.fill('sau');
+    await page.getByRole('listbox').getByRole('option').first().click();
+    await next(page);
+    const gosi = page.getByLabel('First GOSI registration date');
+    await expect(gosi).toBeVisible();
+    await expect(page.locator('#hire-gosiFirstRegisteredOn-hint')).toContainText('3 July 2024');
+    await gosi.fill('2025-02-01');
+    await expect(page.locator('#hire-gosiFirstRegisteredOn-hint')).toContainText('new-entrant GOSI schedule');
+    await gosi.fill('2020-02-01');
+    await expect(page.locator('#hire-gosiFirstRegisteredOn-hint')).toContainText('existing GOSI schedule');
+    await next(page);
+    await saveDraft(page);
+    await expect(page.getByTestId('saved-indicator')).toBeVisible();
+    expect(api.creates[0].body.gosiFirstRegisteredOn).toBe('2020-02-01');
+  });
+
+  test('an expat is not asked for a GOSI registration date', async ({ page }) => {
+    await bootHire(page);
+    await basics(page, { start: '2026-11-01' });
+    await next(page);
+    const box = page.getByRole('combobox', { name: /Nationality/ });
+    await box.fill('pakis');
+    await page.getByRole('listbox').getByRole('option').first().click();
+    await next(page);
+    await expect(page.getByLabel('First GOSI registration date')).toHaveCount(0);
+  });
+
   test('AC26/G08: a server warning opens an acknowledge dialog; a short reason is refused; the retry reuses the key', async ({ page }) => {
     const api = await bootHire(page, { warnFirstCreate: true });
     await basics(page, { start: '2026-01-05' });

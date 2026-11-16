@@ -154,6 +154,14 @@ public class AttendancePolicy : ITenantOwned
     public int HalfDayThresholdMinutes { get; set; } = 240;
     public int StandardWorkMinutes { get; set; } = 480;
     public int BreakMinutes { get; set; } = 60;
+    /// <summary>
+    /// When a day starts for an employee with NO shift assigned (local wall clock). The day then runs from here for the policy's
+    /// working minutes plus its break, which is what late and early-exit are measured against. Null keeps the long-standing 09:00
+    /// (<see cref="Zayra.Api.Infrastructure.Attendance.AttendanceWorkDate.DefaultShiftStart"/>), so a policy written before this
+    /// column reads exactly as before. A new Saudi tenant's default policy is seeded at 08:00 (08:00 + 480 + 60 = 17:00).
+    /// An assigned shift always wins.
+    /// </summary>
+    public TimeOnly? DefaultShiftStart { get; set; }
     // Five columns nothing reads (late/absent thresholds, rounding rule, overtime-approval and absence-to-leave flags) are no
     // longer mapped; they stay in the database, with defaults, until a later release drops them.
     public bool IsActive { get; set; } = true;

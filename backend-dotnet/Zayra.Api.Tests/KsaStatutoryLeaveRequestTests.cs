@@ -44,7 +44,8 @@ public class KsaStatutoryLeaveRequestTests
             TenantId = tenantId, EmployeeCode = $"E-{Guid.NewGuid():N}", FullName = "Employee", EnglishName = "Employee",
             Status = "Active", CompanyId = company.Id,
             JoiningDate = serviceYears is { } y ? DateTime.UtcNow.AddYears(-y) : default,
-            UserAccountId = Guid.NewGuid(), Gender = "Female",
+            // Paternity is offered to men only (and maternity to women), so the employee is whoever the leave is for.
+            UserAccountId = Guid.NewGuid(), Gender = code == "PAT" ? "Male" : "Female",
         };
         db.Employees.Add(employee);
         var type = new LeaveType { TenantId = tenantId, Code = code, NameEn = name, Category = category, IsPaid = true, IsActive = true };
@@ -619,6 +620,7 @@ public class KsaStatutoryLeaveRequestTests
                     {
                         new Claim("tenant_id", f.TenantId.ToString()),
                         new Claim(ClaimTypes.NameIdentifier, f.Employee.UserAccountId!.Value.ToString()),
+                        new Claim("permission", "ess.write"),
                     }, "Test")),
                 },
             },

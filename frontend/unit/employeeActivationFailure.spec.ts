@@ -26,3 +26,16 @@ test('a refused activation shows the server message verbatim, untranslated', asy
   expect(activationRejectionMessage(refused, text => `AR:${text}`)).toBe('Pay must be approved by someone else.');
   expect(activationRejectionMessage({ response: { data: {} } }, text => `AR:${text}`)).toMatch(/^AR:The employee could not be activated/);
 });
+
+test('returning a settled leaver to work is refused with the server sentence in the viewer language, pointing to Rehire', async () => {
+  const { settledServiceRefusal } = await import('../src/lib/employeeActivationFailure');
+  const refused = { response: { status: 409, data: {
+    code: 'rehire_required',
+    message: 'This employee\'s final settlement for service up to 2026-07-31 is approved or paid. Use Rehire to start a new service period.',
+    messageAr: 'تمت الموافقة على التسوية النهائية لهذا الموظف. استخدم إعادة التعيين لبدء فترة خدمة جديدة.',
+  } } };
+  expect(settledServiceRefusal(refused, 'en')).toContain('Use Rehire');
+  expect(settledServiceRefusal(refused, 'ar')).toContain('إعادة التعيين');
+  expect(settledServiceRefusal({ response: { status: 409, data: { code: 'other', message: 'x' } } }, 'en')).toBeNull();
+  expect(settledServiceRefusal(new Error('offline'), 'ar')).toBeNull();
+});

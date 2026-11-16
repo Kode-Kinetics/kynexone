@@ -11,6 +11,9 @@ import { StatusChip } from '../StatusChip';
 import { useAuth } from '../../contexts/AuthContext';
 import { unavailableMessage } from '../../lib/attendanceLoadState';
 import { DomainUnavailable, Empty, Panel, dateTime, statusTone } from './attendanceUi';
+import { useT } from '../../hooks/useT';
+import { BdiMessage } from '../BdiMessage';
+import { msg } from '../../i18n/translations';
 
 type KvPair = { key: string; value: string };
 
@@ -22,6 +25,9 @@ interface DeviceFormState {
   authHeaderName: string; authHeaderValue: string; authParamName: string; authParamValue: string;
   customHeaders: KvPair[]; deviceParams: KvPair[]; fieldMappings: KvPair[];
 }
+
+/** A sample request body for device integrators: code, identical in every language. */
+const EXAMPLE_PUNCH_BODY = '{"punches":[{"employeeCode":"EMP-001","punchTimestampUtc":"2026-06-16T09:00:00Z","punchDirection":"In"}]}';
 
 const emptyKv = (): KvPair[] => [{ key: '', value: '' }];
 
@@ -92,6 +98,7 @@ function deviceToForm(d: AttendanceDevice): DeviceFormState {
  * attendance.bulk_import (AttendanceController).
  */
 export function AttendanceDevicesPanel({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void }) {
+  const t = useT();
   const { hasPermission } = useAuth();
   const canManageSources = hasPermission('attendance.bulk_import');
   const [devices, setDevices] = useState<AttendanceDevice[]>([]);
@@ -139,7 +146,7 @@ export function AttendanceDevicesPanel({ onDirtyChange }: { onDirtyChange?: (dir
       setMessage(success);
       await load();
     } catch (err: any) {
-      setError(err.response?.data?.message ?? err.message ?? 'Attendance action failed.');
+      setError(err.response?.data?.message ?? err.message ?? t('Attendance action failed.'));
     } finally {
       setSaving(false);
     }
@@ -179,7 +186,7 @@ export function AttendanceDevicesPanel({ onDirtyChange }: { onDirtyChange?: (dir
       setDeviceKeyResult(result);
       await load();
     } catch (err: any) {
-      setError(err.response?.data?.message ?? err.message ?? 'Key generation failed.');
+      setError(err.response?.data?.message ?? err.message ?? t('Key generation failed.'));
     } finally {
       setSaving(false);
     }
@@ -194,7 +201,7 @@ export function AttendanceDevicesPanel({ onDirtyChange }: { onDirtyChange?: (dir
       setSyncLogs(logs);
     } catch {
       setSyncLogs([]);
-      setSyncLogsError('Sync logs could not be loaded. This is not an empty log history.');
+      setSyncLogsError(t('Sync logs could not be loaded. This is not an empty log history.'));
     } finally {
       setSyncLogsLoading(false);
     }
@@ -212,17 +219,17 @@ export function AttendanceDevicesPanel({ onDirtyChange }: { onDirtyChange?: (dir
 
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          Connect any attendance source — biometric, RFID, face recognition, REST API, SFTP, or manual CSV.
+          {t('Connect any attendance source — biometric, RFID, face recognition, REST API, SFTP, or manual CSV.')}
         </p>
         <div className="flex shrink-0 items-center gap-2">
-          {loadFailed && <button type="button" onClick={() => { void load(); }} className="btn-secondary" disabled={loading}>Retry</button>}
+          {loadFailed && <button type="button" onClick={() => { void load(); }} className="btn-secondary" disabled={loading}>{t('Retry')}</button>}
           {canManageSources && <button type="button" onClick={() => { setDeviceForm(emptyDeviceForm); setShowAddDevice(true); }} className="btn-primary" disabled={loadFailed}>
-            <Fingerprint className="h-4 w-4" />Add Device
+            <Fingerprint className="h-4 w-4" />{t('Add Device')}
           </button>}
         </div>
       </div>
-      <Panel title="Configured Devices" action={loading ? 'Loading…' : devicesUnavailable ? 'Unavailable' : `${devices.length} sources`}>
-        {loading ? <p role="status" className="text-sm text-slate-400">Loading…</p> : devicesUnavailable ? <DomainUnavailable message={devicesUnavailable} /> : <DeviceTable
+      <Panel title={t('Configured Devices')} action={loading ? 'Loading…' : devicesUnavailable ? 'Unavailable' : `${devices.length} sources`}>
+        {loading ? <p role="status" className="text-sm text-slate-400">{t('Loading…')}</p> : devicesUnavailable ? <DomainUnavailable message={devicesUnavailable} /> : <DeviceTable
           devices={devices}
           onTest={(id) => runAction(() => attendanceApi.devices.test(id), 'Connection test completed.')}
           onSync={(id) => runAction(() => attendanceApi.devices.sync(id), 'Sync attempt completed.')}
@@ -236,7 +243,7 @@ export function AttendanceDevicesPanel({ onDirtyChange }: { onDirtyChange?: (dir
       {/* ── Add / Edit Device Modal ─────────────────────────────────────────── */}
       {(showAddDevice || editingDevice) && (
         <DeviceFormModal
-          title={editingDevice ? `Edit — ${editingDevice.deviceName}` : 'Add Attendance Device'}
+          title={editingDevice ? `Edit — ${editingDevice.deviceName}` : t('Add Attendance Device')}
           form={editingDevice ? editDeviceForm : deviceForm}
           setForm={editingDevice ? setEditDeviceForm : setDeviceForm}
           onSubmit={editingDevice ? submitEditDevice : submitDevice}
@@ -247,43 +254,42 @@ export function AttendanceDevicesPanel({ onDirtyChange }: { onDirtyChange?: (dir
 
       {/* ── Delete Confirm Modal ────────────────────────────────────────────── */}
       {deleteConfirmDevice && (
-        <Modal title="Delete Device" onClose={() => setDeleteConfirmDevice(null)}>
+        <Modal title={t('Delete Device')} onClose={() => setDeleteConfirmDevice(null)}>
           <p className="text-sm text-slate-600 dark:text-slate-300">
-            Are you sure you want to delete <span className="font-semibold text-slate-900 dark:text-white">{deleteConfirmDevice.deviceName}</span>?
-            All sync logs for this device will be retained for audit, but the device will stop receiving punches.
+            <BdiMessage message={msg('Are you sure you want to delete {name}? All sync logs for this device will be retained for audit, but the device will stop receiving punches.')} values={{ name: deleteConfirmDevice.deviceName }} />
           </p>
           <div className="mt-4 flex justify-end gap-2">
-            <button type="button" onClick={() => setDeleteConfirmDevice(null)} className="btn-secondary">Cancel</button>
-            <button type="button" onClick={confirmDelete} disabled={saving} className="btn-primary bg-rose-600 hover:bg-rose-700 border-rose-600 hover:border-rose-700">Delete Device</button>
+            <button type="button" onClick={() => setDeleteConfirmDevice(null)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={confirmDelete} disabled={saving} className="btn-primary bg-rose-600 hover:bg-rose-700 border-rose-600 hover:border-rose-700">{t('Delete Device')}</button>
           </div>
         </Modal>
       )}
 
       {/* ── API Key Modal ───────────────────────────────────────────────────── */}
       {deviceKeyResult && (
-        <Modal title="API Key Generated" onClose={() => setDeviceKeyResult(null)}>
+        <Modal title={t('API Key Generated')} onClose={() => setDeviceKeyResult(null)}>
           <div className="space-y-4">
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
-              This key will only be shown once. Copy and configure it on your biometric device now.
+              {t('This key will only be shown once. Copy and configure it on your biometric device now.')}
             </div>
             <div>
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Device API Key — {deviceKeyResult.deviceName}</p>
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('Device API Key — {deviceName}', { deviceName: deviceKeyResult.deviceName })}</p>
               <div className="flex items-center gap-2">
                 <code className="flex-1 rounded-lg border bg-slate-50 px-3 py-2 font-mono text-sm dark:bg-white/[0.04] dark:border-white/10">{deviceKeyResult.key}</code>
-                <button type="button" onClick={() => navigator.clipboard.writeText(deviceKeyResult.key)} className="btn-secondary h-9 px-3" title="Copy key"><Copy className="h-4 w-4" /></button>
+                <button type="button" onClick={() => navigator.clipboard.writeText(deviceKeyResult.key)} className="btn-secondary h-9 px-3" title={t('Copy key')}><Copy className="h-4 w-4" /></button>
               </div>
             </div>
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-white/[0.04]">
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 flex items-center gap-1.5"><Webhook className="h-3.5 w-3.5" />Biometric Device Configuration</p>
-              <p className="text-xs text-slate-600 dark:text-slate-300 mb-2">Configure your device to POST attendance punches to:</p>
-              <code className="block rounded border bg-white px-3 py-2 font-mono text-xs dark:bg-black/20 dark:border-white/10">{process.env.NEXT_PUBLIC_API_BASE_URL || '[API Base URL]'}/api/attendance/ingest</code>
-              <p className="mt-3 text-xs text-slate-500 mb-1">Required HTTP header:</p>
-              <code className="block rounded border bg-white px-3 py-2 font-mono text-xs dark:bg-black/20 dark:border-white/10">X-Device-Key: {deviceKeyResult.key}</code>
-              <p className="mt-3 text-xs text-slate-500 mb-1">Example JSON body:</p>
-              <code className="block rounded border bg-white px-3 py-2 font-mono text-xs whitespace-pre dark:bg-black/20 dark:border-white/10">{`{"punches":[{"employeeCode":"EMP-001","punchTimestampUtc":"2026-06-16T09:00:00Z","punchDirection":"In"}]}`}</code>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 flex items-center gap-1.5"><Webhook className="h-3.5 w-3.5" />{t('Biometric Device Configuration')}</p>
+              <p className="text-xs text-slate-600 dark:text-slate-300 mb-2">{t('Configure your device to POST attendance punches to')}:</p>
+              <code dir="ltr" className="block rounded border bg-white px-3 py-2 font-mono text-xs text-start dark:bg-black/20 dark:border-white/10">{process.env.NEXT_PUBLIC_API_BASE_URL || '[API Base URL]'}/api/attendance/ingest</code>
+              <p className="mt-3 text-xs text-slate-500 mb-1">{t('Required HTTP header')}:</p>
+              <code dir="ltr" className="block rounded border bg-white px-3 py-2 font-mono text-xs text-start dark:bg-black/20 dark:border-white/10">X-Device-Key: {deviceKeyResult.key}</code>
+              <p className="mt-3 text-xs text-slate-500 mb-1">{t('Example JSON body')}:</p>
+              <code dir="ltr" className="block rounded border bg-white px-3 py-2 font-mono text-xs text-start whitespace-pre dark:bg-black/20 dark:border-white/10">{EXAMPLE_PUNCH_BODY}</code>
             </div>
             <div className="flex justify-end">
-              <button type="button" onClick={() => setDeviceKeyResult(null)} className="btn-primary">Done</button>
+              <button type="button" onClick={() => setDeviceKeyResult(null)} className="btn-primary">{t('Done')}</button>
             </div>
           </div>
         </Modal>
@@ -292,9 +298,9 @@ export function AttendanceDevicesPanel({ onDirtyChange }: { onDirtyChange?: (dir
       {/* ── Sync Logs Modal ─────────────────────────────────────────────────── */}
       {syncLogsDevice && (
         <Modal title={`Sync Logs — ${syncLogsDevice.deviceName}`} onClose={() => setSyncLogsDevice(null)}>
-          {syncLogsLoading && <p className="py-6 text-center text-sm text-slate-400">Loading logs…</p>}
+          {syncLogsLoading && <p className="py-6 text-center text-sm text-slate-400">{t('Loading logs…')}</p>}
           {!syncLogsLoading && syncLogsError && <div role="alert"><DomainUnavailable message={syncLogsError} /></div>}
-          {!syncLogsLoading && !syncLogsError && syncLogs.length === 0 && <Empty text="No sync logs found for this device." />}
+          {!syncLogsLoading && !syncLogsError && syncLogs.length === 0 && <Empty text={t('No sync logs found for this device.')} />}
           {!syncLogsLoading && syncLogs.length > 0 && (
             <div className="space-y-2 max-h-96 overflow-y-auto">
               {syncLogs.map((log) => (
@@ -302,7 +308,7 @@ export function AttendanceDevicesPanel({ onDirtyChange }: { onDirtyChange?: (dir
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-sm font-semibold text-slate-900 dark:text-white">{log.syncMethod}</p>
-                      <p className="text-xs text-slate-400">{dateTime(log.completedAtUtc ?? log.startedAtUtc)} · {log.rawEventsReceived} events received · {log.rawEventsProcessed} processed</p>
+                      <p className="text-xs text-slate-400">{t('{dateTime} · {rawEventsReceived} events received · {rawEventsProcessed} processed', { dateTime: dateTime(log.completedAtUtc ?? log.startedAtUtc), rawEventsReceived: log.rawEventsReceived, rawEventsProcessed: log.rawEventsProcessed })}</p>
                     </div>
                     <StatusChip label={log.status} tone={statusTone(log.status)} dot />
                   </div>
@@ -314,7 +320,7 @@ export function AttendanceDevicesPanel({ onDirtyChange }: { onDirtyChange?: (dir
             </div>
           )}
           <div className="mt-4 flex justify-end">
-            <button type="button" onClick={() => setSyncLogsDevice(null)} className="btn-secondary">Close</button>
+            <button type="button" onClick={() => setSyncLogsDevice(null)} className="btn-secondary">{t('Close')}</button>
           </div>
         </Modal>
       )}
@@ -339,7 +345,8 @@ function DeviceTable({
   onGenerateKey: (device: AttendanceDevice) => void;
   onViewLogs: (device: AttendanceDevice) => void;
 }) {
-  if (devices.length === 0) return <Empty text="No devices found. Add a connector-backed attendance source." />;
+  const t = useT();
+  if (devices.length === 0) return <Empty text={t('No devices found. Add a connector-backed attendance source.')} />;
   return (
     <div className="space-y-3">
       {devices.map((d) => {
@@ -352,20 +359,20 @@ function DeviceTable({
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <p className="font-semibold text-slate-900 dark:text-white">{d.deviceName}</p>
-                  <StatusChip label={d.lastSyncStatus || 'Never synced'} tone={statusTone(d.lastSyncStatus || 'Never')} dot />
-                  {!d.isActive && <StatusChip label="Inactive" tone="rose" />}
-                  {isPush && <span className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-caption font-semibold text-blue-600 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300"><Webhook className="h-3 w-3" />Push</span>}
+                  <StatusChip label={d.lastSyncStatus || t('Never synced')} tone={statusTone(d.lastSyncStatus || 'Never')} dot />
+                  {!d.isActive && <StatusChip label={t('Inactive')} tone="rose" />}
+                  {isPush && <span className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-caption font-semibold text-blue-600 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300"><Webhook className="h-3 w-3" />{t('Push')}</span>}
                 </div>
-                <p className="mt-1 text-xs text-slate-400">{d.vendor} · {d.deviceType} · SN: {d.serialNumber || '—'}</p>
-                <p className="text-xs text-slate-400">{d.locationName || 'No location'} · {d.syncMethod} · {d.syncFrequency || 'Manual'}</p>
+                <p className="mt-1 text-xs text-slate-400">{t('{vendor} · {deviceType} · SN: {value}', { vendor: d.vendor, deviceType: d.deviceType, value: d.serialNumber || '—' })}</p>
+                <p className="text-xs text-slate-400">{d.locationName || t('No location')} · {d.syncMethod} · {d.syncFrequency || t('Manual')}</p>
                 {isPush && (
                   <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
-                    <p className="text-caption font-semibold uppercase tracking-wide text-slate-400 mb-1">Webhook endpoint</p>
-                    <code className="text-xs font-mono text-slate-700 dark:text-slate-300 break-all">
+                    <p className="text-caption font-semibold uppercase tracking-wide text-slate-400 mb-1">{t('Webhook endpoint')}</p>
+                    <code dir="ltr" className="inline-block text-xs font-mono text-slate-700 dark:text-slate-300 break-all">
                       POST {process.env.NEXT_PUBLIC_API_BASE_URL || '[API Base URL]'}/api/attendance/ingest
                     </code>
                     <p className="mt-1 text-caption text-slate-400">
-                      Header: <span className="font-mono">X-Device-Key: {hasKey ? '••••••••••' : '[generate a key below]'}</span>
+                      {t('Header')}: <span dir="ltr" className="inline-block font-mono">X-Device-Key: {hasKey ? '••••••••••' : '[generate a key below]'}</span>
                     </p>
                   </div>
                 )}
@@ -377,12 +384,12 @@ function DeviceTable({
                 )}
               </div>
               <div className="flex flex-wrap gap-1.5 shrink-0">
-                <button type="button" onClick={() => onTest(d.id)} className="btn-secondary h-8 px-2.5 text-xs" title="Test connection">Test</button>
-                <button type="button" onClick={() => onSync(d.id)} className="btn-secondary h-8 px-2.5 text-xs" title="Trigger sync">Sync</button>
-                <button type="button" onClick={() => onViewLogs(d)} className="btn-secondary h-8 px-2.5 text-xs" title="View sync logs"><History className="h-3.5 w-3.5" /></button>
-                <button type="button" onClick={() => onGenerateKey(d)} className="btn-secondary h-8 px-2.5 text-xs" title={hasKey ? 'Rotate API key' : 'Generate API key'}><Key className="h-3.5 w-3.5" /></button>
-                <button type="button" onClick={() => onEdit(d)} className="btn-secondary h-8 px-2.5 text-xs" title="Edit device"><Pencil className="h-3.5 w-3.5" /></button>
-                <button type="button" onClick={() => onDelete(d)} className="btn-secondary h-8 px-2.5 text-xs text-rose-600 dark:text-rose-400 hover:border-rose-300" title="Delete device"><Trash2 className="h-3.5 w-3.5" /></button>
+                <button type="button" onClick={() => onTest(d.id)} className="btn-secondary h-8 px-2.5 text-xs" title={t('Test connection')}>{t('Test')}</button>
+                <button type="button" onClick={() => onSync(d.id)} className="btn-secondary h-8 px-2.5 text-xs" title={t('Trigger sync')}>{t('Sync')}</button>
+                <button type="button" onClick={() => onViewLogs(d)} className="btn-secondary h-8 px-2.5 text-xs" title={t('View sync logs')}><History className="h-3.5 w-3.5" /></button>
+                <button type="button" onClick={() => onGenerateKey(d)} className="btn-secondary h-8 px-2.5 text-xs" title={hasKey ? t('Rotate API key') : t('Generate API key')}><Key className="h-3.5 w-3.5" /></button>
+                <button type="button" onClick={() => onEdit(d)} className="btn-secondary h-8 px-2.5 text-xs" title={t('Edit device')}><Pencil className="h-3.5 w-3.5" /></button>
+                <button type="button" onClick={() => onDelete(d)} className="btn-secondary h-8 px-2.5 text-xs text-rose-600 dark:text-rose-400 hover:border-rose-300" title={t('Delete device')}><Trash2 className="h-3.5 w-3.5" /></button>
               </div>
             </div>
           </div>
@@ -397,6 +404,7 @@ function KvEditor({ label, hint, pairs, onChange, keyPlaceholder, valuePlacehold
   onChange: (pairs: KvPair[]) => void;
   keyPlaceholder?: string; valuePlaceholder?: string;
 }) {
+  const t = useT();
   const set = (i: number, field: 'key' | 'value', val: string) => {
     const next = pairs.map((p, idx) => idx === i ? { ...p, [field]: val } : p);
     onChange(next);
@@ -407,15 +415,15 @@ function KvEditor({ label, hint, pairs, onChange, keyPlaceholder, valuePlacehold
     <div>
       <div className="mb-1.5 flex items-center justify-between">
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-        <button type="button" onClick={add} className="text-xs font-semibold text-sapphire hover:underline">+ Add row</button>
+        <button type="button" onClick={add} className="text-xs font-semibold text-sapphire hover:underline">{t('+ Add row')}</button>
       </div>
       {hint && <p className="mb-2 text-caption text-slate-400">{hint}</p>}
       <div className="space-y-1.5">
         {pairs.map((p, i) => (
           <div key={i} className="flex gap-1.5">
-            <input aria-label={`${label} key ${i + 1}`} className="input flex-1 font-mono text-xs" placeholder={keyPlaceholder ?? 'Key'} value={p.key} onChange={(e) => set(i, 'key', e.target.value)} />
-            <input aria-label={`${label} value ${i + 1}`} className="input flex-1 font-mono text-xs" placeholder={valuePlaceholder ?? 'Value'} value={p.value} onChange={(e) => set(i, 'value', e.target.value)} />
-            <button type="button" onClick={() => remove(i)} aria-label="Remove row" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10"><X className="h-3.5 w-3.5" /></button>
+            <input aria-label={`${label} key ${i + 1}`} className="input flex-1 font-mono text-xs" placeholder={keyPlaceholder ?? t('Key')} value={p.key} onChange={(e) => set(i, 'key', e.target.value)} />
+            <input aria-label={`${label} value ${i + 1}`} className="input flex-1 font-mono text-xs" placeholder={valuePlaceholder ?? t('Value')} value={p.value} onChange={(e) => set(i, 'value', e.target.value)} />
+            <button type="button" onClick={() => remove(i)} aria-label={t('Remove row')} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10"><X className="h-3.5 w-3.5" /></button>
           </div>
         ))}
       </div>
@@ -435,6 +443,7 @@ function DeviceFormModal({ title, form, setForm, onSubmit, onClose, saving }: {
   onClose: () => void;
   saving: boolean;
 }) {
+  const t = useT();
   const f = form;
   const set = (patch: Partial<DeviceFormState>) => setForm({ ...f, ...patch });
   const isPush = f.syncMethod?.toLowerCase().includes('push');
@@ -445,41 +454,41 @@ function DeviceFormModal({ title, form, setForm, onSubmit, onClose, saving }: {
 
         {/* ── Basic Details ─────────────────────────────────────── */}
         <section>
-          <p className="mb-3 text-caption font-semibold uppercase tracking-widest text-slate-400">Basic Details</p>
+          <p className="mb-3 text-caption font-semibold uppercase tracking-widest text-slate-400">{t('Basic Details')}</p>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Device name *">
-              <input aria-label="Device name" className="input w-full" value={f.deviceName} onChange={(e) => set({ deviceName: e.target.value })} placeholder="Main Gate Biometric" required />
+            <Field label={t('Device name *')}>
+              <input aria-label={t('Device name')} className="input w-full" value={f.deviceName} onChange={(e) => set({ deviceName: e.target.value })} placeholder={t('Main Gate Biometric')} required />
             </Field>
-            <Field label="Serial number *" info="Printed on device hardware. Must be unique across this workspace." infoKey="attendance.device_serial">
-              <input aria-label="Serial number" className="input w-full" value={f.serialNumber} onChange={(e) => set({ serialNumber: e.target.value })} placeholder="ZK-8880012345" required />
+            <Field label={t('Serial number *')} info={t('Printed on device hardware. Must be unique across this workspace.')} infoKey="attendance.device_serial">
+              <input aria-label={t('Serial number')} className="input w-full" value={f.serialNumber} onChange={(e) => set({ serialNumber: e.target.value })} placeholder="ZK-8880012345" required />
             </Field>
-            <Field label="Location / branch">
-              <input aria-label="Location" className="input w-full" value={f.locationName} onChange={(e) => set({ locationName: e.target.value })} placeholder="Main entrance, Floor 3…" />
+            <Field label={t('Location / branch')}>
+              <input aria-label={t('Location')} className="input w-full" value={f.locationName} onChange={(e) => set({ locationName: e.target.value })} placeholder={t('Main entrance, Floor 3…')} />
             </Field>
-            <Field label="Status">
-              <select aria-label="Status" className="select w-full" value={f.isActive ? 'active' : 'inactive'} onChange={(e) => set({ isActive: e.target.value === 'active' })}>
-                <option value="active">Active — accepting punches</option>
-                <option value="inactive">Inactive — paused</option>
+            <Field label={t('Status')}>
+              <select aria-label={t('Status')} className="select w-full" value={f.isActive ? 'active' : 'inactive'} onChange={(e) => set({ isActive: e.target.value === 'active' })}>
+                <option value="active">{t('Active — accepting punches')}</option>
+                <option value="inactive">{t('Inactive — paused')}</option>
               </select>
             </Field>
           </div>
-          <Field label="Notes / model info">
-            <input aria-label="Notes" className="input w-full mt-1" value={f.notes} onChange={(e) => set({ notes: e.target.value })} placeholder="ZKTeco K20, firmware 2.3, installed 2026-01, IT contact: John…" />
+          <Field label={t('Notes / model info')}>
+            <input aria-label={t('Notes')} className="input w-full mt-1" value={f.notes} onChange={(e) => set({ notes: e.target.value })} placeholder={t('ZKTeco K20, firmware 2.3, installed 2026-01, IT contact: John…')} />
           </Field>
         </section>
 
         {/* ── Device Identity ───────────────────────────────────── */}
         <section>
-          <p className="mb-3 text-caption font-semibold uppercase tracking-widest text-slate-400">Device Identity</p>
+          <p className="mb-3 text-caption font-semibold uppercase tracking-widest text-slate-400">{t('Device Identity')}</p>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Vendor" info="Free text — enter any vendor name. Examples: ZKTeco, Hikvision, Suprema, Anviz, eSSL, Dahua, Generic." infoKey="attendance.vendor">
-              <input aria-label="Vendor" list="vendor-suggestions" className="input w-full" value={f.vendor} onChange={(e) => set({ vendor: e.target.value })} placeholder="ZKTeco" />
+            <Field label={t('Vendor')} info={t('Free text — enter any vendor name. Examples: ZKTeco, Hikvision, Suprema, Anviz, eSSL, Dahua, Generic.')} infoKey="attendance.vendor">
+              <input aria-label={t('Vendor')} list="vendor-suggestions" className="input w-full" value={f.vendor} onChange={(e) => set({ vendor: e.target.value })} placeholder="ZKTeco" />
               <datalist id="vendor-suggestions">
                 {['ZKTeco','Hikvision','Suprema','Anviz','eSSL','Dahua','Identix','Realand','Generic biometric','Generic RFID','Custom REST API'].map(v => <option key={v} value={v} />)}
               </datalist>
             </Field>
-            <Field label="Device type">
-              <input aria-label="Device type" list="type-suggestions" className="input w-full" value={f.deviceType} onChange={(e) => set({ deviceType: e.target.value })} placeholder="Biometric fingerprint + face" />
+            <Field label={t('Device type')}>
+              <input aria-label={t('Device type')} list="type-suggestions" className="input w-full" value={f.deviceType} onChange={(e) => set({ deviceType: e.target.value })} placeholder={t('Biometric fingerprint + face')} />
               <datalist id="type-suggestions">
                 {['Biometric fingerprint','Face recognition','RFID/card reader','Fingerprint + face','Fingerprint + RFID','All-in-one (face + finger + RFID)','Mobile app','Kiosk/tablet','REST API','SFTP/CSV feed'].map(v => <option key={v} value={v} />)}
               </datalist>
@@ -489,66 +498,66 @@ function DeviceFormModal({ title, form, setForm, onSubmit, onClose, saving }: {
 
         {/* ── Connection ────────────────────────────────────────── */}
         <section>
-          <p className="mb-3 text-caption font-semibold uppercase tracking-widest text-slate-400">Connection</p>
+          <p className="mb-3 text-caption font-semibold uppercase tracking-widest text-slate-400">{t('Connection')}</p>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Sync method" info="Push = device calls our webhook. Pull = we call the device on schedule. SDK = vendor library. Check device manual." infoKey="attendance.sync_method">
-              <select aria-label="Sync method" className="select w-full" value={f.syncMethod} onChange={(e) => set({ syncMethod: e.target.value })}>
-                <option>Push API</option><option>Pull API</option><option>SDK</option>
-                <option>SFTP import</option><option>CSV import</option><option>Manual upload</option>
+            <Field label={t('Sync method')} info={t('Push = device calls our webhook. Pull = we call the device on schedule. SDK = vendor library. Check device manual.')} infoKey="attendance.sync_method">
+              <select aria-label={t('Sync method')} className="select w-full" value={f.syncMethod} onChange={(e) => set({ syncMethod: e.target.value })}>
+                <option value="Push API">{t('Push API')}</option><option value="Pull API">{t('Pull API')}</option><option value="SDK">SDK</option>
+                <option value="SFTP import">{t('SFTP import')}</option><option value="CSV import">{t('CSV import')}</option><option value="Manual upload">{t('Manual upload')}</option>
               </select>
             </Field>
-            <Field label="Sync frequency">
-              <input aria-label="Sync frequency" list="freq-suggestions" className="input w-full" value={f.syncFrequency} onChange={(e) => set({ syncFrequency: e.target.value })} placeholder="Every 5 minutes" />
+            <Field label={t('Sync frequency')}>
+              <input aria-label={t('Sync frequency')} list="freq-suggestions" className="input w-full" value={f.syncFrequency} onChange={(e) => set({ syncFrequency: e.target.value })} placeholder={t('Every 5 minutes')} />
               <datalist id="freq-suggestions">
                 {['Real-time (Push)','Every 1 minute','Every 5 minutes','Every 15 minutes','Every 30 minutes','Hourly','Manual'].map(v => <option key={v} value={v} />)}
               </datalist>
             </Field>
-            <Field label="Device IP / hostname">
-              <input aria-label="Device IP address" className="input w-full font-mono" value={f.ipAddress} onChange={(e) => set({ ipAddress: e.target.value })} placeholder="192.168.1.50" />
+            <Field label={t('Device IP / hostname')}>
+              <input aria-label={t('Device IP address')} className="input w-full font-mono" value={f.ipAddress} onChange={(e) => set({ ipAddress: e.target.value })} placeholder="192.168.1.50" />
             </Field>
-            <Field label="Port">
-              <input aria-label="Port" className="input w-full font-mono" value={f.port} onChange={(e) => set({ port: e.target.value })} placeholder="4370 (ZKTeco default)" />
+            <Field label={t('Port')}>
+              <input aria-label={t('Port')} className="input w-full font-mono" value={f.port} onChange={(e) => set({ port: e.target.value })} placeholder={t('4370 (ZKTeco default)')} />
             </Field>
-            <Field label="API endpoint URL (Pull / REST devices)" info="Full URL the system will call to fetch attendance records. E.g. http://192.168.1.50/api/att/logs" infoKey="attendance.device_endpoint">
-              <input aria-label="Endpoint URL" className="input w-full font-mono" value={f.endpointUrl} onChange={(e) => set({ endpointUrl: e.target.value })} placeholder="http://192.168.1.50/api/att/logs" />
+            <Field label={t('API endpoint URL (Pull / REST devices)')} info={t('Full URL the system will call to fetch attendance records. E.g. http://192.168.1.50/api/att/logs')} infoKey="attendance.device_endpoint">
+              <input aria-label={t('Endpoint URL')} className="input w-full font-mono" value={f.endpointUrl} onChange={(e) => set({ endpointUrl: e.target.value })} placeholder="http://192.168.1.50/api/att/logs" />
             </Field>
           </div>
           {isPush && (
             <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-500/20 dark:bg-blue-500/10">
-              <p className="text-xs font-semibold text-blue-700 dark:text-blue-300 mb-1 flex items-center gap-1.5"><Webhook className="h-3.5 w-3.5" />Push API — configure this device to POST to:</p>
-              <code className="block text-xs font-mono text-blue-800 dark:text-blue-200">{process.env.NEXT_PUBLIC_API_BASE_URL || '[API Base URL]'}/api/attendance/ingest</code>
-              <p className="mt-1 text-xs text-blue-600 dark:text-blue-300">Required header: <span className="font-mono">X-Device-Key: [generate after saving]</span></p>
+              <p className="text-xs font-semibold text-blue-700 dark:text-blue-300 mb-1 flex items-center gap-1.5"><Webhook className="h-3.5 w-3.5" />{t('Push API — configure this device to POST to')}:</p>
+              <code dir="ltr" className="block text-xs font-mono text-start text-blue-800 dark:text-blue-200">{process.env.NEXT_PUBLIC_API_BASE_URL || '[API Base URL]'}/api/attendance/ingest</code>
+              <p className="mt-1 text-xs text-blue-600 dark:text-blue-300">{t('Required header')}: <span dir="ltr" className="inline-block font-mono">X-Device-Key: [generate after saving]</span></p>
             </div>
           )}
         </section>
 
         {/* ── Authentication ────────────────────────────────────── */}
         <section>
-          <p className="mb-3 text-caption font-semibold uppercase tracking-widest text-slate-400">Authentication (for Pull API requests)</p>
+          <p className="mb-3 text-caption font-semibold uppercase tracking-widest text-slate-400">{t('Authentication (for Pull API requests)')}</p>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Auth type">
-              <select aria-label="Auth type" className="select w-full" value={f.authType} onChange={(e) => set({ authType: e.target.value })}>
-                <option value="None">None (open endpoint)</option>
-                <option value="BasicAuth">Basic Auth (username + password)</option>
-                <option value="Bearer">Bearer Token</option>
-                <option value="CustomHeader">Custom Header (e.g. X-API-Key)</option>
-                <option value="ApiKeyQuery">Query Param (e.g. ?api_key=xxx)</option>
+            <Field label={t('Auth type')}>
+              <select aria-label={t('Auth type')} className="select w-full" value={f.authType} onChange={(e) => set({ authType: e.target.value })}>
+                <option value="None">{t('None (open endpoint)')}</option>
+                <option value="BasicAuth">{t('Basic Auth (username + password)')}</option>
+                <option value="Bearer">{t('Bearer Token')}</option>
+                <option value="CustomHeader">{t('Custom Header (e.g. X-API-Key)')}</option>
+                <option value="ApiKeyQuery">{t('Query Param (e.g. ?api_key=xxx)')}</option>
               </select>
             </Field>
             {f.authType === 'BasicAuth' && <>
-              <Field label="Username"><input aria-label="Auth username" className="input w-full" value={f.authUsername} onChange={(e) => set({ authUsername: e.target.value })} placeholder="admin" /></Field>
-              <Field label="Password"><input aria-label="Auth password" type="password" className="input w-full" value={f.authPassword} onChange={(e) => set({ authPassword: e.target.value })} placeholder="••••••••" /></Field>
+              <Field label={t('Username')}><input aria-label={t('Auth username')} className="input w-full" value={f.authUsername} onChange={(e) => set({ authUsername: e.target.value })} placeholder="admin" /></Field>
+              <Field label={t('Password')}><input aria-label={t('Auth password')} type="password" className="input w-full" value={f.authPassword} onChange={(e) => set({ authPassword: e.target.value })} placeholder="••••••••" /></Field>
             </>}
             {f.authType === 'Bearer' && (
-              <Field label="Bearer token"><input aria-label="Bearer token" className="input w-full font-mono" value={f.authToken} onChange={(e) => set({ authToken: e.target.value })} placeholder="eyJ..." /></Field>
+              <Field label={t('Bearer token')}><input aria-label={t('Bearer token')} className="input w-full font-mono" value={f.authToken} onChange={(e) => set({ authToken: e.target.value })} placeholder="eyJ..." /></Field>
             )}
             {f.authType === 'CustomHeader' && <>
-              <Field label="Header name"><input aria-label="Header name" className="input w-full font-mono" value={f.authHeaderName} onChange={(e) => set({ authHeaderName: e.target.value })} placeholder="X-API-Key" /></Field>
-              <Field label="Header value"><input aria-label="Header value" className="input w-full font-mono" value={f.authHeaderValue} onChange={(e) => set({ authHeaderValue: e.target.value })} placeholder="your-secret-key" /></Field>
+              <Field label={t('Header name')}><input aria-label={t('Header name')} className="input w-full font-mono" value={f.authHeaderName} onChange={(e) => set({ authHeaderName: e.target.value })} placeholder="X-API-Key" /></Field>
+              <Field label={t('Header value')}><input aria-label={t('Header value')} className="input w-full font-mono" value={f.authHeaderValue} onChange={(e) => set({ authHeaderValue: e.target.value })} placeholder="your-secret-key" /></Field>
             </>}
             {f.authType === 'ApiKeyQuery' && <>
-              <Field label="Param name"><input aria-label="Query param name" className="input w-full font-mono" value={f.authParamName} onChange={(e) => set({ authParamName: e.target.value })} placeholder="api_key" /></Field>
-              <Field label="Param value"><input aria-label="Query param value" className="input w-full font-mono" value={f.authParamValue} onChange={(e) => set({ authParamValue: e.target.value })} placeholder="your-key-value" /></Field>
+              <Field label={t('Param name')}><input aria-label={t('Query param name')} className="input w-full font-mono" value={f.authParamName} onChange={(e) => set({ authParamName: e.target.value })} placeholder="api_key" /></Field>
+              <Field label={t('Param value')}><input aria-label={t('Query param value')} className="input w-full font-mono" value={f.authParamValue} onChange={(e) => set({ authParamValue: e.target.value })} placeholder="your-key-value" /></Field>
             </>}
           </div>
         </section>
@@ -556,8 +565,8 @@ function DeviceFormModal({ title, form, setForm, onSubmit, onClose, saving }: {
         {/* ── Custom HTTP Headers ───────────────────────────────── */}
         <section>
           <KvEditor
-            label="Custom HTTP Headers"
-            hint="Extra headers included on every Pull API request. E.g. Accept: application/json, X-ISAPI-Version: 2.0 (Hikvision), X-Tenant: acme"
+            label={t('Custom HTTP Headers')}
+            hint={t('Extra headers included on every Pull API request. E.g. Accept: application/json, X-ISAPI-Version: 2.0 (Hikvision), X-Tenant: acme')}
             pairs={f.customHeaders}
             onChange={(pairs) => set({ customHeaders: pairs })}
             keyPlaceholder="Header-Name"
@@ -568,8 +577,8 @@ function DeviceFormModal({ title, form, setForm, onSubmit, onClose, saving }: {
         {/* ── Device Parameters ─────────────────────────────────── */}
         <section>
           <KvEditor
-            label="Device Parameters"
-            hint="Vendor-specific config. Common: poll_path=/iclock/cdata, employee_field=uid, timestamp_field=punch_time, direction_field=punch_state, batch_size=100, timeout_seconds=30, date_format=2006-01-02T15:04:05Z"
+            label={t('Device Parameters')}
+            hint={t('Vendor-specific config. Common: poll_path=/iclock/cdata, employee_field=uid, timestamp_field=punch_time, direction_field=punch_state, batch_size=100, timeout_seconds=30, date_format=2006-01-02T15:04:05Z')}
             pairs={f.deviceParams}
             onChange={(pairs) => set({ deviceParams: pairs })}
             keyPlaceholder="param_name"
@@ -580,8 +589,8 @@ function DeviceFormModal({ title, form, setForm, onSubmit, onClose, saving }: {
         {/* ── Field Mappings ────────────────────────────────────── */}
         <section>
           <KvEditor
-            label="Field Mappings (Device field → System field)"
-            hint="Map the device's JSON/XML field names to system fields. System fields: employeeCode, punchTimestampUtc, punchDirection, verificationMethod, latitude, longitude. E.g. uid→employeeCode, check_type→punchDirection"
+            label={t('Field Mappings (Device field → System field)')}
+            hint={t('Map the device\'s JSON/XML field names to system fields. System fields: employeeCode, punchTimestampUtc, punchDirection, verificationMethod, latitude, longitude. E.g. uid→employeeCode, check_type→punchDirection')}
             pairs={f.fieldMappings}
             onChange={(pairs) => set({ fieldMappings: pairs })}
             keyPlaceholder="device_field_name"
@@ -590,8 +599,8 @@ function DeviceFormModal({ title, form, setForm, onSubmit, onClose, saving }: {
         </section>
 
         <div className="flex justify-end gap-2 border-t border-slate-100 pt-4 dark:border-white/[0.07]">
-          <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-          <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving…' : 'Save Device'}</button>
+          <button type="button" onClick={onClose} className="btn-secondary">{t('Cancel')}</button>
+          <button type="submit" disabled={saving} className="btn-primary">{saving ? t('Saving…') : t('Save Device')}</button>
         </div>
       </form>
     </Modal>
@@ -599,6 +608,7 @@ function DeviceFormModal({ title, form, setForm, onSubmit, onClose, saving }: {
 }
 
 function Modal({ title, onClose, children, size = 'md' }: { title: string; onClose: () => void; children: ReactNode; size?: 'md' | 'lg' | 'xl' }) {
+  const t = useT();
   const maxW = size === 'xl' ? 'max-w-4xl' : size === 'lg' ? 'max-w-3xl' : 'max-w-2xl';
   if (typeof document === 'undefined') return null;
   return createPortal(
@@ -607,7 +617,7 @@ function Modal({ title, onClose, children, size = 'md' }: { title: string; onClo
         <div className={`relative my-8 w-full ${maxW} rounded-2xl border border-slate-200 bg-white shadow-e3 dark:border-white/10 dark:bg-surface`}>
           <div className="sticky top-0 z-10 flex items-center justify-between rounded-t-2xl border-b border-slate-100 bg-white px-6 py-4 dark:border-white/[0.07] dark:bg-surface">
             <h2 className="text-base font-semibold text-slate-900 dark:text-white">{title}</h2>
-            <button type="button" onClick={onClose} aria-label="Close" className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
+            <button type="button" onClick={onClose} aria-label={t('Close')} className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
           </div>
           <div className="p-6">{children}</div>
         </div>

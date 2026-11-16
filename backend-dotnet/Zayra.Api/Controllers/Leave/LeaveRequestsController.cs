@@ -4,10 +4,12 @@ using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
@@ -23,14 +25,26 @@ public class LeaveRequestsController : ControllerBase
     private readonly ILeaveService _leaveService;
     private readonly IDataScopeService _scopeService;
     private readonly INotificationService _notifications;
+    private readonly IDocumentStorage? _storage;
+    private readonly IAuditService? _audit;
 
-    public LeaveRequestsController(ZayraDbContext db, ILeaveService leaveService, IDataScopeService scopeService, INotificationService notifications)
+    public LeaveRequestsController(ZayraDbContext db, ILeaveService leaveService, IDataScopeService scopeService, INotificationService notifications,
+        IDocumentStorage? storage = null, IAuditService? audit = null)
     {
         _db = db;
         _leaveService = leaveService;
         _scopeService = scopeService;
         _notifications = notifications;
+        _storage = storage;
+        _audit = audit;
     }
+
+    /// <summary>
+    /// The caller's own employee record: the data scope's when it has one, else the linked employee (an organisation-wide scope
+    /// carries none). Used wherever "is this the caller's own leave" decides who sees a document.
+    /// </summary>
+    private async Task<int?> SelfEmployeeIdAsync(Guid tenantId, DataScope scope, CancellationToken ct) =>
+        scope.CallerEmployeeId ?? await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct);
 
     [HttpGet]
     public async Task<IActionResult> List(
@@ -73,13 +87,16 @@ public class LeaveRequestsController : ControllerBase
             .Take(pageSize)
             .ToListAsync(ct);
 
-        return Ok(new PagedResult<LeaveRequest>(items, total, page, pageSize));
+        // The attachment key is the handle to a medical document: only the leave's employee and HR see it.
+        var listSelf = await SelfEmployeeIdAsync(tenantId.Value, scope, ct);
+        var shown = items.Select(i => LeaveFileKeyExposure.ForReader(_db, i, User, scope, listSelf)).ToList();
+        return Ok(new PagedResult<LeaveRequest>(shown, total, page, pageSize));
     }
 
     /// <summary>The most pending requests one queue read examines; <c>truncated</c> says when there were more.</summary>
     public const int QueueScanCap = 1000;
 
-    private static readonly string[] QueueStatuses = ["Submitted", "PendingManagerApproval", "PendingHRApproval", "CancellationRequested"];
+    private static readonly string[] QueueStatuses = Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.All;
 
     private sealed record QueueScan(List<LeaveRequest> Rows, int Total, bool Cut, DataScope Scope,
         Dictionary<Guid, LeaveCancellationRequest> Cancellations);
@@ -119,6 +136,7 @@ public class LeaveRequestsController : ControllerBase
         // The decision endpoints are [Authorize(Roles = "Manager,HR Manager,Admin")]; a caller they would turn away
         // has nothing to decide.
         if (!LeaveNotifications.CancellationDeciderRoles.Any(User.IsInRole)) return items;
+        var self = await SelfEmployeeIdAsync(tenantId, scan.Scope, ct);
         foreach (var r in scan.Rows)
         {
             if (r.Status == "CancellationRequested")
@@ -130,7 +148,9 @@ public class LeaveRequestsController : ControllerBase
             }
             if (!await CanDecideResolvedLeaveStepAsync(tenantId, r.Id, userId, ct)) continue;
             if (await LeaveService.MakerCheckerRefusalAsync(_db, r, userId, ct) is not null) continue;
-            items.Add(LeaveAwaitingDecisionDto.From(r, "Decision", null, null));
+            // Whether a supporting document is attached, only for whoever may open it (never the key itself).
+            items.Add(LeaveAwaitingDecisionDto.From(r, "Decision", null, null,
+                !string.IsNullOrWhiteSpace(r.AttachmentPath) && LeaveFileKeyExposure.MaySeeKey(User, scan.Scope, r.EmployeeId, self)));
         }
         return items;
     }
@@ -245,7 +265,81 @@ public class LeaveRequestsController : ControllerBase
             };
         }
 
-        return Ok(new { request, approvals, statutoryHistory, statutory, cancellation });
+        return Ok(new { request = LeaveFileKeyExposure.ForReader(_db, request, User, scope, await SelfEmployeeIdAsync(tenantId.Value, scope, ct)), approvals, statutoryHistory, statutory, cancellation });
+    }
+
+    /// <summary>The types a browser shows inline without running anything; every other stored type is served as a download.</summary>
+    private static readonly HashSet<string> InlineAttachmentTypes = new(StringComparer.OrdinalIgnoreCase) { "application/pdf", "image/png", "image/jpeg" };
+
+    /// <summary>
+    /// The leave's supporting document (a sick note and the like), for the approver screens. Who may open it is the leave
+    /// file-key rule (<see cref="LeaveFileKeyExposure.MaySeeKey"/>): the leave's own employee and Admin / HR Manager /
+    /// HR Officer, within the same tenant and data scope as <c>GET /api/leave/requests/{id}</c>. Line managers may not.
+    /// Only the employee document the leave references is served: the leave's employee's own, not deleted, and passed by the
+    /// upload scan. Everyone else, a leave without one, or a file that is gone, gets 404, so the endpoint never says a
+    /// document exists. Each download is audited.
+    /// </summary>
+    [HttpGet("{id:guid}/attachment")]
+    public async Task<IActionResult> DownloadAttachment(Guid id, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        // Every download is audited: with no audit service there is no download (fail closed, same answer as no storage).
+        if (_storage is null || _audit is null) return NotFound();
+
+        var request = await _db.LeaveRequests.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
+        if (request is null || string.IsNullOrWhiteSpace(request.AttachmentPath)) return NotFound();
+
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        var self = await SelfEmployeeIdAsync(tenantId.Value, scope, ct);
+        if (!scope.CanAccessEmployee(request.EmployeeId) || !LeaveFileKeyExposure.MaySeeKey(User, scope, request.EmployeeId, self))
+            return NotFound();
+
+        var key = request.AttachmentPath.Trim();
+        var document = await _db.EmployeeDocuments.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.EmployeeId == request.EmployeeId && d.StorageUrl == key && !d.IsDeleted
+                // HR evidence is never a leave attachment: the employee may not see it (the submit and import paths refuse it too).
+                && !RestrictedEmployeeDocumentTypes.Lowered.Contains(d.DocumentType.Trim().ToLower()))
+            .OrderByDescending(d => d.UploadedAtUtc)
+            .FirstOrDefaultAsync(ct);
+        if (document is null || !Zayra.Api.Application.Employees.Ess.ScanStatuses.IsServable(document.ScanStatus)) return NotFound();
+        // An identity, payroll or contract document needs employees.sensitive here exactly as on the employee-document
+        // download; the leave's own employee always sees their own file.
+        if (self != request.EmployeeId
+            && Zayra.Api.Application.Employees.EmployeeDocumentDto.IsSensitiveDocument(document.DocumentType, document.DocumentCategory)
+            && !User.HasPermission("employees.sensitive"))
+            return NotFound();
+
+        byte[] contents;
+        try { contents = await _storage.GetBytesAsync(tenantId.Value, document.StorageUrl, ct); }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or InvalidOperationException) { return NotFound(); }
+
+        await _audit.RecordEventAsync("leave.attachment_downloaded", nameof(LeaveRequest), id.ToString(),
+            new Zayra.Api.Application.Auth.RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(),
+                this.GetUserId(), tenantId.Value),
+            System.Text.Json.JsonSerializer.Serialize(new { documentId = document.Id, employeeId = request.EmployeeId }), ct);
+
+        var declared = (document.ContentType ?? string.Empty).Split(';')[0].Trim();
+        var inline = InlineAttachmentTypes.Contains(declared);
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+        // Whatever the stored type, the response may not run scripts or load anything if a browser opens it.
+        Response.Headers["Content-Security-Policy"] = "sandbox";
+        Response.Headers.CacheControl = "no-store";
+        Response.Headers.ContentDisposition = new Microsoft.Net.Http.Headers.ContentDispositionHeaderValue(inline ? "inline" : "attachment")
+        {
+            FileName = SafeAttachmentFileName(document.FileName),
+        }.ToString();
+        return File(contents, inline ? declared.ToLowerInvariant() : "application/octet-stream");
+    }
+
+    /// <summary>A header-safe file name: letters, digits, dot, dash and underscore only, no "..", at most 100 characters.</summary>
+    internal static string SafeAttachmentFileName(string? name)
+    {
+        var raw = Path.GetFileName((name ?? string.Empty).Replace('\\', '/'));
+        var cleaned = System.Text.RegularExpressions.Regex.Replace(raw, "[^A-Za-z0-9._-]", "_");
+        cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"\.{2,}", ".").Trim('.', '_', '-');
+        if (cleaned.Length > 100) cleaned = cleaned[^100..].TrimStart('.', '_', '-');
+        return cleaned.Any(char.IsLetterOrDigit) ? cleaned : "leave-document";
     }
 
     /// <summary>
@@ -297,7 +391,7 @@ public class LeaveRequestsController : ControllerBase
         var leaveType = await _db.LeaveTypes
             .FirstOrDefaultAsync(t => t.Id == req.LeaveTypeId && t.TenantId == tenantId, ct);
         if (leaveType is null)
-            return BadRequest(new { message = "Leave type not found." });
+            return BadRequest(new { code = LeaveRefusalCodes.TypeUnavailable, message = "Leave type not found." });
 
         var employee = await _db.Employees
             .FirstOrDefaultAsync(e => e.Id == req.EmployeeId && e.TenantId == tenantId, ct);
@@ -305,7 +399,7 @@ public class LeaveRequestsController : ControllerBase
             return BadRequest(new { message = "Employee not found." });
 
         if (req.EndDate < req.StartDate)
-            return BadRequest(new { message = "End date must be after start date." });
+            return BadRequest(new { code = LeaveRefusalCodes.InvalidDates, message = "End date must be after start date." });
 
         // W2-D (S1): AttachmentPath holds a STORAGE KEY, never file bytes, and only the key of a
         // document the leave's employee owns. The app sends AttachmentDocumentId (the id returned by
@@ -315,19 +409,21 @@ public class LeaveRequestsController : ControllerBase
         if (req.AttachmentDocumentId is { } attachmentDocumentId)
         {
             var key = await _db.EmployeeDocuments.AsNoTracking()
-                .Where(d => d.TenantId == tenantId && d.EmployeeId == req.EmployeeId && d.Id == attachmentDocumentId && !d.IsDeleted)
+                .Where(d => d.TenantId == tenantId && d.EmployeeId == req.EmployeeId && d.Id == attachmentDocumentId && !d.IsDeleted
+                    && !RestrictedEmployeeDocumentTypes.Lowered.Contains(d.DocumentType.Trim().ToLower()))
                 .Select(d => d.StorageUrl).FirstOrDefaultAsync(ct);
             if (string.IsNullOrWhiteSpace(key))
-                return BadRequest(new { message = "The attachment was not found among the employee's documents." });
+                return BadRequest(new { code = LeaveRefusalCodes.AttachmentNotFound, message = "The attachment was not found among the employee's documents." });
             attachmentPath = key;
         }
         else if (!string.IsNullOrWhiteSpace(req.AttachmentPath))
         {
             var candidate = req.AttachmentPath.Trim();
             var owned = candidate.Length <= 1024 && await _db.EmployeeDocuments.AsNoTracking()
-                .AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == req.EmployeeId && d.StorageUrl == candidate && !d.IsDeleted, ct);
+                .AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == req.EmployeeId && d.StorageUrl == candidate && !d.IsDeleted
+                    && !RestrictedEmployeeDocumentTypes.Lowered.Contains(d.DocumentType.Trim().ToLower()), ct);
             if (!owned)
-                return BadRequest(new { message = "attachmentPath must reference an uploaded document. Upload the file first (POST /api/ess/documents) and send its id as attachmentDocumentId." });
+                return BadRequest(new { code = LeaveRefusalCodes.AttachmentNotFound, message = "attachmentPath must reference an uploaded document. Upload the file first (POST /api/ess/documents) and send its id as attachmentDocumentId." });
             attachmentPath = candidate;
         }
 
@@ -357,7 +453,11 @@ public class LeaveRequestsController : ControllerBase
             DayType = req.DayType ?? "Full",
             HoursRequested = req.HoursRequested ?? 0,
             Reason = req.Reason ?? string.Empty,
-            IsEmergency = req.IsEmergency,
+            // An emergency waives the notice period, so only leave administration may mark one: whoever may file leave for
+            // others (leave.write). On an employee's own request the flag is ignored, silently, as the apps never send it.
+            // Filing on someone's behalf as an emergency is leave administration. The subject never decides about their own
+            // request, so the flag is ignored when the request is for the caller's own employee record, leave.write or not.
+            IsEmergency = req.IsEmergency && !isSelf && User.HasPermission("leave.write"),
             AttachmentPath = attachmentPath,
             DelegateEmployeeId = delegateEmployee?.Id,
             DelegateEmployeeName = delegateEmployee?.FullName ?? string.Empty,
@@ -371,11 +471,14 @@ public class LeaveRequestsController : ControllerBase
             var submitted = await _leaveService.SubmitRequestAsync(tenantId.Value, request, this.GetUserId(), ct);
             // The employee and whoever decides the first step; never the whole workspace. The same path Self-Service uses.
             await LeaveNotifications.NotifySubmittedAsync(_db, _notifications, tenantId.Value, submitted, ct);
-            return Created($"/api/leave/requests/{submitted.Id}", submitted);
+            // The attachment key is the handle to a medical document: only the employee and HR/Admin get it back, whoever filed the request.
+            return Created($"/api/leave/requests/{submitted.Id}", LeaveFileKeyExposure.ForReader(_db, submitted, User, scope, self));
         }
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        // A refusal by the leave rules: same 400 and English message, plus the stable code and its values for the clients to translate.
+        catch (LeaveRefusedException ex) { return BadRequest(new { code = ex.Code, message = ex.Message, args = ex.Args }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -423,7 +526,7 @@ public class LeaveRequestsController : ControllerBase
                 "Leave Request Awaiting Approval",
                 $"{result.EmployeeName}'s {result.LeaveTypeName} request for {result.TotalDays} day(s) is waiting for your decision.",
                 "LeaveRequest", result.Id.ToString(), ct);
-            return Ok(result);
+            return Ok(LeaveFileKeyExposure.ForReader(_db, result, User, scope));
         }
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
@@ -472,7 +575,7 @@ public class LeaveRequestsController : ControllerBase
                 "Leave Rejected",
                 $"{result.EmployeeName}'s {result.LeaveTypeName} request has been rejected.",
                 "LeaveRequest", result.Id.ToString(), ct);
-            return Ok(result);
+            return Ok(LeaveFileKeyExposure.ForReader(_db, result, User, scope));
         }
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
@@ -507,8 +610,8 @@ public class LeaveRequestsController : ControllerBase
         if (!isAdminOrHr && !ownRequest)
             return Forbid();
         // Cancelling your own request is self-service (ess.write); anyone else's is leave administration
-        // (leave.write or leave.cancel). The role and ownership checks alone let an ess.read-only login
-        // cancel its own leave.
+        // (leave.write or leave.cancel). The role and ownership checks alone do not decide it: cancelling
+        // also needs the matching permission.
         var canAdministerLeave = User.HasPermission("leave.write") || User.HasPermission("leave.cancel");
         if (!(canAdministerLeave || (ownRequest && User.HasPermission("ess.write"))))
             return Forbid();
@@ -517,6 +620,15 @@ public class LeaveRequestsController : ControllerBase
 
         if (leaveRequest.Status == "Approved")
         {
+            // Owner rule: an employee may ask to cancel approved leave only BEFORE it starts (the tenant's today, as every other
+            // leave date rule reads it). Once it has started, HR decides. Admin and HR Manager are not held to this.
+            if (!isAdminOrHr && leaveRequest.StartDate <= await TenantClock.TodayForAsync(_db, tenantId.Value, ct))
+                return BadRequest(new
+                {
+                    code = LeaveRefusalCodes.CancelAfterStart,
+                    message = "Approved leave can only be cancelled before it starts. Ask HR if it needs to change.",
+                    args = new Dictionary<string, string>(),
+                });
             if (await _db.LeaveCancellationRequests.AnyAsync(x => x.TenantId == tenantId
                     && x.LeaveRequestId == id && x.Status == "Pending", ct))
                 return Conflict(new { message = "A cancellation request is already pending." });
@@ -576,7 +688,7 @@ public class LeaveRequestsController : ControllerBase
             // second save after the cancellation committed: a failure in between stranded it Pending forever.
             var leave = await _leaveService.ApproveCancellationAsync(tenantId.Value, id, reviewer, req.Notes ?? string.Empty, ct);
             await LeaveNotifications.NotifyCancellationDecidedAsync(_db, _notifications, tenantId.Value, leave, approved: true, req.Notes, ct);
-            return Ok(leave);
+            return Ok(LeaveFileKeyExposure.ForReader(_db, leave, User, scope));
         }
         catch (LeaveDecisionConflictException ex) { return Conflict(new { error = "invalid_leave_state", message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -632,80 +744,50 @@ public class LeaveRequestsController : ControllerBase
     }
 
     [HttpPost("{id:guid}/withdraw")]
-    public async Task<IActionResult> Withdraw(Guid id, [FromBody] WithdrawLeaveRequest req, CancellationToken ct)
+    // The web client posts no content at all (axios sends nothing when no data is given); the mobile app posts {}.
+    // The default [FromBody] binding answers an empty body with 400/415, so an empty one is allowed and means "no reason".
+    public async Task<IActionResult> Withdraw(Guid id, [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] WithdrawLeaveRequest? req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var leaveRequest = await _db.LeaveRequests
+        var leaveRequest = await _db.LeaveRequests.AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (leaveRequest is null) return NotFound();
 
         var canAdminister = User.IsInRole("Admin") || User.IsInRole("HR Manager");
-        if (!canAdminister)
-        {
-            var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
-            if (scope.CallerEmployeeId != leaveRequest.EmployeeId) return Forbid();
-        }
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        var ownRequest = scope.CallerEmployeeId == leaveRequest.EmployeeId;
+        if (!canAdminister && !ownRequest) return Forbid();
+        // The same permission as cancelling (CTO decision 2026-11-12): your own request is self-service (ess.write); anyone
+        // else's is leave administration (leave.write or leave.cancel). The role and ownership checks alone do not decide it:
+        // withdrawing also needs the matching permission.
+        var canAdministerLeave = User.HasPermission("leave.write") || User.HasPermission("leave.cancel");
+        if (!(canAdministerLeave || (ownRequest && User.HasPermission("ess.write"))))
+            return Forbid();
 
+        // The fast path; LeaveService repeats this check under the employee's leave lock, so a final approval that
+        // commits between this read and the write cannot be overwritten.
         var withdrawable = new[] { "Draft", "Submitted", "PendingManagerApproval", "PendingHRApproval" };
         if (!withdrawable.Contains(leaveRequest.Status))
             return BadRequest(new { message = "Only unapproved requests can be withdrawn." });
 
         var employeeName = User.Identity?.Name ?? this.GetUserId()?.ToString() ?? "Employee";
 
-        leaveRequest.Status = "Withdrawn";
-        leaveRequest.CancellationReason = req.Reason ?? string.Empty;
-        leaveRequest.CancelledAtUtc = DateTime.UtcNow;
-
-        // A request may span calendar years. Release the exact reservations recorded during
-        // submission rather than subtracting the aggregate from the start-year balance.
-        var reservations = await _db.LeaveBalanceTransactions.AsNoTracking()
-            .Where(t => t.TenantId == tenantId && t.EmployeeId == leaveRequest.EmployeeId
-                && t.LeaveTypeId == leaveRequest.LeaveTypeId && t.Reference == leaveRequest.Id.ToString()
-                && t.TransactionType == "Pending")
-            .ToListAsync(ct);
-        foreach (var reservation in reservations)
+        // Whoever was deciding it is told it is gone; read before the withdrawal closes the pending step.
+        var deciders = await PendingDecidersAsync(tenantId.Value, id, leaveRequest.EmployeeId, ct);
+        try
         {
-            var balance = await _db.EmployeeLeaveBalances.FirstOrDefaultAsync(b =>
-                b.TenantId == tenantId && b.EmployeeId == leaveRequest.EmployeeId
-                && b.LeaveTypeId == leaveRequest.LeaveTypeId && b.Year == reservation.Year, ct);
-            if (balance is null) continue;
-            var before = balance.Available;
-            balance.Pending = Math.Max(0, balance.Pending - reservation.Amount);
-            balance.UpdatedAtUtc = DateTime.UtcNow;
-            _db.LeaveBalanceTransactions.Add(new LeaveBalanceTransaction
-            {
-                TenantId = tenantId.Value,
-                CompanyId = leaveRequest.CompanyId,
-                EmployeeId = leaveRequest.EmployeeId,
-                LeaveTypeId = leaveRequest.LeaveTypeId,
-                Year = reservation.Year,
-                TransactionType = "Reversed",
-                Amount = reservation.Amount,
-                BalanceBefore = before,
-                BalanceAfter = balance.Available,
-                Reference = leaveRequest.Id.ToString(),
-                Reason = "Leave request withdrawn",
-                PerformedByName = employeeName
-            });
+            var result = await _leaveService.WithdrawRequestAsync(tenantId.Value, id, employeeName, req?.Reason ?? string.Empty, ct);
+            await _notifications.NotifyEachAsync(tenantId.Value,
+                [.. await EmployeeLoginsAsync(tenantId.Value, result.EmployeeId, ct), .. deciders],
+                "Leave Withdrawn",
+                $"{result.EmployeeName}'s {result.LeaveTypeName} request has been withdrawn.",
+                "LeaveRequest", result.Id.ToString(), ct);
+            return Ok(result);
         }
-
-        var projection = await _db.ApprovalRequests
-            .FirstOrDefaultAsync(a => a.TenantId == tenantId && a.EntityName == nameof(LeaveRequest)
-                && a.EntityId == leaveRequest.Id.ToString() && a.Status == "Pending", ct);
-        if (projection is not null)
-        {
-            projection.Status = "Cancelled";
-            projection.CompletedAtUtc = DateTime.UtcNow;
-        }
-        var pendingApprovals = await _db.LeaveApprovals
-            .Where(a => a.TenantId == tenantId && a.LeaveRequestId == id && a.Decision == "Pending")
-            .ToListAsync(ct);
-        foreach (var approval in pendingApprovals) approval.Decision = "Cancelled";
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(leaveRequest);
+        catch (LeaveDecisionConflictException ex) { return Conflict(new { error = "invalid_leave_state", message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     [HttpPost("{id:guid}/delegate")]
@@ -790,7 +872,7 @@ public class LeaveRequestsController : ControllerBase
         {
             x.e.EmployeeCode, x.r.EmployeeName, x.leaveType?.Code ?? string.Empty, x.r.LeaveTypeName,
             x.r.StartDate.ToString("yyyy-MM-dd"), x.r.EndDate.ToString("yyyy-MM-dd"),
-            x.r.DayType, x.r.HoursRequested, x.r.IsEmergency ? "true" : "false", x.r.AttachmentPath,
+            x.r.DayType, x.r.HoursRequested, x.r.IsEmergency ? "true" : "false", LeaveFileKeyExposure.KeyForExport(User, x.r.AttachmentPath),
             x.r.TotalDays, x.r.Status, x.r.Reason
         });
         var csv = Csv.Build(LeaveRequestCsvHeaders, rows);
@@ -838,6 +920,9 @@ public class LeaveRequestsController : ControllerBase
             return typesByCompany[key] = (byCode, byName);
         }
 
+        var canMarkEmergency = User.HasPermission("leave.write");
+        var importerEmployeeId = await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId.Value, ct);
+
         int created = 0, skipped = 0;
         var errors = new List<string>();
         var rowNum = 1;
@@ -865,6 +950,17 @@ public class LeaveRequestsController : ControllerBase
             if (!DateOnly.TryParse(row.GetValueOrDefault("EndDate", string.Empty), out var endDate))
             { skipped++; errors.Add($"Row {rowNum}: EndDate is required and must be yyyy-MM-dd."); continue; }
             decimal.TryParse(row.GetValueOrDefault("HoursRequested", "0"), out var hours);
+            // An attachment key in a file is accepted only when it is the key of a document this employee has uploaded: a key that belongs
+            // to another employee's record is not accepted as the attachment of this leave.
+            var attachmentKey = row.GetValueOrDefault("AttachmentPath", string.Empty).Trim();
+            if (attachmentKey.Length > 0)
+            {
+                var ownsKey = attachmentKey.Length <= 1024 && await _db.EmployeeDocuments.AsNoTracking()
+                    .AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == employee.Id && d.StorageUrl == attachmentKey && !d.IsDeleted
+                        && !RestrictedEmployeeDocumentTypes.Lowered.Contains(d.DocumentType.Trim().ToLower()), ct);
+                if (!ownsKey)
+                { skipped++; errors.Add($"Row {rowNum}: AttachmentPath must be the storage key of a document the employee has uploaded."); continue; }
+            }
 
             var request = new LeaveRequest
             {
@@ -880,7 +976,10 @@ public class LeaveRequestsController : ControllerBase
                 DayType = row.GetValueOrDefault("DayType", "Full").Trim(),
                 HoursRequested = hours,
                 Reason = row.GetValueOrDefault("Reason", string.Empty).Trim(),
-                IsEmergency = row.TryGetValue("IsEmergency", out var emergencyRaw) && string.Equals(emergencyRaw, "true", StringComparison.OrdinalIgnoreCase),
+                // Same rule as filing a request: an emergency waives the notice period, so only leave administration (leave.write)
+                // may mark one, and never on the importer's own employee record.
+                IsEmergency = row.TryGetValue("IsEmergency", out var emergencyRaw) && string.Equals(emergencyRaw, "true", StringComparison.OrdinalIgnoreCase)
+                    && canMarkEmergency && importerEmployeeId != employee.Id,
                 AttachmentPath = row.GetValueOrDefault("AttachmentPath", string.Empty).Trim(),
                 PayrollImpact = leaveType.IsPaid ? "Full" : "None"
             };
@@ -1036,12 +1135,15 @@ public record LeaveAwaitingDecisionDto(
     /// <summary>"Decision" (approve or reject the request) or "Cancellation" (approve the cancellation or keep the leave).</summary>
     string Kind,
     string? CancellationReason,
-    DateTime? CancellationRequestedAtUtc)
+    DateTime? CancellationRequestedAtUtc,
+    /// <summary>A supporting document is attached AND the viewer may open it (the leave's employee or HR/Admin).</summary>
+    bool HasDocument = false)
 {
-    public static LeaveAwaitingDecisionDto From(LeaveRequest r, string kind, string? cancellationReason, DateTime? cancellationRequestedAtUtc) => new(
+    public static LeaveAwaitingDecisionDto From(LeaveRequest r, string kind, string? cancellationReason, DateTime? cancellationRequestedAtUtc,
+        bool hasDocument = false) => new(
         r.Id, r.EmployeeId, r.EmployeeName, r.DepartmentName, r.DesignationTitle, r.LeaveTypeId, r.LeaveTypeName,
         r.StartDate, r.EndDate, r.TotalDays, r.Status, r.Reason, r.IsEmergency, r.SubmittedAtUtc, kind,
-        cancellationReason, cancellationRequestedAtUtc);
+        cancellationReason, cancellationRequestedAtUtc, hasDocument);
 }
 
 public record ApproveLeaveRequest(string? Notes);

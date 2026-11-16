@@ -197,11 +197,6 @@ public static class GradeSalaryStructureSync
         return candidate;
     }
 
-    private static async Task<string> CompanyCurrencyAsync(ZayraDbContext db, Employee employee, CancellationToken ct)
-    {
-        if (employee.CompanyId is not Guid companyId) return "AED";
-        var currency = await db.Companies.AsNoTracking()
-            .Where(x => x.TenantId == employee.TenantId && x.Id == companyId).Select(x => x.DefaultCurrency).FirstOrDefaultAsync(ct);
-        return string.IsNullOrWhiteSpace(currency) ? "AED" : currency.Trim().ToUpperInvariant();
-    }
+    private static Task<string> CompanyCurrencyAsync(ZayraDbContext db, Employee employee, CancellationToken ct) =>
+        Zayra.Api.Infrastructure.Payroll.EmployeeCompanyCurrency.ResolveAsync(db, employee, ct);
 }

@@ -295,6 +295,21 @@ public class TenantModuleBehaviourTests
     }
 
     [Fact]
+    public async Task Write_SaudiBankExport_IsRefusedForTenantAdmin_AndStoresNoRow()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+
+        var result = await MakeController(db, tenantId)
+            .SetModule(FeatureKeys.SaudiBankExport, new SetTenantModuleRequest(false), default);
+
+        var obj = result.Should().BeOfType<ObjectResult>().Subject;
+        obj.StatusCode.Should().Be(StatusCodes.Status501NotImplemented);
+        obj.Value!.ToString().Should().Contain("module_not_enforceable");
+        db.TenantFeatureFlags.Should().BeEmpty("only the platform team can switch the bank export");
+    }
+
+    [Fact]
     public async Task Write_UnenforceableKey_Returns501_RatherThanStoringADeadFlag()
     {
         await using var db = CreateDb();

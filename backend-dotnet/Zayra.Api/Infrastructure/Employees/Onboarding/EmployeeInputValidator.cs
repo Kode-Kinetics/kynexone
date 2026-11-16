@@ -91,6 +91,13 @@ public static class EmployeeInputValidator
         {
             natCode = hit.Iso2; natText = hit.NameEn; natClass = hit.Class;
         }
+        else if (natText.Length > 0 && !draft)
+        {
+            // Typed text that matches nothing and has no code: nothing can classify it, so the person would be treated as a foreigner without
+            // anyone having decided so. Said at save time instead of discovered at payroll.
+            Warn(EmployeeWarningCodes.NationalityUnresolved, "nationality",
+                "The nationality does not match the list, so Saudi, GCC and expatriate rules cannot be applied to this person. Pick it from the list.");
+        }
 
         // ── dates ─────────────────────────────────────────────────────────────────────────────────────
         DateOnly? joining = request.JoiningDate is { } jd
@@ -142,6 +149,7 @@ public static class EmployeeInputValidator
         }
         if (request.ConfirmationDate is { } cd && joining is { } jj && cd < jj) Err("confirmationDate", EmployeeFieldErrors.ConfirmationBeforeJoining);
         if (request.NoticePeriodDays is { } np && (np < 0 || np > 365)) Err("noticePeriodDays", EmployeeFieldErrors.InvalidFormat);
+        if (request.GosiFirstRegisteredOn is { } gosi && (gosi > today || gosi.Year < 1950)) Err("gosiFirstRegisteredOn", EmployeeFieldErrors.InvalidFormat);
 
         // ── contact ───────────────────────────────────────────────────────────────────────────────────
         var mobile = request.MobileNumber;

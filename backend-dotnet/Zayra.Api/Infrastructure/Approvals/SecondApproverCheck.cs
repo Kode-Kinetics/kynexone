@@ -72,10 +72,10 @@ public static class SecondApproverCheck
         $"Add a second person with {whoEn} before {actionEn}. Nobody else can approve it, so it would wait forever.";
 
     /// <summary>Thrown by service-layer code that must refuse before it writes; controllers render <see cref="Body"/> as a 422.</summary>
-    public sealed class NoEligibleApproverException(string permission, string actionEn, string actionAr)
-        : InvalidOperationException(MessageEn(FinanceRights(permission).En, actionEn))
+    public sealed class NoEligibleApproverException(string permission, string actionEn, string actionAr, (string En, string Ar)? approver = null)
+        : InvalidOperationException(MessageEn((approver ?? FinanceRights(permission)).En, actionEn))
     {
-        public Refused Body { get; } = Refusal(permission, actionEn, actionAr);
+        public Refused Body { get; } = Refusal(permission, actionEn, actionAr, approver);
     }
 
     /// <summary>422 <see cref="Refusal"/> when nobody else can approve; null when someone can.</summary>

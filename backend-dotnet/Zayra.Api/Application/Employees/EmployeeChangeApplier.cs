@@ -136,6 +136,12 @@ public static class EmployeeChangeApplier
                 case "civilIdExpiryDate": employee.CivilIdExpiryDate = ReadDateOnly(value); break;         // KW/OM/BH pay gate
                 case "idNumber": employee.IdNumber = value.GetString() ?? employee.IdNumber; break;        // SA national Hawiyya, activate gate
                 case "qiwaContractNumber": employee.QiwaContractNumber = value.GetString() ?? employee.QiwaContractNumber; break;
+                // The Qiwa block references; EstablishmentId is checked by the Saudi bank export (establishment_mismatch).
+                case "establishmentId": employee.EstablishmentId = value.GetString()?.Trim() ?? employee.EstablishmentId; break;
+                case "occupationCode": employee.OccupationCode = value.GetString()?.Trim() ?? employee.OccupationCode; break;
+                case "workLocationId": employee.WorkLocationId = value.GetString()?.Trim() ?? employee.WorkLocationId; break;
+                case "contractReference": employee.ContractReference = value.GetString()?.Trim() ?? employee.ContractReference; break;
+                case "workPermitReference": employee.WorkPermitReference = value.GetString()?.Trim() ?? employee.WorkPermitReference; break;
                 // Emitted by the server catalogue for every expat (registry `SponsorName`, compliance key
                 // `sponsor`); unreachable while the catalogue was dead, reachable the moment it was fixed.
                 case "sponsorName": employee.SponsorName = value.GetString() ?? employee.SponsorName; break;
@@ -264,8 +270,9 @@ public static class EmployeeChangeApplier
                 case "payrollGroup": profile.PayrollGroup = value.GetString()?.Trim() ?? string.Empty; break;
                 case "salaryStructureReference": profile.SalaryStructureReference = value.GetString()?.Trim() ?? string.Empty; break;
                 case "paymentMethod":
+                    // The payment method lives on the profile only. Employee.WpsBankDetails holds the approved Saudi bank-file
+                    // beneficiary details (ApprovedSaudiBeneficiaryDetails); copying the method's name over it wiped the BIC and addresses.
                     profile.PaymentMethod = value.GetString()?.Trim() ?? string.Empty;
-                    employee.WpsBankDetails = profile.PaymentMethod;
                     break;
             }
         }

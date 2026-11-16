@@ -37,6 +37,10 @@ public sealed partial class OfferLifecycleService
                     await Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ResolveAsync(db, actor.TenantId, company, ct),
                     input.StartDate, input.ProbationMonths) is { } probationMessage)
                 throw new OfferLifecycleException("offer_probation_over_company_limit", probationMessage, 422);
+            if (Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.StatutoryProbationOverLimit(
+                    await db.Companies.AsNoTracking().Where(c => c.TenantId == actor.TenantId && c.Id == company).Select(c => c.CountryCode).FirstOrDefaultAsync(ct),
+                    input.StartDate, input.ProbationMonths) is { } statutoryMessage)
+                throw new OfferLifecycleException("offer_probation_over_statutory_limit", statutoryMessage, 422);
             var email = input.RecipientEmail?.Trim() ?? string.Empty;
             if (!MailAddress.TryCreate(email, out var address) || address.Address != email || email.Length > 254)
                 throw new OfferLifecycleException("offer_recipient_invalid", "Enter the candidate's complete email address.", 422);

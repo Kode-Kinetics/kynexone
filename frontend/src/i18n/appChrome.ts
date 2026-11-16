@@ -7,7 +7,6 @@ const ar: Record<string, string> = {
   'Group Overview': 'نظرة على المجموعة',
   'Insights & Reports': 'التحليلات والتقارير',
   'Tax Policies': 'السياسات الضريبية',
-  'GOSI Filing': 'ملفات التأمينات الاجتماعية',
   'Parallel Run Variance': 'فروقات التشغيل الموازي',
   'New Hires': 'الموظفون الجدد',
   'HR Letters': 'خطابات الموارد البشرية',

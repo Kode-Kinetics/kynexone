@@ -87,7 +87,11 @@ public sealed class OfferCompensationHandoffPostgresTests(PostgresFixture fixtur
         approval.Result.Should().BeOfType<OkObjectResult>(JsonSerializer.Serialize((approval.Result as ObjectResult)?.Value));
         (await controller.ApproveDraft(id, default)).Result.Should().BeOfType<ConflictObjectResult>();
         var employee = await db.Employees.SingleAsync(e => e.TenantId == seed.Actor.TenantId);
-        employee.CompanyId.Should().Be(seed.Actor.CompanyId); employee.Salary.Should().Be(1150);
+        employee.CompanyId.Should().Be(seed.Actor.CompanyId);
+        (await db.EmployeeSalaryStructures.CountAsync(e => e.TenantId == seed.Actor.TenantId)).Should().Be(0, "HR does not write the pay; a second approver applies it");
+        await ApproveBySecondApproverAsync(seed, employee.Id);
+        db.ChangeTracker.Clear();
+        employee = await db.Employees.SingleAsync(e => e.TenantId == seed.Actor.TenantId); employee.Salary.Should().Be(1150);
         var assignment = await db.EmployeeSalaryStructures.SingleAsync(e => e.TenantId == seed.Actor.TenantId);
         assignment.BasicSalary.Should().Be(1000); assignment.FoodAllowance.Should().Be(150);
         assignment.OtherAllowance.Should().Be(0); assignment.FixedDeduction.Should().Be(0);
@@ -112,6 +116,7 @@ public sealed class OfferCompensationHandoffPostgresTests(PostgresFixture fixtur
         await using var verify = fixture.CreateDb();
         var approval = await EmployeeDraftLifecyclePostgresTests.Employees(verify, seed.Actor.TenantId, Guid.NewGuid()).ApproveDraft(id, default);
         approval.Result.Should().BeOfType<OkObjectResult>(JsonSerializer.Serialize((approval.Result as ObjectResult)?.Value));
+        await ApproveBySecondApproverAsync(seed, (await verify.Employees.SingleAsync(e => e.TenantId == seed.Actor.TenantId)).Id);
         var assignment = await verify.EmployeeSalaryStructures.SingleAsync(e => e.TenantId == seed.Actor.TenantId);
         var structure = await verify.SalaryStructures.SingleAsync(s => s.Id == assignment.SalaryStructureId);
         structure.Code.Should().Match(c => c == "DIRECT" || c.StartsWith("GRADE-"), "the default structure applies when the offer names none");
@@ -153,7 +158,16 @@ public sealed class OfferCompensationHandoffPostgresTests(PostgresFixture fixtur
         await db.SaveChangesAsync();
         var accepted = await new RecruitmentService(db).AcceptOfferAsync(seed.Actor.TenantId, seed.OfferId, seed.Actor.UserId, "Recruiter");
         await DraftStatutoryIdentity.ApplyAsync(db, accepted.OnboardingDraftId!.Value, "SA");
+        await PayApprover.SeedAsync(fixture, seed.Actor.TenantId);
         return (seed, accepted.OnboardingDraftId!.Value);
+    }
+    /// <summary>HR does not write an offer hire's pay: a second approver (not the HR approver, not the offer's makers) applies the staged package.</summary>
+    private async Task ApproveBySecondApproverAsync(OfferLifecycleSeed seed, int employeeId)
+    {
+        await using var db = fixture.CreateDb();
+        var approver = (await db.Users.AsNoTracking().Where(u => u.TenantId == seed.Actor.TenantId && u.FullName == "Pay Approver").Select(u => u.Id).FirstAsync());
+        var result = await PayApprover.ApproveStagedPackageAsync(fixture, seed.Actor.TenantId, approver, employeeId);
+        result.Should().BeOfType<OkObjectResult>(JsonSerializer.Serialize((result as ObjectResult)?.Value));
     }
     private async Task Confirm(OfferLifecycleSeed seed, Guid id)
     {
@@ -231,6 +245,7 @@ public sealed class OfferCompensationHandoffPostgresTests(PostgresFixture fixtur
     public async Task AllSixEarningsSurviveCatalogueAndGradeChangesWithZeroDeduction()
     {
         var seed = await OfferLifecycleTestData.SeedAsync(fixture); await using var db = fixture.CreateDb();
+        await PayApprover.SeedAsync(fixture, seed.Actor.TenantId);
         var catalogue = new PayComponent { TenantId = seed.Actor.TenantId, CompanyId = seed.Actor.CompanyId, Code = "FOOD",
             NameEn = "Meals", CalcMethod = "StructureField", StructureField = "FoodAllowance", Value = 999m };
         var grade = new Grade { TenantId = seed.Actor.TenantId, Code = "G1", Name = "Grade one", Currency = "USD" };
@@ -251,6 +266,8 @@ public sealed class OfferCompensationHandoffPostgresTests(PostgresFixture fixtur
         (await EmployeeDraftLifecyclePostgresTests.Employees(db, seed.Actor.TenantId, seed.Actor.UserId).PutDraftOfferCompensation(id, new(1, dispositions, true), default)).Result.Should().BeOfType<OkObjectResult>();
         var approval = await EmployeeDraftLifecyclePostgresTests.Employees(db, seed.Actor.TenantId, Guid.NewGuid()).ApproveDraft(id, default);
         approval.Result.Should().BeOfType<OkObjectResult>(JsonSerializer.Serialize((approval.Result as ObjectResult)?.Value));
+        await ApproveBySecondApproverAsync(seed, (await db.Employees.SingleAsync(e => e.TenantId == seed.Actor.TenantId)).Id);
+        db.ChangeTracker.Clear();
         var salary = await db.EmployeeSalaryStructures.SingleAsync(s => s.TenantId == seed.Actor.TenantId);
         new[] { salary.BasicSalary, salary.HousingAllowance, salary.TransportAllowance, salary.FoodAllowance, salary.MobileAllowance, salary.OtherAllowance, salary.FixedDeduction }
             .Should().Equal(1000m, 200m, 75m, 150m, 25m, 50m, 0m);
@@ -270,6 +287,8 @@ public sealed class OfferCompensationHandoffPostgresTests(PostgresFixture fixtur
         (await maker.PutDraftOfferCompensation(id, new(2, OfferCompensationHandoffTests.Dispositions(), true), default)).Result.Should().BeOfType<ConflictObjectResult>();
         (await maker.PutDraftOfferCompensation(id, new(3, OfferCompensationHandoffTests.Dispositions(), true), default)).Result.Should().BeOfType<OkObjectResult>();
         (await EmployeeDraftLifecyclePostgresTests.Employees(db, seed.Actor.TenantId, Guid.NewGuid()).ApproveDraft(id, default)).Result.Should().BeOfType<OkObjectResult>();
+        await ApproveBySecondApproverAsync(seed, (await db.Employees.SingleAsync(e => e.TenantId == seed.Actor.TenantId)).Id);
+        db.ChangeTracker.Clear();
         (await db.EmployeeSalaryStructures.SingleAsync(s => s.TenantId == seed.Actor.TenantId)).EffectiveDate.Should().Be(new DateOnly(2027, 2, 1));
     }
 
@@ -277,6 +296,7 @@ public sealed class OfferCompensationHandoffPostgresTests(PostgresFixture fixtur
     public async Task LegacyFourFieldSnapshotNeedsExplicitGroupConfirmationThenCannotTransferItsPlacement()
     {
         var seed = await OfferLifecycleTestData.SeedAsync(fixture); await using var db = fixture.CreateDb();
+        await PayApprover.SeedAsync(fixture, seed.Actor.TenantId);
         var offer = await db.OfferLetters.SingleAsync(o => o.Id == seed.OfferId);
         var app = await db.JobApplications.SingleAsync(a => a.Id == seed.ApplicationId);
         offer.CompanyId = null; app.CompanyId = null; offer.OfferedDepartment = ""; offer.OfferedJobTitle = "";
@@ -318,7 +338,10 @@ public sealed class OfferCompensationHandoffPostgresTests(PostgresFixture fixtur
         (await maker.UpdateDraft(id, request, default)).Result.Should().BeOfType<OkObjectResult>();
         (await maker.PutDraftOfferCompensation(id, new(5, rows, true), default)).Result.Should().BeOfType<OkObjectResult>();
         (await EmployeeDraftLifecyclePostgresTests.Employees(db, seed.Actor.TenantId, Guid.NewGuid()).ApproveDraft(id, default)).Result.Should().BeOfType<OkObjectResult>();
-        (await db.Employees.SingleAsync(e => e.TenantId == seed.Actor.TenantId)).CompanyId.Should().Be(company.Id);
+        var legacyEmployee = await db.Employees.SingleAsync(e => e.TenantId == seed.Actor.TenantId);
+        legacyEmployee.CompanyId.Should().Be(company.Id);
+        await ApproveBySecondApproverAsync(seed, legacyEmployee.Id);
+        db.ChangeTracker.Clear();
         (await db.EmployeeSalaryStructures.SingleAsync(s => s.TenantId == seed.Actor.TenantId)).Currency.Should().Be(snapshot.Currency);
     }
 }

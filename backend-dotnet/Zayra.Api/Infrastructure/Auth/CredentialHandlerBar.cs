@@ -32,19 +32,22 @@ public static class CredentialHandlerBar
             .Select(a => a.Metadata)
             .ToListAsync(ct);
         foreach (var meta in rows)
-        {
-            if (string.IsNullOrEmpty(meta)) continue;
-            try
-            {
-                using var doc = JsonDocument.Parse(meta);
-                var root = doc.RootElement;
-                if (root.TryGetProperty("disclosed", out var d) && d.ValueKind == JsonValueKind.True
-                    && root.TryGetProperty("issuedBy", out var i) && i.ValueKind == JsonValueKind.String
-                    && Guid.TryParse(i.GetString(), out var issuer) && issuer == callerUserId)
-                    return true;
-            }
-            catch (JsonException) { }
-        }
+            if (IssuedCodeTo(meta, callerUserId)) return true;
         return false;
+    }
+
+    /// <summary>True when a welcome-code redemption's audit metadata says the code was shown (disclosed) and <paramref name="callerUserId"/> issued it.</summary>
+    public static bool IssuedCodeTo(string? meta, Guid callerUserId)
+    {
+        if (string.IsNullOrEmpty(meta)) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(meta);
+            var root = doc.RootElement;
+            return root.TryGetProperty("disclosed", out var d) && d.ValueKind == JsonValueKind.True
+                && root.TryGetProperty("issuedBy", out var i) && i.ValueKind == JsonValueKind.String
+                && Guid.TryParse(i.GetString(), out var issuer) && issuer == callerUserId;
+        }
+        catch (JsonException) { return false; }
     }
 }

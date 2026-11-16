@@ -4,6 +4,8 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { formatAmount } from '@/src/lib/hire/money';
 import { composeWorkEmail, parseAmount } from '@/src/lib/hire/payload';
+import { bandStatus, hirePackage } from '@/src/lib/hire/gradePackage';
+import { effectiveNoticeDays, gosiCohortFor } from '@/src/lib/hire/gosiNotice';
 import { buildCountryOptions } from '@/src/lib/hire/nationality';
 import { bankNameFor, normalizeIban } from '@/src/lib/hire/iban';
 import { activationNeeds } from '@/src/lib/hire/hireValidation';
@@ -45,7 +47,7 @@ function Block({ name, onEdit, children }: { name: string; onEdit: () => void; c
   );
 }
 
-export function ReviewStep({ form, lookups, currency, companyCountry, today, banks, allowanceCatalog, costCentre, onEdit, hireTemplate }: StepProps & { onEdit: (step: 1 | 2 | 3) => void; hireTemplate?: HireTemplate | null }) {
+export function ReviewStep({ form, lookups, currency, companyCountry, today, banks, allowanceCatalog, gradeFill, hireDefaults, costCentre, onEdit, hireTemplate }: StepProps & { onEdit: (step: 1 | 2 | 3) => void; hireTemplate?: HireTemplate | null }) {
   const { t, locale } = useLocale();
   const ar = locale === 'ar';
   const nat = buildCountryOptions().find(o => o.code === form.nationalityCode);
@@ -80,7 +82,9 @@ export function ReviewStep({ form, lookups, currency, companyCountry, today, ban
   const designationGradeId = lookups.designations.find(d => d.id === form.designationId)?.gradeId;
   const designationGrade = designationGradeId ? { gradeId: designationGradeId, gradeCode: lookups.grades.find(g => g.id === designationGradeId)?.code ?? '' } : undefined;
   const warnings = reviewWarnings(form, { today, designationGrade });
-  if (grade && basic !== undefined && basic > 0 && grade.maxSalary > 0 && (basic < grade.minSalary || basic > grade.maxSalary)) warnings.push('grade_band_out_of_range');
+  // The package as it will be saved (typed figures plus what the grade adds to a blank allowance); the grade's band is checked on the TOTAL, as the server does.
+  const pkg = hirePackage(form, gradeFill);
+  if (bandStatus(pkg.total, grade)) warnings.push('grade_band_out_of_range');
   // The monthly cash allowances this hire will have: the person's own lines, or (untouched) the grade's, which the server fills in on create.
   const allowanceRows = decodeValue(form.allowances);
   const allowanceLines = allowanceRows ?? gradeLinesFrom(allowanceCatalog.catalog, form.gradeId);
@@ -140,15 +144,29 @@ export function ReviewStep({ form, lookups, currency, companyCountry, today, ban
         {form.contractEndDate && dateRow('contractEndDate', t('Contract end date'), form.contractEndDate)}
         {form.probationWaived && <Row label={t('Probation')} value={t('No probation')} />}
         {!form.probationWaived && form.probationEndDate && dateRow('probationEndDate', t('Probation end date'), form.probationEndDate)}
+        {effectiveNoticeDays(form.noticePeriodDays, hireDefaults.noticePeriodDays) !== undefined && (
+          <Row label={t('Notice period (days)')} value={String(effectiveNoticeDays(form.noticePeriodDays, hireDefaults.noticePeriodDays))} ltr />
+        )}
         <Row label={t('IBAN')} value={form.iban.trim() ? normalizeIban(form.iban) : ''} ltr />
         {bank && <Row label={t('Bank')} value={bank} />}
         <Row label={t('Basic salary')} value={money(form.basic)} ltr />
+        {(['housing', 'transport', 'other'] as const).map(field => {
+          const row = pkg.rows.find(r => r.field === field);
+          const typed = form[field].trim() !== '';
+          if (!row && !typed) return null;
+          const amount = formatAmount(row?.amount ?? 0, currency, locale);
+          return <Row key={field} label={field === 'housing' ? t('Housing allowance') : field === 'transport' ? t('Transport allowance') : t('Other allowance')} value={row?.fromGrade ? t('{amount} (from the grade)', { amount }) : amount} ltr={!row?.fromGrade} />;
+        })}
+        {pkg.total > 0 && <Row label={t('Total monthly pay')} value={formatAmount(pkg.total, currency, locale)} ltr />}
         {allowanceSummary && <Row label={t('Other monthly allowances')} value={allowanceSummary} />}
       </Block>
       <Block name={t('Documents')} onEdit={() => onEdit(3)}>
         {form.idType && <Row label={t('ID type')} value={t(ID_TYPES[form.idType] ?? form.idType)} />}
         <Row label={t('ID number')} value={form.idNumber.trim()} ltr />
         {dateRow('idExpiry', t('ID expiry date'), form.idExpiry, true)}
+        {nat?.code === 'SA' && form.gosiFirstRegisteredOn && (
+          <Row label={t('First GOSI registration date')} value={`${date(form.gosiFirstRegisteredOn)}${gosiCohortFor(form.gosiFirstRegisteredOn) ? ` · ${gosiCohortFor(form.gosiFirstRegisteredOn) === 'newEntrant' ? t('New-entrant schedule') : t('Existing schedule')}` : ''}`} />
+        )}
         {form.passportNumber.trim() && <Row label={t('Passport number')} value={form.passportNumber.trim().toUpperCase()} ltr />}
         {form.passportNumber.trim() && dateRow('passportExpiry', t('Passport expiry date'), form.passportExpiry, true)}
       </Block>

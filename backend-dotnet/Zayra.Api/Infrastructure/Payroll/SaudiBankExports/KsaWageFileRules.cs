@@ -267,30 +267,41 @@ public static class KsaWageFileRules
                 "The national unified number must be exactly 10 digits, as shown in Qiwa.", null, "nationalUnifiedNo"));
     }
 
+    /// <summary>
+    /// [MOL-ID] the employee's own government ID: exactly 10 digits, a Saudi national ID starting with 1 or an Iqama starting with 2,
+    /// read against the nationality. Null when the ID is acceptable. Shared by the Saudi bank file and the WPS validator, so the WPS
+    /// register cannot carry what the bank file refuses (a passport number, a short or lettered ID).
+    /// </summary>
+    public static (string Code, string Message, string Field)? MolIdFinding(string? molId, string? nationality)
+    {
+        var isSaudi = IsSaudiNationality(nationality);
+        if (string.IsNullOrEmpty(molId))
+            return (Codes.MolIdMissing, "has no national ID or Iqama number. Add it to the employee record.", "employeeId");
+        if (molId.Length != 10 || !molId.All(char.IsAsciiDigit))
+            return (Codes.MolIdInvalid, "national ID/Iqama must be exactly 10 digits.", "employeeId");
+        if (string.IsNullOrWhiteSpace(nationality))
+            return (Codes.NationalityMissing, "has no nationality, so the ID cannot be checked (Saudi IDs start with 1, Iqamas with 2).", "nationality");
+        if (isSaudi && molId[0] != '1')
+            return (Codes.MolIdPrefixMismatch, "is recorded as Saudi, but the ID does not start with 1. A Saudi national ID starts with 1.", "employeeId");
+        // An ID starting with 1 is a Saudi national ID. If the nationality is not a spelling we know
+        // as Saudi, the likelier fault is the nationality field (e.g. a typo or a local spelling), so
+        // that is the field the error names — the ID itself is well-formed.
+        if (!isSaudi && molId[0] == '1')
+            return (Codes.NationalityNotSaudi, $"the ID starts with 1 (a Saudi national ID), but the nationality \"{nationality.Trim()}\" is not recognised as Saudi. Record the nationality as Saudi, or correct the ID if this person holds an Iqama.", "nationality");
+        // [CONFIRM] GCC nationals working in KSA may be registered without an Iqama; until confirmed
+        // they are held to the non-Saudi rule and block rather than file under a guessed ID.
+        if (!isSaudi && molId[0] != '2')
+            return (Codes.MolIdPrefixMismatch, "is recorded as non-Saudi, but the ID does not start with 2. An Iqama number starts with 2.", "employeeId");
+        return null;
+    }
+
     private static void ValidateRow(KsaWageFileRow r, List<SaudiBankExportIssueDto> errors, List<SaudiBankExportWarningDto> warnings)
     {
         void Err(string code, string message, string field) =>
             errors.Add(new(code, $"{r.EmployeeLabel}: {message}", r.EmployeeRef, field));
 
         // ── [MOL-ID] the employee's own government ID, prefix tied to nationality ───────────────
-        var isSaudi = IsSaudiNationality(r.Nationality);
-        if (string.IsNullOrEmpty(r.MolId))
-            Err(Codes.MolIdMissing, "has no national ID or Iqama number. Add it to the employee record.", "employeeId");
-        else if (r.MolId.Length != 10 || !r.MolId.All(char.IsAsciiDigit))
-            Err(Codes.MolIdInvalid, "national ID/Iqama must be exactly 10 digits.", "employeeId");
-        else if (string.IsNullOrWhiteSpace(r.Nationality))
-            Err(Codes.NationalityMissing, "has no nationality, so the ID cannot be checked (Saudi IDs start with 1, Iqamas with 2).", "nationality");
-        else if (isSaudi && r.MolId[0] != '1')
-            Err(Codes.MolIdPrefixMismatch, "is recorded as Saudi, but the ID does not start with 1. A Saudi national ID starts with 1.", "employeeId");
-        // An ID starting with 1 is a Saudi national ID. If the nationality is not a spelling we know
-        // as Saudi, the likelier fault is the nationality field (e.g. a typo or a local spelling), so
-        // that is the field the error names — the ID itself is well-formed.
-        else if (!isSaudi && r.MolId[0] == '1')
-            Err(Codes.NationalityNotSaudi, $"the ID starts with 1 (a Saudi national ID), but the nationality \"{r.Nationality!.Trim()}\" is not recognised as Saudi. Record the nationality as Saudi, or correct the ID if this person holds an Iqama.", "nationality");
-        // [CONFIRM] GCC nationals working in KSA may be registered without an Iqama; until confirmed
-        // they are held to the non-Saudi rule and block rather than file under a guessed ID.
-        else if (!isSaudi && r.MolId[0] != '2')
-            Err(Codes.MolIdPrefixMismatch, "is recorded as non-Saudi, but the ID does not start with 2. An Iqama number starts with 2.", "employeeId");
+        if (MolIdFinding(r.MolId, r.Nationality) is { } molId) Err(molId.Code, molId.Message, molId.Field);
 
         // ── [59-ACC] 24-character upper-case Saudi IBAN, mod-97, bank code consistent with BIC ───
         // An ANB internal account (16 digits, ANB BIC) is not an IBAN: it falls through to the ANB

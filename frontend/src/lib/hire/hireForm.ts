@@ -38,6 +38,10 @@ export interface HireForm {
   probationEndDate: string;
   /** Exception: this hire has no probation. Clears the probation end date; the server confirms them from the start date. */
   probationWaived: boolean;
+  /** Notice period in days, as text. Blank means the company default (shown pre-filled by the wizard). */
+  noticePeriodDays: string;
+  /** Saudi nationals only: the date GOSI first registered the person (YYYY-MM-DD). Blank = not known; it decides the GOSI contribution schedule. */
+  gosiFirstRegisteredOn: string;
   workLocation: string;
   iban: string;
   molId: string;
@@ -57,7 +61,7 @@ export function emptyHireForm(): HireForm {
     englishName: '', companyId: '', startDate: '', designationId: '', gradeId: '', branchId: '', departmentId: '', costCenterId: '', costCenterReason: '', managerId: '',
     employeeCode: '', manualCode: false, workEmail: '', arabicName: '', preferredName: '', gender: '', maritalStatus: '',
     nationalityCode: '', idType: '', idNumber: '', idExpiry: '', idChecksumOverrideReason: '', passportNumber: '', passportExpiry: '', dob: '', mobileCountry: '', mobileNational: '',
-    personalEmail: '', employmentType: '', contractType: '', contractEndDate: '', probationEndDate: '', probationWaived: false, workLocation: '', iban: '', molId: '',
+    personalEmail: '', employmentType: '', contractType: '', contractEndDate: '', probationEndDate: '', probationWaived: false, noticePeriodDays: '', gosiFirstRegisteredOn: '', workLocation: '', iban: '', molId: '',
     basic: '', housing: '', transport: '', other: '', allowances: '',
   };
 }

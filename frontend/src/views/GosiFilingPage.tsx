@@ -3,16 +3,19 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, FileSpreadsheet, Info, RefreshCw, ShieldCheck, XCircle,
+  AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Download, FileSpreadsheet, Info, RefreshCw, ShieldCheck, XCircle,
 } from 'lucide-react';
 import {
   gosiApi, type GosiComponentBreakdown, type GosiPeriodSummary, type GosiRunSummary, type GosiVarianceReport,
 } from '@/src/api/gosi';
 import { payrollApi, type PayrollRun } from '@/src/api/payroll';
+import { useAuth } from '@/src/contexts/AuthContext';
 import { useCompany } from '@/src/contexts/CompanyContext';
 import { useT } from '@/src/hooks/useT';
 import { useFormat } from '@/src/hooks/useFormat';
 import { enumLabel } from '@/src/i18n/enumLabel';
+import { translate } from '@/src/i18n/translations';
+import { buildGosiReconciliationCsv, gosiReconciliationCsvName, type GosiReconciliationRow } from '@/src/lib/gosiReconciliationCsv';
 import type { Formatter } from '@/src/lib/format';
 
 // ── helpers ─────────────────────────────────────────────────────────────────────
@@ -20,7 +23,7 @@ import type { Formatter } from '@/src/lib/format';
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const HALALA = 0.01;
 
-/** Two-decimal amounts in the viewer's locale: the filing view always shows halalas. */
+/** Two-decimal amounts in the viewer's locale: the reconciliation view always shows halalas. */
 function makeMoney(fx: Formatter) {
   const money = (n: number | null | undefined) =>
     n === null || n === undefined ? '—' : fx.number(n, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -34,11 +37,11 @@ const isZero = (n: number | null | undefined) => n !== null && n !== undefined &
 const errorText = (e: unknown, what: 'period' | 'run', t: (k: string) => string) => {
   const status = (e as { response?: { status?: number } })?.response?.status;
   if (what === 'period') {
-    if (status === 403) return t('Your role cannot read GOSI period summary. GOSI filing needs Admin, HR Manager, Payroll Manager or Payroll Officer.');
+    if (status === 403) return t('Your role cannot read GOSI period summary. The GOSI reconciliation report needs Admin, HR Manager, Payroll Manager or Payroll Officer.');
     if (status === 404) return t('The GOSI period summary was not found.');
     return t('Could not load the GOSI period summary.');
   }
-  if (status === 403) return t('Your role cannot read payroll run reconciliation. GOSI filing needs Admin, HR Manager, Payroll Manager or Payroll Officer.');
+  if (status === 403) return t('Your role cannot read payroll run reconciliation. The GOSI reconciliation report needs Admin, HR Manager, Payroll Manager or Payroll Officer.');
   if (status === 404) return t('The payroll run reconciliation was not found.');
   return t('Could not load the payroll run reconciliation.');
 };
@@ -48,13 +51,14 @@ type Scope = { kind: 'period' } | { kind: 'run'; runId: string };
 // ── page ────────────────────────────────────────────────────────────────────────
 
 /**
- * GOSI filing & variance: read-only view over the three reconciliation endpoints.
- * Period mode is the filing source (every non-voided run unioned, ceiling applied once);
+ * GOSI reconciliation report: read-only view over the three reconciliation endpoints. Not a filing: nothing is sent to GOSI.
+ * Period mode is the reconciliation source (every non-voided run unioned, ceiling applied once);
  * run mode drills into one run's tie-out and per-employee variance with expected lines.
  */
 export function GosiFilingPage() {
   const t = useT();
   const fx = useFormat();
+  const { hasPermission } = useAuth();
   const { companies, selectedCompanyId, companyVersion } = useCompany();
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
@@ -164,14 +168,47 @@ export function GosiFilingPage() {
   const reload = () => (scope.kind === 'run' ? void loadRun(scope.runId) : void loadPeriod());
   const tie = scope.kind === 'run' ? runSummary : period;
 
+  // The CSV is the screen's own per-employee figures, for the user's spreadsheet; it needs the payroll export permission.
+  const canExport = hasPermission('payroll.export');
+  const csvRows: GosiReconciliationRow[] = scope.kind === 'run'
+    ? (variance?.rows ?? []).map((r) => ({
+      employeeCode: r.employeeCode, employeeName: r.employeeName, classification: r.classification, coveredWage: r.coveredWageBase,
+      expectedEmployee: r.expectedEmployeeContrib, actualEmployee: r.actualEmployeeContrib,
+      expectedEmployer: r.expectedEmployerContrib, actualEmployer: r.actualEmployerContrib,
+    }))
+    : (period?.employees ?? []).map((r) => ({
+      employeeCode: r.employeeCode, employeeName: r.employeeName, classification: r.classification, coveredWage: r.coveredWageBase,
+      expectedEmployee: r.expectedEmployee, actualEmployee: r.actualEmployee,
+      expectedEmployer: r.expectedEmployer, actualEmployer: r.actualEmployer,
+    }));
+  const exportCsv = () => {
+    // Headings in both languages, so the file reads the same whoever opens it.
+    const both = (key: string) => `${translate('en', key)} / ${translate('ar', key)}`;
+    const csv = buildGosiReconciliationCsv(csvRows, {
+      headers: ['Employee code', 'Employee', 'Classification', 'Covered wage', 'Expected employee', 'Actual employee', 'Employee variance',
+        'Expected employer', 'Actual employer', 'Employer variance'].map(both),
+      totalsLabel: both('Total'),
+      footer: both('Reconciliation report from KynexOne. This is not a GOSI file and cannot be uploaded to GOSI. Decimals use a point.'),
+      period: `${year}-${String(month).padStart(2, '0')}`,
+    });
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = gosiReconciliationCsvName(`${year}-${String(month).padStart(2, '0')}`);
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-4">
       {/* Header + picker */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('GOSI Filing & Variance')}</h1>
+          <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('GOSI reconciliation report')}</h1>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             {t('Deducted vs recomputed vs posted to the ledger, per employee, per period. Read-only.')}
+          </p>
+          <p className="text-xs text-slate-500 dark:text-slate-400" data-testid="gosi-not-a-filing">
+            {t('This is a reconciliation report. Nothing is submitted or filed with GOSI from here; submit and pay through the GOSI portal.')}
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
@@ -189,6 +226,12 @@ export function GosiFilingPage() {
             className="flex h-[34px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-300 dark:hover:bg-white/[0.08]">
             <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" /> {t('Refresh')}
           </button>
+          {canExport && !loading && !error && csvRows.length > 0 && (
+            <button type="button" onClick={exportCsv} data-testid="gosi-export-csv"
+              className="flex h-[34px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-300 dark:hover:bg-white/[0.08]">
+              <Download className="h-3.5 w-3.5" aria-hidden="true" /> {t('Export CSV (for reconciliation, not a GOSI upload)')}
+            </button>
+          )}
         </div>
       </div>
 
@@ -212,7 +255,7 @@ export function GosiFilingPage() {
       <div className="flex items-start gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs font-medium text-blue-800 dark:border-blue-500/20 dark:bg-blue-500/[0.06] dark:text-blue-300">
         <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <span>
-          {t('Employee GOSI readiness (missing IDs, classification, blocked employees) lives on {link}. This screen reconciles what payroll actually filed.', {
+          {t('Employee GOSI readiness (missing IDs, classification, blocked employees) lives on {link}. This screen reconciles what payroll actually deducted.', {
             link: '\u0000',
           }).split('\u0000').flatMap((part, i, all) => i < all.length - 1
             ? [part, <Link key={i} href="/saudi-compliance" className="font-semibold underline underline-offset-2">{t('Saudi Compliance')}</Link>]
@@ -294,7 +337,7 @@ function NoStatutoryData({ periodLabel, runCount, packStatusNote }: { periodLabe
       <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">{periodLabel}</p>
       <p className="max-w-lg text-xs text-slate-500 dark:text-slate-400">
         {runCount === 0
-          ? t('There is no processed payroll run for this period and company, so there is nothing to file. Pick a period from the quick-picks above, or process payroll for this month first.')
+          ? t('There is no processed payroll run for this period and company, so there is nothing to reconcile. Pick a period from the quick-picks above, or process payroll for this month first.')
           : t('{count, plural, one {# payroll run exists} other {# payroll runs exist}} for this period, but none carries statutory GOSI deduction lines. Reprocess the run, or check the employees\' GOSI classification on Saudi Compliance.', { count: runCount })}
       </p>
       {packStatusNote && <p className="max-w-lg text-caption text-slate-400">{packStatusNote}</p>}
@@ -314,7 +357,7 @@ function ScopeBar({ period, scope, onChange }: { period: GosiPeriodSummary; scop
     <div className="flex flex-wrap items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 dark:border-white/[0.06] dark:bg-white/[0.03]" role="tablist" aria-label={t('Reconciliation scope')}>
       <button type="button" role="tab" aria-selected={scope.kind === 'period'} onClick={() => onChange({ kind: 'period' })}
         className={`${base} ${scope.kind === 'period' ? on : off}`}>
-        {t('Whole period · filing view ({count, plural, one {# run} other {# runs}})', { count: period.runCount })}
+        {t('Whole period · reconciliation view ({count, plural, one {# run} other {# runs}})', { count: period.runCount })}
       </button>
       {period.runs.map((r) => (
         <button key={r.runId} type="button" role="tab" aria-selected={scope.kind === 'run' && scope.runId === r.runId}
@@ -343,12 +386,12 @@ function Notes({ packResolved, packStatusNote, periodScopeNote, expectedIsPeriod
   if (expectedIsPeriodPartial) items.push({
     tone: 'amber',
     title: t('This run is part of a multi-run period. A variance here is arithmetic, not a defect.'),
-    body: periodScopeNote ?? t('Other runs share this period. File from the whole-period view.'), testId: 'gosi-period-scope-note',
+    body: periodScopeNote ?? t('Other runs share this period. Use the whole-period view to reconcile.'), testId: 'gosi-period-scope-note',
   });
   else if (runCount > 1) items.push({
     tone: 'blue',
     title: t('{count} runs are unioned for this period', { count: runCount }),
-    body: t('Expected is recomputed once on the period-aggregated covered wage, so the statutory ceiling is applied exactly once. This is the figure to file.'),
+    body: t('Expected is recomputed once on the period-aggregated covered wage, so the statutory ceiling is applied exactly once. This is the figure to compare with your GOSI invoice.'),
     testId: 'gosi-multi-run-note',
   });
   if (items.length === 0) return null;

@@ -3,15 +3,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiErrorReason } from '../../api/client';
 import {
-  financeErpApi, saveJournalFile,
+  financeErpApi, readOtherFormatLive, saveJournalFile, splitManifestWarnings,
   type CompanyBalance, type JournalExportDetail, type JournalExportFormat, type JournalExportManifest,
   type JournalExportScope, type JournalExportSummary, type JournalOutcome,
 } from '../../api/financeErp';
 import { useCompany } from '../../contexts/CompanyContext';
+import { useLocale } from '../../contexts/LocaleContext';
 import { usePayrollCompanies } from '../../hooks/usePayrollCompanies';
 import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
 import { msg } from '../../i18n/translations';
+import { MonthPicker, DatePicker } from '../ui/DateParts';
+import { erpFormatDisclaimer, erpFormatName, erpOptionText } from '../../lib/erpFormatText';
 
 /**
  * ERP journal hand-off for a period: check → create → download → record what the ERP said.
@@ -52,16 +55,21 @@ function thisMonth(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
-interface Refusal { message: string; byCompany: CompanyBalance[] }
+interface Refusal { message: string; byCompany: CompanyBalance[]; otherFormatLive?: { format: string; fileName: string } }
 
 function refusalOf(err: unknown, fallback: string): Refusal {
   const data = (err as { response?: { data?: { byCompany?: CompanyBalance[] } } })?.response?.data;
-  return { message: apiErrorReason(err, fallback), byCompany: Array.isArray(data?.byCompany) ? data!.byCompany : [] };
+  const other = readOtherFormatLive(err);
+  return {
+    message: apiErrorReason(err, fallback), byCompany: Array.isArray(data?.byCompany) ? data!.byCompany : [],
+    ...(other ? { otherFormatLive: other } : {}),
+  };
 }
 
 export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string }) {
   const t = useT();
   const f = useFormat();
+  const { locale } = useLocale();
   const { companies } = usePayrollCompanies();
   // Only a group-scoped user may export (or list) "all companies"; the API forbids it to anyone else, so a
   // company-scoped user starts on their own company and never sees the group option.
@@ -106,12 +114,13 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
   const format = useMemo(() => formats?.find(x => x.key === formatKey) ?? null, [formats, formatKey]);
   const scope: JournalExportScope = { period, companyId: companyId || null, format: formatKey, options };
   const currencyOf = (m: { currency: string }) => m.currency || null;
+  const shownWarnings = manifest ? splitManifestWarnings(manifest, locale) : null;
 
-  const run = async (kind: 'preview' | 'create') => {
+  const run = async (kind: 'preview' | 'create', acknowledgeOtherFormatLive = false) => {
     setBusy(kind);
     setRefusal(null);
     try {
-      const result = kind === 'preview' ? await financeErpApi.preview(scope) : await financeErpApi.create(scope);
+      const result = kind === 'preview' ? await financeErpApi.preview(scope) : await financeErpApi.create(acknowledgeOtherFormatLive ? { ...scope, acknowledgeOtherFormatLive: true } : scope);
       setManifest(result);
       if (kind === 'create') { loadHistory(); if (result.exportId) setOpenId(result.exportId); }
     } catch (err) {
@@ -144,10 +153,10 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <label className="text-xs font-medium text-slate-600 dark:text-slate-300">
+        <div className="text-xs font-medium text-slate-600 dark:text-slate-300">
           {t('Accounting month')}
-          <input type="month" className="input mt-1 w-full" value={period} onChange={e => setPeriod(e.target.value)} />
-        </label>
+          <MonthPicker className="mt-1" aria-label={t('Accounting month')} value={period} onChange={setPeriod} />
+        </div>
         <label className="text-xs font-medium text-slate-600 dark:text-slate-300">
           {t('Company')}
           <select className="select mt-1 w-full" value={companyId} onChange={e => setCompanyId(e.target.value)}>
@@ -161,7 +170,7 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
           <select className="select mt-1 w-full" value={formatKey} disabled={!formats}
             onChange={e => { setFormatKey(e.target.value); setOptions({}); setManifest(null); }}>
             {!formats && <option value={formatKey}>{t('Loading formats…')}</option>}
-            {formats?.map(x => <option key={x.key} value={x.key}>{x.displayName}</option>)}
+            {formats?.map(x => <option key={x.key} value={x.key}>{erpFormatName(t, x.displayName)}</option>)}
           </select>
         </label>
       </div>
@@ -172,7 +181,7 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
           {format.status === 'Template' && (
             <p className="mb-1 font-semibold text-amber-700 dark:text-amber-300">{t('Template layout: import one test file into your ERP test company before using it for real postings.')}</p>
           )}
-          <p>{format.disclaimer}</p>
+          <p>{erpFormatDisclaimer(t, format.disclaimer)}</p>
           {format.singleCompany && companyId === '' && (
             <p className="mt-1 font-semibold text-amber-700 dark:text-amber-300" data-testid="journal-export-single-company">
               {t('This format holds one company per file: choose a company above.')}
@@ -186,10 +195,10 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
                 {format.options.map(o => (
                   <label key={o.key} className="text-xs">
-                    {o.required ? t('{label} (required)', { label: o.label }) : o.label}
+                    {o.required ? t('{label} (required)', { label: erpOptionText(t, o.label) }) : erpOptionText(t, o.label)}
                     <input className="input mt-1 w-full" maxLength={o.maxLength} placeholder={o.defaultValue} required={o.required}
                       value={options[o.key] ?? ''} onChange={e => setOptions(prev => ({ ...prev, [o.key]: e.target.value }))} />
-                    <span className="mt-0.5 block text-[11px] text-slate-400">{o.description}</span>
+                    <span className="mt-0.5 block text-[11px] text-slate-400">{erpOptionText(t, o.description)}</span>
                   </label>
                 ))}
               </div>
@@ -207,7 +216,18 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
         </button>
       </div>
 
-      {refusal && (
+      {refusal?.otherFormatLive && (
+        <div role="alert" className="space-y-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-500/10 dark:text-amber-200" data-testid="journal-export-other-format-live">
+          <p>
+            {t("A {format} export of this period ({file}) is still waiting for your ERP's result and covers the same ledger rows. Sending them in another format as well would give your ERP two files and could post them twice.", { format: refusal.otherFormatLive.format, file: refusal.otherFormatLive.fileName })}
+          </p>
+          <p className="text-xs">{t('Record whether your ERP posted or refused that file first, or create the new file anyway.')}</p>
+          <button type="button" className="btn-secondary text-xs" data-testid="journal-export-create-anyway" disabled={!!busy} onClick={() => run('create', true)}>
+            {t('Create anyway — the other file is still awaiting ERP confirmation')}
+          </button>
+        </div>
+      )}
+      {refusal && !refusal.otherFormatLive && (
         <div role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-300" data-testid="journal-export-refusal">
           <p>{refusal.message}</p>
           {refusal.byCompany.length > 0 && <CompanyTable rows={refusal.byCompany} currency={null} />}
@@ -225,6 +245,16 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
               {t('{count} ledger rows already posted in your ERP are left out, so nothing is posted twice.', { count: manifest.previouslyConfirmedExcluded.count })}
             </p>
           )}
+          {(manifest.openingBalanceExcluded?.count ?? 0) > 0 && (
+            <p className="text-xs text-sky-700 dark:text-sky-300" data-testid="journal-export-opening-balances">
+              {t('{count} opening-balance ledger rows are not exported (net {net}: {debits} added to receivables, {credits} reduced): your ERP already holds those balances from your previous system.', {
+                count: manifest.openingBalanceExcluded!.count,
+                net: f.money(manifest.openingBalanceExcluded!.net, currencyOf(manifest)),
+                debits: f.money(manifest.openingBalanceExcluded!.debits, currencyOf(manifest)),
+                credits: f.money(manifest.openingBalanceExcluded!.credits, currencyOf(manifest)),
+              })}
+            </p>
+          )}
           <p className="text-sm text-slate-700 dark:text-slate-200">
             {t('{journals} journals, debits {debits}, credits {credits}', {
               journals: manifest.journalCount,
@@ -233,7 +263,11 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
             })}
           </p>
           <CompanyTable rows={manifest.byCompany} currency={currencyOf(manifest)} />
-          {manifest.warnings.map(w => <p key={w} className="text-xs text-amber-700 dark:text-amber-300">{w}</p>)}
+          {/* C-1: a file still waiting for the ERP that already holds some of these rows is named in the viewer's language. */}
+          {shownWarnings?.liveOverlaps.map(w => (
+            <p key={w} className="text-xs font-semibold text-amber-700 dark:text-amber-300" data-testid="journal-export-live-overlap">{w}</p>
+          ))}
+          {shownWarnings?.others.map(w => <p key={w} className="text-xs text-amber-700 dark:text-amber-300">{w}</p>)}
           {/* AM-21: a read-only finance user gets no example lines; say so instead of showing nothing. */}
           {manifest.sample === null && (
             <p data-testid="journal-export-lines-hidden" className="text-xs text-slate-500 dark:text-slate-400">
@@ -267,6 +301,9 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
                   <Pill tone={STATUS_TONE[row.status] ?? STATUS_TONE.Superseded}>{t(STATUS_LABEL[row.status] ?? row.status)}</Pill>
                   {row.kind !== 'Full' && <Pill tone={STATUS_TONE.PartiallyConfirmed}>{t(KIND_LABEL[row.kind] ?? row.kind)}</Pill>}
                   <span className="text-slate-500">{f.money(row.totalDebits, row.currency || null)}</span>
+                  <span data-testid="journal-export-line-count" className="text-slate-500">
+                    {t(row.lineCount === 1 ? '{count} line' : '{count} lines', { count: row.lineCount })}
+                  </span>
                   <span className="text-slate-400">{t('Exported by {name} on {date}', { name: row.exportedByName, date: f.dateTime(row.exportedAtUtc) })}</span>
                   <span className="ms-auto flex gap-2">
                     <button type="button" className="btn-secondary h-7 px-2 text-xs" onClick={() => download(row)}>{t('Download file')}</button>
@@ -394,9 +431,9 @@ function ExportOutcome({ id, onChanged }: { id: string; onChanged: () => void })
                     <label>{t('ERP document number')}
                       <input className="input mt-1 w-full" value={numbers[k] ?? ''} onChange={e => setNumbers(p => ({ ...p, [k]: e.target.value }))} />
                     </label>
-                    <label>{t('Posted on')}
-                      <input type="date" className="input mt-1 w-full" value={dates[k] ?? ''} onChange={e => setDates(p => ({ ...p, [k]: e.target.value }))} />
-                    </label>
+                    <div>{t('Posted on')}
+                      <DatePicker className="mt-1" aria-label={t('Posted on')} value={dates[k] ?? ''} onChange={v => setDates(p => ({ ...p, [k]: v }))} />
+                    </div>
                   </div>
                   <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={!!saving || !(numbers[k] ?? '').trim()}
                     onClick={() => act(`c-${k}`, () => {

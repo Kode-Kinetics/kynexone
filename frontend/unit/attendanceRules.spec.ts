@@ -11,6 +11,7 @@ import { SETUP_TOOLS } from '../src/lib/setupAreas';
 const good: AttendanceRuleForm = {
   code: 'RYD-DAY', name: 'Riyadh day', branchId: '', departmentId: '', gradeId: '',
   graceMinutes: '10', earlyExitThresholdMinutes: '15', halfDayThresholdMinutes: '240', standardWorkMinutes: '480', breakMinutes: '60',
+  defaultShiftStart: '',
 };
 
 test('a_complete_form_is_valid_and_becomes_a_numeric_request_with_an_upper_case_code', () => {
@@ -18,6 +19,7 @@ test('a_complete_form_is_valid_and_becomes_a_numeric_request_with_an_upper_case_
   expect(ruleFormToRequest({ ...good, code: ' ryd-day ', branchId: 'b-1' })).toEqual({
     code: 'RYD-DAY', name: 'Riyadh day', branchId: 'b-1', departmentId: null, gradeId: null,
     graceMinutes: 10, earlyExitThresholdMinutes: 15, halfDayThresholdMinutes: 240, standardWorkMinutes: 480, breakMinutes: 60,
+    defaultShiftStart: '',
   });
 });
 
@@ -30,11 +32,25 @@ test('every_range_the_server_enforces_is_enforced_before_sending', () => {
     [{ standardWorkMinutes: '59' }, 'standardWorkMinutes'], [{ standardWorkMinutes: '961' }, 'standardWorkMinutes'],
     [{ breakMinutes: '-5' }, 'breakMinutes'], [{ breakMinutes: '480' }, 'breakMinutes'],
     [{ halfDayThresholdMinutes: '0' }, 'halfDayThresholdMinutes'], [{ halfDayThresholdMinutes: '481' }, 'halfDayThresholdMinutes'],
+    [{ defaultShiftStart: '8:00' }, 'defaultShiftStart'], [{ defaultShiftStart: '24:00' }, 'defaultShiftStart'], [{ defaultShiftStart: '08:60' }, 'defaultShiftStart'],
   ];
   for (const [change, field] of cases) {
     expect(Object.keys(validateRuleForm({ ...good, ...change })), JSON.stringify(change)).toContain(field);
   }
   expect(ATTENDANCE_RULE_LIMITS.graceMinutes).toEqual({ min: 0, max: 120 });
+});
+
+test('the_time_a_day_starts_is_optional_and_round_trips_as_HH_mm', () => {
+  expect(validateRuleForm({ ...good, defaultShiftStart: '08:00' })).toEqual({});
+  expect(validateRuleForm({ ...good, defaultShiftStart: '' })).toEqual({});
+  expect(ruleFormToRequest({ ...good, defaultShiftStart: ' 08:00 ' }).defaultShiftStart).toBe('08:00');
+  // An empty box clears it (back to the 09:00 default); a policy without one reads as an empty box.
+  expect(ruleFormToRequest(good).defaultShiftStart).toBe('');
+  const base = { id: 'p', code: 'DEFAULT', name: 'Default', branchId: null, departmentId: null, gradeId: null, graceMinutes: 10,
+    earlyExitThresholdMinutes: 15, halfDayThresholdMinutes: 240, standardWorkMinutes: 480, breakMinutes: 60, isActive: true };
+  expect(ruleFormFromPolicy({ ...base, defaultShiftStart: '08:00' }).defaultShiftStart).toBe('08:00');
+  expect(ruleFormFromPolicy({ ...base, defaultShiftStart: null }).defaultShiftStart).toBe('');
+  expect(ruleFormFromPolicy(base).defaultShiftStart).toBe('');
 });
 
 test('editing_a_policy_round_trips_its_values_and_scope', () => {

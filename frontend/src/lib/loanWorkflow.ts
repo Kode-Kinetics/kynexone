@@ -1,4 +1,5 @@
 import type { LoanApproval, LoanRepaymentMethod } from '../api/loans';
+import { isModelBindingText } from './modelBindingText';
 
 export const repaymentMethodLabels: Record<LoanRepaymentMethod, string> = {
   BankTransfer: 'Bank transfer', DirectDebit: 'Direct debit', Cash: 'Cash receipt', PayrollDeduction: 'Payroll deduction',
@@ -9,13 +10,15 @@ export function loanErrorMessage(error: unknown, fallback: string): string {
   const data = response?.data;
   if (response?.status === 502 || response?.status === 503 || response?.status === 504) return 'The service is restarting or temporarily unavailable. Wait a minute and try again.';
   // A proxy or host error page arrives as an HTML string; never show markup to the user.
-  if (typeof data === 'string' && data.trim() && !/^\s*<(!doctype|html)/i.test(data)) return data;
+  if (typeof data === 'string' && data.trim() && !/^\s*<(!doctype|html)/i.test(data)) return isModelBindingText(data) ? fallback : data;
   if (data && typeof data === 'object') {
     const body = data as Record<string, unknown>;
-    if (typeof body.detail === 'string') return body.detail;
-    if (typeof body.message === 'string') return body.message;
+    if (typeof body.detail === 'string') return isModelBindingText(body.detail) ? fallback : body.detail;
+    if (typeof body.message === 'string') return isModelBindingText(body.message) ? fallback : body.message;
     if (body.errors && typeof body.errors === 'object') {
       const messages = Object.values(body.errors).flat().filter((item): item is string => typeof item === 'string');
+      // The binder's own sentences ("The req field is required…") are not shown; the caller's sentence is.
+      if (messages.some(isModelBindingText)) return fallback;
       if (messages.length) return messages.join(' ');
     }
     if (typeof body.title === 'string') return body.title;

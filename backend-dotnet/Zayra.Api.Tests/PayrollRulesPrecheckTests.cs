@@ -85,4 +85,41 @@ public class PayrollRulesPrecheckTests
         var rules = CompanyPayrollRuleSet.Defaults with { MaxProbationDays = max };
         (CompanyPayrollRules.ProbationOverLimit(rules, DateOnly.Parse(start), months) is not null).Should().Be(refused);
     }
+
+    // Saudi Labour Law Art. 53: a probation never exceeds 180 days. Six months is offered as 180 days (owner decision
+    // 2026-11-12): HR writes "6 months", the probation ends on day 180. More than six months is refused.
+    [Theory]
+    [InlineData("SA", "2026-01-01", 3, false)]
+    [InlineData("SAU", "2026-01-01", 5, false)]
+    [InlineData("SA", "2026-01-01", 6, false)]    // 181 calendar days, offered as 180
+    [InlineData("sau", "2026-03-01", 6, false)]   // 184 calendar days, offered as 180
+    [InlineData("SA", "2026-01-01", 7, true)]
+    [InlineData("SA", "2026-01-01", 12, true)]
+    [InlineData("AE", "2026-01-01", 12, false)]   // not a Saudi company: the statutory ceiling is not this country's
+    [InlineData("", "2026-01-01", 12, false)]
+    public void Probation_InASaudiCompany_NeverExceedsTheStatutory180Days(string country, string start, int months, bool refused)
+        => (CompanyPayrollRules.StatutoryProbationOverLimit(country, DateOnly.Parse(start), months) is not null).Should().Be(refused);
+
+    [Fact]
+    public void Probation_StatutoryRefusal_SaysTheLawAndTheLongestProbation()
+        => CompanyPayrollRules.StatutoryProbationOverLimit("SA", new DateOnly(2026, 1, 1), 7).Should()
+            .Contain("180 days").And.Contain("Art. 53").And.Contain("6 months");
+
+    [Theory]
+    [InlineData("SA", "2026-01-01", 3, "2026-04-01")]   // under the ceiling: calendar months, as before
+    [InlineData("SA", "2026-01-01", 6, "2026-06-30")]   // day 180 (1 Jan + 180 days), not 1 Jul
+    [InlineData("SAU", "2026-03-01", 6, "2026-08-28")]
+    [InlineData("AE", "2026-01-01", 6, "2026-07-01")]   // other countries: calendar months
+    [InlineData("", "2026-01-01", 6, "2026-07-01")]
+    public void ProbationEnd_InASaudiCompany_IsCappedAtDay180(string country, string start, int months, string end)
+        => CompanyPayrollRules.ProbationEnd(country, DateOnly.Parse(start), months).Should().Be(DateOnly.Parse(end));
+
+    [Theory]
+    [InlineData("SA", 6, "180 days")]
+    [InlineData("SA", 3, "3 months")]
+    [InlineData("SA", 1, "1 month")]
+    [InlineData("AE", 6, "6 months")]
+    [InlineData("SA", 0, "None")]
+    public void ProbationPeriodText_SaysWhatTheEmployeeWillServe(string country, int months, string text)
+        => CompanyPayrollRules.ProbationPeriodText(country, new DateOnly(2026, 1, 1), months).Should().Be(text);
 }

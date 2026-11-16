@@ -3,10 +3,12 @@ namespace Zayra.Api.Models;
 
 // ── Workforce Plan ─────────────────────────────────────────────────────────────
 
-public class WorkforcePlan : ITenantOwned
+public class WorkforcePlan : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Stamped from the plan's department (or the explicit company) on create; backfilled by migration.</summary>
+    public Guid? CompanyId { get; set; }
     public string PlanCode { get; set; } = string.Empty;           // WFP-2026-001
     public int PlanYear { get; set; }
     public string PlanName { get; set; } = string.Empty;
@@ -49,10 +51,12 @@ public class CandidateDocument : ITenantOwned
 
 // ── Interview Feedback ─────────────────────────────────────────────────────────
 
-public class InterviewFeedback : ITenantOwned
+public class InterviewFeedback : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Stamped from the parent interview on create; backfilled by migration.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid InterviewScheduleId { get; set; }
     public Guid ApplicationId { get; set; }
     public Guid? InterviewerUserId { get; set; }
@@ -111,10 +115,12 @@ public class AssessmentQuestion : ITenantOwned
 
 // ── Candidate Assessment (sent to candidate) ──────────────────────────────────
 
-public class CandidateAssessment : ITenantOwned
+public class CandidateAssessment : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Stamped from the parent application on create; backfilled by migration.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid ApplicationId { get; set; }
     public Guid CandidateId { get; set; }
     public Guid TemplateId { get; set; }

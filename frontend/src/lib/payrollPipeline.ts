@@ -14,7 +14,10 @@
  *                    Approve without one). Off-cycle runs are not gated, so they have no review to wait for.
  *   Approved         "Processed" -> "PendingFinanceReview" (payroll review) -> "Approved" (finance decision)
  *   Locked           run.status = "Locked"                      (posts the GL journal)
- *   Paid / Exported  run.status = "Paid" or a payment batch whose bank file has been generated or later
+ *   Paid / Exported  run.status = "Paid" or a payment batch whose bank file has been generated or later. Where the
+ *                    company's bank file comes from the Saudi bank export (the batch says bankFileAvailable), the
+ *                    generated XML is an INTERNAL payroll register: it sets Generated/Downloaded but is not a bank
+ *                    file, so only the bank export (bankFileGenerated) completes the stage.
  * "Voided" is a side exit, not a stage.
  */
 import type { PayrollApproval, PayrollPaymentBatch, PayrollRun } from '../api/payroll';
@@ -44,9 +47,21 @@ export type ReasonId =
   | 'currency_unconfirmed'  // lock summary cannot name a currency
   | 'no_batch'              // locked, no payment batch yet
   | 'batch_not_exported'    // batch exists, bank file not generated
+  | 'bank_file_not_generated' // only the internal payroll register exists; the bank export has not been generated
+  | 'awaiting_bank_confirmation' // the bank file exists, but the bank has not confirmed every payment ({confirmed} of {total} when known)
   | 'voided';
 
-export interface Reason { id: ReasonId; count?: number; message?: string }
+/**
+ * Two facts the payment-batch list adds per batch (absent from an older API):
+ *   bankFileAvailable  the Saudi bank export applies to the batch's legal entity, so ITS file is the bank file
+ *   bankFileGenerated  a bank export exists for the batch
+ */
+export type PipelineBatch = PayrollPaymentBatch & { bankFileAvailable?: boolean; bankFileGenerated?: boolean };
+
+/** Which file the batch detail names: the bank file, the internal register, or (unknown / not Saudi) what the API's label says. */
+export type BatchFileKind = 'bank_file' | 'register';
+
+export interface Reason { id: ReasonId; count?: number; message?: string; confirmed?: number; total?: number }
 
 export interface PipelineStage {
   key: StageKey;
@@ -56,7 +71,13 @@ export interface PipelineStage {
   /** Why the stage is not (yet) done, in words. Set on blocked AND upcoming stages. */
   reason: Reason | null;
   /** Extra facts: the payment batch status, the approval level, overrides. */
-  detail: { id: 'batch'; label: string; number: string } | { id: 'payroll_review' } | { id: 'overrides'; count: number } | { id: 'signed_off'; name: string | null } | { id: 'review_not_required' } | null;
+  detail: {
+    id: 'batch'; label: string; number: string;
+    /** Set when the API says which file exists; the screen then names it instead of a bare "Generated". */
+    file?: BatchFileKind;
+    /** A person moved the batch past its file (submitted, accepted, paid...): the status label says where it is. */
+    statusAfterFile?: boolean;
+  } | { id: 'payroll_review' } | { id: 'overrides'; count: number } | { id: 'signed_off'; name: string | null } | { id: 'review_not_required' } | null;
 }
 
 export type NextActionKind = 'process' | 'retry' | 'goto' | 'review' | 'lock' | 'none';
@@ -65,7 +86,7 @@ export type PayrollTabKey = string;
 export interface NextAction {
   kind: NextActionKind;
   /** Which sentence labels the button; the screen owns the words. */
-  label: 'process' | 'retry' | 'review_validation' | 'review_attendance' | 'review' | 'approve' | 'lock' | 'bank' | 'none';
+  label: 'process' | 'retry' | 'review_validation' | 'review_attendance' | 'review' | 'approve' | 'lock' | 'bank' | 'confirm_bank' | 'none';
   tab?: PayrollTabKey;
   /** The button is shown but cannot be used; `reason` says why. */
   disabled: boolean;
@@ -87,7 +108,7 @@ export interface PipelineInput {
   openErrors: number | null;
   overrideCount: number;
   approvals: PayrollApproval[] | null;
-  batches: PayrollPaymentBatch[] | null;
+  batches: PipelineBatch[] | null;
   prechecks: Prechecks | null;
   /** When the reconciliation was signed off (an Active server sign-off for this processing of the run); null = not yet. */
   reviewedAtUtc: string | null;
@@ -120,10 +141,55 @@ function latestApproval(approvals: PayrollApproval[] | null, level: string): Pay
     .sort((a, b) => (b.decidedAtUtc ?? '').localeCompare(a.decidedAtUtc ?? ''))[0] ?? null;
 }
 
-export function exportedBatch(batches: PayrollPaymentBatch[] | null): PayrollPaymentBatch | null {
+/** The statuses generating and downloading a file set by themselves. Later ones (Submitted, Accepted...) a person records. */
+const FILE_STEP_WPS = new Set(['Generated', 'Downloaded']);
+
+const wpsOf = (b: PipelineBatch): string => b.effectiveWpsStatus ?? b.wpsStatus;
+
+/**
+ * Only the internal payroll register stands behind the batch's Generated/Downloaded: its company's bank file is the bank
+ * export, and that has not been generated. Once a person has moved the batch on (Submitted and later) the export can no
+ * longer be made for it, so the old rule applies from there and the stage is not held back for good.
+ */
+function onlyRegister(b: PipelineBatch): boolean {
+  return b.bankFileAvailable === true && b.bankFileGenerated !== true && FILE_STEP_WPS.has(wpsOf(b));
+}
+
+/** The batch's file counts for "Paid / Exported". Without the flags (older API, other companies) a generated WPS file counts, as before. */
+function hasExportedFile(b: PipelineBatch): boolean {
+  return EXPORTED_WPS.has(wpsOf(b)) && !onlyRegister(b);
+}
+
+function fileKindOf(b: PipelineBatch): BatchFileKind | undefined {
+  // An older API sends no flags: say only what its label said.
+  if (typeof b.bankFileGenerated !== 'boolean') return undefined;
+  if (b.bankFileGenerated) return 'bank_file';
+  // A Saudi company's generated XML is the internal register even where the bank export is switched off.
+  return b.bankFileAvailable || b.isSaudi ? 'register' : undefined;
+}
+
+/**
+ * The bank file exists but the bank has not confirmed every payment: the batch lists payments still unconfirmed and it has
+ * not been settled (Paid / Reconciled). Null when the API sent no confirmation facts (an older one): the file alone then
+ * completes the stage, as before. The counts come from what the list carries, the unconfirmed payments and the share the
+ * bank has spoken about: total = unconfirmed / (1 - coverage) and confirmed = total - unconfirmed.
+ */
+function awaitingBankConfirmation(b: PipelineBatch): Reason | null {
+  const unconfirmed = b.unconfirmedPayments?.count;
+  if (typeof unconfirmed !== 'number' || unconfirmed <= 0) return null;
+  if (wpsOf(b) === 'Paid' || wpsOf(b) === 'Reconciled') return null;
+  const coverage = b.confirmationCoverage;
+  if (typeof coverage !== 'number' || !Number.isFinite(coverage) || coverage < 0) return { id: 'awaiting_bank_confirmation' };
+  const total = Math.round(unconfirmed / (1 - Math.min(coverage, 0.9999)));
+  return { id: 'awaiting_bank_confirmation', confirmed: Math.max(0, total - unconfirmed), total };
+}
+
+const newestFirst = (a: PipelineBatch, b: PipelineBatch) =>
+  (b.wpsStatusChangedAtUtc ?? b.createdAtUtc).localeCompare(a.wpsStatusChangedAtUtc ?? a.createdAtUtc);
+
+export function exportedBatch<B extends PipelineBatch>(batches: B[] | null): B | null {
   if (!batches) return null;
-  const done = batches.filter(b => EXPORTED_WPS.has(b.effectiveWpsStatus ?? b.wpsStatus));
-  return done.sort((a, b) => (b.wpsStatusChangedAtUtc ?? b.createdAtUtc).localeCompare(a.wpsStatusChangedAtUtc ?? a.createdAtUtc))[0] ?? null;
+  return batches.filter(hasExportedFile).sort(newestFirst)[0] ?? null;
 }
 
 /** Where a status sits: 0 draft, 1 processed (incl. payroll review), 2 approved, 3 locked, 4 paid; -1 unknown/voided. */
@@ -220,12 +286,21 @@ export function derivePipeline(input: PipelineInput): PipelineModel {
   const batch = exportedBatch(batches);
   if (phase === 4) paid.state = 'done';
   else if (phase === 3) {
-    if (batch) paid.state = 'done';
-    else { paid.state = 'current'; paid.reason = { id: batches && batches.length > 0 ? 'batch_not_exported' : 'no_batch' }; }
+    const waiting = batch ? awaitingBankConfirmation(batch) : null;
+    if (waiting) { paid.state = 'current'; paid.reason = waiting; }
+    else if (batch) paid.state = 'done';
+    else {
+      paid.state = 'current';
+      paid.reason = { id: !batches || batches.length === 0 ? 'no_batch' : batches.some(onlyRegister) ? 'bank_file_not_generated' : 'batch_not_exported' };
+    }
   } else paid.reason = { id: phase === 0 ? 'needs_process' : 'needs_lock' };
-  if (batch && paid.state === 'done') {
+  if (batch && (paid.state === 'done' || paid.reason?.id === 'awaiting_bank_confirmation')) {
     paid.whenUtc = batch.wpsStatusChangedAtUtc ?? batch.createdAtUtc;
-    paid.detail = { id: 'batch', label: batch.wpsStatusLabel ?? batch.effectiveWpsStatus ?? batch.wpsStatus, number: batch.batchNumber };
+    const file = fileKindOf(batch);
+    paid.detail = {
+      id: 'batch', label: batch.wpsStatusLabel ?? wpsOf(batch), number: batch.batchNumber,
+      ...(file ? { file, statusAfterFile: !FILE_STEP_WPS.has(wpsOf(batch)) } : {}),
+    };
   }
 
   const focusStage = stages.find(s => s.state === 'current' || s.state === 'blocked') ?? null;
@@ -267,7 +342,9 @@ export function derivePipeline(input: PipelineInput): PipelineModel {
       } else { next = { kind: 'lock', label: 'lock', disabled: true }; nextReason = locked.reason; }
       break;
     case 'paid':
-      next = { kind: 'goto', label: 'bank', tab: 'bank-wps', disabled: false };
+      next = paid.reason?.id === 'awaiting_bank_confirmation'
+        ? { kind: 'goto', label: 'confirm_bank', tab: 'payment-tracking', disabled: false }
+        : { kind: 'goto', label: 'bank', tab: 'bank-wps', disabled: false };
       nextReason = paid.reason;
       break;
     default: break;
@@ -335,7 +412,7 @@ export type AttentionKind = 'process' | 'approve' | 'finance' | 'lock' | 'export
  * are not part of the run list, so a run held back by open errors still reads as waiting for its stage.
  * null = nothing is waiting on a person (paid, voided, or exported).
  */
-export function attentionFor(run: Pick<PayrollRun, 'id' | 'status'>, batches: PayrollPaymentBatch[] | null): AttentionKind | null {
+export function attentionFor(run: Pick<PayrollRun, 'id' | 'status'>, batches: PipelineBatch[] | null): AttentionKind | null {
   switch (run.status) {
     case 'Draft': return 'process';
     case 'Processed': return 'approve';
@@ -357,16 +434,16 @@ export function sortByAttention<T extends Pick<PayrollRun, 'year' | 'month'> & {
 
 // ── Review: employees with issues first ────────────────────────────────────────
 
-export interface EmployeeIssues { employeeId: number; errors: number; warnings: number; messages: string[] }
+export interface EmployeeIssues { employeeId: number; errors: number; warnings: number; messages: string[]; /** The same findings with their codes, so a screen can show a plain sentence per code. */ findings: Array<{ code: string; message: string }> }
 
 /** Open validation results grouped by employee; errors first, then warnings, then most results. Run-level rows (no employee) are not here. */
-export function employeesWithIssues(results: Array<{ employeeId: number | null; severity: string; message: string; isResolved: boolean }>): EmployeeIssues[] {
+export function employeesWithIssues(results: Array<{ employeeId: number | null; severity: string; message: string; isResolved: boolean; code?: string }>): EmployeeIssues[] {
   const by = new Map<number, EmployeeIssues>();
   for (const r of results) {
     if (r.isResolved || r.employeeId === null) continue;
-    const row = by.get(r.employeeId) ?? { employeeId: r.employeeId, errors: 0, warnings: 0, messages: [] };
+    const row = by.get(r.employeeId) ?? { employeeId: r.employeeId, errors: 0, warnings: 0, messages: [], findings: [] };
     if (r.severity === 'Error') row.errors++; else row.warnings++;
-    if (row.messages.length < 3 && !row.messages.includes(r.message)) row.messages.push(r.message);
+    if (row.messages.length < 3 && !row.messages.includes(r.message)) { row.messages.push(r.message); row.findings.push({ code: r.code ?? '', message: r.message }); }
     by.set(r.employeeId, row);
   }
   return [...by.values()].sort((a, b) => b.errors - a.errors || b.warnings - a.warnings || a.employeeId - b.employeeId);

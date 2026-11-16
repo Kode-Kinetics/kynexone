@@ -5,7 +5,7 @@ import { defineConfig, devices } from '@playwright/test';
 // (e.g. `npx next dev -p 5198`); this suite never touches a real tenant.
 export default defineConfig({
   testDir: '.',
-  testMatch: /payroll-cost-centre-journal\.spec\.ts/,
+  testMatch: /payroll-(cost-centre-journal|gl-ui)\.spec\.ts/,
   workers: 1,
   retries: 0,
   forbidOnly: !!process.env.CI,

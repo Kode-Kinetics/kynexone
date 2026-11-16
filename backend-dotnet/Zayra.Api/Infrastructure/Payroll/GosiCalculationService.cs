@@ -70,6 +70,13 @@ public static class GosiCalculationService
     }
 
     /// <summary>
+    /// The same classification for a person on file: a confirmed ISO nationality code is the record and decides (SA = Saudi, a GCC member
+    /// state = GCC, any other code = NonSaudi); without one the free text decides, as <see cref="DeriveClassification(string?)"/> does.
+    /// </summary>
+    public static string DeriveClassification(string? nationality, string? nationalityCode, string? mappingState) =>
+        DeriveClassification(Compliance.EmployeeNationality.Effective(nationality, nationalityCode, mappingState));
+
+    /// <summary>
     /// S1/A4 — the ISO-3166-1 alpha-2 home state for a GCC national, or null for anyone who is not
     /// one. Kept beside <see cref="DeriveClassification"/> so the two can never disagree about who
     /// counts as GCC.
@@ -217,6 +224,7 @@ public static class GosiCalculationService
     /// and the GOSI preview all showed a smaller one. The dashboard is the figure a customer's finance
     /// team reconciles against the GOSI portal, so it was the wrong one that got trusted.</para>
     /// </param>
+    /// <param name="rounding">The resolved <c>gosi.rounding_mode</c> (see <see cref="GosiRounding.ResolveAsync"/>); null follows the seeded rule's dates.</param>
     /// <param name="allRules">All active rules for the tenant — preloaded once per run.</param>
     /// <param name="periodDate">The last date of the pay period (used for effective-date selection).</param>
     /// <param name="tenantId">The tenant ID for override precedence resolution.</param>
@@ -233,8 +241,12 @@ public static class GosiCalculationService
         IReadOnlyList<GosiContributionRule> allRules,
         DateOnly                            periodDate,
         Guid                                tenantId,
-        GosiWageBounds                      bounds)
+        GosiWageBounds                      bounds,
+        MidpointRounding?                   rounding = null)
     {
+        // The rounding mode is the gosi.rounding_mode rule, not a constant: a caller that resolved the rule passes it; without one the
+        // period decides exactly as the seeded rule does (half-even before the go-live month, half-up from it).
+        var mode = rounding ?? GosiRounding.DefaultModeFor(periodDate);
         var classification = DeriveClassification(nationality);
         var rules          = SelectActiveRules(classification, allRules, periodDate, tenantId);
 
@@ -263,7 +275,7 @@ public static class GosiCalculationService
             // 100× remittance error that neither store's own tests could see. See
             // StatutoryValueUnits for the single unit registry and the write-path refusals, and
             // migration GosiContributionRuleRateToFraction for the conversion of existing rows.
-            var amount = Math.Round(wage * rule.Rate, 2);
+            var amount = Math.Round(wage * rule.Rate, 2, mode);
             if (amount <= 0m) continue;
 
             lines.Add(new GosiContributionLine(

@@ -166,7 +166,7 @@ public static class ProfileSectionRegistry
                 if (Has("arabicName")) e.ArabicName = V("arabicName");
                 break;
             case EssSectionKeys.Id:
-                if (Has("nationalId")) { e.IdNumber = V("nationalId"); e.IdType = "NationalId"; }
+                if (Has("nationalId")) { e.IdNumber = V("nationalId"); e.IdType = Zayra.Api.Infrastructure.Employees.GovernmentIdTypes.NationalId; }
                 if (Has("iqamaNumber")) e.IqamaNumber = V("iqamaNumber");
                 if (Has("iqamaExpiry")) e.IqamaExpiryDate = ParseDate(V("iqamaExpiry"));
                 if (Has("borderNumber")) e.BorderNumber = V("borderNumber");

@@ -82,6 +82,64 @@ public sealed class ExternalSettlementPaymentConcurrencyPostgresTests
         await AssertDischargedOnceAsync(seed);
     }
 
+    /// <summary>
+    /// The leave-balance rows the settlement's encashment lines name are read FOR UPDATE inside the recording's transaction, so a
+    /// payroll run or an encashment approval writing the same rows waits instead of overwriting Encashed with a stale value.
+    /// </summary>
+    [Fact]
+    public async Task Recording_ReadsTheEncashedLeaveBalanceRowsForUpdate()
+    {
+        var seed = await SeedApprovedSettlementAsync();
+        Guid balanceId;
+        await using (var db = _fixture.CreateDb())
+        {
+            var settlement = await db.EmployeeFinalSettlements.SingleAsync(x => x.Id == seed.SettlementId);
+            var row = new EmployeeLeaveBalance
+            {
+                TenantId = seed.TenantId, EmployeeId = settlement.EmployeeId, EmployeeName = settlement.EmployeeName,
+                LeaveTypeId = Guid.NewGuid(), LeaveTypeName = "Annual leave", Year = 2026, Accrued = 12.25m, Used = 3m,
+            };
+            db.EmployeeLeaveBalances.Add(row);
+            db.FinalSettlementLines.Add(new FinalSettlementLine
+            {
+                TenantId = seed.TenantId, SettlementId = settlement.Id, ComponentCode = FinalSettlementComponents.LeaveEncashment,
+                ComponentName = "Leave encashment — Annual leave", LineType = FinalSettlementLineTypes.Earning,
+                Source = FinalSettlementComponents.SettlementSource, Amount = 2_775m, Quantity = 9.25m, SourceEntityId = row.Id,
+            });
+            await db.SaveChangesAsync();
+            balanceId = row.Id;
+        }
+
+        var capture = new SqlCapture();
+        await using (var db = CreateDb(capture))
+        {
+            var result = await Controller(db, seed.TenantId, Guid.NewGuid()).RecordExternalSettlementPayment(
+                seed.OffboardingId, new ExternalSettlementPaymentRequest("BankTransfer", "TRF-LOCK", Gross - Deductions, null),
+                CancellationToken.None);
+            Assert.IsType<OkObjectResult>(result);
+        }
+
+        var balanceReads = capture.Commands
+            .Where(c => c.Contains("FROM employee_leave_balances", StringComparison.Ordinal) && c.Contains("SELECT", StringComparison.Ordinal))
+            .ToList();
+        Assert.NotEmpty(balanceReads);
+        Assert.All(balanceReads, c => Assert.Contains("FOR UPDATE", c, StringComparison.Ordinal));
+        await using var verify = _fixture.CreateDb();
+        Assert.Equal(9.25m, (await verify.EmployeeLeaveBalances.AsNoTracking().SingleAsync(x => x.Id == balanceId)).Encashed);
+    }
+
+    /// <summary>Records every reader command's text, after <see cref="RowLockingInterceptor"/> has rewritten it.</summary>
+    private sealed class SqlCapture : DbCommandInterceptor
+    {
+        public System.Collections.Concurrent.ConcurrentQueue<string> Commands { get; } = new();
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            Commands.Enqueue(command.CommandText);
+            return ValueTask.FromResult(result);
+        }
+    }
+
     private async Task AssertDischargedOnceAsync(Seed seed)
     {
         await using var verify = _fixture.CreateDb();

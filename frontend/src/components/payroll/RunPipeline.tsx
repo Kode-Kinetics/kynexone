@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Circle, CircleDot } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Circle, CircleDot } from 'lucide-react';
 import { type PayrollRun } from '../../api/payroll';
 import { isProcessingActive, startRunProcessing } from '../../api/payrollProcessing';
 import { useAuth } from '../../contexts/AuthContext';
@@ -18,11 +18,15 @@ import {
   type AttentionKind, type NextAction, type PipelineStage, type Reason, type StageKey,
 } from '../../lib/payrollPipeline';
 import { isPeriodOwning, priorRunCandidates, reviewFromSignoff, reviewIsRequired } from '../../lib/payrollRecon';
+import { isolateLtr } from '../../lib/bidi';
 import { requestFailureReason } from '../../lib/requestFailure';
 import { EnumLabel } from '../EnumLabel';
 import { Button } from '../ui/Button';
 import { usePeriodLabel } from './LockSummary';
 import { RunReviewPanel } from './RunReviewPanel';
+import { splitRunsByVoided } from '../../lib/runOptions';
+
+const STAGES_PREF_KEY = 'kynexone-payroll-pipeline-stages';
 
 /** The tab each stage's name opens (the review stage opens its own panel instead). */
 const STAGE_TAB: Record<Exclude<StageKey, 'review'>, string> = {
@@ -62,6 +66,16 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
   const [missingRun, setMissingRun] = useState(false);
   const [showAllAttention, setShowAllAttention] = useState(false);
   const reviewRef = useRef<HTMLDivElement>(null);
+  // The stage cards take half a laptop screen. With a run chosen they start folded (the run, its stage and the next step stay in view) and
+  // the choice is remembered. Processing shows its progress inside a stage card, so it opens them for as long as it runs.
+  const [stagesPref, setStagesPref] = useState<'open' | 'folded' | null>(null);
+  useEffect(() => {
+    try { const v = window.localStorage.getItem(STAGES_PREF_KEY); setStagesPref(v === 'open' || v === 'folded' ? v : null); } catch { /* storage unavailable: the default stays */ }
+  }, []);
+  const chooseStages = (next: 'open' | 'folded') => {
+    setStagesPref(next);
+    try { window.localStorage.setItem(STAGES_PREF_KEY, next); } catch { /* the choice just is not remembered */ }
+  };
 
   const can = { process: hasPermission('payroll.write'), approve: hasPermission('payroll.approve'), lock: hasPermission('payroll.lock') };
   const currency = run ? resolvePayrollRunCurrency(run, companies, companiesState) : null;
@@ -185,6 +199,8 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
   ), [data.runs, data.allBatches]);
   const attentionIds = new Set(attention.map(a => a.id));
   const otherRuns = data.runs.filter(r => !attentionIds.has(r.id));
+  // A voided run is not set beside the live ones: it has its own group.
+  const { live: liveOtherRuns, voided: voidedRuns } = splitRunsByVoided(otherRuns);
   const visibleAttention = showAllAttention ? attention : attention.slice(0, 5);
 
   const companyName = (r: PayrollRun) => {
@@ -197,6 +213,8 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
 
   const focusStage = model?.stages.find(s => s.key === model.focus) ?? null;
   const processingStatus = processing.status;
+  const processingActive = isProcessingActive(processingStatus?.status);
+  const stagesOpen = !run || processingActive || (stagesPref ?? 'folded') === 'open';
   const busy = starting || (run !== null && lockingRunId === run.id);
 
   return (
@@ -204,7 +222,7 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 id="run-pipeline-title" className="text-h3 font-semibold text-fg">{t('Payroll run')}</h2>
-          <p className="text-body-sm text-fg-muted">{t('Pick a run to see where it is and what to do next. The tabs below hold the detail.')}</p>
+          {(!run || stagesOpen) && <p className="text-body-sm text-fg-muted">{t('Pick a run to see where it is and what to do next. The tabs below hold the detail.')}</p>}
         </div>
         <div className="flex items-center gap-2">
           <label htmlFor="pipeline-run-picker" className="text-body-sm text-fg-muted">{t('Run')}</label>
@@ -221,9 +239,14 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
                 {attention.map(r => <option key={r.id} value={r.id}>{runLabel(r)} — {attentionText(t, r.attention)}</option>)}
               </optgroup>
             )}
-            {otherRuns.length > 0 && (
+            {liveOtherRuns.length > 0 && (
               <optgroup label={t('Other runs')}>
-                {otherRuns.map(r => <option key={r.id} value={r.id}>{runLabel(r)} — {statusText(t, r.status)}</option>)}
+                {liveOtherRuns.map(r => <option key={r.id} value={r.id}>{runLabel(r)} — {statusText(t, r.status)}</option>)}
+              </optgroup>
+            )}
+            {voidedRuns.length > 0 && (
+              <optgroup label={t('Voided runs')}>
+                {voidedRuns.map(r => <option key={r.id} value={r.id}>{runLabel(r)} — {statusText(t, r.status)}</option>)}
               </optgroup>
             )}
           </select>
@@ -266,13 +289,31 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-h4 font-semibold text-fg">{runLabel(run)}</span>
             <span className="badge badge-neutral"><EnumLabel enum="PayrollRunStatus" value={run.status} /></span>
-            {currencyCode && <span className="text-body-sm text-fg-muted"><bdi>{currencyCode}</bdi></span>}
+            {currencyCode && <span className="text-body-sm text-fg-muted">{t('Amounts in {currency}', { currency: fmt.currencyLabel(currencyCode) })}</span>}
+            {focusStage && !stagesOpen && (
+              <span className="text-body-sm text-fg-muted" data-testid="pipeline-folded-stage">
+                {t('Stage {stage}: {state}', { stage: stageName(t, focusStage.key), state: stateName(t, focusStage.state) })}
+              </span>
+            )}
+            {!processingActive && (
+              <button
+                type="button"
+                className="btn-secondary btn-sm ms-auto"
+                aria-expanded={stagesOpen}
+                aria-controls="pipeline-stages-region"
+                data-testid="pipeline-stages-toggle"
+                onClick={() => chooseStages(stagesOpen ? 'folded' : 'open')}
+              >
+                {stagesOpen ? t('Hide stages') : t('Show stages')}
+                <ChevronDown className={`h-4 w-4 transition-transform ${stagesOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
+              </button>
+            )}
           </div>
 
           {model.voided && <p role="status" className="rounded-lg border border-line bg-surface-sunken px-3 py-2 text-body-sm text-fg-muted">{t('This run was voided. It has no further stages.')}</p>}
           {model.unknownStatus && <p role="status" className="rounded-lg border border-line bg-surface-sunken px-3 py-2 text-body-sm text-fg-muted">{t('This run has a status the pipeline does not know, so no stage is highlighted.')}</p>}
 
-          <ol aria-label={t('Stages of payroll run {period}', { period: period(run) })} className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8" data-testid="pipeline-stages">
+          <ol id="pipeline-stages-region" aria-label={t('Stages of payroll run {period}', { period: period(run) })} className={`${stagesOpen ? 'grid' : 'hidden'} grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8`} data-testid="pipeline-stages">
             {model.stages.map(stage => (
               <StageItem
                 key={stage.key}
@@ -472,7 +513,17 @@ function attentionText(t: T, kind: AttentionKind): string {
 
 function detailText(t: T, d: NonNullable<PipelineStage['detail']>): string {
   switch (d.id) {
-    case 'batch': return t('Bank file {number}: {label}', { number: d.number, label: d.label });
+    // The label is the API's English status text; the dictionary holds its Arabic (an unknown status prints as sent).
+    case 'batch': {
+      // Where the API says which file exists, name it: a Saudi company's internal register is not its bank file.
+      if (!d.file) return t('Bank file {number}: {label}', { number: d.number, label: t(d.label) });
+      // The batch number is a left-to-right code inside what may be an Arabic sentence: isolate it so it is not reordered.
+      const number = isolateLtr(d.number);
+      const file = d.file === 'bank_file'
+        ? t('Batch {number}: Bank file generated', { number })
+        : t('Batch {number}: Register generated (internal, not a bank file)', { number });
+      return d.statusAfterFile ? `${file} ${t('Status: {status}', { status: t(d.label) })}` : file;
+    }
     case 'payroll_review': return t('Payroll review is done');
     case 'overrides': return t('{count, plural, one {# error cleared by override} other {# errors cleared by override}}', { count: d.count });
     case 'signed_off': return d.name ? t('Signed off by {name}', { name: d.name }) : t('Reconciliation signed off');
@@ -501,6 +552,11 @@ function reasonText(t: T, r: Reason): string {
     case 'currency_unconfirmed': return t('The company currency is not confirmed, so the lock summary cannot name one. Check Setup → Companies.');
     case 'no_batch': return t('No payment batch exists yet. Create one on the Bank / WPS tab.');
     case 'batch_not_exported': return t('A payment batch exists, but its bank file has not been generated yet.');
+    case 'bank_file_not_generated': return t('The internal payroll register is generated, but the bank file has not been generated yet.');
+    case 'awaiting_bank_confirmation':
+      return r.total === undefined || r.confirmed === undefined
+        ? t('Bank file ready — waiting for bank confirmation')
+        : t('Bank file ready — waiting for bank confirmation ({confirmed} of {total})', { confirmed: r.confirmed, total: r.total });
     case 'voided': return t('Voided.');
   }
 }
@@ -515,6 +571,7 @@ function nextTitle(t: T, next: NextAction, focus: PipelineStage | null): string 
     case 'approve': return t('Approve the run');
     case 'lock': return t('Lock the run');
     case 'bank': return t('Create the bank file');
+    case 'confirm_bank': return t('Confirm payments with the bank');
     case 'none': return focus && focus.key === 'processed' ? t('Processing…') : t('All stages are complete.');
   }
 }
@@ -529,6 +586,7 @@ function actionLabel(t: T, next: NextAction, busy: boolean): string {
     case 'approve': return t('Go to Approvals');
     case 'lock': return busy ? t('Locking…') : t('Review summary and lock');
     case 'bank': return t('Open Bank / WPS');
+    case 'confirm_bank': return t('Open Payment Tracking');
     case 'none': return '';
   }
 }

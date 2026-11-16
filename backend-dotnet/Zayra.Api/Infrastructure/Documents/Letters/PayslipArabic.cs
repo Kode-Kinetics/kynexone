@@ -60,6 +60,16 @@ public static class PayslipArabic
         ["Other Allowances"] = "بدلات أخرى",
         ["Other Deductions"] = "استقطاعات أخرى",
         ["Arrears"] = "متأخرات",
+        // The lines Process itemises under their persisted names (PayslipItemiser). Names that carry a note in
+        // brackets (overtime hours and rate, loss-of-pay days and rate, tax rate) keep it: see ItemName.
+        ["Overtime"] = "العمل الإضافي",
+        ["Late/early attendance deduction"] = "خصم التأخير والخروج المبكر",
+        ["Loss of Pay"] = "خصم أيام الغياب",
+        ["Leave deduction"] = "خصم الإجازة",
+        ["Loan instalment"] = "قسط قرض",
+        ["Salary advance repayment"] = "سداد السلفة",
+        ["Fixed deduction"] = "استقطاع ثابت",
+        ["Income tax"] = "ضريبة الدخل",
         ["Net Pay"] = "صافي الراتب",
     };
 
@@ -77,7 +87,9 @@ public static class PayslipArabic
         foreach (var (en, ar) in Exact)
         {
             if (trimmed.StartsWith(en + " (", StringComparison.OrdinalIgnoreCase))
-                return ar + trimmed[en.Length..];
+                // The note is Latin text with digits, brackets and "×": left in the right-to-left run its brackets and numbers
+                // reorder ("d × 1,000.00/d) 1.00"). A left-to-right isolate (U+2066..U+2069) keeps it reading as written.
+                return ar + " \u2066" + trimmed[(en.Length + 1)..] + "\u2069";
         }
         const string arrearsPrefix = "Arrears — ";
         if (trimmed.StartsWith(arrearsPrefix, StringComparison.OrdinalIgnoreCase))

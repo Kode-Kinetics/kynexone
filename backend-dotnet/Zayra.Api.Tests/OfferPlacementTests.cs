@@ -333,6 +333,8 @@ public sealed class OfferPlacementTests
         };
         db.AddRange(department, designation, candidate, opening, application);
         await db.SaveChangesAsync();
+        // An offer hire's pay waits for a second approver with pay-approval rights: there must be one besides the people who made the hire.
+        await PayApprover.SeedAsync(_fixture, tenantId);
         return new Seeded(tenantId, application.Id, department.Id, designation.Id);
     }
 

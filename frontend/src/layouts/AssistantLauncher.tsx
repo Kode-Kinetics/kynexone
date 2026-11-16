@@ -9,8 +9,9 @@ export const ASSISTANT_DIALOG_ID = 'kody-assistant-dialog';
  * Below 1280px the launcher is the 48px circle only, so it never sits over a page's primary action;
  * AppLayout gives <main> enough bottom padding that the last action can scroll clear of it.
  * The company setup wizard keeps the circle at every width: its sticky footer holds the primary action there.
+ * So does Payroll, whose wide tables have their last column under the labelled button at 1366 px.
  */
-const COMPACT_ROUTES = [/^\/setup\/new-company(\/|$)/, /^\/setup\/company\/[^/]+\/complete(\/|$)/];
+const COMPACT_ROUTES = [/^\/setup\/new-company(\/|$)/, /^\/setup\/company\/[^/]+\/complete(\/|$)/, /^\/payroll(\/|$)/];
 
 export function AssistantLauncher({ open, onOpen }: { open: boolean; onOpen: () => void }) {
   const t = useT();

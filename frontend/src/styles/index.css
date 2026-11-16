@@ -24,6 +24,14 @@ html {
   background: rgb(var(--kx-canvas));
 }
 
+/* Payroll only: the sticky top bar (60px) and the floating assistant must not cover what an anchor or a focused field scrolls
+   to. Not page-wide: on a page whose own column scrolls (Setup's section list), page scroll padding makes scrollIntoView move
+   the whole page as well. */
+html:has(.kx-scroll-tables) {
+  scroll-padding-top: 4.75rem;
+  scroll-padding-bottom: 6rem;
+}
+
 body {
   min-width: 320px;
   min-height: 100vh;
@@ -81,6 +89,10 @@ textarea:focus-visible {
   .surface-raised {
     @apply rounded-xl border border-line bg-surface shadow-e2;
   }
+
+  /* A wide table scrolls sideways inside its card on a narrow screen instead of being clipped by the card's overflow-hidden. */
+  /* Only the cards that clip (overflow-hidden): a stat card that merely runs a little wide must not become a scroll region nobody can focus. */
+  .kx-scroll-tables .surface.overflow-hidden { overflow-x: auto; }
 
   .muted-text {
     @apply text-fg-subtle;

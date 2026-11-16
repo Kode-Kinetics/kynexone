@@ -48,7 +48,7 @@ public class EosbProvisionSnapshot : ITenantOwned, ICompanyScopedOperational
 
 /// <summary>
 /// A finance journal that needs a SECOND person to approve it before it posts: the EOSB actuarial
-/// true-up and the legacy 2104/2105 absence-deduction reclassification. Both are manual, judgemental
+/// true-up, the legacy 2104/2105 absence-deduction reclassification and the write-off of an employee receivable. Both are manual, judgemental
 /// postings to a liability, so neither is ever automatic and the requester can never approve their own.
 /// One table for both because the lifecycle (Pending → Approved | Rejected, maker ≠ checker, posted
 /// lines linked by <c>FinanceGlEntry.SourceEntityId</c>) is identical; <see cref="Kind"/> says which.
@@ -85,6 +85,8 @@ public class GlAdjustmentRequest : ITenantOwned, ICompanyScopedOperational
     /// <summary>Cost-accounting v1 (WP-C3, AM-36): the optional cost centre the profit-and-loss line of the journal carries (null = none).
     /// Validated by the one cost-centre reference check when requested; stamped, with its snapshots, on that line at approval.</summary>
     public Guid? CostCenterId { get; set; }
+    /// <summary>The record the request acts on. Receivable write-off: the <see cref="PayrollEmployeeReceivable"/> being written off. Null for the other kinds.</summary>
+    public Guid? SubjectId { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
 }
@@ -93,7 +95,9 @@ public static class GlAdjustmentKinds
 {
     public const string EosbTrueUp = "EosbTrueUp";
     public const string LegacyAbsenceReclass = "LegacyAbsenceReclass";
-    public static readonly string[] All = { EosbTrueUp, LegacyAbsenceReclass };
+    /// <summary>Write-off of an employee receivable (the loan balance a final settlement could not recover): DR 5114 / CR 1420.</summary>
+    public const string ReceivableWriteOff = "ReceivableWriteOff";
+    public static readonly string[] All = { EosbTrueUp, LegacyAbsenceReclass, ReceivableWriteOff };
 }
 
 public static class GlAdjustmentStatuses

@@ -32,7 +32,7 @@ public static class EmployeeChangeDetail
 
     /// <summary>Social-insurance enrolment numbers the name classifier does not recognise on its own.</summary>
     private static readonly HashSet<string> ExtraIdentifierKeys = new(StringComparer.OrdinalIgnoreCase)
-        { "socialInsuranceReference", "gosiReference", "qiwaContractNumber" };
+        { "socialInsuranceReference", "gosiReference", "qiwaContractNumber", "establishmentId", "contractReference", "workPermitReference" };
 
     public const string MaskedPay = "Hidden — needs pay access";
     public const string MaskedRestricted = "Hidden — needs sensitive-data access";

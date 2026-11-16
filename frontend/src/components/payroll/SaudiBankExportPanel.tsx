@@ -26,8 +26,14 @@ import {
   type SaudiBankExportIssue, type CustomBankTemplate,
 } from '../../api/saudiBankExports';
 import { useLocale } from '../../contexts/LocaleContext';
+import { enumLabel } from '../../i18n/enumLabel';
+import { bankAcceptanceLabel, bankFormatLabel } from '../../lib/payrollBatchDisplay';
+import { DatePicker } from '../ui/DateParts';
 import { useAuth } from '../../contexts/AuthContext';
+import { bankFileProductionAllowed, bankTemplatesAllowed } from '../../lib/payrollPaymentAccess';
+import { EmployeeLabelText } from './EmployeeLabelText';
 import { SaudiBankBeneficiaryEditor } from './SaudiBankBeneficiaryEditor';
+import type { BankFlowProgress } from '../../lib/bankFileSteps';
 import { CustomBankTemplateEditor } from './CustomBankTemplateEditor';
 
 // Copy for the custom-template format only (the ANB copy above is unchanged).
@@ -75,6 +81,7 @@ export type Copy = {
   selectBatchType: string; saveSetup: string; saving: string; saved: string; unsaved: string;
   noManagePerm: string; noExportPerm: string;
   batchTitle: string; batchReference: string; batchReferenceHelp: string; paymentDate: string; paymentDateHelp: string;
+  batchReferenceSuggested: string;
   validate: string; validating: string; generate: string; generating: string; download: string; downloading: string;
   needSave: string; needValidate: string; staleValidation: string; blocked: string; busy: string;
   validationOk: string; validationBlocked: (n: number) => string; warnings: string; employees: string; total: string;
@@ -88,7 +95,7 @@ export type Copy = {
 };
 
 export const EN: Copy = {
-  title: 'Bank instruction file — ANB Connect CSV',
+  title: 'Payroll payment instruction file (bank format) — ANB Connect CSV',
   subtitle: 'Prepares the two ANB Connect payroll-payment CSV files (header.csv + body.csv) for this payment batch.',
   loading: 'Loading bank export details…',
   loadFailed: 'Could not load the bank export details for this batch.',
@@ -138,6 +145,7 @@ export const EN: Copy = {
   batchReferenceHelp: '1–16 digits. This is the WPS file reference: it must never repeat for this establishment, including on voided runs; also check references used outside KynexOne.',
   paymentDate: 'Credit value date',
   paymentDateHelp: 'Date the bank should credit employees.',
+  batchReferenceSuggested: 'Suggested from the payment batch number. Change it if your bank or your own records use another number.',
   validate: 'Validate',
   validating: 'Validating…',
   generate: 'Generate files',
@@ -182,7 +190,7 @@ export const EN: Copy = {
 };
 
 export const AR: Copy = {
-  title: 'ملف تعليمات البنك — ANB Connect CSV',
+  title: 'ملف تعليمات دفع الرواتب (بصيغة البنك) — ANB Connect CSV',
   subtitle: 'يجهّز ملفي CSV الخاصين بدفع الرواتب عبر ANB Connect ‏(header.csv و body.csv) لدفعة الدفع هذه.',
   loading: 'جارٍ تحميل تفاصيل التصدير البنكي…',
   loadFailed: 'تعذّر تحميل تفاصيل التصدير البنكي لهذه الدفعة.',
@@ -232,6 +240,7 @@ export const AR: Copy = {
   batchReferenceHelp: 'من 1 إلى 16 رقمًا. هذا هو مرجع ملف حماية الأجور ويجب ألا يتكرر لهذه المنشأة أبدًا، بما في ذلك المسيرات الملغاة.',
   paymentDate: 'تاريخ قيمة الإيداع',
   paymentDateHelp: 'التاريخ الذي يودع فيه البنك الرواتب.',
+  batchReferenceSuggested: 'مقترح من رقم دفعة الدفع. غيّره إذا كان بنكك أو سجلاتك تستخدم رقمًا آخر.',
   validate: 'تحقق',
   validating: 'جارٍ التحقق…',
   generate: 'إنشاء الملفات',
@@ -416,7 +425,7 @@ export function SaudiBankSettingsForm({ c, idPrefix, draft, setField, errors, fo
   dirty: boolean;
   onSubmit: (e?: React.FormEvent) => void;
 }) {
-  const { locale } = useLocale();
+  const { locale, t } = useLocale();
   const cc = CUSTOM_COPY[locale === 'ar' ? 'ar' : 'en'];
   // A custom template needs only the establishment id and (optionally) a debit IBAN; the ANB employer fields do not apply.
   const draftIsCustom = isCustomFormatId(draft.formatId);
@@ -459,7 +468,7 @@ export function SaudiBankSettingsForm({ c, idPrefix, draft, setField, errors, fo
             onChange={(e) => setField('formatId', e.target.value)} aria-invalid={sErr('formatId') ? true : undefined}
             aria-describedby={describedBy('formatId', sErr('formatId'), false)}>
             <option value="">—</option>
-            {formats.map((f) => <option key={f.id} value={f.id}>{isCustomFormatId(f.id) ? `${f.name} (${cc.suffix})` : f.name}</option>)}
+            {formats.map((f) => <option key={f.id} value={f.id}>{isCustomFormatId(f.id) ? `${t(f.name)} (${cc.suffix})` : t(f.name)}</option>)}
           </select>
         </FieldShell>
         {!draftIsCustom && <FieldShell id={fid('batchType')} label={c.batchType} error={sErr('batchType')}>
@@ -467,7 +476,7 @@ export function SaudiBankSettingsForm({ c, idPrefix, draft, setField, errors, fo
             onChange={(e) => setField('batchType', e.target.value)} aria-invalid={sErr('batchType') ? true : undefined}
             aria-describedby={describedBy('batchType', sErr('batchType'), false)}>
             <option value="">{c.selectBatchType}</option>
-            {SAUDI_BANK_BATCH_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            {SAUDI_BANK_BATCH_TYPES.map((type) => <option key={type} value={type}>{enumLabel(t, 'BankBatchType', type)}</option>)}
           </select>
         </FieldShell>}
         {textInput('molEstablishmentId', c.molEstablishmentId, { help: c.molHelp, ltr: true })}
@@ -507,8 +516,14 @@ type Busy = null | 'save' | 'validate' | 'generate' | 'download';
 type LoadState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready' };
 type ActionError = { message: string; issues?: SaudiBankExportIssue[] } | null;
 
-export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string; employeeIds?: number[] }) {
-  const { locale } = useLocale();
+export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onProgress, suggestedReference }: {
+  batchId: string; employeeIds?: number[]; employeeLabels?: Record<number, string>;
+  /** Pre-fills the batch number of a batch that has no export yet (editable; the server still refuses a reused one). */
+  suggestedReference?: string;
+  /** Where the batch is in check -> create -> download, for the step flow above the panel. */
+  onProgress?: (p: BankFlowProgress) => void;
+}) {
+  const { locale, t } = useLocale();
   const c = locale === 'ar' ? AR : EN;
   const { hasPermission } = useAuth();
   const uid = useId();
@@ -535,6 +550,8 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
   const busyRef = useRef(false);
   const actionAbortRef = useRef<AbortController | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
+  const suggestedRef = useRef(suggestedReference ?? '');
+  suggestedRef.current = suggestedReference ?? '';
 
   // ── Load: context first (gives companyId), then formats + settings in parallel.
   useEffect(() => {
@@ -549,7 +566,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
     setFormats([]);
     setSavedSettings(null);
     setDraft(EMPTY_SETTINGS);
-    setBatchInput({ batchReference: '', paymentDate: '' });
+    setBatchInput({ batchReference: suggestedRef.current, paymentDate: '' });
     setValidation(null);
     setArtifact(null);
     setActionError(null);
@@ -616,6 +633,16 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
   const existingMatches = !!artifact
     && artifact.batchReference === batchInput.batchReference
     && (artifact.paymentDate ?? '').slice(0, 10) === batchInput.paymentDate;
+
+  // The step flow above this panel follows the same facts the buttons below use.
+  const progressValidation: BankFlowProgress['validation'] = busy === 'validate' ? 'running'
+    : !validation ? 'none' : validationStale ? 'stale' : validation.result.canExport ? 'passed' : 'blocked';
+  const progressGenerated = !!artifact;
+  useEffect(() => {
+    if (load.status !== 'ready') { onProgress?.({ gate: 'ready', validation: 'none', generated: false }); return; }
+    onProgress?.({ gate: 'ready', validation: progressValidation, generated: progressGenerated });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load.status, progressValidation, progressGenerated]);
 
   // Pre-select the only supported format when nothing is saved yet (explicit, visible choice).
   useEffect(() => {
@@ -794,11 +821,11 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
         {/* Format facts + disclaimer */}
         <dl className="grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
           <div><dt className="text-slate-400">{c.company}</dt><dd className="font-medium text-slate-800 dark:text-white">{ctx?.companyName}</dd></div>
-          <div><dt className="text-slate-400">{c.runStatus}</dt><dd className="font-medium text-slate-800 dark:text-white">{ctx?.runStatus}</dd></div>
+          <div><dt className="text-slate-400">{c.runStatus}</dt><dd className="font-medium text-slate-800 dark:text-white">{enumLabel(t, 'PayrollRunStatus', ctx?.runStatus)}</dd></div>
           {selectedFormat && (
             <>
-              {!isCustomFormatId(selectedFormat.id) && <div><dt className="text-slate-400">{c.bank} · {c.channel}</dt><dd className="font-medium text-slate-800 dark:text-white">{selectedFormat.bank} · {selectedFormat.channel}</dd></div>}
-              <div><dt className="text-slate-400">{c.acceptance}</dt><dd className="font-mono text-amber-700 dark:text-amber-400">{selectedFormat.acceptanceStatus}</dd></div>
+              {!isCustomFormatId(selectedFormat.id) && <div><dt className="text-slate-400">{c.bank} · {c.channel}</dt><dd className="font-medium text-slate-800 dark:text-white">{t(selectedFormat.bank)} · {t(selectedFormat.channel)}</dd></div>}
+              <div><dt className="text-slate-400">{c.acceptance}</dt><dd className="font-mono text-amber-700 dark:text-amber-400">{bankAcceptanceLabel(t, selectedFormat.acceptanceStatus)}</dd></div>
               {!isCustomFormatId(selectedFormat.id) && <div><dt className="text-slate-400">{c.reviewedOn}</dt><dd className="text-slate-700 dark:text-slate-300">{selectedFormat.reviewedOn}</dd></div>}
               {!isCustomFormatId(selectedFormat.id) && <div className="min-w-0"><dt className="text-slate-400">{c.source}</dt>
                 <dd className="truncate">
@@ -820,7 +847,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
         {draftIsCustom && <Alert tone="info">{cc.notice}</Alert>}
         {formats.length === 0 && <Alert tone="error">{c.noFormats}</Alert>}
         {savedFormatUnsupported && <Alert tone="error">{c.unsupportedFormat(savedSettings?.formatId ?? '')}</Alert>}
-        {!hasPermission('payroll.export') && <Alert tone="info">{c.noExportPerm}</Alert>}
+        {!bankFileProductionAllowed(hasPermission) && <Alert tone="info">{c.noExportPerm}</Alert>}
 
         {/* Employer setup */}
         <SaudiBankSettingsForm c={c} idPrefix={uid} draft={draft} setField={setField}
@@ -828,8 +855,9 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
           canManage={hasPermission('payroll.structure_manage')} saving={busy === 'save'} otherBusy={busy !== null && busy !== 'save'}
           dirty={settingsDirty} onSubmit={onSave} />
 
-        {/* Custom bank templates: layout configured by the customer, approved by a second person */}
-        {ctx && (
+        {/* Custom bank templates: layout configured by the customer, approved by a second person. The template routes stay with
+            payroll.export, so the editor is not shown to someone who only prepares the file. */}
+        {ctx && bankTemplatesAllowed(hasPermission) && (
           <CustomBankTemplateEditor
             companyId={ctx.companyId}
             batchId={batchId}
@@ -849,17 +877,18 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
         <div className="rounded-xl border border-slate-100 p-4 dark:border-white/10">
           <h4 className="text-sm font-semibold text-slate-800 dark:text-white">{c.batchTitle}</h4>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <FieldShell id={fid('batchReference')} label={c.batchReference} help={c.batchReferenceHelp} error={bErr('batchReference')}>
+            <FieldShell id={fid('batchReference')} label={c.batchReference}
+              help={!artifact && suggestedReference && batchInput.batchReference === suggestedReference ? `${c.batchReferenceHelp} ${c.batchReferenceSuggested}` : c.batchReferenceHelp}
+              error={bErr('batchReference')}>
               <input id={fid('batchReference')} className={`${inp} ${bErr('batchReference') ? inpErr : ''}`} value={batchInput.batchReference}
                 onChange={(e) => setBatchField('batchReference', e.target.value)} inputMode="numeric" dir="ltr" autoComplete="off"
                 aria-invalid={bErr('batchReference') ? true : undefined}
                 aria-describedby={describedBy('batchReference', bErr('batchReference'), true)} />
             </FieldShell>
             <FieldShell id={fid('paymentDate')} label={c.paymentDate} help={c.paymentDateHelp} error={bErr('paymentDate')}>
-              <input id={fid('paymentDate')} type="date" className={`${inp} ${bErr('paymentDate') ? inpErr : ''}`} value={batchInput.paymentDate}
-                onChange={(e) => setBatchField('paymentDate', e.target.value)} dir="ltr"
-                aria-invalid={bErr('paymentDate') ? true : undefined}
-                aria-describedby={describedBy('paymentDate', bErr('paymentDate'), true)} />
+              <span id={fid('paymentDate')} tabIndex={-1} aria-describedby={describedBy('paymentDate', bErr('paymentDate'), true)} className="block outline-none">
+                <DatePicker aria-label={c.paymentDate} value={batchInput.paymentDate} onChange={(v) => setBatchField('paymentDate', v)} />
+              </span>
             </FieldShell>
           </div>
 
@@ -900,7 +929,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
           {actionError && (
             <Alert tone="error">
               <p role="alert">{actionError.message}</p>
-              {actionError.issues && actionError.issues.length > 0 && <IssueList issues={actionError.issues} c={c} onFocusField={focusField} />}
+              {actionError.issues && actionError.issues.length > 0 && <IssueList issues={actionError.issues} c={c} labels={employeeLabels} onFocusField={focusField} />}
             </Alert>
           )}
 
@@ -919,7 +948,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
                     {' '}({c.runNet}: <span className="tabular-nums" dir="ltr">{fmtMoney(result.runNetTotal ?? 0, result.currency)}</span>)
                   </p>
                 )}
-                {result.errors.length > 0 && <IssueList issues={result.errors} c={c} onFocusField={focusField} />}
+                {result.errors.length > 0 && <IssueList issues={result.errors} c={c} labels={employeeLabels} onFocusField={focusField} />}
               </Alert>
               {(result.exclusions?.length ?? 0) > 0 && (
                 <Alert tone="warn">
@@ -945,11 +974,11 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
           )}
 
           {artifact && (
-            <div className="rounded-xl border border-teal-200 bg-teal-50/50 p-4 dark:border-teal-500/20 dark:bg-teal-500/5">
+            <div id="bank-wps-generated-export" tabIndex={-1} className="rounded-xl border border-teal-200 bg-teal-50/50 p-4 outline-none dark:border-teal-500/20 dark:bg-teal-500/5">
               <p className="text-sm font-semibold text-slate-800 dark:text-white">{c.artifactTitle}</p>
               <dl className="mt-2 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
                 <div><dt className="text-slate-400">{c.artifactId}</dt><dd className="break-all font-mono text-slate-700 dark:text-slate-300" dir="ltr">{artifact.id}</dd></div>
-                <div><dt className="text-slate-400">{c.format}</dt><dd className="font-mono text-slate-700 dark:text-slate-300">{artifact.formatId}</dd></div>
+                <div><dt className="text-slate-400">{c.format}</dt><dd className="text-slate-700 dark:text-slate-300">{bankFormatLabel(t, formats, artifact.formatId, cc.suffix)}</dd></div>
                 <div><dt className="text-slate-400">{c.batchReference}</dt><dd className="font-mono text-slate-700 dark:text-slate-300" dir="ltr">{artifact.batchReference}</dd></div>
                 <div><dt className="text-slate-400">{c.paymentDate}</dt><dd className="text-slate-700 dark:text-slate-300" dir="ltr">{(artifact.paymentDate ?? '').slice(0, 10)}</dd></div>
                 <div><dt className="text-slate-400">{c.employees}</dt><dd className="tabular-nums text-slate-700 dark:text-slate-300">{artifact.employeeCount}</dd></div>
@@ -972,7 +1001,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
 
         {/* Per-employee BIC + address lines, submitted through the existing employee approval workflow.
             Any submitted or reloaded change discards the last validation so the batch must be revalidated. */}
-        {employeeIds && <SaudiBankBeneficiaryEditor key={batchId} employeeIds={employeeIds} onChange={() => setValidation(null)} />}
+        {employeeIds && <SaudiBankBeneficiaryEditor key={batchId} employeeIds={employeeIds} employeeLabels={employeeLabels} onChange={() => setValidation(null)} />}
       </div>
     </section>
   );
@@ -980,14 +1009,14 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
 
 const FOCUSABLE_FIELDS = new Set<string>([...SETTINGS_KEYS, 'batchReference', 'paymentDate']);
 
-function IssueList({ issues, c, onFocusField }: { issues: SaudiBankExportIssue[]; c: Copy; onFocusField: (k: string) => void }) {
+function IssueList({ issues, c, labels, onFocusField }: { issues: SaudiBankExportIssue[]; c: Copy; labels?: Record<number, string>; onFocusField: (k: string) => void }) {
   // Every blocker is rendered (scrollable, never truncated): the file is all-or-nothing.
   return (
     <ul className="mt-2 max-h-72 space-y-1 overflow-y-auto pe-1 text-xs">
       {issues.map((i, idx) => (
         <li key={`${i.code}-${i.employeeId ?? ''}-${i.field ?? ''}-${idx}`} className="rounded-md bg-white/60 px-2 py-1.5 dark:bg-black/10">
           <span className="font-mono text-[11px] opacity-80">{i.code}</span>
-          {i.employeeId != null && i.employeeId !== '' && <span className="ms-2 font-medium">{c.employee(String(i.employeeId))}</span>}
+          {i.employeeId != null && i.employeeId !== '' && <span className="ms-2 font-medium"><EmployeeLabelText label={labels?.[Number(i.employeeId)] || c.employee(String(i.employeeId))} /></span>}
           {i.field && <span className="ms-2 opacity-80">{c.field}: <span className="font-mono" dir="ltr">{i.field}</span></span>}
           <span className="block">{i.message}</span>
           {i.field && FOCUSABLE_FIELDS.has(i.field) && (

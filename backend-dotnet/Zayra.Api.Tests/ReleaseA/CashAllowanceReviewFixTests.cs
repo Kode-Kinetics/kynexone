@@ -204,7 +204,10 @@ public partial class CashAllowanceReviewFixTests
         field.Masked.Should().BeTrue();
         field.CurrentValue.Should().Be(EmployeeChangeDetail.MaskedPay);
         field.ProposedValue.Should().Be(EmployeeChangeDetail.MaskedPay);
-        JsonSerializer.Serialize(detail).Should().NotContain("Car allowance").And.NotContain("Phone allowance").And.NotContain("500").And.NotContain("200");
+        // Random ids can contain "500" or "200" (e.g. 200611d8-…), so they are removed before looking for the amounts.
+        var withoutIds = System.Text.RegularExpressions.Regex.Replace(JsonSerializer.Serialize(detail),
+            "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", "<id>");
+        withoutIds.Should().NotContain("Car allowance").And.NotContain("Phone allowance").And.NotContain("500").And.NotContain("200");
     }
 
     // ══ M1. Arrears for an allowance that is no longer on the current record ═══════════════════

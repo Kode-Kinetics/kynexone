@@ -93,14 +93,14 @@ test.describe('New hires — the screen uses those rules', () => {
     const source = page();
     expect(source).toContain('nextDraftAction(row)');
     expect(source).toContain('approveDisabledReason(');
-    expect(source).toContain('rejectionReasonError(reason)');
+    expect(source).toContain('rejectionReasonError(reason, t)');
     expect(source).toContain('disabled={!!deciding || handoffBusy || !!disabledReason}');
   });
 
   test('a load failure renders an error with a retry, not "nothing waiting"', () => {
     const source = page();
     expect(source).toContain('setData(null);');
-    expect(source).toContain('setLoadError(draftRequestFailureReason(err));');
+    expect(source).toContain('setLoadError(draftRequestFailureReason(err, t));');
     // The empty state renders only when there is no error.
     expect(source).toMatch(/!loading && !loadError && data && data\.items\.length === 0/);
     expect(source).toContain('role="alert"');

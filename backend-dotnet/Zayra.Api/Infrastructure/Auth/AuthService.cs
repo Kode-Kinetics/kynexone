@@ -20,6 +20,9 @@ public class AuthService : IAuthService
 {
     private readonly ZayraDbContext _db;
     private readonly IPasswordHasher _passwordHasher;
+
+    /// <summary>Wrong two-step codes (across every challenge) after which the account is locked, like a run of wrong passwords.</summary>
+    public const int MfaFailedLockoutThreshold = 10;
     private readonly ITokenService _tokenService;
     private readonly IAuditService _auditService;
     private readonly IEmailService _emailService;
@@ -1777,14 +1780,25 @@ public class AuthService : IAuthService
                 user.MfaFailedCount++;
                 if (challenge.FailedAttempts >= MfaChallengeToken.MaxAttempts)
                     challenge.UsedAtUtc = completedAtUtc;
+                // Each challenge allows only a few wrong codes, and the per-account counter applies across challenges: at the threshold
+                // the account is locked for the tenant's lockout
+                // period (the lock a run of wrong passwords sets), a new sign-in is refused, and an administrator's unlock or the end of the
+                // period clears it. A correct code resets the count.
+                var mfaLocked = user.MfaFailedCount >= MfaFailedLockoutThreshold;
+                if (mfaLocked)
+                {
+                    user.IsLocked = true;
+                    user.LockoutEnd = completedAtUtc.AddMinutes(policy?.LockoutDurationMinutes ?? 15);
+                }
                 _db.LoginActivities.Add(new LoginActivity
                 {
                     Id = activityId,
                     TenantId = user.TenantId,
                     UserId = user.Id,
                     EmailAttempted = user.Email,
-                    EventType = LoginEventTypes.LoginFailed,
-                    FailureReason = backupCode is null ? "mfa_code_mismatch" : "mfa_backup_code_mismatch",
+                    EventType = mfaLocked ? LoginEventTypes.AccountLocked : LoginEventTypes.LoginFailed,
+                    FailureReason = mfaLocked ? "account_locked_after_repeated_mfa_failures"
+                        : backupCode is null ? "mfa_code_mismatch" : "mfa_backup_code_mismatch",
                     IpAddress = context.IpAddress,
                     UserAgent = context.UserAgent,
                     OccurredAtUtc = completedAtUtc
@@ -1792,7 +1806,7 @@ public class AuthService : IAuthService
                 _db.AuditLogs.Add(AuthAuditEntry.Create(
                     auditId,
                     completedAtUtc,
-                    backupCode is null ? "auth.mfa_failed" : "auth.mfa.backup_code_failed",
+                    mfaLocked ? "auth.account_locked" : backupCode is null ? "auth.mfa_failed" : "auth.mfa.backup_code_failed",
                     "MfaChallengeToken",
                     challenge.Id.ToString(),
                     auditContext,

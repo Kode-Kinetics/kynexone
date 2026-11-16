@@ -99,7 +99,9 @@ public class StatutoryRuleMemoTests
         // above enforces. This second bound is only a tightness ratchet.
         // 16 → 18: the validation context now also reads the two GOSI minimum-contributory-wage rows
         // (gosi.covered_wage_min_*_sar) for a non-blocking warning — two PRE-LOOP reads, once per run.
-        counter.Count.Should().BeLessThanOrEqualTo(18);
+        // 18 → 19: the KSA deduction calculator now reads gosi.rounding_mode (half-up / half-even) once per run, memoised by the same reader. One
+        // more PRE-LOOP read; the count stays flat in headcount, which is the property the assertion above protects.
+        counter.Count.Should().BeLessThanOrEqualTo(19);
 
         // Value invariance: KSA Saudi GOSI EE = 9% + 0.75% = 9.75% of covered wage (12,000) = 1,170.
         await using (var check = _fx.CreateDb())

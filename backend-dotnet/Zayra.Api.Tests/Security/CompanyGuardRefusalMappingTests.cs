@@ -24,6 +24,15 @@ public class CompanyGuardRefusalMappingTests
     }
 
     [Fact]
+    public void AnUnknownCompanyCurrency_IsAnsweredWithItsStableCode()
+    {
+        var (status, code, text) = ExceptionResponseMapper.Map(
+            new Zayra.Api.Infrastructure.Payroll.CompanyCurrencyUnknownException("The company of employee E1 has no currency set."));
+
+        (status, code, text).Should().Be((StatusCodes.Status400BadRequest, "company_currency_unknown", "The company of employee E1 has no currency set."));
+    }
+
+    [Fact]
     public void OtherRefusals_KeepTheirStatus()
     {
         ExceptionResponseMapper.Map(new InvalidOperationException("Something else is wrong.")).Should().Be((400, "bad_request", "Something else is wrong."));

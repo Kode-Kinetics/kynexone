@@ -131,6 +131,9 @@ public static class WpsSifValidator
     /// via the ONE readiness evaluator (missing GOSI/social-insurance ref, expired Iqama/visa/EID/QID/CivilId
     /// at pay date, missing MolId/routing where required, State==Blocked). The validator stays PURE: it
     /// simply turns membership into a blocking error so activation and pay read the same evaluator.
+    ///
+    /// <paramref name="saudiCompany"/> is true when the run's company files the KSA wage-protection register (the caller's exporter
+    /// is the KSA one). Only then does the KSA government-ID resolution apply; other registers carry the profile's MolId.
     /// </summary>
     public static WpsValidationResult Validate(
         PayrollRun                       run,
@@ -138,7 +141,8 @@ public static class WpsSifValidator
         IReadOnlyList<EmployeePayrollProfile> profiles,
         IReadOnlyList<Employee>          employees,
         IReadOnlySet<int>?               payBlockedEmployeeIds = null,
-        IReadOnlyDictionary<int, Zayra.Api.Infrastructure.Employees.BorderNumberRule.WageFileBorderId>? borderNumberIds = null)
+        IReadOnlyDictionary<int, Zayra.Api.Infrastructure.Employees.BorderNumberRule.WageFileBorderId>? borderNumberIds = null,
+        bool saudiCompany = false)
     {
         var errors   = new List<WpsValidationIssue>();
         var warnings = new List<WpsValidationIssue>();
@@ -224,23 +228,40 @@ public static class WpsSifValidator
             }
             else
             {
-                if (string.IsNullOrWhiteSpace(emp.IdNumber))
+                // Saudi company: the ONE wage-file ID resolution, shared with the WPS register writer and the Saudi bank export: the
+                // National ID or the Iqama (IdNumber or IqamaNumber), else the Border Number inside the company's window. Anywhere
+                // else the file carries the payroll profile's MolId (PayrollController.GenerateWps), so the earlier rule stands:
+                // IdNumber must be present.
+                var wageFileId = saudiCompany
+                    ? Zayra.Api.Infrastructure.Employees.WageFileGovernmentId.Resolve(emp, borderNumberIds)
+                    : OutsideSaudiArabiaId(emp, borderNumberIds);
+                switch (wageFileId.Outcome)
                 {
-                    // KSA: a new arrival inside the border-number window has no Iqama yet. Per the company's
-                    // setting the Border Number is written as the ID (a warning naming them), or they are held.
-                    if (borderNumberIds is not null && borderNumberIds.TryGetValue(empId, out var border))
-                    {
-                        if (border.Allowed)
-                            warnings.Add(EmpWarning(Zayra.Api.Infrastructure.Employees.BorderNumberRule.BorderNumberUsedAsIdCode, empId, empCode,
-                                $"Employee {empCode} has no Iqama yet; their Border Number is written as the employee ID in this file."));
-                        else
-                            errors.Add(EmpError(Zayra.Api.Infrastructure.Employees.BorderNumberRule.BorderNumberNotAllowedAsIdCode, empId, empCode,
-                                $"Employee {empCode} has no Iqama yet and this company does not use the Border Number as the wage-file employee ID. Record the Iqama, or turn the setting on under Company rates."));
-                    }
-                    else
+                    case Zayra.Api.Infrastructure.Employees.WageFileIdOutcome.Conflict:
+                        errors.Add(EmpError("EMPLOYEE_ID_CONFLICT", empId, empCode,
+                            $"Employee {empCode} has a National ID and an Iqama number that differ. Correct the identity record before exporting."));
+                        break;
+                    case Zayra.Api.Infrastructure.Employees.WageFileIdOutcome.BorderNumberUsed:
+                        // KSA: a new arrival inside the border-number window has no Iqama yet; per the company's setting the Border Number is
+                        // written as the ID (a warning naming them), or they are held.
+                        warnings.Add(EmpWarning(Zayra.Api.Infrastructure.Employees.BorderNumberRule.BorderNumberUsedAsIdCode, empId, empCode,
+                            $"Employee {empCode} has no Iqama yet; their Border Number is written as the employee ID in this file."));
+                        break;
+                    case Zayra.Api.Infrastructure.Employees.WageFileIdOutcome.BorderNumberNotAllowed:
+                        errors.Add(EmpError(Zayra.Api.Infrastructure.Employees.BorderNumberRule.BorderNumberNotAllowedAsIdCode, empId, empCode,
+                            $"Employee {empCode} has no Iqama yet and this company does not use the Border Number as the wage-file employee ID. Record the Iqama, or turn the setting on under Company rates."));
+                        break;
+                    case Zayra.Api.Infrastructure.Employees.WageFileIdOutcome.Missing:
                         errors.Add(EmpError("MISSING_ID_NUMBER", empId, empCode,
                             $"Employee {empCode} is missing a government ID number required for WPS regulatory reporting."));
+                        break;
                 }
+                // Saudi register: the ID written must be a National ID (1…) or an Iqama (2…), 10 digits, matching the nationality —
+                // the Saudi bank file's own rule, so an unrecognised ID type (a passport number) cannot reach the register.
+                if (saudiCompany && wageFileId.Outcome == Zayra.Api.Infrastructure.Employees.WageFileIdOutcome.Resolved
+                    && SaudiBankExports.KsaWageFileRules.MolIdFinding(
+                           wageFileId.Value, Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(emp)) is { } idFinding)
+                    errors.Add(EmpError(idFinding.Code.ToUpperInvariant(), empId, empCode, $"Employee {empCode}: {idFinding.Message}"));
 
                 // A row that could never have been payable (never activated, or fully closed out) is a
                 // BLOCKING error: it is a data defect, not a payment.
@@ -257,6 +278,20 @@ public static class WpsSifValidator
         }
 
         return new WpsValidationResult(errors, warnings);
+    }
+
+    /// <summary>The ID rule outside Saudi Arabia, as it was before the KSA resolution: IdNumber, whatever its recorded type; with none,
+    /// a border-number entry if the caller resolved one; else missing. IqamaNumber is a Saudi field and plays no part.</summary>
+    private static Zayra.Api.Infrastructure.Employees.WageFileId OutsideSaudiArabiaId(
+        Employee emp, IReadOnlyDictionary<int, Zayra.Api.Infrastructure.Employees.BorderNumberRule.WageFileBorderId>? borderNumberIds)
+    {
+        if (!string.IsNullOrWhiteSpace(emp.IdNumber))
+            return new(emp.IdNumber.Trim(), Zayra.Api.Infrastructure.Employees.WageFileIdOutcome.Resolved);
+        if (borderNumberIds is not null && borderNumberIds.TryGetValue(emp.Id, out var border))
+            return border.Allowed
+                ? new(border.BorderNumber, Zayra.Api.Infrastructure.Employees.WageFileIdOutcome.BorderNumberUsed)
+                : new(null, Zayra.Api.Infrastructure.Employees.WageFileIdOutcome.BorderNumberNotAllowed);
+        return new(null, Zayra.Api.Infrastructure.Employees.WageFileIdOutcome.Missing);
     }
 
     // ── Issue factory helpers ─────────────────────────────────────────────────

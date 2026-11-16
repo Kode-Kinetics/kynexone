@@ -294,8 +294,9 @@ public sealed class QiwaSyncWorker : BackgroundService
             ? employee.EstablishmentId
             : connection?.EstablishmentId ?? string.Empty;
 
+        var (primaryIdType, primaryIdNumber) = QiwaIntegrationService.PrimaryIdentity(employee);
         var payload = new QiwaEmployeePayload(
-            employee.EmployeeCode, employee.IdNumber, employee.IdType,
+            employee.EmployeeCode, primaryIdNumber, primaryIdType,
             employee.Nationality, employee.SaudiOrNonSaudi, employee.OccupationCode,
             establishmentId, employee.WorkLocationId, employee.ContractReference);
 

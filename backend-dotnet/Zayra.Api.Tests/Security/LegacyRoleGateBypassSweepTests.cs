@@ -20,7 +20,7 @@ namespace Zayra.Api.Tests.Security;
 /// maps the endpoint to (explicit <c>[HasPermission]</c> keys, else a key inferred from controller and verb),
 /// whether or not the caller's role is in the list. That keeps custom roles working, but it means the role list
 /// is NOT the gate: the permission is. Where the inferred key was one every employee or line manager holds
-/// (ess.read, manager.approve, leave.approve, employees.read...), HR-only endpoints were open to them.</para>
+/// (ess.read, manager.approve, leave.approve, employees.read...), an HR-only endpoint did not need an HR-level permission.</para>
 ///
 /// <para>THE RATCHET. Every role-gated action is enumerated by reflection, its effective permission resolved
 /// exactly as the pipeline does, and every seeded role (AuthSeeder's real bundles) that is NOT named on the gate

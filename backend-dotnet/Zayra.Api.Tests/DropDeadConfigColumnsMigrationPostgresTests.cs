@@ -85,8 +85,11 @@ public sealed class DropDeadConfigColumnsMigrationPostgresTests
         (await Scalar<long>(container, "SELECT count(*) FROM tenant_hr_configs")).Should().Be(1);
         // The current model (which never named them) still reads and writes both tables.
         db.TenantHrConfigs.Add(new TenantHrConfig { TenantId = Guid.NewGuid() });
-        db.AttendancePolicies.Add(new AttendancePolicy { TenantId = Guid.NewGuid(), Code = "NEW", Name = "New policy" });
         await db.SaveChangesAsync();
+        // The schema sits at THIS migration, and later migrations add attendance_policies columns the current model maps,
+        // so the second row is written with the table's own defaults rather than through the model; reading still goes
+        // through the model.
+        await Exec(container, await InsertRowSql(container, "attendance_policies", new() { ["tenant_id"] = "'10000000-0000-0000-0000-0000000000d3'", ["code"] = "'NEW'" }));
         (await db.AttendancePolicies.CountAsync()).Should().Be(2);
 
         // Down: the schema comes back with the original type, NOT NULL and default; the dropped values do not.

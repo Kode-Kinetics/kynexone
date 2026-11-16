@@ -118,6 +118,14 @@ export const ROLE_POLICY: PolicyRule[] = [
   onlyHeldBy('erp-confirm-is-the-checker', 'finance.erp.confirm', ['Admin', 'Finance Approver'],
     'Maker-checker on the GL hand-off: Payroll Manager produces the journal export, so it must not also attest '
     + 'that the client ERP imported it.'),
+  onlyHeldBy('settle-and-remit-are-finance-approver', 'payroll.payment.settle', ['Admin', 'Finance Approver'],
+    'Segregation of duties on the payment: the Payroll Manager prepares the batch and the wage file, only the Finance Approver posts the cash settlement.'),
+  onlyHeldBy('remit-is-finance-approver', 'payroll.remit.manage', ['Admin', 'Finance Approver'],
+    'Remitting a statutory or loan liability moves cash: Finance Approver only; the Payroll Manager never holds it.'),
+  onlyHeldBy('payment-batch-is-the-preparer', 'payroll.payment_batch.manage', ['Admin', 'Payroll Manager'],
+    'The Payroll Manager prepares the bank file. The Finance Approver does NOT hold it, so no built-in role both prepares and pays.'),
+  onlyHeldBy('wps-status-is-the-payer', 'payroll.wps_status.update', ['Admin', 'Finance Approver'],
+    'Confirming the file status belongs to the payer side; the Payroll Manager who prepared the file does not hold it.'),
 ];
 
 /** Every key a policy rule names that the catalog does not define. */

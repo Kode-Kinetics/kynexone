@@ -179,6 +179,8 @@ export interface LeaveAwaitingDecision {
   kind: 'Decision' | 'Cancellation';
   cancellationReason: string | null;
   cancellationRequestedAtUtc: string | null;
+  /** A supporting document is attached and the viewer may open it (the leave's own employee or HR/Admin); never the key itself. */
+  hasDocument?: boolean;
 }
 
 /** A queue read from the server: its rows, the pending total in the viewer's scope, and whether it stopped at the cap. */
@@ -434,7 +436,16 @@ export const leaveBalancesApi = {
     client.get<LeaveBalanceTransaction[]>('/api/leave/balances/transactions', { params: { employeeId, leaveTypeId, year } }).then(r => r.data),
   accrue: () =>
     client.post('/api/leave/balances/accrue').then(r => r.data),
+  /**
+   * Creates this year's balances from the configured leave policies (monthly policies accrued month by month up to
+   * today; front-loaded policies granted in full). Idempotent: a second run changes nothing.
+   */
+  openYear: (year?: number) =>
+    client.post<OpenYearResult>('/api/leave/balances/open-year', { year }).then(r => r.data),
 };
+
+/** What one "open the year" run created. */
+export interface OpenYearResult { year: number; balancesCreated: number; accrualEntries: number; allocationEntries: number }
 
 /** The server's KsaStatutoryLeaveKind names. */
 export type StatutoryLeaveKindName =
@@ -463,6 +474,17 @@ export interface StatutoryLeaveContext {
   separateEventReason: string | null;
 }
 
+/** The file name the server put in Content-Disposition (it sanitises it), or a neutral one. */
+function attachmentFileName(header: unknown): string {
+  if (typeof header !== 'string') return 'leave-document';
+  const star = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(header);
+  if (star) {
+    try { return decodeURIComponent(star[1].trim().replace(/^"|"$/g, '')); } catch { /* fall through */ }
+  }
+  const plain = /filename\s*=\s*"?([^";]+)"?/i.exec(header);
+  return plain ? plain[1].trim() : 'leave-document';
+}
+
 export const leaveRequestsApi = {
   /** For each Saudi statutory leave request among `ids`: the employee's other leave of that kind. */
   statutoryHistory: (ids: string[]) =>
@@ -476,6 +498,10 @@ export const leaveRequestsApi = {
       client.get<{ items: LeaveRequest[]; total: number }>('/api/leave/requests', { params: { ...params, page, pageSize } }).then(r => r.data)),
   get: (id: string) =>
     client.get<LeaveRequest>(`/api/leave/requests/${id}`).then(r => r.data),
+  /** The leave's supporting document as a blob, through the authenticated route. 404 when the caller may not see it or there is none. */
+  attachment: (id: string) =>
+    client.get<Blob>(`/api/leave/requests/${id}/attachment`, { responseType: 'blob' })
+      .then(r => ({ blob: r.data, fileName: attachmentFileName(r.headers?.['content-disposition']) })),
   /** The request with its steps and, for approved leave someone asked to cancel, where that cancellation stands. */
   detail: (id: string) =>
     client.get<{ request: LeaveRequest; approvals: LeaveApproval[]; cancellation: LeaveCancellationState | null }>(`/api/leave/requests/${id}`).then(r => r.data),
@@ -501,6 +527,8 @@ export const leaveRequestsApi = {
     dayType?: string; hoursRequested?: number; reason: string; isEmergency?: boolean;
     attachmentPath?: string; delegateEmployeeId?: number; delegateEmployeeName?: string;
     statutoryEventDate?: string; separateEventReason?: string;
+    /** Id of a document the employee already has on file (uploaded first); a leave type that requires one refuses the request without it. */
+    attachmentDocumentId?: string;
   }) => client.post<LeaveRequest>('/api/leave/requests', body).then(r => r.data),
   approve: (id: string, notes?: string) =>
     client.post<LeaveRequest>(`/api/leave/requests/${id}/approve`, { notes }).then(r => r.data),
@@ -508,8 +536,10 @@ export const leaveRequestsApi = {
     client.post<LeaveRequest>(`/api/leave/requests/${id}/reject`, { reason }).then(r => r.data),
   cancel: (id: string, reason: string) =>
     client.post<LeaveRequest>(`/api/leave/requests/${id}/cancel`, { reason }).then(r => r.data),
-  withdraw: (id: string) =>
-    client.post<LeaveRequest>(`/api/leave/requests/${id}/withdraw`).then(r => r.data),
+  // Always a JSON body (`{}` without a reason), as the mobile app sends it: a POST with no content is refused by the
+  // server's body binding and the request used to stay pending.
+  withdraw: (id: string, reason?: string) =>
+    client.post<LeaveRequest>(`/api/leave/requests/${id}/withdraw`, { reason }).then(r => r.data),
   delegate: (id: string, delegateEmployeeId: number, delegateEmployeeName: string) =>
     client.post<LeaveRequest>(`/api/leave/requests/${id}/delegate`, { delegateEmployeeId, delegateEmployeeName }).then(r => r.data),
 };

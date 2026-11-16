@@ -61,6 +61,7 @@ public class OpeningBalanceCutoverTests
             new(ClaimTypes.Name, name),
             new(ClaimTypes.Role, "Admin"),
             new("permission", "payroll.read"),
+            new("permission", "finance.opening_balances.import"),
             new("permission", "payroll.write"),
             new("permission", "payroll.lock"),
             new("permission", "payroll.approve"),

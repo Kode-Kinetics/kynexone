@@ -28,6 +28,8 @@ export interface HireMockOptions {
   flagOff?: boolean;
   /** Existing person the duplicate-check returns. */
   duplicate?: { status: string; matchType?: 'strong' | 'probable' | 'possible'; canView?: boolean; signals?: string[] };
+  /** POST /rehire answers 422 rehire_start_not_after_settlement (the start date is on or before the settled last working day). */
+  rehireBeforeSettlement?: boolean;
   /** The first create answers 409 warnings_require_acknowledgement. */
   warnFirstCreate?: boolean;
   /** The warnings that 409 carries (default: joining_backdated, the code the API sends). */
@@ -49,6 +51,10 @@ export interface HireMockOptions {
   /** Hold every hire-draft PUT response until released (the request is still recorded when it is sent). */
   holdPut?: Promise<void>;
   permissions?: string[];
+  /** Release A on, with this Benefits-by-grade matrix (GET /api/entitlements/matrix). Needs the `entitlements.read` permission to be read. */
+  matrix?: { components?: Array<Record<string, any>>; cells: Array<Record<string, any>> };
+  /** The company's default notice period (GET /api/employees/hire-defaults). Omitted = the company has none. */
+  noticeDefault?: number;
   /** Arabic name suggestions the transliterate endpoint knows, by the English text sent. Any other name answers requiresManualEntry. */
   transliterations?: Record<string, string>;
   /** P3: the company's hire templates. Omitted = the picker is not shown (the endpoint answers an empty list). */
@@ -130,7 +136,9 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
       isGroupScope: !!options.multipleCompanies, accountType: options.multipleCompanies ? 'Group' : 'SingleCompany',
       companies: companies.map(c => ({ id: c.id, name: c.legalNameEn, code: 'T', countryCode: c.countryCode, isActive: true })),
     });
-    if (p === '/api/features/disabled-keys') return reply(options.flagOff ? ['release_a', 'hire_wizard_v2'] : ['release_a']);
+    if (p === '/api/features/disabled-keys') return reply(options.flagOff ? ['release_a', 'hire_wizard_v2'] : options.matrix ? [] : ['release_a']);
+    if (p === '/api/employees/hire-defaults') return reply({ noticePeriodDays: options.noticeDefault ?? null });
+    if (p === '/api/entitlements/matrix') return reply({ asOf: '2026-11-01', today: '2026-11-12', companyId: null, currency: 'SAR', grades: [], components: options.matrix?.components ?? [], cells: options.matrix?.cells ?? [], offerings: [], gaps: [] });
     if (p === '/api/features/modules') return reply([]);
     if (p === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });
     if (p === '/api/companies') return reply(paged(companies));
@@ -192,6 +200,13 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
       return reply({ updatedAtUtc: `2026-10-27T08:00:0${seq}Z`, readiness: { state: 'Draft', blockers: 0 } });
     }
     if (/^\/api\/employees\/\d+\/hire-review$/.test(p)) return reply({ blockers: options.review?.blockers ?? [{ key: 'IqamaNumber', label: 'Identity number missing' }, { key: 'pay:compensationUnapproved', label: 'Pay package awaiting Finance approval' }], warnings: options.review?.warnings ?? [], notProvided: options.review?.notProvided ?? [{ key: 'arabicName', label: 'Arabic name' }], essSections: [] });
+    if (/^\/api\/employees\/\d+\/rehire$/.test(p) && options.rehireBeforeSettlement) {
+      rehires.push(body);
+      return reply({ title: 'rehire_start_not_after_settlement', status: 422, code: 'rehire_start_not_after_settlement',
+        detail: 'The start date must be after 2026-12-31, the last working day an approved or paid final settlement already covers.',
+        messageAr: 'يجب أن يكون تاريخ البدء بعد 2026-12-31.', settledThrough: '2026-12-31',
+        errors: { joiningDate: ['rehire_start_not_after_settlement'] }, traceId: 't-rehire' }, 422);
+    }
     if (/^\/api\/employees\/\d+\/rehire$/.test(p)) { rehires.push(body); return reply({ id: 44, status: 'Draft', fullName: 'Alex Morgan', updatedAtUtc: '2026-10-27T09:00:00Z' }); }
     if (/^\/api\/employees\/\d+\/draft$/.test(p) && method === 'DELETE') { discards.push(p); return route.fulfill({ status: 204 }); }
     if (p.endsWith('/pay-scale')) return reply([]);

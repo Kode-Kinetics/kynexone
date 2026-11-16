@@ -40,6 +40,15 @@ test.describe('problem+json parsing', () => {
     const ref = parseHireProblem(fx('invalid_reference'));
     expect(ref).toMatchObject({ kind: 'invalid_reference', field: 'departmentId' });
   });
+  test('422 rehire_start_not_after_settlement lands on the start date field with its own sentence', async () => {
+    const p = parseHireProblem(fx('rehire_start_not_after_settlement'));
+    expect(p.kind).toBe('validation');
+    if (p.kind !== 'validation') return;
+    expect(p.fields.joiningDate).toEqual(['rehire_start_not_after_settlement']);
+    const { serverFieldIssue } = await import('../src/lib/hire/problem');
+    expect(serverFieldIssue('startDate', 'rehire_start_not_after_settlement').key)
+      .toBe('The start date must be after the last working day that was already settled.');
+  });
   test('anything else is "other"; a network failure is "network"', () => {
     expect(parseHireProblem({ response: { status: 503, data: { message: 'x' } } }).kind).toBe('other');
     expect(parseHireProblem(new Error('Network Error')).kind).toBe('network');

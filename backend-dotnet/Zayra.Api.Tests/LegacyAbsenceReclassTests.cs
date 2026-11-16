@@ -22,7 +22,7 @@ public class LegacyAbsenceReclassTests
 {
     private const string Attendance = "2104 - Attendance Adjustment Payable";
     private const string Leave = "2105 - Leave Deduction Payable";
-    private const string AttendanceContra = "5008 - Attendance & Late Deductions (contra)";
+    private const string AttendanceContra = "5008 - Absence, Late & Early Deductions (contra)";
 
     private static (ZayraDbContext db, SqliteConnection conn) NewDb()
     {

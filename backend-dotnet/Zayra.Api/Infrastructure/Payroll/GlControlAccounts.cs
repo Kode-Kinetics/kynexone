@@ -264,6 +264,7 @@ public sealed class ReceivableClearingSplitter
     private readonly Dictionary<string, decimal> _available;
     private readonly Dictionary<string, decimal> _appliedToReceivable = new(StringComparer.Ordinal);
     private decimal _appliedToCash;
+    private decimal _uncoveredByReceivable;
 
     /// <param name="cashAccount">Where the uncovered excess goes — the pre-B1b destination.</param>
     /// <param name="receivableBalances">Account label → carrying (debit) balance. A label appearing twice
@@ -283,6 +284,14 @@ public sealed class ReceivableClearingSplitter
 
     /// <summary>How much of this remittance was a real cash payout (uncovered by any receivable).</summary>
     public decimal AppliedToCash => _appliedToCash;
+
+    /// <summary>
+    /// The part of a recognised loan / advance instalment that its receivable could not cover. Unlike a
+    /// third-party payout (<c>receivableAccount == null</c>, a genuine cash payment), this money was withheld
+    /// from an employee against a loan the ledger never lent: sending it to Cash/Bank books a bank outflow
+    /// that never happened. Callers refuse the remittance when this is above zero.
+    /// </summary>
+    public decimal UncoveredByReceivable => _uncoveredByReceivable;
 
     /// <summary>
     /// Splits <paramref name="amount"/> for one accrual line.
@@ -320,6 +329,7 @@ public sealed class ReceivableClearingSplitter
         {
             split.Add((_cashAccount, toCash));
             _appliedToCash += toCash;
+            _uncoveredByReceivable += toCash;
         }
         return split;
     }

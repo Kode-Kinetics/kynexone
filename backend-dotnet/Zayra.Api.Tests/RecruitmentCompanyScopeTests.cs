@@ -39,7 +39,7 @@ public class RecruitmentCompanyScopeTests
         seedDb.Companies.AddRange(companyA, companyB);
 
         var candA = MakeCandidate(tenantId, companyA.Id, "a@x.com");
-        var openingA = MakeOpening(tenantId);
+        var openingA = MakeOpening(tenantId, companyA.Id);
         var appA = MakeApplication(tenantId, companyA.Id, openingA.Id, candA.Id);
         var offerA = MakeOffer(tenantId, companyA.Id, appA.Id);
         seedDb.Candidates.Add(candA);
@@ -109,7 +109,7 @@ public class RecruitmentCompanyScopeTests
         var companyA = MakeCompany(tenantId, "Stamp-Alpha");
         seedDb.Companies.Add(companyA);
         var cand = MakeCandidate(tenantId, companyA.Id, "stamp@x.com");
-        var opening = MakeOpening(tenantId);
+        var opening = MakeOpening(tenantId, companyA.Id);
         seedDb.Candidates.Add(cand);
         seedDb.JobOpenings.Add(opening);
         await seedDb.SaveChangesAsync();
@@ -136,7 +136,7 @@ public class RecruitmentCompanyScopeTests
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
         var company = MakeCompany(tenantId, "Enc-Co");
-        var opening = MakeOpening(tenantId);
+        var opening = MakeOpening(tenantId, company.Id);
         var cand = MakeCandidate(tenantId, company.Id, "enc@x.com");
         var app = MakeApplication(tenantId, company.Id, opening.Id, cand.Id);
         db.Companies.Add(company); db.JobOpenings.Add(opening); db.Candidates.Add(cand); db.JobApplications.Add(app);
@@ -185,7 +185,7 @@ public class RecruitmentCompanyScopeTests
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
         var company = MakeCompany(tenantId, "Disp-Co");
-        var opening = MakeOpening(tenantId);
+        var opening = MakeOpening(tenantId, company.Id);
         var cand = MakeCandidate(tenantId, company.Id, "disp@x.com");
         var app = MakeApplication(tenantId, company.Id, opening.Id, cand.Id);
         var offer = MakeOffer(tenantId, company.Id, app.Id);
@@ -241,9 +241,9 @@ public class RecruitmentCompanyScopeTests
         FirstName = "Test", LastName = "Candidate", Email = email,
     };
 
-    private static JobOpening MakeOpening(Guid tenantId) => new()
+    private static JobOpening MakeOpening(Guid tenantId, Guid? companyId = null) => new()
     {
-        TenantId = tenantId, JobCode = $"JOB-{Guid.NewGuid():N}", Title = "Engineer", Status = "Open", HeadCount = 5,
+        TenantId = tenantId, CompanyId = companyId, JobCode = $"JOB-{Guid.NewGuid():N}", Title = "Engineer", Status = "Open", HeadCount = 5,
     };
 
     private static JobApplication MakeApplication(Guid tenantId, Guid? companyId, Guid openingId, Guid candidateId) => new()

@@ -242,7 +242,7 @@ const GROUP_ROUTES: Readonly<Record<SetupAreaId, readonly ((nav: DestinationNavi
   payrollCompliance: [
     nav => route('payrollCompliance', 'compliance', 'Documents and renewals', '/compliance', 'operations', 'company', nav),
     nav => route('payrollCompliance', 'saudiComplianceDashboard', 'Saudization and Qiwa status', '/saudi-compliance', 'operations', 'company', nav),
-    nav => route('payrollCompliance', 'gosiFiling', 'GOSI filing', '/gosi-filing', 'operations', 'company', nav),
+    nav => route('payrollCompliance', 'gosiFiling', 'GOSI reconciliation', '/gosi-filing', 'operations', 'company', nav),
   ],
   accessSecurity: [],
   workspace: [],

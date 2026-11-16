@@ -5,6 +5,7 @@ import { isRefreshRefused } from '../lib/authLoadState';
 import { clearSessionKeepingLocale } from './clearSession';
 import { setSignInNotice, signInNoticeForRefreshRefusal } from '../lib/signInNotice';
 import { SUBSCRIPTION_ALERT_HREF, isOnPlanAndBilling } from '../lib/subscriptionAlert';
+import { isModelBindingText } from '../lib/modelBindingText';
 
 // In the browser, use relative URLs so Next.js proxy handles CORS.
 // On the server (SSR), we need the absolute URL since there's no proxy.
@@ -218,7 +219,7 @@ export function apiErrorReason(err: unknown, fallback: string, locale?: string):
   const status = e?.response?.status;
   if (status != null && status >= 500) return fallback;
   const data = e?.response?.data;
-  const sentence = (v: unknown): string | null => (typeof v === 'string' && v.trim() && !/^\s*</.test(v) && v.length < 500 ? v.trim() : null);
+  const sentence = (v: unknown): string | null => (typeof v === 'string' && v.trim() && !/^\s*</.test(v) && v.length < 500 && !isModelBindingText(v) ? v.trim() : null);
   if (typeof data === 'string') return sentence(data) ?? fallback;
   if (data && typeof data === 'object') {
     const body = data as { message?: unknown; messageAr?: unknown; detail?: unknown; error?: unknown; errors?: unknown; title?: unknown };

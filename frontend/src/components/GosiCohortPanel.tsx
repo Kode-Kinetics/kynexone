@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { employeesApi } from '../api/employees';
 import type { EmployeeDetail, GosiCohort } from '../api/employees';
+import { useT } from '../hooks/useT';
 
 /**
  * F02 — the employee's GOSI cohort: the person-level fact the Saudi contribution schedule has been keyed
@@ -51,15 +52,16 @@ function explain(cohort: GosiCohort, date?: string | null): string {
  * signal, the sentence is the evidence.
  */
 export function GosiBasisNote({ cohort, basis }: { cohort?: string | null; basis: string }) {
+  const t = useT();
   // A new entrant is an exception only when the slip was NOT computed on the new-entrant schedule (the server
   // froze "NOT MODELLED" in the basis: processed before the schedule existed, or no rate on record).
   const newEntrantBlocked = cohort === 'NewEntrant' && basis.includes('NOT MODELLED');
   const { label, tone } =
-    newEntrantBlocked ? { label: 'GOSI: new entrant', tone: 'text-rose-600 dark:text-rose-400' }
-      : cohort === 'NewEntrant' ? { label: 'GOSI: new entrant', tone: 'text-sky-700 dark:text-sky-400' }
-      : cohort === 'Unknown' ? { label: 'GOSI basis: unverified', tone: 'text-amber-600 dark:text-amber-400' }
-        : cohort === 'PreJuly2024' ? { label: 'GOSI basis: pre-3-July-2024', tone: 'text-slate-500' }
-          : { label: 'GOSI basis', tone: 'text-slate-500' };
+    newEntrantBlocked ? { label: t('GOSI: new entrant'), tone: 'text-rose-600 dark:text-rose-400' }
+      : cohort === 'NewEntrant' ? { label: t('GOSI: new entrant'), tone: 'text-sky-700 dark:text-sky-400' }
+      : cohort === 'Unknown' ? { label: t('GOSI basis: unverified'), tone: 'text-amber-600 dark:text-amber-400' }
+        : cohort === 'PreJuly2024' ? { label: t('GOSI basis: pre-3-July-2024'), tone: 'text-slate-500' }
+          : { label: t('GOSI basis'), tone: 'text-slate-500' };
   return (
     <details className="mt-0.5 text-start" data-testid="gosi-basis-note">
       <summary className={`cursor-pointer text-caption leading-tight ${tone}`}>{label}</summary>
@@ -69,6 +71,7 @@ export function GosiBasisNote({ cohort, basis }: { cohort?: string | null; basis
 }
 
 export function GosiCohortPanel({ employee }: { employee: EmployeeDetail }) {
+  const t = useT();
   const [value, setValue] = useState(employee.gosiFirstRegisteredOn ?? '');
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
@@ -85,8 +88,8 @@ export function GosiCohortPanel({ employee }: { employee: EmployeeDetail }) {
     try {
       const res = await employeesApi.update(employee.id, today, { gosiFirstRegisteredOn: value === '' ? null : value });
       setNotice(res.status === 202
-        ? { ok: true, text: 'Sent for approval. The date applies once an approver accepts it; payroll runs processed after that use it.' }
-        : { ok: true, text: 'Saved.' });
+        ? { ok: true, text: t('Sent for approval. The date applies once an approver accepts it; payroll runs processed after that use it.') }
+        : { ok: true, text: t('Saved.') });
     } catch (e: unknown) {
       const status = (e as { response?: { status?: number } })?.response?.status;
       const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
@@ -105,14 +108,14 @@ export function GosiCohortPanel({ employee }: { employee: EmployeeDetail }) {
   return (
     <section aria-labelledby="gosi-cohort-heading" className="mt-4 rounded-lg border border-slate-200 p-3 dark:border-white/10" data-testid="gosi-cohort-panel">
       <div className="flex flex-wrap items-center gap-2">
-        <h4 id="gosi-cohort-heading" className="text-sm font-semibold text-slate-900 dark:text-white">GOSI cohort</h4>
+        <h4 id="gosi-cohort-heading" className="text-sm font-semibold text-slate-900 dark:text-white">{t('GOSI cohort')}</h4>
         <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${status.tone}`} data-testid="gosi-cohort-status">{status.label}</span>
       </div>
       <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">{explain(cohort, employee.gosiFirstRegisteredOn)}</p>
 
       <div className="mt-3 flex flex-wrap items-end gap-2">
         <label className="grid gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
-          GOSI first-registration date
+          {t('GOSI first-registration date')}
           <input
             type="date"
             max={today}
@@ -123,10 +126,10 @@ export function GosiCohortPanel({ employee }: { employee: EmployeeDetail }) {
           />
         </label>
         <button type="button" onClick={submit} disabled={saving || unchanged} className="btn-primary disabled:opacity-50">
-          {saving ? 'Sending…' : 'Send for approval'}
+          {saving ? t('Sending…') : t('Send for approval')}
         </button>
       </div>
-      <p className="mt-1 text-caption text-slate-500">Copy it from the person&apos;s GOSI record. The change is applied only after approval.</p>
+      <p className="mt-1 text-caption text-slate-500">{t('Copy it from the person\'s GOSI record. The change is applied only after approval.')}</p>
       {notice && (
         <p role="status" className={`mt-2 text-xs ${notice.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-400'}`}>
           {notice.text}

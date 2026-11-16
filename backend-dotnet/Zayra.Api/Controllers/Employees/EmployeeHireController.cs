@@ -49,6 +49,18 @@ public sealed class EmployeeHireController : ControllerBase
     public sealed record RehireRequest(DateTime StartDate, Guid? DesignationId, Guid? GradeId, string? Reason);
     public sealed record ApproveCompensationRequest(string? Note, bool OverrideGradeRange = false);
 
+    // ── What a new hire starts with ──────────────────────────────────────────────────────────────
+    /// <summary>The company's defaults for a new hire, so the form can show them pre-filled (editable): today the default notice period.
+    /// Null when the company has none. Read only; nothing is applied until the hire is created.</summary>
+    [HttpGet("hire-defaults")]
+    [HasPermission("employees.write")]
+    public async Task<IActionResult> HireDefaults([FromQuery] Guid companyId, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        var country = await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == companyId && !c.IsDeleted).Select(c => c.CountryCode).FirstOrDefaultAsync(ct);
+        return Ok(new { noticePeriodDays = await EmployeeHireDefaults.NoticePeriodDaysAsync(_db, tenantId, country, ct) });
+    }
+
     // ── Draft autosave ───────────────────────────────────────────────────────────────────────────
     [HttpPut("{id:int}/hire-draft")]
     [HasPermission("employees.write")]
@@ -139,6 +151,8 @@ public sealed class EmployeeHireController : ControllerBase
     }
 
     // ── Rehire ───────────────────────────────────────────────────────────────────────────────────
+    internal const string RehireStartNotAfterSettlement = "rehire_start_not_after_settlement";
+
     private static readonly string[] RehirableStatuses =
         [EmployeeStatuses.Terminated, EmployeeStatuses.Exited, EmployeeStatuses.Archived, EmployeeStatuses.Offboarded];
 
@@ -165,6 +179,21 @@ public sealed class EmployeeHireController : ControllerBase
             throw new EmployeeValidationException(400, EmployeeProblemCodes.ValidationFailed,
                 new Dictionary<string, string[]> { ["startDate"] = [EmployeeFieldErrors.JoiningOutOfRange] },
                 "The start date is outside the allowed range.");
+        // Owner rule 2026-11-13: after an approved or paid final settlement, the new service counts from the rehire date. A start
+        // on or before the last working day already settled would overlap paid service, so it must come strictly after it.
+        if (await SettledServicePeriod.LatestSettledLastWorkingDayAsync(_db, tenantId, id, null, ct) is DateOnly settledThrough
+            && requested <= settledThrough)
+        {
+            var refused = Problem(422, RehireStartNotAfterSettlement,
+                $"The start date must be after {settledThrough:yyyy-MM-dd}, the last working day an approved or paid final settlement "
+                + "already covers. Choose a later start date.");
+            var problem = (ProblemDetails)refused.Value!;
+            problem.Extensions["messageAr"] = $"يجب أن يكون تاريخ البدء بعد {settledThrough:yyyy-MM-dd}، آخر يوم عمل تغطيه تسوية نهائية "
+                + "معتمدة أو مصروفة. اختر تاريخ بدء لاحقًا.";
+            problem.Extensions["settledThrough"] = settledThrough;
+            problem.Extensions["errors"] = new Dictionary<string, string[]> { ["joiningDate"] = [RehireStartNotAfterSettlement] };
+            return refused;
+        }
         // A changed designation or grade is checked like a new hire's: this tenant, active, the employing company or shared,
         // and the grade the designation belongs to.
         var gradeChanged = body.GradeId is Guid requestedGrade && requestedGrade != employee.GradeId;
@@ -268,6 +297,8 @@ public sealed class EmployeeHireController : ControllerBase
         }
         if (request.ComplianceRecords is { } records)
             request = request with { ComplianceRecords = records.Where(r => !BlankOrMasked(r.FieldValue)).ToList() };
+        // F02: a caller who cannot see the GOSI first-registration date resumed a form that shows none; keep what is stored.
+        request = request with { GosiFirstRegisteredOn = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == id).Select(x => x.GosiFirstRegisteredOn).FirstOrDefaultAsync(ct) };
         if (request.SalaryBreakdown is { } b
             && (b.BasicSalary ?? 0m) == 0m && (b.HousingAllowance ?? 0m) == 0m && (b.TransportAllowance ?? 0m) == 0m && (b.FoodAllowance ?? 0m) == 0m
             && (b.MobileAllowance ?? 0m) == 0m && (b.OtherAllowance ?? 0m) == 0m && (b.FixedDeduction ?? 0m) == 0m)
