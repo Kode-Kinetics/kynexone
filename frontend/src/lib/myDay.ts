@@ -304,8 +304,7 @@ export function deriveDay(i: {
   const worked = t('{hours} h {minutes} min', splitMinutes(a?.totalWorkedMinutes ?? 0));
 
   const facts: DayView['facts'] = [];
-  // The arrival fact needs `attendanceTodaySource`, which the backend does not send yet (the field is
-  // typed optional in api/ess.ts). Until it does, the source is undefined and this fact stays hidden:
+  // The arrival fact is shown only for a processed day (`attendanceTodaySource`, sent by GET /api/ess/dashboard):
   // a raw punch is provisional, and "On time" / "Late by" must only come from a processed day.
   if (!onLeave && d.attendanceTodaySource === 'processed' && a?.firstInUtc) {
     facts.push({ value: a.lateMinutes > 0 ? t('Late by {minutes} min', { minutes: a.lateMinutes }) : t('On time'), label: t('Arrival') });
