@@ -42,8 +42,8 @@ public class PayLeaveArrearsTests
         var lines = await ArrearsLines(db, mar.Id, e.Id);
         lines.Select(l => (l.ComponentName, l.Amount)).Should().BeEquivalentTo(new[]
         {
-            ("Unpaid leave arrears for 2026-01", 1_000m),
-            ("Unpaid leave arrears for 2026-02", 1_000m),
+            ("Unpaid leave arrears (2026-01)", 1_000m),
+            ("Unpaid leave arrears (2026-02)", 1_000m),
         });
         lines.Should().OnlyContain(l => l.Source == "Leave");
         (await DeductionSum(db, mar.Id, e.Id, "LEAVE")).Should().Be(0m, "March itself has no unpaid leave");

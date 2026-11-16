@@ -72,7 +72,7 @@ public class PayLeaveCancelRefundTests
 
         var line = (await ReversalLines(db, feb.Id, f.Employee.Id)).Should().ContainSingle().Subject;
         line.Amount.Should().Be(janDeducted);
-        line.ComponentName.Should().Be("Leave deduction reversal for 2026-01");
+        line.ComponentName.Should().Be("Leave deduction reversal (2026-01)");
         (await DeductionSum(db, feb.Id, f.Employee.Id, "LEAVE")).Should().Be(0m);
         (await Slip(db, feb.Id, f.Employee.Id))!.GrossSalary.Should().Be(Basic + Housing + janDeducted, "net over both months is zero");
         (await db.PayrollSlips.AsNoTracking().CountAsync(s => s.RunId == jan.Id)).Should().Be(1, "January's run is not touched");
@@ -99,8 +99,8 @@ public class PayLeaveCancelRefundTests
 
         (await ReversalLines(db, mar.Id, f.Employee.Id)).Select(l => (l.ComponentName, l.Amount)).Should().BeEquivalentTo(new[]
         {
-            ("Leave deduction reversal for 2026-01", 1_000m),
-            ("Leave deduction reversal for 2026-02", 1_000m),
+            ("Leave deduction reversal (2026-01)", 1_000m),
+            ("Leave deduction reversal (2026-02)", 1_000m),
         }, "a refund is the employee's own pay and is never held back by the deduction cap");
         (await DeductionSum(db, jan.Id, f.Employee.Id, "LEAVE")).Should().Be(1_000m, "closed runs keep their payslips");
         (await DeductionSum(db, feb.Id, f.Employee.Id, "LEAVE")).Should().Be(1_000m);

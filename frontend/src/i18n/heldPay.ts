@@ -23,6 +23,9 @@ const ar: Record<string, string> = {
     'الأجر المحتجز الذي صُرف إلى هذا المسير لا يدفعه هذا المسير لأن الموظف ليس ضمنه. ويبقى مستحقًا. أدرج الموظف في المسير ثم عالجه من جديد.',
   'Unpaid-leave arrears from earlier months were not all collected this month, because deductions stay within the company’s share of the wage due. The rest carries to the next run; anything still owed when employment ends is shown on the final settlement.':
     'لم تُحصَّل كل متأخرات الإجازات غير المدفوعة من الأشهر السابقة هذا الشهر، لأن الخصومات تبقى ضمن النسبة التي حددتها الشركة من الأجر المستحق. ويُرحَّل الباقي إلى المسير التالي، وما يبقى مستحقًا عند انتهاء الخدمة يظهر في التسوية النهائية.',
+  // Payslip line names the run writes (LeaveArrears); the month follows in brackets and is kept as written.
+  'Unpaid leave arrears': 'متأخرات إجازة غير مدفوعة',
+  'Leave deduction reversal': 'استرداد خصم إجازة',
   // Multi-month leave deductions report (views/LeaveSliceSplitReportPage.tsx), read-only.
   'The report could not be loaded.': 'تعذّر تحميل التقرير.',
   'Would be split': 'سيُقسَّم',

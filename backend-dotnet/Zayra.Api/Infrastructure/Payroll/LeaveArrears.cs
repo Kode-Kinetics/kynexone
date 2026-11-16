@@ -9,13 +9,13 @@ namespace Zayra.Api.Infrastructure.Payroll;
 ///
 /// <para><b>Arrears.</b> A leave deduction dated on or before the run's month that no run collected (the leave was approved
 /// after its month closed, or the row was left behind) is collected by the EARLIEST open run, on its own line "Unpaid
-/// leave arrears for YYYY-MM". A closed run is never edited. Arrears are recovery of pay already paid for days not worked,
+/// leave arrears (YYYY-MM)". A closed run is never edited. Arrears are recovery of pay already paid for days not worked,
 /// so together with every other deduction of the month they stay within the company's cap on the wage due (50% unless the
 /// company set a lower percentage); what does not fit is carried to the next run as a remainder row of the same month.</para>
 ///
 /// <para><b>Reversals.</b> A deduction already taken by a processed run for a leave that is later cancelled is given back as
 /// a credit row (negative amount) of the same month, collected by the earliest open run as an earnings line "Leave deduction
-/// reversal for YYYY-MM". A refund is never capped.</para>
+/// reversal (YYYY-MM)". A refund is never capped.</para>
 /// </summary>
 public static class LeaveArrears
 {
@@ -29,8 +29,9 @@ public static class LeaveArrears
     public const string RemainderArtifact = "LeaveImpactRemainder";
     public const decimal DefaultCapPct = 50m;
 
-    public static string ArrearsLabel(string period) => $"Unpaid leave arrears for {period}";
-    public static string ReversalLabel(string period) => $"Leave deduction reversal for {period}";
+    /// <summary>Payslip line names. The month is in brackets so the payslip translates the name and keeps the month as is.</summary>
+    public static string ArrearsLabel(string period) => $"Unpaid leave arrears ({period})";
+    public static string ReversalLabel(string period) => $"Leave deduction reversal ({period})";
 
     public static bool IsReversal(LeavePayrollImpact x) => x.Amount < 0m || x.ImpactType == ReversalImpactType;
 
