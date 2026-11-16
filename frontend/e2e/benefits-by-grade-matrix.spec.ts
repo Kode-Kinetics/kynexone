@@ -40,6 +40,18 @@ const submitAdd = (page: Page, locale: Locale) => addDialog(page, locale).getByR
 /** The row's actions menu (Skip for this company, Correct GL, Remove benefit...). */
 const rowMenu = (page: Page, locale: Locale, benefit: string) => page.getByRole('button', { name: say(locale, 'Actions for {benefit}', { benefit }), exact: true });
 
+/**
+ * Opens a row's actions menu. A row under the fold (a new benefit is the last row, below the visible part of a 1280x720
+ * window) is scrolled into view FIRST and the scroll events are let land: Playwright's own scroll-into-view on click fires
+ * its scroll event after the click has opened the menu, and the menu closes on any scroll, so the menu item detached.
+ */
+async function openRowMenu(page: Page, locale: Locale, benefit: string) {
+  const trigger = rowMenu(page, locale, benefit);
+  await trigger.scrollIntoViewIfNeeded();
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await trigger.click();
+}
+
 /** The box of something that slides in: read once it has stopped moving. */
 async function settledBox(locator: import('@playwright/test').Locator) {
   let last = await locator.boundingBox();
@@ -245,7 +257,7 @@ for (const locale of ['en', 'ar'] as const) {
       await shot(page, `add-benefit-${locale}`);
 
       // Unused, so it can be removed again (from the row's actions menu, with the existing confirmation).
-      await rowMenu(page, locale, benefit).click();
+      await openRowMenu(page, locale, benefit);
       await page.getByRole('menuitem', { name: say(locale, 'Remove benefit'), exact: true }).click();
       await page.getByRole('button', { name: say(locale, 'Yes, remove it'), exact: true }).click();
       await expect(page.getByText(say(locale, '{benefit} was removed.', { benefit }))).toBeVisible();
@@ -367,7 +379,7 @@ for (const locale of ['en', 'ar'] as const) {
       await shot(page, `add-cash-allowance-${locale}`);
 
       // Remove works as for a contract benefit.
-      await rowMenu(page, locale, benefit).click();
+      await openRowMenu(page, locale, benefit);
       await page.getByRole('menuitem', { name: say(locale, 'Remove benefit'), exact: true }).click();
       await page.getByRole('button', { name: say(locale, 'Yes, remove it'), exact: true }).click();
       await expect(page.getByText(say(locale, '{benefit} was removed.', { benefit }))).toBeVisible();
@@ -597,7 +609,7 @@ for (const locale of ['en', 'ar'] as const) {
       await rowMenu(page, locale, locale === 'ar' ? component('AIR_TICKET').nameAr : component('AIR_TICKET').nameEn).click();
       await expect(page.getByRole('menuitem', { name: say(locale, 'Remove benefit') })).toHaveCount(0);
       await page.keyboard.press('Escape');
-      await rowMenu(page, locale, benefit).click();
+      await openRowMenu(page, locale, benefit);
       await page.getByRole('menuitem', { name: say(locale, 'Remove benefit'), exact: true }).click();
       await page.getByRole('button', { name: say(locale, 'Yes, remove it'), exact: true }).click();
       await expect(page.getByText(say(locale, '{benefit} was removed.', { benefit }))).toBeVisible();

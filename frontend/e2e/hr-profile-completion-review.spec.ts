@@ -66,7 +66,7 @@ test.describe('English at 1440', () => {
     await expect(page.getByText('Values are masked. You need the sensitive-data permission to see them in full.')).toBeVisible();
     const item = page.getByTestId('inbox-item');
     await item.getByRole('button', { name: 'Review' }).click();
-    await expect(item.getByRole('link', { name: 'Download' })).toHaveCount(0);
+    await expect(item.getByRole('button', { name: 'Download' })).toHaveCount(0);
     await expect(item.getByTestId('attachment-hidden')).toHaveCount(2);   // clean and trusted: allowed to download, but this caller may not
     await expect(item.getByText('letter.pdf')).toHaveCount(0);
     await expect(item.getByRole('button', { name: 'Scan again' })).toHaveCount(0);
@@ -92,7 +92,7 @@ test.describe('English at 1440', () => {
     await card.getByRole('button', { name: 'Review' }).click();
     await card.locator('li', { hasText: 'pending.pdf' }).getByRole('button', { name: 'Scan again' }).click();
     await expect(card.locator('li', { hasText: 'pending.pdf' })).toContainText('Checked');
-    await expect(card.locator('li', { hasText: 'pending.pdf' }).getByRole('link', { name: 'Download' })).toBeVisible();
+    await expect(card.locator('li', { hasText: 'pending.pdf' }).getByRole('button', { name: 'Download' })).toBeVisible();
     await expect(card.getByRole('button', { name: 'Scan again' })).toHaveCount(0);
     expect(log.rescans).toEqual(['d-pend']);
   });
