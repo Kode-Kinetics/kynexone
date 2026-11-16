@@ -3835,6 +3835,8 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
   const t = useT();
   const fmtAmt = useFmtAmt();
   const { hasPermission } = useAuth();
+  // The ERP-export endpoints answer 403 without one of these; without them the panel (and its reads) is not mounted at all.
+  const mayUseErpExport = hasPermission('finance.gl.read') || hasPermission('finance.gl.manage');
   const { companies: payrollCompanies } = usePayrollCompanies();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setLocalRunId] = useState(selectedRunId ?? '');
@@ -3980,7 +3982,9 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
       )}
 
       {/* ERP hand-off: the posting file for the month, and what the ERP said about it. */}
-      <JournalExportsPanel defaultPeriod={exportPeriod} />
+      {mayUseErpExport
+        ? <JournalExportsPanel defaultPeriod={exportPeriod} />
+        : <p data-testid="journal-export-no-access" className="text-sm text-fg-muted">{t('Exporting the journal needs Finance access')}</p>}
     </div>
   );
 }
