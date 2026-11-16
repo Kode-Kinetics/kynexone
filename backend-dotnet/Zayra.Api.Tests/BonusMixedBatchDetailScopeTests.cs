@@ -136,6 +136,24 @@ public class BonusMixedBatchDetailScopeTests
         Strings(body, "auditLogs", "Action").Should().BeEquivalentTo(["BATCH-LEVEL", "LINE-A", "LINE-B"]);
     }
 
+    [Fact]
+    public async Task ACompanyCaller_StillSeesOnlyTheirCompanysEntries_WhenTheBatchCountHasDrifted()
+    {
+        var (conn, w) = await SeedAsync();
+        await using var _ = conn;
+        await using (var db = new ZayraDbContext(w.Options))
+        {
+            var batch = await db.BonusBatches.SingleAsync(b => b.Id == w.Batch);
+            batch.EmployeeCount = 1;   // a stale count: it no longer exceeds the lines this caller sees
+            await db.SaveChangesAsync();
+        }
+
+        var body = await DetailAsync(w, w.CoA);
+
+        Strings(body, "glEntries", "Description").Should().BeEquivalentTo(["GL-A"]);
+        Strings(body, "auditLogs", "Action").Should().BeEquivalentTo(["BATCH-LEVEL", "LINE-A"]);
+    }
+
     private sealed class Scope : IDataScopeService
     {
         public Task<DataScope> ResolveAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct) =>
