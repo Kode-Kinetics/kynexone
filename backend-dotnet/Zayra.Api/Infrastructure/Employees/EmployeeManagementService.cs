@@ -83,7 +83,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         var includeFormer = Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.IncludesFormerEmployees(accessFilter);
         var query = _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted && (includeFormer || !ExitEmployeeStatuses.ExitLower.Contains(x.Status.ToLower())));
         query = EmployeeSearch.Apply(query, _db.Branches, search, includeSensitive);
-        if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+        query = EmployeeStatusFilter.Apply(query, status);
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(x => x.Department == department);
         query = EmployeeSearch.ApplyFilters(query, _db.Branches, branch, designation);
         // SERVER-SIDE readiness / import-gap filter — the whole dataset, so the deep-link works past page 1.
@@ -1714,7 +1714,9 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     public async Task<EmployeeStatusSummaryDto> StatusSummaryAsync(Guid tenantId, CancellationToken cancellationToken)
     {
-        var items = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).GroupBy(x => x.Status).Select(x => new EmployeeGroupCountDto(x.Key, x.Count())).ToListAsync(cancellationToken);
+        var perSpelling = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).GroupBy(x => x.Status).Select(x => new { x.Key, Count = x.Count() }).ToListAsync(cancellationToken);
+        // 'Active' and a legacy 'active' are one status: fold the (few) distinct spellings together after the grouped query.
+        var items = EmployeeStatusFilter.Collapse(perSpelling.Select(x => (x.Key, x.Count))).Select(x => new EmployeeGroupCountDto(x.Name, x.Count)).ToList();
         return new EmployeeStatusSummaryDto(items);
     }
 
