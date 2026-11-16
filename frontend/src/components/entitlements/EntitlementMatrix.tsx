@@ -523,8 +523,11 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
           onCorrected={async result => {
             const benefit = componentName(result.component); const from = result.component.cashAllowance?.effectiveFrom;
             setFinance(null); setCautions(allowanceWarnings(result.component.warnings));
-            setNotice(from ? fillTemplate(t('{benefit} was changed from {month}.'), { benefit, month: fmt.gregorian(from, 'monthYear') })
-              : fillTemplate(t('{benefit} was changed.'), { benefit }));
+            // A correction waits for another Finance user: whoever made it can never confirm it (the server refuses them too).
+            if (result.component.cashAllowance?.financePending) setMakerBlocked(blocked => new Set(blocked).add(result.component.code));
+            const changed = from ? fillTemplate(t('{benefit} was changed from {month}.'), { benefit, month: fmt.gregorian(from, 'monthYear') })
+              : fillTemplate(t('{benefit} was changed.'), { benefit });
+            setNotice(result.component.cashAllowance?.financePending ? `${changed} ${t('Another Finance user must confirm the change before it is used.')}` : changed);
             setStaleNote(result.staleRuns.length > 0
               ? fillTemplate(t('These draft runs were calculated with the old setting; process them again: {months}.'),
                 { months: staleRunMonths(result.staleRuns, iso => fmt.gregorian(iso, 'monthYear')) }) : '');
@@ -642,7 +645,7 @@ function MatrixRow({ layout, onlyGradeId, isNew, component: c, grades, drafts, o
     {pending && canFinance && !makerBlocked && <button type="button" className="btn-secondary btn-sm" aria-expanded={financeOpen === 'confirm'} onClick={() => onFinance('confirm')}>
       {t('Review and confirm')}<span className="sr-only"> {name}</span></button>}
     {pending && canFinance && makerBlocked && <span className="block text-meta text-fg-muted" data-testid="maker-cannot-confirm">
-      {t('You added this allowance, so someone else in Finance must confirm it.')}</span>}
+      {t('You added or changed this allowance, so someone else in Finance must confirm it.')}</span>}
     {pending && !canFinance && <span className="block text-meta text-fg-muted">{t('Finance must confirm it before it can be used.')}</span>}
     {companyView && offering?.changesOn && <span className="block text-meta text-fg-muted">{fillTemplate(t(offering.offered ? 'Not offered from {date}' : 'Offered again from {date}'), { date: offering.changesOn })}</span>}
     {c.isLoanFacility && loan.href && <Link href={loan.href} className="inline-flex min-h-6 items-center text-meta font-semibold text-primary-fg underline">{t('Edit in Loans → Loan policies → Limits by grade')}</Link>}

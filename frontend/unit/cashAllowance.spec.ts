@@ -221,6 +221,8 @@ test('each refusal of confirm and correct belongs to a field, and the maker is t
   expect(field('group_scope_required', 403)).toMatchObject({ field: 'general' });
   // The person who added it cannot confirm it: the grid withdraws Confirm for them.
   expect(field('maker_cannot_confirm', 403)).toMatchObject({ field: 'general', makerBlocked: true, key: 'You added this allowance, so someone else in Finance must confirm it.' });
+  expect(field('changer_cannot_confirm', 403)).toMatchObject({ field: 'general', makerBlocked: true,
+    key: 'You changed this allowance since Finance last confirmed it, so someone else in Finance must confirm it.' });
   // A screen that is out of date is told to reload.
   for (const code of ['already_confirmed', 'not_confirmed', 'not_a_cash_allowance']) expect(field(code, 409)).toMatchObject({ field: 'general', stale: true });
   expect(field('later_version_exists', 409)).toMatchObject({ field: 'effectiveFrom' });
@@ -268,7 +270,7 @@ test('every sentence of the Finance confirm and correct panels, the end of servi
   }
   // Every key a refusal can resolve to is in the dictionary.
   const refusals = ['gl_driver_required', 'eosb_category_invalid', 'eosb_reason_required', 'eosb_reason_too_long', 'effective_from_required', 'effective_from_not_month_start',
-    'reason_required', 'reason_too_long', 'nothing_to_change', 'group_scope_required', 'finance_required', 'maker_cannot_confirm', 'not_a_cash_allowance',
+    'reason_required', 'reason_too_long', 'nothing_to_change', 'group_scope_required', 'finance_required', 'maker_cannot_confirm', 'changer_cannot_confirm', 'not_a_cash_allowance',
     'already_confirmed', 'not_confirmed', 'later_version_exists', 'period_committed'];
   for (const code of refusals) {
     const key = financeServerProblem(refusedWith(400, { error: code })).key;

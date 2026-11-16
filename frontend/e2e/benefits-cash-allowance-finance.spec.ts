@@ -161,6 +161,38 @@ for (const locale of ['en', 'ar'] as const) {
       expect(errors).toEqual([]);
     });
 
+    test('someone who changed it since Finance last confirmed it is told so, and Confirm is withdrawn', async ({ page }) => {
+      const { errors } = await boot(page, locale, ['entitlements.read', 'entitlements.manage', 'payroll.approve'], () => withAllowances([waiting]));
+      await page.route('**/api/entitlements/components/ALW_PHONE/confirm', route => route.fulfill({ status: 403, json: { error: 'changer_cannot_confirm', message: 'You changed it.' } }));
+      await confirmButton(page, locale, name(locale, waiting)).click();
+      await page.getByTestId('finance-confirm-panel').getByRole('button', { name: say(locale, 'Confirm'), exact: true }).click();
+      await expect(page.getByTestId('finance-confirm-panel').getByRole('alert'))
+        .toContainText(say(locale, 'You changed this allowance since Finance last confirmed it, so someone else in Finance must confirm it.'));
+      await expect(page.getByTestId('maker-cannot-confirm')).toHaveText(say(locale, 'You added or changed this allowance, so someone else in Finance must confirm it.'));
+      await expect(confirmButton(page, locale, name(locale, waiting))).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
+    test('a correction waits for another Finance user: the notice says so, and the corrector is not offered Confirm', async ({ page }) => {
+      let corrected = false;
+      const pendingCar = { ...confirmed, cashAllowance: info({ glDriverKey: 'EARN:PHONE', effectiveFrom: '2027-01-01', financePending: true, financeConfirmedAtUtc: null }) };
+      const { errors } = await boot(page, locale, ['entitlements.read', 'entitlements.manage', 'payroll.approve'], () => withAllowances([corrected ? pendingCar : confirmed]));
+      await page.route('**/api/entitlements/components/ALW_CAR/correct', route => {
+        corrected = true;
+        return route.fulfill({ json: { component: pendingCar, staleRuns: [] } });
+      });
+      await page.getByRole('button', { name: say(locale, 'Actions for {benefit}', { benefit: name(locale, confirmed) }), exact: true }).click();
+      await page.getByRole('menuitem', { name: say(locale, 'Correct GL / end of service'), exact: true }).click();
+      const panel = page.getByTestId('finance-correct-panel');
+      await panel.getByLabel(say(locale, 'GL account for this allowance (required)')).selectOption('EARN:PHONE');
+      await panel.getByLabel(say(locale, 'Reason for the change (required)')).fill('Posted to the wrong account');
+      await panel.getByRole('button', { name: say(locale, 'Save the correction') }).click();
+      await expect(page.getByText(say(locale, 'Another Finance user must confirm the change before it is used.'), { exact: false })).toBeVisible();
+      await expect(page.getByTestId('maker-cannot-confirm')).toBeVisible();
+      await expect(confirmButton(page, locale, name(locale, confirmed))).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
     test('Finance corrects a confirmed allowance from a month on: a committed month names the earliest, and stale draft runs are listed', async ({ page }) => {
       const { errors, calls } = await boot(page, locale, ['entitlements.read', 'entitlements.manage', 'payroll.approve'], () => withAllowances([confirmed]));
       let attempts = 0;

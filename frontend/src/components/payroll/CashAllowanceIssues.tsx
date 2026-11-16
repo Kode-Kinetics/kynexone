@@ -15,6 +15,7 @@ const SENTENCES: Record<string, string> = {
   no_definition: 'The allowance {name} on this salary is no longer set up in Benefits by grade. Remove it from the salary, or set it up again.',
   not_confirmed: 'The allowance {name} is waiting for Finance to confirm it in Benefits by grade.',
   no_gl_driver: 'The allowance {name} has no GL account yet. Finance sets it in Benefits by grade.',
+  other_company: '{employee} moved from another company. The allowance {name} on their salary belongs to that company and is not paid here. Remove it from their salary.',
 };
 
 function employeeHref(id: number): string | null {
@@ -51,7 +52,7 @@ export function CashAllowanceIssuesPanel({ issues }: { issues: readonly CashAllo
                 <span className="font-medium">{href ? <Link href={href} className="text-sapphire underline"><bdi>{issue.employeeName}</bdi></Link> : <bdi>{issue.employeeName}</bdi>}</span>
                 {' '}<span className="text-xs text-slate-500" dir="ltr"><bdi>{issue.employeeCode}</bdi></span>
                 <span className="block text-xs text-slate-600 dark:text-slate-300">
-                  {sentence ? t(sentence, { name: readinessIssueName(issue, locale) }) : issue.message}
+                  {sentence ? t(sentence, { name: readinessIssueName(issue, locale), employee: issue.employeeName }) : (locale === 'ar' && issue.messageAr) || issue.message}
                 </span>
               </span>
               {needsBenefits && <Link href={readinessIssueHref(issue)} className="text-xs font-semibold text-sapphire underline">{t('Open Benefits by grade')}</Link>}

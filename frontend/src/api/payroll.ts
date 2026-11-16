@@ -709,11 +709,14 @@ export interface PayrollReadiness {
   cashAllowanceIssues?: CashAllowanceIssue[];
 }
 
-export type CashAllowanceProblem = 'no_definition' | 'not_confirmed' | 'no_gl_driver';
+/** `other_company`: the line is the own allowance of a company the employee no longer works for (moved); it is never stripped automatically. */
+export type CashAllowanceProblem = 'no_definition' | 'not_confirmed' | 'no_gl_driver' | 'other_company';
 
 export interface CashAllowanceIssue {
   employeeId: number; employeeCode: string; employeeName: string; companyId: string | null; code: string;
   problem: CashAllowanceProblem; message: string;
+  /** The server's sentence in Arabic, when it has one. Absent from an older API. */
+  messageAr?: string | null;
   /** The allowance's own name (the code alone told nobody which one it was), and where to fix it. Absent from an older API. */
   allowanceNameEn?: string | null; allowanceNameAr?: string | null; href?: string | null;
 }
