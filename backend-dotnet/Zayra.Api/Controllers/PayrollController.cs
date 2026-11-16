@@ -3034,6 +3034,9 @@ public partial class PayrollController : ControllerBase
         // POD-B2 — the run's population selections have no FK (nothing in this schema does), so remove
         // them here or they would outlive the run as orphans and be re-resolved onto a recycled id.
         _db.PayrollRunEmployeeSelections.RemoveRange(_db.PayrollRunEmployeeSelections.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
+        // Held pay Finance released into this run would otherwise sit on a run that no longer exists, never paid: its hold
+        // returns to Held so it can be released into another run.
+        await HeldPay.ReturnReleasesAsync(_db, tenantId, id, GetUserId(), "The run it was released into was deleted.", cancellationToken);
         _db.PayrollRuns.Remove(run);
         await PayrollAudit("payroll.run.deleted", "PayrollRun", id.ToString(), new { run.Year, run.Month, run.RunType }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);

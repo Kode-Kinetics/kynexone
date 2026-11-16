@@ -1335,6 +1335,11 @@ public sealed class PayrollVoidService
             }
         }
 
+        // Held pay Finance released into a run that is being VOIDED is no longer paid by it (its payslips are voided with it):
+        // the hold returns to Held, to be released into another run. A reopen keeps the run, whose re-process pays it again.
+        if (runIsRetired)
+            await HeldPay.ReturnReleasesAsync(_db, tenantId, runId, null, "The run it was released into was voided.", ct);
+
         // The witnesses have been replayed; a re-Process of this run writes a fresh set.
         if (witnesses.Count > 0) _db.PayrollRunConsumptions.RemoveRange(witnesses);
 

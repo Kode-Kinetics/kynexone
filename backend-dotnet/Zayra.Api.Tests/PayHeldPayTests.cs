@@ -225,4 +225,46 @@ public class PayHeldPayTests
         (await Releases(db)).Should().ContainSingle();
         (await EarningSum(db, apr.Id, s.Id, "ADJ_HELD_PAY_RELEASED")).Should().Be(Basic + Housing, "paid exactly once");
     }
+
+    /// <summary>P1-A2: deleting the run a release was put on returns the hold to Held, so nothing is lost.</summary>
+    [Fact]
+    public async Task DeletingTheRunAReleaseWasPutOn_ReturnsTheHoldToHeld()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var (co, _, _, apr, hold) = await HeldInMarch(db);
+        Status(await Payroll(db, co.TenantId, Checker).DecideHeldPay(hold.Id, new HeldPayDecisionRequest("pay", null), CancellationToken.None)).Should().Be(200);
+
+        var deleted = await Payroll(db, co.TenantId, Checker).DeleteRun(apr.Id, CancellationToken.None);
+        deleted.Should().BeOfType<NoContentResult>();
+        db.ChangeTracker.Clear();
+
+        (await Holds(db)).Single().Status.Should().Be(HeldPay.Held, "the pay is owed again and Finance can release it into another run");
+        (await Releases(db)).Should().BeEmpty("no release may sit on a run that no longer exists");
+        (await db.AuditLogs.AsNoTracking().CountAsync(a => a.Action == "payroll.held_pay.release_returned" && a.EntityId == hold.Id.ToString())).Should().Be(1);
+    }
+
+    /// <summary>P1-A2: voiding the run that paid a release returns the hold to Held; re-released, it is paid exactly once.</summary>
+    [Fact]
+    public async Task VoidingTheRunThatPaidARelease_ReturnsTheHold_AndTheReleaseIsPaidOnceAfterwards()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var (co, s, _, apr, hold) = await HeldInMarch(db);
+        var finance = Payroll(db, co.TenantId, Checker);
+        Status(await finance.DecideHeldPay(hold.Id, new HeldPayDecisionRequest("pay", null), CancellationToken.None)).Should().Be(200);
+        await Process(db, co, apr.Id);
+        (await EarningSum(db, apr.Id, s.Id, "ADJ_HELD_PAY_RELEASED")).Should().Be(Basic + Housing);
+
+        (await new PayrollVoidService(db).VoidAsync(apr.Id, co.TenantId, null, "System", "wrong bank file", CancellationToken.None)).IsVoided.Should().BeTrue();
+        db.ChangeTracker.Clear();
+
+        (await Holds(db)).Single().Status.Should().Be(HeldPay.Held, "the voided run no longer pays it");
+        (await Releases(db)).Should().BeEmpty();
+        var aprReplacement = await AddRun(db, co, 2026, 4);
+        Status(await finance.DecideHeldPay(hold.Id, new HeldPayDecisionRequest("pay", null), CancellationToken.None)).Should().Be(200);
+        await Process(db, co, aprReplacement.Id);
+        (await EarningSum(db, aprReplacement.Id, s.Id, "ADJ_HELD_PAY_RELEASED")).Should().Be(Basic + Housing);
+        (await Releases(db)).Should().ContainSingle();
+    }
 }

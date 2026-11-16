@@ -198,6 +198,37 @@ public static class HeldPay
         });
     }
 
+    /// <summary>
+    /// The run a release was put on is going away (deleted as a Draft, or voided): it will never pay the release. Each such
+    /// release is removed and its hold returns to Held, so the pay is owed again and Finance can release it into another run;
+    /// nothing is lost and nothing can be paid twice. Tracked changes only; the caller saves them in its own transaction.
+    /// </summary>
+    public static async Task<int> ReturnReleasesAsync(
+        ZayraDbContext db, Guid tenantId, Guid runId, Guid? actorUserId, string why, CancellationToken ct)
+    {
+        var releases = await db.PayrollAdjustments
+            .Where(a => a.TenantId == tenantId && a.PayrollRunId == runId && a.SourceType == ReleaseSource && a.SourceId != null)
+            .ToListAsync(ct);
+        if (releases.Count == 0) return 0;
+        var holdIds = releases.Select(a => a.SourceId!.Value).ToList();
+        var holds = await db.PayrollAdjustments
+            .Where(a => a.TenantId == tenantId && holdIds.Contains(a.Id) && a.SourceType == HoldSource && a.Status == Released)
+            .ToListAsync(ct);
+        foreach (var hold in holds)
+        {
+            hold.Status = Held;
+            db.AuditLogs.Add(new AuditLog
+            {
+                TenantId = tenantId, UserId = actorUserId, EntityName = nameof(PayrollAdjustment), EntityId = hold.Id.ToString(),
+                Action = "payroll.held_pay.release_returned",
+                Metadata = JsonSerializer.Serialize(new { employeeId = hold.EmployeeId, amount = hold.Amount, runId, why }),
+                CreatedAtUtc = DateTime.UtcNow,
+            });
+        }
+        db.PayrollAdjustments.RemoveRange(releases);
+        return holds.Count;
+    }
+
     /// <summary>One transaction inside the execution strategy (Npgsql's retrying strategy requires it); a caller's own
     /// transaction is joined instead. A retry starts from a clean change tracker.</summary>
     private static async Task<bool> InTransactionAsync(ZayraDbContext db, Func<Task<bool>> body, CancellationToken ct)
