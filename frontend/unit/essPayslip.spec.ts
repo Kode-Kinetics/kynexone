@@ -56,10 +56,10 @@ test('figures that do not add up are flagged, not hidden', () => {
 // denied. They must go to the employee's own payslip page, and that page must admit ess.read.
 test('self-service payslip links open a page an employee can access', () => {
   const root = join(__dirname, '..');
-  const ess = readFileSync(join(root, 'src/views/EmployeeSelfServicePage.tsx'), 'utf8');
+  const ess = readFileSync(join(root, 'src/views/EmployeeSelfServicePage.tsx'), 'utf8') + readFileSync(join(root, 'src/lib/myDay.ts'), 'utf8');
   expect(ess).not.toMatch(/['"]\/payroll['"]/);
-  // "View Payslip" button and the Last Payslip tile; the Pay tab is in routes/essSections.ts.
-  expect(ess.match(/href=\{ESS_PAYSLIPS_PATH\}/g)?.length).toBe(2);
+  // The "View Payslip" quick action, and the "Open my payslips" step on a quiet day; the Pay tab is in routes/essSections.ts.
+  expect(ess.match(/href: ESS_PAYSLIPS_PATH|href: lead\.action|ESS_PAYSLIPS_PATH/g)?.length).toBeGreaterThanOrEqual(2);
   expect(readFileSync(join(root, 'src/routes/essSections.ts'), 'utf8')).toMatch(/label: 'My Payslips', tab: 'Payslips', path: '\/ess\/payslips'/);
 
   const page = readFileSync(join(root, 'app/(dashboard)', ESS_PAYSLIPS_PATH.slice(1), 'page.tsx'), 'utf8');

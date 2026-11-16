@@ -69,16 +69,16 @@ export function PayrollByDepartment({ data, currency = null }: { data: Dashboard
         <h2 id="attrate-heading" className="text-[15px] font-semibold text-slate-900 dark:text-white">{t('Attendance rate by month')}</h2>
         <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">{t('Days attended as a share of days rostered. {month} is month to date, not today’s figure.', { month: f.period(current) })}</p>
       </header>
-      <div className="flex items-end gap-3" role="img" aria-label={months.map((m) => m.attendanceRate > 0
+      <div className="flex items-end gap-3 [#stage-panel_&]:flex-1" role="img" aria-label={months.map((m) => m.attendanceRate > 0
         ? t('{month}: {rate}', { month: f.period(m.month), rate: f.percent(m.attendanceRate) })
         : t('{month}: no attendance captured', { month: f.period(m.month) })).join(', ')}>
         {months.map((m) => (
-          <span key={m.month} className="flex flex-1 flex-col items-center gap-1">
+          <span key={m.month} className="flex flex-1 flex-col items-center gap-1 [#stage-panel_&]:self-stretch">
             <span className="text-[11px] font-semibold tabular-nums text-slate-900 dark:text-white">{m.attendanceRate > 0 ? f.percent(m.attendanceRate) : ''}</span>
-            <span className="flex h-[88px] w-full items-end justify-center">
+            <span className="wg-rate-col flex w-full items-end justify-center">
               {m.attendanceRate > 0
-                ? <span className="wg-bar block w-[22px] rounded-t-[5px] rounded-b-[2px]" ref={(n) => { if (n) { n.style.height = `${(m.attendanceRate / 100) * 88}px`; n.style.background = m.month === current ? 'var(--viz-1)' : 'var(--viz-recede)'; } }} />
-                : <span className="block h-[88px] w-[22px] rounded-[5px] border border-dashed border-slate-300 dark:border-white/15" />}
+                ? <span className="wg-bar block w-[22px] rounded-t-[5px] rounded-b-[2px]" ref={(n) => { if (n) { n.style.height = `${m.attendanceRate}%`; n.style.background = m.month === current ? 'var(--viz-1)' : 'var(--viz-recede)'; } }} />
+                : <span className="block h-full w-[22px] rounded-[5px] border border-dashed border-slate-300 dark:border-white/15" />}
             </span>
             <span className={`text-[11px] ${m.month === current ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-400'}`}>{f.period(m.month, 'short')}</span>
           </span>

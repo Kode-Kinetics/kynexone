@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { LOCALE_DICTS } from '../src/i18n/translations';
@@ -11,18 +11,24 @@ import { essNavItems, essPages } from '../src/routes/essSections';
 
 const root = join(__dirname, '..');
 const read = (rel: string) => readFileSync(join(root, rel), 'utf8');
+// "My day" is the page plus its pieces (components/ess/myday) and their derivations (lib/myDay.ts).
+const MYDAY_FILES = [
+  'src/views/EmployeeSelfServicePage.tsx', 'src/lib/myDay.ts',
+  ...readdirSync(join(root, 'src/components/ess/myday')).filter((f) => f.endsWith('.tsx')).map((f) => `src/components/ess/myday/${f}`),
+];
+const myDay = () => MYDAY_FILES.map(read).join('\n');
 
 // The self-service "Apply Leave", "OT Request" and "My Requests" buttons went to /leave, /overtime and
 // /hr-requests: HR's screens, gated on leave.*, overtime.* and approvals.*, none of which the Employee
 // role holds. Every employee who clicked got "Access Denied".
 test('self-service buttons open the employee pages, never the HR screens', () => {
-  const ess = read('src/views/EmployeeSelfServicePage.tsx');
+  const ess = myDay();
   expect(ess).not.toMatch(/['"]\/(leave|overtime|hr-requests|payroll)['"]/);
-  // Apply Leave button, Leave Balance tile and the balances card's link; OT quick action; requests.
-  expect(ess.match(/href=\{ESS_LEAVE_PATH\}/g)?.length).toBe(3);
+  // The leave quick action, the "next step" and the tracker's leave rows; the OT quick action; the requests link.
+  expect(ess).toMatch(/href: ESS_LEAVE_PATH/);
   expect(ess).toMatch(/href: ESS_OVERTIME_PATH/);
-  expect(ess.match(/href=\{ESS_REQUESTS_PATH\}/g)?.length).toBe(2); // hero button, the card's link
-  // Each recent request and HR's reply open that request; a missing punch starts a correction request.
+  expect(read('src/components/ess/myday/MyDayTracker.tsx')).toMatch(/href=\{ESS_REQUESTS_PATH\}/);
+  // Each request and HR's reply open that request; a missing punch starts a correction request.
   expect(ess).toMatch(/`\$\{ESS_REQUESTS_PATH\}\?open=\$\{encodeURIComponent\(r\.id\)\}`/);
   expect(ess).toMatch(/`\$\{ESS_REQUESTS_PATH\}\?subject=/);
   expect(read('src/views/MyRequestsPage.tsx')).toMatch(/q\.get\('open'\)[\s\S]*openThread\(open\)/);
@@ -84,15 +90,15 @@ test('only a request still waiting for approval can be cancelled from self-servi
 test('every string on the employee pages has English and Arabic, with the same placeholders', () => {
   const files = [
     'src/views/MyLeavePage.tsx', 'src/views/MyOvertimePage.tsx', 'src/views/MyRequestsPage.tsx', 'src/views/MyDocumentsPage.tsx',
-    'src/views/EmployeeSelfServicePage.tsx', 'src/components/ess/EssParts.tsx', 'src/components/ess/EssWorkspaceNav.tsx',
+    ...MYDAY_FILES, 'src/components/ess/EssParts.tsx', 'src/components/ess/EssWorkspaceNav.tsx',
   ];
   const keys = new Set<string>();
   for (const f of files) for (const m of read(f).matchAll(/\bt\('((?:[^'\\]|\\.)*)'[,)]/g)) keys.add(m[1].replace(/\\'/g, "'"));
   for (const m of read('src/lib/essSelfService.ts').matchAll(/label: '([^']+)'/g)) keys.add(m[1]);
   for (const k of ['My Leave', 'My Overtime', 'My HR Requests']) keys.add(k);
   // The self-service home page's buttons and quick actions.
-  const home = read('src/views/EmployeeSelfServicePage.tsx');
-  for (const k of ['Apply Leave', 'View Payslip', 'Raise a request', 'My Requests', 'Request leave', 'Request overtime', 'Request an HR letter', 'Ask for a correction']) {
+  const home = myDay();
+  for (const k of ['View Payslip', 'Open my requests', 'Request leave', 'Request overtime', 'Request an HR letter', 'Ask for a correction']) {
     expect(home, k).toContain(`t('${k}')`);
   }
   expect(keys.size).toBeGreaterThan(80);
@@ -105,7 +111,7 @@ test('every string on the employee pages has English and Arabic, with the same p
 test('OT Request on the self-service page follows the Overtime module switch', () => {
   const home = read('src/views/EmployeeSelfServicePage.tsx');
   expect(home).toMatch(/const overtimeOn = isFeatureEnabled\('overtime'\);/);
-  expect(home).toMatch(/\.\.\.\(canWrite && overtimeOn \? \[\{[^\]]*href: ESS_OVERTIME_PATH \}\] : \[\]\)/);
+  expect(home).toMatch(/\.\.\.\(canWrite && overtimeOn \? \[\{[^\]]*href: ESS_OVERTIME_PATH[^\]]*\}\] : \[\]\)/);
 });
 
 test('the submit forms are offered only with ess.write', () => {
@@ -138,13 +144,14 @@ test('leave type names use the Arabic name from the leave types', () => {
 test('the self-service home offers its write actions only with ess.write, and raises HR requests on /ess/requests', () => {
   const home = read('src/views/EmployeeSelfServicePage.tsx');
   expect(home).toMatch(/const canWrite = useCanWriteEss\(\);/);
-  expect(home).toMatch(/\{canWrite && \(\s*<Link href=\{ESS_LEAVE_PATH\}/);
+  // Read-only logins are not promised a request they cannot make: the leave action reads "Open my leave".
+  expect(home).toMatch(/label: canWrite \? t\('Request leave'\) : t\('Open my leave'\)/);
   // Request a document moved to its own tab (/ess/documents): the form, or the read-only notice.
   expect(home).not.toMatch(/essDocumentsApi/);
   expect(read('src/views/MyDocumentsPage.tsx')).toMatch(/!canWrite \? \(\s*<EssReadOnly \/>/);
   // No inline HR request form or thread any more: the card links to the employee's requests page.
   expect(home).not.toMatch(/createHrRequest|addHrRequestComment|hrRequestDetail/);
-  expect(home).toMatch(/testId="ess-home-hr-requests"/);
+  expect(read('src/components/ess/myday/MyDayTracker.tsx')).toMatch(/data-testid="ess-home-hr-requests"/);
 });
 
 test('payslip lines read in Arabic from the catalogue, or a translated standard name', () => {

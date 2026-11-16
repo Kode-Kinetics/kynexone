@@ -11,7 +11,8 @@ import { ArrowRight, CheckCircle2 } from 'lucide-react';
 import { attentionSeverityLabel, type AttentionItem } from './dashboardModel';
 import { useT } from '../../hooks/useT';
 
-export function AttentionStrip({ items, findingsUnavailable }: { items: AttentionItem[]; findingsUnavailable?: boolean }) {
+/** `compact` (the one-screen stage): the action is the arrow alone, so the sentence gets the room instead of being clipped. */
+export function AttentionStrip({ items, findingsUnavailable, compact = false }: { items: AttentionItem[]; findingsUnavailable?: boolean; compact?: boolean }) {
   const t = useT();
   if (items.length === 0) {
     return (
@@ -45,7 +46,7 @@ export function AttentionStrip({ items, findingsUnavailable }: { items: Attentio
                 <span className="sr-only">{attentionSeverityLabel(t, it.severity)}: </span>
                 <span className="min-w-0 truncate font-medium">{it.title}</span>
                 <span className="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap font-semibold text-sapphire group-hover:underline dark:text-blue-300">
-                  {it.cta} <ArrowRight className="h-3 w-3" aria-hidden />
+                  <span className={compact ? 'sr-only' : undefined}>{it.cta}</span> <ArrowRight className="h-3 w-3 rtl:-scale-x-100" aria-hidden />
                 </span>
                 <span className="sr-only">. {it.detail}</span>
               </Link>

@@ -93,7 +93,7 @@ export function AttendanceHeatmap({ data }: { data: DashboardFull }) {
                     <span key={c.date} role="img"
                       aria-label={cellLabel}
                       title={cellLabel}
-                      className={`grid h-[25px] place-items-center rounded text-caption font-semibold tabular-nums ${c.date === today ? 'wg-heat-today bg-transparent text-slate-800 outline-dashed outline-1 outline-slate-400 dark:text-slate-200' : h ? '' : 'bg-slate-100 dark:bg-white/[0.05]'}`}
+                      className={`wg-heat-cell grid place-items-center rounded text-caption font-semibold tabular-nums ${c.date === today ? 'wg-heat-today bg-transparent text-slate-800 outline-dashed outline-1 outline-slate-400 dark:text-slate-200' : h ? '' : 'bg-slate-100 dark:bg-white/[0.05]'}`}
                       ref={(n) => { if (n && h && c.date !== today) { n.style.background = h.bg; n.style.color = h.fg; } }}>
                       {c.rate == null ? '' : Math.round(c.rate)}
                     </span>

@@ -388,6 +388,25 @@ textarea:focus-visible {
     linear-gradient(135deg, var(--wg-hero-base), var(--wg-hero-base2));
   box-shadow: 0 24px 48px -28px var(--wg-hero-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
+/* Mesh upgrade where oklch interpolation and color-mix exist: three layers from the same hero
+ * tokens, blended in oklch so the midtones stay clean instead of going muddy grey. The highlight
+ * sits opposite the headline, so RTL gets a mirrored twin. Older browsers keep the base above. */
+@supports (background: linear-gradient(in oklch, red, blue)) and (color: color-mix(in oklch, red, blue)) {
+  .wg-hero {
+    background-image:
+      radial-gradient(70% 120% at 100% 0%, color-mix(in oklch, var(--wg-hero-light) 88%, white), transparent 60%),
+      radial-gradient(55% 100% at 0% 115%, var(--wg-hero-deep), transparent 64%),
+      radial-gradient(40% 60% at 62% 118%, color-mix(in oklch, var(--wg-hero-light) 55%, transparent), transparent 70%),
+      linear-gradient(135deg in oklch, var(--wg-hero-base), var(--wg-hero-base2));
+  }
+  [dir='rtl'] .wg-hero {
+    background-image:
+      radial-gradient(70% 120% at 0% 0%, color-mix(in oklch, var(--wg-hero-light) 88%, white), transparent 60%),
+      radial-gradient(55% 100% at 100% 115%, var(--wg-hero-deep), transparent 64%),
+      radial-gradient(40% 60% at 38% 118%, color-mix(in oklch, var(--wg-hero-light) 55%, transparent), transparent 70%),
+      linear-gradient(225deg in oklch, var(--wg-hero-base), var(--wg-hero-base2));
+  }
+}
 /* High-contrast mode: drop the gradient and let every piece of text on the band take the
  * system colours, so nothing depends on the brand blue being painted. */
 @media (forced-colors: active) {
@@ -401,6 +420,67 @@ textarea:focus-visible {
   border: 1px solid var(--wg-line);
   border-radius: var(--kx-radius-md);
   box-shadow: var(--wg-card-shadow);
+}
+
+/* Stage cards: a one-pixel gradient hairline (brand-tinted at the top corner, fading to the plain
+ * line) drawn by a masked pseudo-element, so the card keeps its own border-radius and fill. */
+@supports (color: color-mix(in oklch, red, blue)) and ((mask-composite: exclude) or (-webkit-mask-composite: xor)) {
+  .wg-card-edge, #stage-panel .wg-card { position: relative; border-color: transparent; }
+  .wg-card-edge::before, #stage-panel .wg-card::before {
+    content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none;
+    background: linear-gradient(160deg, color-mix(in oklch, var(--wg-hero-light) 38%, var(--wg-line)), var(--wg-line) 42%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+  }
+  [dir='rtl'] .wg-card-edge::before, [dir='rtl'] #stage-panel .wg-card::before {
+    background: linear-gradient(200deg, color-mix(in oklch, var(--wg-hero-light) 38%, var(--wg-line)), var(--wg-line) 42%);
+  }
+  .dark .wg-card-edge::before, .dark #stage-panel .wg-card::before,
+  [dir='rtl'].dark .wg-card-edge::before, [dir='rtl'].dark #stage-panel .wg-card::before, .dark [dir='rtl'] .wg-card-edge::before, .dark [dir='rtl'] #stage-panel .wg-card::before {
+    background: linear-gradient(160deg, color-mix(in oklch, white 18%, var(--wg-line)), var(--wg-line) 45%);
+  }
+}
+@media (forced-colors: active) { .wg-card-edge::before, #stage-panel .wg-card::before { display: none; } }
+
+/* Conic-gradient ring: --wg-p is a registered <percentage>, so the arc sweeps once when it is set
+ * after mount; where @property is missing, or motion is reduced, it simply snaps to the value. */
+@property --wg-p { syntax: '<percentage>'; inherits: false; initial-value: 0%; }
+.wg-ring {
+  --wg-ring-a: var(--viz-ring-a);
+  --wg-ring-b: color-mix(in srgb, var(--viz-ring-a) 62%, var(--viz-ord-1));
+  --wg-ring-rest: var(--viz-ring-b);
+  border-radius: 9999px;
+  background: conic-gradient(from 0deg, var(--wg-ring-a) 0%, var(--wg-ring-b) var(--wg-p), var(--wg-ring-rest) var(--wg-p) 100%);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 13px), #000 calc(100% - 12px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 13px), #000 calc(100% - 12px));
+  transition: --wg-p var(--wg-dur-slow, 280ms) var(--wg-ease, ease-out);
+}
+.wg-ring-bad { --wg-ring-rest: color-mix(in srgb, var(--viz-ring-bad) 78%, white); }
+.dark .wg-ring-bad { --wg-ring-rest: color-mix(in srgb, var(--viz-ring-bad) 55%, black); }
+@media (prefers-reduced-motion: reduce) { .wg-ring { transition: none; } }
+
+/* Flat gradient bar fill; the gradient runs along the bar, so RTL reverses it. */
+.wg-gradbar { background-image: linear-gradient(90deg, var(--viz-ord-2), var(--viz-ord-3)); }
+[dir='rtl'] .wg-gradbar { background-image: linear-gradient(270deg, var(--viz-ord-2), var(--viz-ord-3)); }
+
+/* Stage cards give their spare height to the data marks, not to blank bands: heatmap cells and the
+ * monthly-rate columns grow with the window (capped), everywhere else they keep their fixed size. */
+.wg-heat-cell { height: 25px; }
+#stage-panel .wg-heat-cell { height: clamp(25px, 3.8vh, 38px); }
+.wg-rate-col { height: 88px; }
+#stage-panel .wg-rate-col { height: auto; flex: 1 1 0; min-height: 88px; }
+
+/* Stage tab switch: only the panel is snapshotted by the View Transitions API, so the glass chrome
+ * is never flattened. Browsers without it (and keyboard / reduced-motion switches) just swap. */
+#stage-panel { view-transition-name: stage-panel; }
+@keyframes wg-fade-out { to { opacity: 0; } }
+/* Everything else on the page stays still: no default cross-fade of the root while the panel swaps. */
+::view-transition-old(root), ::view-transition-new(root) { animation: none; }
+::view-transition-old(stage-panel) { animation: wg-fade-out 120ms var(--wg-ease, ease-out) both; }
+::view-transition-new(stage-panel) { animation: wg-view-in 200ms var(--wg-ease, ease-out) both; }
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(stage-panel), ::view-transition-new(stage-panel) { animation: none; }
 }
 
 .wg-glass {
@@ -742,4 +822,21 @@ textarea:focus-visible {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+
+/* Employee home hero on a quiet day (on leave, nothing waiting): the same gradient in a calm teal.
+ * The light stop stays dark enough for white text (4.5:1) once the recipe mixes it with white. */
+.wg-hero[data-tone='calm'] {
+  --wg-hero-base: #0b5159;
+  --wg-hero-base2: #083f4a;
+  --wg-hero-light: #0f6f74;
+  --wg-hero-deep: #052a33;
+  --wg-hero-shadow: rgba(11, 81, 89, 0.5);
+}
+.dark .wg-hero[data-tone='calm'] {
+  --wg-hero-base: #0a444b;
+  --wg-hero-base2: #073640;
+  --wg-hero-light: #0d6166;
+  --wg-hero-deep: #041f27;
+  --wg-hero-shadow: rgba(0, 0, 0, 0.6);
 }

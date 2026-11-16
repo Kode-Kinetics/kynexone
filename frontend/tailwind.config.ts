@@ -98,6 +98,8 @@ export default {
         h2: ['1.375rem', { lineHeight: '1.75rem', letterSpacing: '-0.01em' }],
         h1: ['1.75rem', { lineHeight: '2.125rem', letterSpacing: '-0.02em' }],
         kpi: ['1.75rem', { lineHeight: '2rem', letterSpacing: '-0.02em' }],
+        // The one hero figure on a screen (net pay): fluid between a laptop and a wide monitor.
+        display: ['clamp(2.25rem, 3.4vw, 3.5rem)', { lineHeight: '1.04', letterSpacing: '-0.035em' }],
       },
       spacing: {
         'control-sm': 'var(--kx-control-sm)',

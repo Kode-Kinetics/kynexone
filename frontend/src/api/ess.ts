@@ -23,6 +23,11 @@ export interface EssDashboard {
     lateMinutes: number;
     overtimeMinutes: number;
   };
+  /**
+   * Where `attendanceToday` came from: "processed" (HR's daily record) or "raw" (built from today's punches
+   * before the day is processed, so lateness and status are not computed yet). Null with no record.
+   */
+  attendanceTodaySource?: 'processed' | 'raw' | null;
   leaveBalances: Array<{
     leaveTypeId: string;
     leaveTypeName: string;

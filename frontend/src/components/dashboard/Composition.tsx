@@ -1,14 +1,13 @@
 'use client';
 
 /**
- * Headcount by department as extruded bars, plus the employment-type split as a 3D ring. The depth face is
- * part of each bar's length (front + depth = value), and names and exact values sit in aligned
- * columns, so the depth never has to be read for the number. Nationality lives in the
+ * Headcount by department as flat gradient bars, plus the employment-type split as a ring. Names and
+ * exact values sit in aligned columns, so the bar never has to be read for the number. Nationality lives in the
  * Saudization tile, not repeated here.
  */
 
 import type { DashboardFull } from '../../api/dashboard';
-import { Bars3D, Ring3D } from './charts/Visuals';
+import { RankedBars, Ring } from './charts/Visuals';
 import { useT } from '../../hooks/useT';
 import { useFormat } from '../../hooks/useFormat';
 import { employmentTypeLabel } from '../../lib/employmentType';
@@ -31,17 +30,13 @@ export function Composition({ data }: { data: DashboardFull }) {
       {depts.length === 0 ? (
         <p className="text-body-sm text-slate-700 dark:text-slate-300">{t('No active employees yet.')}</p>
       ) : (
-        <div className="grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)_2.25rem] items-start gap-x-3">
-          <ul className="flex flex-col">{depts.map((d) => <li key={d.name} className="flex h-[22px] items-center truncate text-xs text-slate-800 dark:text-slate-200">{d.name}</li>)}</ul>
-          <div className="pt-[2px]"><Bars3D items={depts} label={`${t('Headcount by department')}: ${depts.map((d) => `${d.name} ${d.value}`).join(', ')}`} /></div>
-          <ul className="flex flex-col">{depts.map((d) => <li key={d.name} className="flex h-[22px] items-center justify-end text-xs font-semibold tabular-nums text-slate-900 dark:text-white">{d.value}</li>)}</ul>
-        </div>
+        <RankedBars items={depts} label={`${t('Headcount by department')}: ${depts.map((d) => `${d.name} ${d.value}`).join(', ')}`} />
       )}
 
       {/* Employment mix: the largest type against the rest, when there is a real split. */}
       {mix.length >= 2 ? (
         <div className="mt-auto flex flex-wrap items-center gap-4 rounded-xl border border-[color:var(--wg-line)] bg-[color:var(--wg-surface-2)] p-4">
-          <Ring3D a={mix[0].value} b={mixTotal - mix[0].value} center={f.percent((mix[0].value / mixTotal) * 100)} sub={mix[0].name.toLowerCase()}
+          <Ring a={mix[0].value} b={mixTotal - mix[0].value} center={f.percent((mix[0].value / mixTotal) * 100)} sub={mix[0].name.toLowerCase()}
             label={`${t('Employment type')}: ${mix.map((m) => `${m.name} ${m.value}`).join(', ')}`} />
           <ul className="flex min-w-[140px] flex-1 flex-col gap-1.5 text-body-sm">
             {mix.slice(0, 4).map((m, i) => (

@@ -106,7 +106,8 @@ const shot = async (page: Page, name: string, project: string) => {
 
 test('the sidebar offers one Self-Service entry; its pages are tabs inside the workspace', async ({ page, isMobile }, info) => {
   const errors = await boot(page, '/ess');
-  await expect(page.getByRole('heading', { level: 1, name: /Amira/ })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('heading', { level: 1, name: 'My day' })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('heading', { name: /Amira/ })).toBeVisible();
 
   if (!isMobile) {
     const nav = page.locator('nav[aria-label="Primary navigation"]');
@@ -120,30 +121,37 @@ test('the sidebar offers one Self-Service entry; its pages are tabs inside the w
   await expect(sections.getByRole('link')).toHaveText(['Overview', 'Pay', 'Leave and time', 'Requests', 'Benefits', 'Surveys']);
   await expect(sections.getByRole('link', { name: 'Overview' })).toHaveAttribute('aria-current', 'page');
 
-  // Exceptions first: the missing punch, HR's reply and the expiring iqama, each with its next step.
-  const attention = page.getByTestId('ess-attention');
-  await expect(attention.getByRole('heading', { name: 'Needs your attention' })).toBeVisible();
-  await expect(attention).toContainText('A punch is missing from today');
-  await expect(attention).toContainText('HR replied to “Bank letter for a car loan”');
-  await expect(attention).toContainText('Iqama is expiring');
-  await expect(attention.getByRole('link', { name: 'Read the reply' })).toHaveAttribute('href', '/ess/requests?open=r-1');
-  await expect(attention).toContainText('3 items');
+  // The next step leads with the missing punch; HR's reply is in the tracker and the expiring iqama in "Coming up".
+  const next = page.getByTestId('ess-attention');
+  await expect(next).toContainText('Your next step');
+  await expect(next).toContainText('A punch is missing from today');
+  if (!isMobile) await expect(next.getByRole('link', { name: 'Ask for a correction' })).toHaveAttribute('href', /^\/ess\/requests\?subject=/);
+  const tracker = page.getByTestId('ess-home-hr-requests');
+  await expect(tracker).toContainText('Bank letter for a car loan');
+  await expect(tracker).toContainText('HR has replied');
+  await expect(tracker.getByRole('link', { name: 'Read the reply' })).toHaveAttribute('href', '/ess/requests?open=r-1');
+  await expect(page.getByTestId('ess-home-upcoming')).toContainText('Iqama is expiring');
   // A punch missing today: the day is not "Present" yet.
-  await expect(page.getByTestId('ess-tile-attendance')).toContainText('Incomplete');
-  await expect(page.getByTestId('ess-tile-attendance')).not.toContainText('Present');
-  // The pay date is the server's month-end guess, and says so.
+  await expect(page.getByTestId('ess-today')).toContainText('A punch is missing');
+  await expect(page.getByTestId('ess-today')).not.toContainText('Present');
+  // The pay date is the server's month-end guess, and says so. Net pay is masked until shown.
   await expect(page.getByTestId('ess-home-upcoming')).toContainText('Expected pay date (estimate)');
-  await expect(page.getByTestId('ess-tile-payslip')).not.toContainText('Next payroll');
+  await expect(page.getByTestId('ess-net-pay')).toContainText('••••••');
+  await expect(page.locator('body')).not.toContainText('14,250');
   await expect(page.getByText(/Profile \d+% complete/)).toHaveCount(0);
 
-  // Every headline number links to the records behind it.
-  await expect(page.getByTestId('ess-tile-leave')).toHaveAttribute('href', '/ess/leave');
-  await expect(page.getByTestId('ess-tile-payslip')).toHaveAttribute('href', '/ess/payslips');
-  await expect(page.getByTestId('ess-tile-loans')).toHaveAttribute('href', '/ess/loans');
-  await expect(page.getByTestId('ess-tile-payslip')).toContainText('Net pay for September 2026');
-  await expect(page.getByTestId('ess-tile-loans')).toContainText('Outstanding on 1 active loan');
-  await expect(page.getByTestId('ess-tile-attendance')).toContainText('6 h of approved overtime this month');
-  await expect(page.getByTestId('ess-tile-leave')).toContainText('15 days');
+  // The quick actions go to the pages behind them.
+  const quick = page.getByTestId('ess-home-quick-actions');
+  await expect(quick.getByRole('link', { name: /Request leave/ })).toHaveAttribute('href', '/ess/leave');
+  await expect(quick.getByRole('link', { name: /View Payslip/ })).toHaveAttribute('href', '/ess/payslips');
+  await expect(quick).toContainText('Annual Leave: 15 days available');
+  await expect(quick).toContainText('6 h of approved overtime this month');
+  await expect(page.getByTestId('ess-hero')).toContainText('Last net pay, September 2026');
+  // The records behind the day are one tab away.
+  await page.getByRole('tab', { name: 'My records' }).click();
+  await expect(page.getByRole('link', { name: 'Open my loans' })).toHaveAttribute('href', '/ess/loans');
+  await expect(page.getByRole('tabpanel', { name: 'My records' })).toContainText('Outstanding on 1 active loan');
+  await page.getByRole('tab', { name: 'Today' }).click();
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await shot(page, 'ess-overview', info.project.name);
@@ -197,7 +205,7 @@ test('the workspace reads right to left in Arabic without overflowing', async ({
   const sections = page.getByRole('navigation', { name: 'أقسام الخدمة الذاتية' });
   await expect(sections.getByRole('link', { name: 'الراتب' })).toBeVisible({ timeout: 60_000 });
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
-  await expect(page.getByTestId('ess-attention')).toContainText('يحتاج إلى انتباهك');
+  await expect(page.getByTestId('ess-attention')).toContainText('خطوتك التالية');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await shot(page, 'ess-overview-ar', info.project.name);
   expect(errors, errors.join('\n')).toEqual([]);
@@ -205,23 +213,26 @@ test('the workspace reads right to left in Arabic without overflowing', async ({
 
 test('"Read the reply" opens that request with HR\'s reply', async ({ page }) => {
   await boot(page, '/ess');
-  await page.getByTestId('ess-attention').getByRole('link', { name: 'Read the reply' }).click();
+  await page.getByTestId('ess-home-hr-requests').getByRole('link', { name: 'Read the reply' }).click();
   await expect(page).toHaveURL(/\/ess\/requests\?open=r-1$/, { timeout: 60_000 }); // a dev server compiles each page on first visit
   await expect(page.getByTestId('my-requests-thread')).toContainText('Your bank letter is ready to collect.', { timeout: 30_000 });
   // Read: the reply is no longer something that needs the employee.
   await page.goto('/ess');
   await expect(page.getByTestId('ess-attention')).toContainText('A punch is missing from today', { timeout: 60_000 });
+  // Read: the reply is no longer waiting for the employee, so the next step and the tracker stop offering it.
   await expect(page.getByTestId('ess-attention')).not.toContainText('HR replied');
+  await expect(page.getByTestId('ess-home-hr-requests').getByRole('link', { name: 'Read the reply' })).toHaveCount(0);
 });
 
 test('a read-only employee is offered nothing to submit, and no loans link without a loans permission', async ({ page }) => {
   await boot(page, '/ess', { permissions: ['ess.read'] });
-  await expect(page.getByRole('heading', { level: 1, name: /Amira/ })).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByRole('link', { name: 'Apply Leave' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { level: 1, name: 'My day' })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('link', { name: /^Request leave/ })).toHaveCount(0);
   await expect(page.getByTestId('ess-attention').getByRole('link', { name: 'Ask for a correction' })).toHaveCount(0);
   await expect(page.getByTestId('ess-home-quick-actions')).not.toContainText('Request an HR letter');
   await expect(page.getByTestId('ess-home-quick-actions')).toContainText('My letters');
-  await expect(page.getByTestId('ess-tile-loans')).not.toHaveAttribute('href', /.*/);
+  await page.getByRole('tab', { name: 'My records' }).click();
+  await expect(page.getByRole('link', { name: 'Open my loans' })).toHaveCount(0);
   await page.goto('/ess/documents');
   await expect(page.getByTestId('ess-documents-request')).toContainText('cannot send requests');
 });
@@ -246,10 +257,9 @@ test('a module switched off takes its section out of the workspace', async ({ pa
 
 test('a failed HR-requests read is never shown as "nothing needs your attention"', async ({ page }) => {
   await boot(page, '/ess', { failRequests: true });
-  const attention = page.getByTestId('ess-attention');
-  await expect(attention).toContainText('Your HR requests could not be loaded', { timeout: 60_000 });
-  await expect(attention).not.toContainText('Nothing needs your attention');
-  await expect(page.getByTestId('ess-home-hr-requests')).toContainText('could not be loaded');
+  const tracker = page.getByTestId('ess-home-hr-requests');
+  await expect(tracker.getByRole('alert')).toContainText('Could not load: HR requests', { timeout: 60_000 });
+  await expect(page.getByTestId('ess-attention')).not.toContainText('Nothing is waiting for you');
 });
 
 test('a failed refresh after a letter request keeps the list and the confirmation', async ({ page }) => {

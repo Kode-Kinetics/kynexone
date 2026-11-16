@@ -8,7 +8,7 @@
  */
 
 import Link from 'next/link';
-import { ArrowRight, CheckCircle2 } from 'lucide-react';
+import { AlertTriangle, ArrowRight, CheckCircle2, Clock } from 'lucide-react';
 import { Avatar } from '../Avatar';
 import type { ApprovalQueueItem } from '../../api/dashboard';
 import { ageLabel, entityLabel, parseApprovalSubject } from './dashboardModel';
@@ -61,7 +61,7 @@ function rowsFrom(queue: ApprovalQueueItem[], now: number): Row[] {
   }).sort((a, b) => b.ageH - a.ageH);
 }
 
-function Wait({ r }: { r: Row }) {
+function Wait({ r, stacked = false }: { r: Row; stacked?: boolean }) {
   const t = useT();
   const pct = Math.min(1, r.ageH / r.refH);
   const bar = r.over ? '#DC2626' : pct > 0.66 ? '#D97706' : '#16A34A';
@@ -70,8 +70,8 @@ function Wait({ r }: { r: Row }) {
       <span className={`text-xs font-semibold tabular-nums ${r.over ? 'text-rose-700 dark:text-rose-400' : 'text-slate-800 dark:text-slate-200'}`}>
         {ageLabel(r.ageH, t)}
         {(r.hasDue || r.over) && (
-          <span className="font-normal text-slate-600 dark:text-slate-400">
-            {' · '}
+          <span className={`font-normal text-slate-600 dark:text-slate-400 ${stacked ? 'block' : ''}`}>
+            {stacked ? null : ' · '}
             {r.hasDue
               ? (r.over ? t('{time} overdue', { time: ageLabel(-(r.dueH as number), t) }) : t('Due in {time}', { time: ageLabel(r.dueH as number, t) }))
               : t('Over 3 days')}
@@ -85,14 +85,45 @@ function Wait({ r }: { r: Row }) {
   );
 }
 
-export function ApprovalsTable({ queue, pending, loading, compact, dense = false }: { queue: ApprovalQueueItem[]; pending: number; loading: boolean; compact: boolean; dense?: boolean }) {
+/** Leave requests open the decision drawer when the page provides one; everything else goes to the approvals queue. */
+function ReviewAction({ r, onReview, className, children }: { r: Row; onReview?: (id: string) => void; className: string; children: React.ReactNode }) {
+  if (onReview && r.chip === 'leave') return <button type="button" onClick={() => onReview(r.id)} aria-haspopup="dialog" className={className}>{children}</button>;
+  return <Link href="/approvals" className={className}>{children}</Link>;
+}
+
+/** One status chip per request: overdue (icon + text), due soon, or simply how long it has waited. Never colour alone. */
+function WaitChip({ r }: { r: Row }) {
+  const t = useT();
+  if (r.over) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-0.5 text-caption font-semibold text-rose-800 dark:bg-rose-500/15 dark:text-rose-200">
+        <AlertTriangle className="h-3 w-3" aria-hidden />
+        {r.hasDue ? t('{time} overdue', { time: ageLabel(-(r.dueH as number), t) }) : t('Over 3 days')}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-caption font-semibold text-slate-700 dark:bg-white/10 dark:text-slate-200">
+      <Clock className="h-3 w-3" aria-hidden />
+      {r.hasDue ? t('Due in {time}', { time: ageLabel(r.dueH as number, t) }) : t('Waiting {age}', { age: ageLabel(r.ageH, t) })}
+    </span>
+  );
+}
+
+/**
+ * Stage: `narrow` is the half-width column (no Detail column, waiting time on two lines); `fill`
+ * takes the height the column gives and scrolls inside it if the estimate of `maxRows` was generous.
+ * `maxRows` replaces the default cap.
+ */
+export function ApprovalsTable({ queue, pending, loading, compact, dense = false, fill = false, narrow = false, maxRows, onReview }: { onReview?: (id: string) => void; queue: ApprovalQueueItem[]; pending: number; loading: boolean; compact: boolean; dense?: boolean; fill?: boolean; narrow?: boolean; maxRows?: number }) {
   const t = useT();
   const rows = rowsFrom(queue, Date.now());
   const overCount = rows.filter((r) => r.over).length;
   const anyDue = rows.some((r) => r.hasDue);
+  const cap = maxRows ?? (dense ? 4 : 6);
 
   return (
-    <section aria-labelledby="approvals-heading" className="wg-card flex min-w-0 flex-col gap-2 p-5">
+    <section aria-labelledby="approvals-heading" className={`wg-card flex min-w-0 flex-col gap-2 p-5 ${fill ? 'h-full min-h-0' : ''}`}>
       <header className="flex items-start justify-between gap-3">
         <div>
           <h2 id="approvals-heading" className="text-body font-semibold text-slate-900 dark:text-white">
@@ -118,7 +149,36 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
         <p className="flex items-center gap-2 text-body-sm text-slate-700 dark:text-slate-300"><CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden />{t('Nothing is waiting for a decision.')}</p>
       )}
 
-      {!loading && rows.length > 0 && (compact ? (
+      {!loading && rows.length > 0 && narrow && !compact && (
+        <>
+          <ul className={`flex flex-col ${fill ? 'min-h-0 flex-1 overflow-y-auto' : ''}`}>
+            {rows.slice(0, cap).map((r) => (
+              <li key={r.id} className="flex items-center gap-3 border-t border-[color:var(--wg-line)] py-2.5 first:border-t-0">
+                <Avatar name={r.name} size="md" />
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span dir="auto" className="text-body-sm font-semibold text-slate-900 dark:text-white"><bdi>{r.name}</bdi></span>
+                    <WaitChip r={r} />
+                  </span>
+                  <span className="text-xs text-slate-600 dark:text-slate-400">
+                    <span title={t(r.kind)} className={`rounded-full px-1.5 py-px font-semibold ${CHIP[r.chip]}`}>{t(r.kind)}</span>
+                    {r.detail && <> <bdi>{r.detail}</bdi></>}
+                  </span>
+                </span>
+                <ReviewAction r={r} onReview={onReview} className="wg-press inline-flex h-8 shrink-0 items-center rounded-lg border border-[color:var(--wg-line-strong)] px-3 text-xs font-semibold text-slate-800 hover:bg-[color:var(--wg-surface-2)] dark:text-slate-100">
+                  {t('Review')}<span className="sr-only"> {t('{kind} for {name}', { kind: t(r.kind), name: r.name })}</span>
+                </ReviewAction>
+              </li>
+            ))}
+          </ul>
+          {pending > Math.min(rows.length, cap) && (
+            <Link href="/approvals" className="inline-flex items-center gap-1 text-body-sm font-semibold text-sapphire hover:underline dark:text-blue-300">
+              {t('View all {count}', { count: pending })} <ArrowRight className="h-3.5 w-3.5 rtl:-scale-x-100" aria-hidden />
+            </Link>
+          )}
+        </>
+      )}
+      {!loading && rows.length > 0 && !(narrow && !compact) && (compact ? (
         <ul className="flex flex-col gap-2">
           {rows.map((r) => (
             <li key={r.id} className="flex items-center gap-3 rounded-xl border border-[color:var(--wg-line)] p-3">
@@ -131,25 +191,27 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
                 </span>
                 <Wait r={r} />
               </span>
-              <Link href="/approvals" className="wg-press inline-flex h-9 shrink-0 items-center rounded-lg bg-sapphire px-3 text-xs font-semibold text-white dark:bg-blue-600">{t('Review')}</Link>
+              <ReviewAction r={r} onReview={onReview} className="wg-press inline-flex h-9 shrink-0 items-center rounded-lg bg-sapphire px-3 text-xs font-semibold text-white dark:bg-blue-600">{t('Review')}</ReviewAction>
             </li>
           ))}
         </ul>
       ) : (
-        <div className="overflow-x-auto">
+        <div className={fill ? 'min-h-0 flex-1 overflow-auto' : 'overflow-x-auto'}>
           <table className="w-full table-fixed border-collapse text-start">
-            <colgroup><col className="w-[33%]" /><col className="w-[24%] 2xl:w-[18%]" /><col className="hidden 2xl:table-column 2xl:w-[18%]" /><col className="w-[25%] 2xl:w-[18%]" /><col className="w-[18%] 2xl:w-[12%]" /></colgroup>
+            {narrow
+              ? <colgroup><col className="w-[34%]" /><col className="w-[27%]" /><col /><col className="w-[84px]" /></colgroup>
+              : <colgroup><col className="w-[33%]" /><col className="w-[24%] 2xl:w-[18%]" /><col className="hidden 2xl:table-column 2xl:w-[18%]" /><col className="w-[25%] 2xl:w-[18%]" /><col className="w-[18%] 2xl:w-[12%]" /></colgroup>}
             <thead>
               <tr className="text-caption text-slate-600 dark:text-slate-400">
                 <th scope="col" className="pb-2 text-start font-medium">{t('Employee')}</th>
                 <th scope="col" className="pb-2 text-start font-medium">{t('Request')}</th>
-                <th scope="col" className="hidden pb-2 text-start font-medium 2xl:table-cell">{t('Detail')}</th>
+                {!narrow && <th scope="col" className="hidden pb-2 text-start font-medium 2xl:table-cell">{t('Detail')}</th>}
                 <th scope="col" className="pb-2 text-start font-medium">{anyDue ? t('Waiting vs due date') : t('Waiting')}</th>
                 <th scope="col" className="pb-2"><span className="sr-only">{t('Action')}</span></th>
               </tr>
             </thead>
             <tbody>
-              {rows.slice(0, dense ? 4 : 6).map((r) => (
+              {rows.slice(0, cap).map((r) => (
                 <tr key={r.id} className="border-t border-[color:var(--wg-line)]">
                   <td className={`${dense ? 'py-1.5' : 'py-2'} pe-3`}>
                     <span className="flex items-center gap-2.5">
@@ -163,21 +225,21 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
                   <td className="pe-3">
                     <span className="flex flex-col items-start gap-1">
                       <span title={t(r.kind)} className={`max-w-full truncate rounded-full px-2 py-0.5 text-xs font-semibold ${CHIP[r.chip]}`}>{t(r.kind)}</span>
-                      {r.detail && <span className="text-xs text-slate-700 dark:text-slate-300 2xl:hidden">{r.detail}</span>}
+                      {r.detail && <span className={`text-xs text-slate-700 dark:text-slate-300 ${narrow ? '' : '2xl:hidden'}`}>{r.detail}</span>}
                     </span>
                   </td>
-                  <td className="hidden pe-3 text-body-sm text-slate-700 dark:text-slate-300 2xl:table-cell">{r.detail ?? ''}</td>
-                  <td className="pe-3"><Wait r={r} /></td>
+                  {!narrow && <td className="hidden pe-3 text-body-sm text-slate-700 dark:text-slate-300 2xl:table-cell">{r.detail ?? ''}</td>}
+                  <td className="pe-3"><Wait r={r} stacked={narrow} /></td>
                   <td className="text-end">
-                    <Link href="/approvals" className="wg-press inline-flex h-8 items-center rounded-lg border border-indigo-200 px-2.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-50 dark:border-indigo-400/30 dark:text-indigo-200 dark:hover:bg-indigo-500/10">
+                    <ReviewAction r={r} onReview={onReview} className="wg-press inline-flex h-8 items-center rounded-lg border border-indigo-200 px-2.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-50 dark:border-indigo-400/30 dark:text-indigo-200 dark:hover:bg-indigo-500/10">
                       {t('Review')}<span className="sr-only"> {t('{kind} for {name}', { kind: t(r.kind), name: r.name })}</span>
-                    </Link>
+                    </ReviewAction>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {pending > Math.min(rows.length, dense ? 4 : 6) && (
+          {pending > Math.min(rows.length, cap) && (
             <Link href="/approvals" className="mt-2 inline-flex items-center gap-1 text-body-sm font-semibold text-sapphire hover:underline dark:text-blue-300">
               {t('View all {count}', { count: pending })} <ArrowRight className="h-3.5 w-3.5" aria-hidden />
             </Link>
