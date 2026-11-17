@@ -170,18 +170,15 @@ public class LegacyEnrollmentUnderReleaseATests
     }
 
     [Fact]
-    public void ReconcileReport_HasTheSameGateAsTheEnrolmentList()
+    public void ReconcileReport_HasThePermissionGateOfTheEnrolmentList_AndNoLegacyRoleList()
     {
         var list = typeof(BenefitsController).GetMethod(nameof(BenefitsController.ListEnrollments))!;
         var report = typeof(BenefitsController).GetMethod(nameof(BenefitsController.LegacyReconcile))!;
-        static string Gate(System.Reflection.MethodInfo m) => string.Join("|", m.GetCustomAttributes(true)
-            .Select(a => a switch
-            {
-                Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute p => "perm:" + string.Join(",", p.Permissions),
-                Microsoft.AspNetCore.Authorization.AuthorizeAttribute z => "roles:" + z.Roles,
-                _ => null,
-            }).Where(x => x is not null).OrderBy(x => x));
-        Gate(report).Should().Be(Gate(list));
+        static string Perm(System.Reflection.MethodInfo m) => string.Join(",",
+            m.GetCustomAttributes(true).OfType<Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute>().Single().Permissions);
+        Perm(report).Should().Be(Perm(list));
+        report.GetCustomAttributes(true).OfType<Microsoft.AspNetCore.Authorization.AuthorizeAttribute>()
+            .Where(a => a is not Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute).Should().BeEmpty("new code gates on permissions, not role names");
         report.GetCustomAttributes(typeof(HttpGetAttribute), true).Should().ContainSingle("the report is read-only");
     }
 

@@ -587,10 +587,10 @@ public class BenefitsController : ControllerBase
     /// Read-only reconcile report for a Benefits-by-grade (release_a) tenant: every enrolment of the previous benefits system that still exists, with
     /// whether it carries payment terms (paid in salary, deducted, or reimbursed). Payroll never pays those under release_a and names each active one as a
     /// warning on the run; this list is where HR sees what is left to end or move to the grade package. Empty while release_a is off (the legacy system
-    /// is then the authority). The same gate as the enrolment list; the caller's company scope applies.
+    /// is then the authority). The enrolment list's permission gate (HR writers, payroll and finance readers), without a legacy role list; the caller's
+    /// company scope applies.
     /// </summary>
     [HttpGet("legacy-reconcile")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer,Finance,Auditor")]
     [HasPermission("employees.write", "payroll.read", "finance.gl.read")]
     public async Task<IActionResult> LegacyReconcile(CancellationToken ct)
     {
