@@ -48,6 +48,9 @@ public partial class CashAllowanceRependKeepsPayingTests
 
         refused.Should().BeOfType<ConflictObjectResult>(Describe(refused));
         ErrorOf(refused).Should().Be("payroll_run_stale_definition");
+        var body = JsonSerializer.SerializeToElement(((ObjectResult)refused).Value, Web);
+        body.GetProperty("message").GetString().Should().Contain("was switched off or ended for 2026-06").And.NotContain("corrected");
+        new System.Text.RegularExpressions.Regex("[؀-ۿ]").IsMatch(body.GetProperty("messageAr").GetString()!).Should().BeTrue();
         (await w.Db.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == june.Id)).Status.Should().Be("Processed");
     }
 
