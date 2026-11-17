@@ -92,4 +92,23 @@ public partial class CashAllowanceRependKeepsPayingTests
         BodyOf(refused).GetProperty("message").GetString().Should().Contain("can be confirmed once payroll for 2026-07 is approved");
         Arabic.IsMatch(BodyOf(refused).GetProperty("messageAr").GetString()!).Should().BeTrue();
     }
+
+    [Fact]
+    public async Task TheClosedVersion_IsExplainedInTheConfirmationEntry_NamingTheMonthAndTheConfirmer()
+    {
+        await using var w = await World.Create();
+        await w.AddConfirmedCarAsync();
+        await w.GiveAsync(w.A, 500m);
+        Status(await w.As(w.FinanceA, finance: true).CorrectBenefit(w.Service, Car, new CorrectAllowanceRequest(June1, "Re-route", GlDriverKey: "EARN:CAR2"), default)).Should200("");
+        var june = await w.RunAsync(2026, 6);
+        (await w.Process(june)).Should().BeOfType<OkObjectResult>();
+        await w.MarkAsync(june, "Approved");
+
+        Status(await w.As(w.FinanceB, finance: true).ConfirmBenefit(w.Service, Car, null, default)).Should200("");
+
+        var entry = JsonDocument.Parse((await w.Db.AuditLogs.AsNoTracking().Where(a => a.Action == EntitlementMatrixService.AuditBenefitConfirmed)
+            .OrderByDescending(a => a.CreatedAtUtc).FirstAsync()).Metadata!).RootElement;
+        entry.GetProperty("note").GetString().Should().Be($"Closed at the end of 2026-06 when the pending change was confirmed by {w.FinanceB}.");
+        Arabic.IsMatch(entry.GetProperty("noteAr").GetString()!).Should().BeTrue();
+    }
 }

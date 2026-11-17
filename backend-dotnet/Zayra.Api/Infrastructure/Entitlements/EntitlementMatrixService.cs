@@ -1322,6 +1322,15 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             row.LastConfirmedTermsJson = null;   // confirmed: nothing is held back any more
             row.UpdatedAtUtc = now; row.UpdatedBy = actor.UserId;
             var current = successor ?? row;
+            // Why the closed version ends where it does, and carries the earlier confirmation: said in the confirmation entry (no column).
+            string? note = null, noteAr = null;
+            if (committedThrough is DateOnly closedAt)
+            {
+                var confirmerName = await db.Users.AsNoTracking().Where(u => u.Id == actor.UserId && u.TenantId == tid).Select(u => u.FullName).FirstOrDefaultAsync(ct);
+                var who = string.IsNullOrWhiteSpace(confirmerName) ? actor.UserId.Value.ToString() : confirmerName;
+                note = $"Closed at the end of {closedAt:yyyy-MM} when the pending change was confirmed by {who}.";
+                noteAr = $"أُغلقت بنهاية {closedAt:yyyy-MM} عند تأكيد التغيير المعلّق من قِبل {who}.";
+            }
             var warnings = CashAllowanceDefinitions.Warnings(current.NameEn, current.NameAr, current.EosbIncluded, current.EosbExclusionCategory, atCreation: false);
             db.AuditLogs.Add(Audit(actor, row.CompanyId, AuditBenefitConfirmed, row.Id, new
             {
@@ -1329,7 +1338,7 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
                 changed = before != terms, warnings = warnings.Select(w => w.Code).ToArray(),
                 // Set when the change reached months already committed: those months keep the last confirmed terms (row), the change applies from the next one.
                 committedThrough, keptVersionId = committedThrough is null ? (Guid?)null : row.Id, newVersionId = successor?.Id,
-                newVersionFrom = successor?.EffectiveFrom,
+                newVersionFrom = successor?.EffectiveFrom, note, noteAr,
             }));
             await db.SaveChangesAsync(ct);
             return Ok(ToDto(EntitlementComponentRules.CustomRuleFor(code, current.NameEn, current.NameAr), InfoOf(current), warnings, owner: current.CompanyId));
