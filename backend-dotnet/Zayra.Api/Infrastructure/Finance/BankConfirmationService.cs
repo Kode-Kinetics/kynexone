@@ -193,7 +193,11 @@ public sealed class BankConfirmationService
                 }));
         }
 
-        var parse = parser.Parse(content);
+        // A parser that needs the batch (the establishment, each employee's government ID) asks for it; every other
+        // parser is called exactly as before.
+        var parse = parser is IContextualBankConfirmationParser contextual
+            ? contextual.Parse(content, await BankConfirmationBatchContextLoader.LoadAsync(_db, tenantId, batch, run, ct))
+            : parser.Parse(content);
         var result = new BankConfirmationImportResult
         {
             ImportBatchId = Guid.NewGuid(),

@@ -559,6 +559,11 @@ builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmation
     Zayra.Api.Infrastructure.Finance.GenericCsvBankConfirmationParser>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmationParser,
     Zayra.Api.Infrastructure.Finance.WpsAckBankConfirmationParser>();
+// Reads a bank-produced WPS file. OFF unless Payroll:WpsReturnedFileParser:Enabled is true; even then it only runs when an
+// import explicitly selects format=wps-returned-file.
+if (Zayra.Api.Infrastructure.Finance.WpsReturnedFileFeature.IsEnabled(builder.Configuration))
+    builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmationParser,
+        Zayra.Api.Infrastructure.Finance.WpsReturnedFileBankConfirmationParser>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.JournalExportService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.BankConfirmationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.PeriodHandoffReconciler>();
