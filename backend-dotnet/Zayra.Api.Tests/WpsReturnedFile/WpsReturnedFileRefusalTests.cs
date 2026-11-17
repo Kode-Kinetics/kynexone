@@ -104,7 +104,7 @@ public class WpsReturnedFileRefusalTests
     public void A_file_level_fault_means_the_parser_hands_the_import_no_rows(string name)
     {
         var c = All[name];
-        var parse = new WpsReturnedFileBankConfirmationParser().Parse(c.Content, Ctx(c));
+        var parse = new WpsReturnedFileBankConfirmationParser(statusColumnVerified: true).Parse(c.Content, Ctx(c));
 
         parse.Rows.Should().BeEmpty($"{name} must apply nothing");
         parse.Errors.Should().Contain(e => e.Error == c.Code, name);
@@ -142,7 +142,7 @@ public class WpsReturnedFileRefusalTests
             expectedRows.Select((r, i) => new WpsExpectedLine(i + 1, $"EMP{i + 1:D4}", r.MolId, r.Iban, r.Net)).ToList(),
             BatchCreated, expectedRows.Sum(r => r.Net), Scope, new HashSet<string>());
 
-        var parse = new WpsReturnedFileBankConfirmationParser().Parse(file, ctx);
+        var parse = new WpsReturnedFileBankConfirmationParser(statusColumnVerified: true).Parse(file, ctx);
 
         parse.Errors.Count.Should().Be(202, "200 listed + one summary + the standing notice");
         parse.Errors.Should().Contain(e => e.Error == "more_errors");

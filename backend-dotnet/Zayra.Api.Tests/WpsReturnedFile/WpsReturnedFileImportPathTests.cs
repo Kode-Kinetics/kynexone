@@ -28,7 +28,7 @@ public class WpsReturnedFileImportPathTests
     private static BankConfirmationService Service(ZayraDbContext db) =>
         new(db, new IBankConfirmationParser[]
         {
-            new GenericCsvBankConfirmationParser(), new WpsAckBankConfirmationParser(), new WpsReturnedFileBankConfirmationParser(),
+            new GenericCsvBankConfirmationParser(), new WpsAckBankConfirmationParser(), new WpsReturnedFileBankConfirmationParser(statusColumnVerified: true),
         });
 
     private sealed record Seeded(Guid TenantId, Guid BatchId, IReadOnlyList<SynthRow> Rows, IReadOnlyList<PayrollPaymentRecord> Records, Company Company);
@@ -310,6 +310,49 @@ public class WpsReturnedFileImportPathTests
 
         result!.PaidApplied.Should().Be(2);
         Reload(db, s.Records[2]).Status.Should().Be("Pending");
+    }
+
+    [Fact]
+    public async Task Until_the_status_column_is_verified_no_status_is_applied_to_any_record()
+    {
+        using var db = NewDb();
+        var s = Seed(db, 3);
+        var unverified = new BankConfirmationService(db, new IBankConfirmationParser[] { new WpsReturnedFileBankConfirmationParser() });
+        var rows = s.Rows.Select(r => r with { Status = "PAID" }).ToList();
+        rows[1] = rows[1] with { Status = "REJECTED" };
+
+        var (result, refusal) = await unverified.ImportAsync(s.TenantId, s.BatchId, "f.txt", WpsReturnedFileOracle.Build(rows), Key,
+            new BankConfirmationImportOptions(), null, "x", default);
+        db.SaveChanges();
+
+        result.Should().BeNull();
+        JsonSerializer.Serialize(refusal!.Payload).Should().Contain("status_column_unverified");
+        db.PayrollPaymentRecords.Should().OnlyContain(r => r.Status == "Pending");
+        db.BankPaymentConfirmations.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void The_status_column_switch_is_off_unless_set()
+    {
+        WpsReturnedFileFeature.StatusColumnVerified(new ConfigurationBuilder().Build()).Should().BeFalse();
+        WpsReturnedFileFeature.StatusColumnVerified(new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?> { [WpsReturnedFileFeature.StatusColumnVerifiedKey] = "true" }).Build()).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task An_accepted_word_changes_no_status_and_is_reported()
+    {
+        using var db = NewDb();
+        var s = Seed(db, 3);
+        var rows = s.Rows.Select(r => r with { Status = "PAID" }).ToList();
+        rows[2] = rows[2] with { Status = "SUCCESS" };
+
+        var (result, _) = await Import(db, s, WpsReturnedFileOracle.Build(rows));
+        db.SaveChanges();
+
+        result!.PaidApplied.Should().Be(2);
+        Reload(db, s.Records[2]).Status.Should().Be("Pending");
+        JsonSerializer.Serialize(result.ParseErrors).Should().Contain("status_accepted_only");
     }
 
     [Fact]

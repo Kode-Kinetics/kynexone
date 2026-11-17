@@ -38,6 +38,14 @@ public interface IContextualBankConfirmationParser : IBankConfirmationParser
 public static class WpsReturnedFileFeature
 {
     public const string ConfigKey = "Payroll:WpsReturnedFileParser:Enabled";
+    /// <summary>
+    /// Off until a real bank file has confirmed the per-line status column. While off, the reader still checks the file and matches
+    /// lines, but no status word changes a payment record (nothing is marked paid, returned or pending).
+    /// </summary>
+    public const string StatusColumnVerifiedKey = "Payroll:WpsReturnedFileParser:StatusColumnVerified";
+
+    public static bool StatusColumnVerified(IConfiguration? configuration) =>
+        bool.TryParse(configuration?[StatusColumnVerifiedKey], out var on) && on;
 
     public static bool IsEnabled(IConfiguration? configuration) =>
         bool.TryParse(configuration?[ConfigKey], out var on) && on;
@@ -51,7 +59,8 @@ public static class BankConfirmationParserRegistration
         services.AddSingleton<IBankConfirmationParser, GenericCsvBankConfirmationParser>();
         services.AddSingleton<IBankConfirmationParser, WpsAckBankConfirmationParser>();
         if (WpsReturnedFileFeature.IsEnabled(configuration))
-            services.AddSingleton<IBankConfirmationParser, WpsReturnedFileBankConfirmationParser>();
+            services.AddSingleton<IBankConfirmationParser>(_ =>
+                new WpsReturnedFileBankConfirmationParser(WpsReturnedFileFeature.StatusColumnVerified(configuration)));
         return services;
     }
 }
@@ -77,9 +86,15 @@ public sealed class WpsReturnedFileBankConfirmationParser : IContextualBankConfi
       + "bank's signature, and it is not a wage-protection submission or a Mudad acceptance. The tab and [TAG] layout and the per-line "
       + "status field are assumed from field names the product already cites and have not been confirmed against a real bank file. "
       + "A file is refused as a whole if its establishment, date, total or FILE-REF do not fit this payment batch, or if any account "
-      + "differs from the payroll record. Lines are matched to payment records by government ID, account and amount.";
+      + "differs from the payroll record. Lines are matched to payment records by government ID, account and amount. No payment "
+      + "status is applied to any record until the status column has been verified against a real bank file and switched on.";
 
     private const int MaxErrors = 200;
+    private readonly bool _statusColumnVerified;
+
+    public WpsReturnedFileBankConfirmationParser() : this(false) { }
+
+    public WpsReturnedFileBankConfirmationParser(bool statusColumnVerified) => _statusColumnVerified = statusColumnVerified;
 
     /// <summary>The establishment and the employee records are needed to read this file safely, so the plain overload refuses.</summary>
     public BankConfirmationParseResult Parse(string content) =>
@@ -140,12 +155,24 @@ public sealed class WpsReturnedFileBankConfirmationParser : IContextualBankConfi
 
         var fileRows = read.Rows.ToDictionary(r => r.Line);
         var noStatus = 0;
+        var unverified = 0;
+        var acceptedOnly = 0;
         foreach (var line in rec.Lines)
         {
             switch (line.Classification)
             {
                 case WpsReconciliationClass.MatchedFiguresOnly:
                     noStatus++;
+                    break;
+                case WpsReconciliationClass.MatchedAccepted:
+                    acceptedOnly++;
+                    break;
+                case WpsReconciliationClass.MatchedPaid or WpsReconciliationClass.MatchedPending or WpsReconciliationClass.Rejected
+                    or WpsReconciliationClass.AmountMismatch when line.Outcome is not null && !_statusColumnVerified:
+                    // The status column is not verified against a real bank file: nothing is applied from it.
+                    unverified++;
+                    if (line.Classification is WpsReconciliationClass.AmountMismatch or WpsReconciliationClass.Rejected)
+                        errors.Add(new(line.FileLine ?? 0, line.Classification, line.ReasonEn, line.ReasonAr));
                     break;
                 case WpsReconciliationClass.MatchedPaid or WpsReconciliationClass.MatchedPending or WpsReconciliationClass.Rejected
                     or WpsReconciliationClass.AmountMismatch when line.Outcome is not null:
@@ -179,6 +206,14 @@ public sealed class WpsReturnedFileBankConfirmationParser : IContextualBankConfi
             }
         }
 
+        if (unverified > 0)
+            errors.Add(new(0, "status_column_unverified",
+                $"{unverified} line(s) carry a payment status, but the status column has not been verified against a real bank file, so no status was applied.",
+                $"{unverified} سطر (أسطر) تحمل حالة دفع، لكن عمود الحالة لم يتم التحقق منه على ملف بنك حقيقي، لذلك لم تُطبَّق أي حالة."));
+        if (acceptedOnly > 0)
+            errors.Add(new(0, "status_accepted_only",
+                $"{acceptedOnly} line(s): the bank reports the file accepted but does not confirm the credit. No status was changed.",
+                $"{acceptedOnly} سطر (أسطر): يفيد البنك بقبول الملف دون تأكيد قيد المبلغ. لم تتغير أي حالة."));
         if (noStatus > 0)
             errors.Add(new(0, "status_missing",
                 $"{noStatus} line(s) match the payroll run but carry no payment status in the file, so they confirm the figures only. Nothing was applied for them.",

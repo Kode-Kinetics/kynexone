@@ -221,15 +221,56 @@ public class WpsReturnedFileReconcilerTests
     [InlineData("R")]
     [InlineData("N")]
     [InlineData("NO")]
-    [InlineData("COMPLETED")]
     [InlineData("ACWC")]
-    [InlineData("SUCCESS")]
+    [InlineData("UNPAID")]
     public void A_single_letter_or_loose_word_confirms_nothing(string word)
     {
         var rows = WithStatus(WpsReturnedFileOracle.Rows(1), word);
         var line = Run(rows, Expected(rows)).Lines.Single();
         line.Classification.Should().Be(WpsReconciliationClass.StatusNotRecognised);
         line.Outcome.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("RJCT")]
+    [InlineData("REJECT")]
+    [InlineData("REJECTED")]
+    [InlineData("RETURN")]
+    [InlineData("RETURNED")]
+    [InlineData("RTRN")]
+    [InlineData("BOUNCE")]
+    [InlineData("BOUNCED")]
+    [InlineData("FAIL")]
+    [InlineData("FAILED")]
+    [InlineData("FAILURE")]
+    [InlineData("DECLINED")]
+    [InlineData("CANCELLED_BY_BANK")]
+    public void Only_an_unambiguous_return_word_is_a_rejection(string word)
+    {
+        var rows = WithStatus(WpsReturnedFileOracle.Rows(1), word);
+        Run(rows, Expected(rows)).Lines.Single().Classification.Should().Be(WpsReconciliationClass.Rejected);
+    }
+
+    [Theory]
+    [InlineData("SUCCESS")]
+    [InlineData("SUCCESSFUL")]
+    [InlineData("COMPLETED")]
+    [InlineData("EXECUTED")]
+    [InlineData("ACCEPTED")]
+    public void A_success_word_means_the_bank_accepted_the_file_and_confirms_no_credit(string word)
+    {
+        var rows = WithStatus(WpsReturnedFileOracle.Rows(1), word);
+        var line = Run(rows, Expected(rows)).Lines.Single();
+        line.Classification.Should().Be(WpsReconciliationClass.MatchedAccepted);
+        line.Outcome.Should().BeNull("no status change");
+        line.ReasonEn.Should().Contain("does not confirm");
+    }
+
+    [Fact]
+    public void ACWP_and_ACSP_are_in_progress()
+    {
+        foreach (var word in new[] { "ACWP", "ACSP" })
+            WpsReturnedFileStatus.Classify(word).Should().Be("Pending");
     }
 
     [Fact]

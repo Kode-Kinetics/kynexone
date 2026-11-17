@@ -15,6 +15,8 @@ public static class WpsReconciliationClass
     public const string MatchedPending = "matched_pending";
     /// <summary>Matches our record but the file carries no payment status: the figures agree, nothing is confirmed.</summary>
     public const string MatchedFiguresOnly = "matched_figures_only";
+    /// <summary>Matches our record; the bank says it accepted the file but does not confirm the credit. Informational: no status change.</summary>
+    public const string MatchedAccepted = "matched_accepted";
     public const string AmountMismatch = "amount_mismatch";
     public const string AccountMismatch = "account_mismatch";
     /// <summary>Our payment record has no IBAN, so the account cannot be checked.</summary>
@@ -31,14 +33,23 @@ public static class WpsReconciliationClass
 /// The status words THIS reader accepts for a line. Deliberately stricter than the shared
 /// <c>BankOutcomeVocabulary</c> (which is untouched): no single letters, no "OK"/"YES", and ISO ACSP ("settlement in process")
 /// is pending, never paid. The per-line status tag itself is unverified (see the rule catalogue), so anything not listed
-/// here confirms nothing.
+/// here confirms nothing. Paid or Returned only on an unambiguous bank word; "success"/"completed"/"executed" words mean the bank
+/// accepted the file, not that the credit is confirmed, so they are informational and change nothing.
 /// </summary>
 public static class WpsReturnedFileStatus
 {
     private static readonly HashSet<string> Paid = new(StringComparer.OrdinalIgnoreCase) { "PAID", "SETTLED", "CREDITED", "ACSC", "ACCC" };
-    private static readonly HashSet<string> Returned = new(StringComparer.OrdinalIgnoreCase) { "REJECTED", "RETURNED", "RJCT", "RTRN", "FAILED" };
+    private static readonly HashSet<string> Returned = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "RJCT", "REJECT", "REJECTED", "RETURN", "RETURNED", "RTRN", "BOUNCE", "BOUNCED", "FAIL", "FAILED", "FAILURE", "DECLINED", "CANCELLED_BY_BANK",
+    };
     private static readonly HashSet<string> Pending = new(StringComparer.OrdinalIgnoreCase)
-        { "PENDING", "PDNG", "PROCESSING", "IN_PROGRESS", "ACSP", "ACCP", "ACTC", "RCVD", "RECEIVED" };
+        { "PENDING", "PDNG", "PROCESSING", "IN_PROGRESS", "ACSP", "ACWP", "ACCP", "ACTC", "RCVD", "RECEIVED" };
+    private static readonly HashSet<string> AcceptedOnly = new(StringComparer.OrdinalIgnoreCase)
+        { "SUCCESS", "SUCCESSFUL", "SUCCEEDED", "COMPLETED", "COMPLETE", "EXECUTED", "ACCEPTED" };
+
+    /// <summary>True for a word that means "the bank accepted the file" without confirming the credit.</summary>
+    public static bool IsAcceptedOnly(string? status) => AcceptedOnly.Contains((status ?? string.Empty).Trim().Replace(' ', '_'));
 
     /// <summary>"Paid", "Returned" or "Pending" (<see cref="BankConfirmationOutcomes"/>), or null for any other word.</summary>
     public static string? Classify(string? status)
@@ -166,6 +177,12 @@ public static class WpsReturnedFileReconciler
                 lines.Add(Line(WpsReconciliationClass.AmountMismatch, null,
                     $"The amount in the file is {(lower ? "lower" : "higher")} than the payroll run amount for this employee. It is held until someone reviews the difference.",
                     $"المبلغ في الملف {(lower ? "أقل" : "أكبر")} من مبلغ مسير الرواتب لهذا الموظف. يبقى معلقاً حتى تتم مراجعة الفرق."));
+            }
+            else if (WpsReturnedFileStatus.IsAcceptedOnly(row.TrnStatus))
+            {
+                lines.Add(Line(WpsReconciliationClass.MatchedAccepted, statusRaw,
+                    $"The bank reports {statusRaw}, which means it accepted the file but does not confirm that the money was credited. No status was changed. Check the bank statement.",
+                    $"أفاد البنك بالحالة {Iso(statusRaw)} ومعناها أنه قبل الملف دون تأكيد قيد المبلغ. لم تتغير أي حالة. راجع كشف حساب البنك."));
             }
             else if (!string.IsNullOrWhiteSpace(row.TrnStatus) && outcome is null)
             {
