@@ -176,16 +176,8 @@ public class InterviewsController : ControllerBase
         // may submit feedback ONLY for an interview they are assigned to — prevents tenant-wide
         // feedback injection into arbitrary interview ids. HR coordinators (Admin/HR Manager/
         // HR Officer/Recruiter) run panels and may record on behalf of any interviewer.
-        var isHrCoordinator = User.IsInRole("Admin") || User.IsInRole("HR Manager")
-            || User.IsInRole("HR Officer") || User.IsInRole("Recruiter");
-        if (!isHrCoordinator)
-        {
-            var me = GetUserName();
-            var assigned = !string.IsNullOrWhiteSpace(me)
-                && interview.InterviewerNames.Contains(me, StringComparison.OrdinalIgnoreCase);
-            if (!assigned)
-                return Forbid();
-        }
+        if (!InterviewPanel.MayWriteFeedback(User, interview, GetUserName()))
+            return Forbid();
 
         var feedback = new InterviewFeedback
         {
