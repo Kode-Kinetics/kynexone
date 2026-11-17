@@ -62,7 +62,10 @@ public sealed class EmployeePackageController : ControllerBase
             try { preview = await new EntitlementWriter(_db, _clock, _resolver).PreviewAsync(tid, active.Id, ct); }
             catch (EntitlementWriteRefusedException) { preview = null; }
         }
-        return Ok(EmployeePackageView.From(resolved, context, proposal, preview, this.GetUserId()));
+        var view = EmployeePackageView.From(resolved, context, proposal, preview, this.GetUserId());
+        // Salary figures are pay data: only a caller holding employees.sensitive sees them (as on every other view of pay). entitlements.read alone
+        // (a custom role, or Finance confirming allowances) sees the package's shape without the salary amounts.
+        return Ok(User.HasPermission("employees.sensitive") ? view : view.WithoutSalaryAmounts());
     }
 
     /// <summary>
@@ -413,7 +416,8 @@ public sealed record EmployeePackageView(
     PackageFreezeStatusDto FreezeStatus,
     int DependantsOnFile,
     PackageProposalDto? Proposal,
-    IReadOnlyDictionary<string, ComponentLabel> Labels)
+    IReadOnlyDictionary<string, ComponentLabel> Labels,
+    bool SalaryAmountsHidden = false)
 {
     public static EmployeePackageView From(ResolvedPackage resolved, PackageViewContext c, OpenProposal? proposal, FreezePreview? preview, Guid? viewer)
     {
@@ -462,6 +466,25 @@ public sealed record EmployeePackageView(
                 proposal.Proposal.From, proposal.Proposal.To, proposal.Proposal.Rows, proposal.Proposal.Skips),
             c.Labels);
     }
+}
+
+public static class EmployeePackageViewMasking
+{
+    /// <summary>The same view without the employee's salary figures: the salary record (basic salary) is left out, and every line read from the salary
+    /// record, or worked out from it (a multiple of housing, a percentage of basic), loses its amounts; a rate stays (it is the grade's, not the
+    /// employee's pay). <see cref="EmployeePackageView.SalaryAmountsHidden"/> tells the screen why the amounts are missing. The benefits, the grade
+    /// standard and the contract benefits are unchanged.</summary>
+    public static EmployeePackageView WithoutSalaryAmounts(this EmployeePackageView view) => view with
+    {
+        Salary = null,
+        SalaryAmountsHidden = true,
+        Package = view.Package with
+        {
+            Lines = view.Package.Lines.Select(l => l.Source == PackageLineSources.Salary
+                    ? l with { Amount = null, MonthlyCash = null, ResolvedAmount = null }
+                    : l.Rate is not null ? l with { ResolvedAmount = null } : l).ToList(),
+        },
+    };
 }
 
 public sealed record PackageGradeDto(Guid Id, string Code, string Name, string? NameAr, int Level);

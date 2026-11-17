@@ -112,6 +112,8 @@ export interface EmployeePackageView {
   dependantsOnFile: number;
   proposal: PackageProposal | null;
   labels: Record<string, ComponentLabel>;
+  /** The caller lacks employees.sensitive: the salary figures were left out on the server (the salary record and the amounts read from it). */
+  salaryAmountsHidden?: boolean;
 }
 
 export interface ProposedRow {
