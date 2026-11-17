@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using Zayra.Api.Infrastructure.Finance;
 
 namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports;
 
@@ -25,12 +26,52 @@ public sealed record AnbGenerationResult(
     IReadOnlyList<SaudiBankExportIssueDto> Errors, IReadOnlyList<AnbGeneratedFile>? Files, int PaymentCount, decimal TotalAmount)
 {
     public bool Ok => Errors.Count == 0 && Files is not null;
+
+    /// <summary>Points for a person to check that do not block the file (for example "check bank holidays").</summary>
+    public IReadOnlyList<SaudiBankExportWarningDto> Warnings { get; init; } = Array.Empty<SaudiBankExportWarningDto>();
+}
+
+/// <summary>What a Saudi bank-holiday calendar says about one date.</summary>
+public enum SaudiBankHolidayAnswer
+{
+    /// <summary>No calendar source answers for this date: a person must check it.</summary>
+    Unknown,
+    BankingDay,
+    BankHoliday,
+}
+
+/// <summary>
+/// The seam for a Saudi bank-holiday calendar (CTO gate 8.4.5). Which source to trust (SAMA's published holidays, the
+/// bank's own calendar) is an owner decision, so no real source exists yet: <see cref="NoSaudiBankHolidayCalendar"/>
+/// answers <see cref="SaudiBankHolidayAnswer.Unknown"/> for every date and the generator warns "check bank holidays".
+/// An implementation must be pure (no I/O at generation time): load the calendar before calling the generator.
+/// </summary>
+public interface ISaudiBankHolidayCalendar
+{
+    SaudiBankHolidayAnswer Check(DateOnly date);
+}
+
+/// <summary>The only calendar until a source is chosen: it knows no date.</summary>
+public sealed class NoSaudiBankHolidayCalendar : ISaudiBankHolidayCalendar
+{
+    public static readonly NoSaudiBankHolidayCalendar Instance = new();
+    private NoSaudiBankHolidayCalendar() { }
+    public SaudiBankHolidayAnswer Check(DateOnly date) => SaudiBankHolidayAnswer.Unknown;
+}
+
+/// <summary>What the credit value date is checked against. <paramref name="TodayInRiyadh"/> is today's date in Riyadh,
+/// read by the caller from its clock (never <c>DateTime.Now</c> here: the generator stays pure).</summary>
+public sealed record AnbValueDateRules(DateOnly TodayInRiyadh, ISaudiBankHolidayCalendar Holidays)
+{
+    public static AnbValueDateRules WithoutHolidayCalendar(DateOnly todayInRiyadh) =>
+        new(todayInRiyadh, NoSaudiBankHolidayCalendar.Instance);
 }
 
 /// <summary>
 /// PURE generator for <c>anb-connect-csv-v1</c> (ANB Connect payroll-payment, spec reviewed 2026-09-26).
 /// No I/O, no clock, no culture: same input ⇒ same bytes, which is what lets a repeated generate prove
-/// it is the same instruction by hash.
+/// it is the same instruction by hash. "Today" for the value-date checks is an input
+/// (<see cref="AnbValueDateRules"/>), never read here.
 ///
 /// <para>Every rule FAILS CLOSED with a structured blocker. Nothing is trimmed, rounded, truncated,
 /// defaulted, apostrophised or re-cased — a value either satisfies the spec table as supplied or the
@@ -74,6 +115,31 @@ public static class AnbConnectCsvGenerator
         "organizationAddress2", "organizationAddress3", "companyName", "narrative", "batchType",
     };
 
+    // Credit value date (CTO gate 8.4.5). Errors carry the field "paymentDate", the request field the user sets.
+    public const string ValueDateWeekend = "value_date_weekend";
+    public const string ValueDateInPast = "value_date_in_past";
+    public const string ValueDateBankHoliday = "value_date_bank_holiday";
+    /// <summary>Warning: no bank-holiday calendar source exists yet, so a person must check the date.</summary>
+    public const string ValueDateCheckBankHolidays = "value_date_check_bank_holidays";
+
+    /// <summary>Plain English and Arabic for the value-date codes. The English is the message sent today; the Arabic is
+    /// here for the screen to show by code. {0} is the value date, {1} today's Riyadh date (both yyyy-MM-dd).</summary>
+    public static readonly IReadOnlyDictionary<string, BankText> ValueDateTexts = new Dictionary<string, BankText>(StringComparer.Ordinal)
+    {
+        [ValueDateWeekend] = new(
+            "The credit value date {0} falls on the Saudi bank weekend (Friday or Saturday). Choose a working day, Sunday to Thursday.",
+            "تاريخ قيمة الإيداع {0} يقع في عطلة نهاية الأسبوع لدى البنوك السعودية (الجمعة أو السبت). اختر يوم عمل من الأحد إلى الخميس."),
+        [ValueDateInPast] = new(
+            "The credit value date {0} is before today ({1}, Riyadh time). Choose today or a later working day.",
+            "تاريخ قيمة الإيداع {0} سابق لتاريخ اليوم ({1} بتوقيت الرياض). اختر تاريخ اليوم أو يوم عمل لاحقًا."),
+        [ValueDateBankHoliday] = new(
+            "The credit value date {0} is a Saudi bank holiday. Choose a working day.",
+            "تاريخ قيمة الإيداع {0} يوافق عطلة رسمية لدى البنوك السعودية. اختر يوم عمل."),
+        [ValueDateCheckBankHolidays] = new(
+            "Check bank holidays: no Saudi bank holiday calendar is set up, so the credit value date was not checked against bank holidays. Confirm with your bank that it is a banking day.",
+            "تحقّق من العطل الرسمية: لم يُعدّ تقويم لعطل البنوك السعودية، لذلك لم يُتحقّق من تاريخ قيمة الإيداع مقابل العطل. تأكّد من البنك أنه يوم عمل مصرفي."),
+    };
+
     public const int MaxPaymentCount = 999_999;
     public const int MaxAmountChars = 12;
 
@@ -82,9 +148,14 @@ public static class AnbConnectCsvGenerator
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
     private const string Crlf = "\r\n";
 
-    public static AnbGenerationResult Generate(AnbHeaderInput header, IReadOnlyList<AnbPaymentInput> rows, decimal expectedTotal)
+    public static AnbGenerationResult Generate(AnbHeaderInput header, IReadOnlyList<AnbPaymentInput> rows, decimal expectedTotal,
+        AnbValueDateRules valueDate)
     {
+        ArgumentNullException.ThrowIfNull(valueDate);
+        ArgumentNullException.ThrowIfNull(valueDate.Holidays);
         var errors = new List<SaudiBankExportIssueDto>();
+        var warnings = new List<SaudiBankExportWarningDto>();
+        CheckValueDate(header.CreditValueDate, valueDate, errors, warnings);
 
         if (!IsAsciiDigits(header.BatchNumber, 1, 20))
             errors.Add(new("batch_reference_invalid", "batchNumber must be 1 to 20 digits.", null, "batchReference"));
@@ -116,7 +187,7 @@ public static class AnbConnectCsvGenerator
         if (!IsTwoDecimals(total))
             errors.Add(new("total_invalid", "totalPayrollAmount has more than two decimals."));
 
-        if (errors.Count > 0) return new AnbGenerationResult(errors, null, rows.Count, total);
+        if (errors.Count > 0) return new AnbGenerationResult(errors, null, rows.Count, total) { Warnings = warnings };
 
         var headerCsv = new StringBuilder();
         var headerValues = new List<string>
@@ -143,7 +214,34 @@ public static class AnbConnectCsvGenerator
         }
 
         var files = new[] { File(HeaderFileName, headerCsv), File(BodyFileName, bodyCsv) };
-        return new AnbGenerationResult(errors, files, rows.Count, total);
+        return new AnbGenerationResult(errors, files, rows.Count, total) { Warnings = warnings };
+    }
+
+    /// <summary>The credit value date checks (CTO gate 8.4.5).</summary>
+    private static void CheckValueDate(DateOnly date, AnbValueDateRules rules, List<SaudiBankExportIssueDto> errors,
+        List<SaudiBankExportWarningDto> warnings)
+    {
+        string Text(string code) => string.Format(CultureInfo.InvariantCulture, ValueDateTexts[code].English,
+            date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            rules.TodayInRiyadh.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+
+        if (date < rules.TodayInRiyadh)
+            errors.Add(new(ValueDateInPast, Text(ValueDateInPast), null, "paymentDate"));
+        if (date.DayOfWeek is DayOfWeek.Friday or DayOfWeek.Saturday)
+            errors.Add(new(ValueDateWeekend, Text(ValueDateWeekend), null, "paymentDate"));
+
+        // Fail closed: only a calendar that positively says "banking day" removes the warning.
+        switch (rules.Holidays.Check(date))
+        {
+            case SaudiBankHolidayAnswer.BankingDay:
+                break;
+            case SaudiBankHolidayAnswer.BankHoliday:
+                errors.Add(new(ValueDateBankHoliday, Text(ValueDateBankHoliday), null, "paymentDate"));
+                break;
+            default:
+                warnings.Add(new(ValueDateCheckBankHolidays, Text(ValueDateCheckBankHolidays)));
+                break;
+        }
     }
 
     /// <summary>Validates one employer settings field. <paramref name="allowBlank"/> lets settings be saved

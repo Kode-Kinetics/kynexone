@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
@@ -19,12 +21,20 @@ public enum AnbTransactionPhase { Initiated, Pending, InProgress, Paid, Returned
 /// <item>The snapshot must fit the batch (<see cref="BankBatchBinding"/>): the bank's item count equals the
 /// lines we sent, the amounts sum to the frozen total, and every line was created after the submit intent.
 /// Otherwise it is another payroll (last month's, a voided batch's) and is refused.</item>
-/// <item>PAID is Paid. RETURNED and FAILED are Returned: the shared vocabulary already reads FAILED that
-/// way (<c>BankOutcomeVocabulary.ReturnedTokens</c>, BankConfirmationParsers.cs:57). INITIATED, PENDING and
-/// IN PROGRESS are Pending, which the import records and applies to no record.</item>
-/// <item>A payroll the bank REJECTED or FAILED fails every line it had not settled (Returned, reason
-/// <c>PAYROLL_REJECTED</c>/<c>PAYROLL_FAILED</c>). A COMPLETED payroll pays nobody by itself: only a per-line
-/// PAID does.</item>
+/// <item>PAID is Paid. RETURNED is Returned (the money left and came back). FAILED is Rejected, "Not paid: rejected
+/// by bank" (CTO gate 8.4.2): the bank refused the instruction, the money never left, so it is never counted as
+/// returned money awaiting a GL correction. The rendered outcome word is read the same way by the shared vocabulary
+/// (<c>BankOutcomeVocabulary</c>). INITIATED, PENDING and IN PROGRESS are Pending, which the import records and
+/// applies to no record.</item>
+/// <item>A payroll the bank REJECTED or FAILED rejects every line it had not settled (Rejected). A COMPLETED payroll
+/// pays nobody by itself: only a per-line PAID does.</item>
+/// <item>The bank's reason (the line's <c>paymentStatusDescription</c>, or the payroll's <c>reason</c> for the lines a
+/// refused payroll rejects) gives <see cref="BankConfirmationRow.ReasonCode"/> only when it carries exactly one reason
+/// code (<see cref="ReasonCodeIn"/>), which the shared <see cref="BankStatusReasonCatalogue"/> then describes. A status
+/// word or free text is never a reason code (CTO gate 8.4.7).</item>
+/// <item>A duplicate-payment reason (DUPL, or the word duplicate) is held for a person
+/// (<see cref="DuplicateHeldReason"/>): the first payment may have gone through, so the line is never recorded as
+/// "not paid, still owed".</item>
 /// <item>An unpublished line word is held (<see cref="BankUnresolvedLine"/>, reason <c>unknown_status</c>)
 /// and the other lines still map; an unpublished PAYROLL word throws.</item>
 /// <item>Lines are matched to what we sent by national ID AND account and carried by OUR WPS reference; no
@@ -45,6 +55,9 @@ public static class AnbPayrollStatusMapper
     public static readonly TimeSpan CreatedAtTolerance = TimeSpan.FromMinutes(5);
 
     private const int MaxReasonLength = 300;
+
+    /// <summary><see cref="BankUnresolvedLine.Reason"/> for a line whose bank reason is a duplicate payment.</summary>
+    public const string DuplicateHeldReason = "duplicate_held";
 
     /// <summary>ASCII words only (a look-alike letter such as a dotless i never upper-cases into a known
     /// word); trimmed, upper-cased, and a space treated like an underscore ("IN PROGRESS" and "IN_PROGRESS"
@@ -93,7 +106,9 @@ public static class AnbPayrollStatusMapper
     public static string ToConfirmationOutcome(AnbTransactionPhase phase) => phase switch
     {
         AnbTransactionPhase.Paid => BankConfirmationOutcomes.Paid,
-        AnbTransactionPhase.Returned or AnbTransactionPhase.Failed => BankConfirmationOutcomes.Returned,
+        AnbTransactionPhase.Returned => BankConfirmationOutcomes.Returned,
+        // Refused by the bank: not paid, never "money came back" (CTO gate 8.4.2).
+        AnbTransactionPhase.Failed => BankConfirmationOutcomes.Rejected,
         AnbTransactionPhase.Initiated or AnbTransactionPhase.Pending or AnbTransactionPhase.InProgress => BankConfirmationOutcomes.Pending,
         _ => throw new ArgumentOutOfRangeException(nameof(phase)),
     };
@@ -168,22 +183,34 @@ public static class AnbPayrollStatusMapper
 
             var raw = line.PaymentStatus.Trim();
             var outcome = ToConfirmationOutcome(phase);
-            var reasonCode = raw;
-            var reasonText = Reason(line.PaymentStatusDescription, line.EmployeeName);
+            var lineReason = Reason(line.PaymentStatusDescription, line.EmployeeName);
+            var reasonText = lineReason;
+            var duplicate = IsDuplicateReason(lineReason);
             if (payrollFailed)
             {
                 if (!IsTerminal(phase))
                 {
-                    // The whole payroll was refused (for example insufficient balance): this line will not be paid.
-                    outcome = BankConfirmationOutcomes.Returned;
-                    reasonCode = "PAYROLL_" + payroll.ToString().ToUpperInvariant();
-                    reasonText = Reason(snapshot.Reason, line.EmployeeName) ?? reasonText;
+                    // The whole payroll was refused (for example insufficient balance): this line was not paid.
+                    outcome = BankConfirmationOutcomes.Rejected;
+                    var payrollReason = Reason(snapshot.Reason, line.EmployeeName);
+                    reasonText = payrollReason ?? reasonText;
+                    duplicate |= IsDuplicateReason(payrollReason);
                 }
                 else if (phase == AnbTransactionPhase.Paid)
                 {
                     anomalies.Add(new BankLineAnomaly(wpsReference, "paid_in_rejected_payroll"));
                 }
             }
+
+            if (duplicate)
+            {
+                // The bank says this is a duplicate: the earlier payment may have reached the employee. A person checks
+                // before anything is recorded; it is never "not paid, still owed".
+                unresolved.Add(new BankUnresolvedLine(i + 1, SensitiveValueMask.MaskId(line.EmployeeId), DuplicateHeldReason,
+                    AnbStatusWords.Printable(raw)));
+                continue;
+            }
+            var reasonCode = ReasonCodeIn(reasonText);
 
             rows.Add(new BankConfirmationRow(
                 RowNumber: 0,
@@ -244,6 +271,51 @@ public static class AnbPayrollStatusMapper
         var distinct = snapshot.Lines.GroupBy(l => Key(l.EmployeeId, l.EmployeeAccountNumber)).Select(g => g.First()).ToList();
         if (distinct.Count == snapshot.ItemCount && distinct.Sum(l => l.SalaryAmount) != binding.ExpectedTotal)
             throw new BankChannelException(BankChannelCodes.PayrollNotThisBatch);
+    }
+
+    private static readonly Regex IsoReasonShape = new("^[A-Z]{2}[0-9]{2}$", RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The one reason code a bank reason text carries, or null. A token is a code when it is upper case and either a
+    /// code of the shared <see cref="BankStatusReasonCatalogue"/> or ISO-shaped (two letters, two digits, for example
+    /// AC03). Null when the text has no code, more than one, a formula prefix or hidden characters: the catalogue then
+    /// says "ask your bank" and nothing from the text is echoed as a code. Read from the masked text, so an ID or IBAN
+    /// never becomes a code.
+    /// </summary>
+    public static string? ReasonCodeIn(string? maskedText)
+    {
+        if (string.IsNullOrWhiteSpace(maskedText)) return null;
+        var text = maskedText.Trim();
+        if (text[0] is '=' or '+' or '-' or '@') return null;
+        if (text.Any(c => char.IsControl(c) || CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.Format)) return null;
+        var codes = AsciiTokens(text)
+            .Where(t => t.All(c => c is (>= 'A' and <= 'Z') or (>= '0' and <= '9'))
+                        && (BankStatusReasonCatalogue.IsKnown(t) || IsoReasonShape.IsMatch(t)))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return codes.Count == 1 ? codes[0] : null;
+    }
+
+    /// <summary>True when the reason says the payment is a duplicate: the ISO code DUPL, or the word duplicate in
+    /// English (any case) or Arabic. When in doubt, hold.</summary>
+    public static bool IsDuplicateReason(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        if (text.Contains("مكرر", StringComparison.Ordinal) || text.Contains("تكرار", StringComparison.Ordinal)) return true;
+        return AsciiTokens(text).Any(t => t.Equals("DUPL", StringComparison.OrdinalIgnoreCase)
+                                          || t.StartsWith("DUPLICAT", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Runs of ASCII letters and digits.</summary>
+    private static IEnumerable<string> AsciiTokens(string text)
+    {
+        var start = -1;
+        for (var i = 0; i <= text.Length; i++)
+        {
+            var isWordChar = i < text.Length && text[i] is (>= 'A' and <= 'Z') or (>= 'a' and <= 'z') or (>= '0' and <= '9');
+            if (isWordChar && start < 0) start = i;
+            else if (!isWordChar && start >= 0) { yield return text[start..i]; start = -1; }
+        }
     }
 
     private static (string, string) Key(string? employeeId, string? account) => ((employeeId ?? string.Empty).Trim(), (account ?? string.Empty).Trim());

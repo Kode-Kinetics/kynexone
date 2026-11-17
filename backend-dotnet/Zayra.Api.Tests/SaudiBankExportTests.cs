@@ -44,8 +44,17 @@ internal static class SaudiBankExportTestData
     public static SaudiBankExportBatchRequest Request(string reference = "2026092601") => new()
     {
         BatchReference = reference,
-        PaymentDate = DateTime.UtcNow.AddDays(5).ToString("yyyy-MM-dd"),
+        PaymentDate = FutureWorkingDay().ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
     };
+
+    /// <summary>Five days ahead in Riyadh, moved off the Saudi bank weekend (Friday, Saturday): the ANB file refuses a
+    /// weekend or past credit value date.</summary>
+    public static DateOnly FutureWorkingDay()
+    {
+        var day = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeBySystemTimeZoneId(DateTime.UtcNow, "Asia/Riyadh")).AddDays(5);
+        while (day.DayOfWeek is DayOfWeek.Friday or DayOfWeek.Saturday) day = day.AddDays(1);
+        return day;
+    }
 
     public static async Task<Guid> SeedCompanyAsync(ZayraDbContext db, Guid tenantId)
     {
@@ -121,6 +130,9 @@ public class SaudiBankExportTests
 {
     // ── Pure generator ────────────────────────────────────────────────────────────────────────
 
+    /// <summary>"Today" for the value-date checks: before the fixed value date in <see cref="Header"/>.</summary>
+    private static readonly AnbValueDateRules ValueDateRules = AnbValueDateRules.WithoutHolidayCalendar(new DateOnly(2026, 9, 20));
+
     private static AnbHeaderInput Header(string batch = "2026092601") => new(
         batch, "PAYROLL", "7001234567", "0108061198800026", new DateOnly(2026, 10, 1),
         "Test Establishment Co", "Riyadh", "Olaya", "KSA", "Payroll Sep 2026", "Test Establishment");
@@ -135,7 +147,7 @@ public class SaudiBankExportTests
     public void Generator_EmitsExactColumnOrder_CrLf_NoBom_LosslessAmounts()
     {
         // Rows passed out of order on purpose: output order is stable by employee ref.
-        var result = AnbConnectCsvGenerator.Generate(Header(), new[] { Row2(), Row1() }, 11550.50m);
+        var result = AnbConnectCsvGenerator.Generate(Header(), new[] { Row2(), Row1() }, 11550.50m, ValueDateRules);
 
         result.Ok.Should().BeTrue(string.Join("; ", result.Errors.Select(e => e.Code)));
         var header = result.Files!.Single(f => f.Name == "header.csv").Content;
@@ -154,8 +166,8 @@ public class SaudiBankExportTests
     [Fact]
     public void Generator_IsDeterministic_SameInputSameHashes()
     {
-        var a = AnbConnectCsvGenerator.Generate(Header(), new[] { Row1(), Row2() }, 11550.50m);
-        var b = AnbConnectCsvGenerator.Generate(Header(), new[] { Row2(), Row1() }, 11550.50m);
+        var a = AnbConnectCsvGenerator.Generate(Header(), new[] { Row1(), Row2() }, 11550.50m, ValueDateRules);
+        var b = AnbConnectCsvGenerator.Generate(Header(), new[] { Row2(), Row1() }, 11550.50m, ValueDateRules);
         a.Files!.Select(f => f.Sha256).Should().Equal(b.Files!.Select(f => f.Sha256));
     }
 
@@ -181,7 +193,7 @@ public class SaudiBankExportTests
     [MemberData(nameof(BadRows))]
     public void Generator_FailsClosed_OnInvalidRow_AndEmitsNoFiles(AnbPaymentInput bad, string expectedCode)
     {
-        var result = AnbConnectCsvGenerator.Generate(Header(), new[] { bad, Row2() }, bad.SalaryAmount + 5250.50m);
+        var result = AnbConnectCsvGenerator.Generate(Header(), new[] { bad, Row2() }, bad.SalaryAmount + 5250.50m, ValueDateRules);
         result.Files.Should().BeNull();
         result.Errors.Should().Contain(e => e.Code == expectedCode && e.EmployeeId == 1);
         result.Errors.Should().NotContain(e => e.Message.Contains("1012345678"), "national IDs never appear in messages");
@@ -191,7 +203,7 @@ public class SaudiBankExportTests
     public void Generator_Blocks_DuplicateIdsAccounts_AndTotalMismatch()
     {
         var dup = Row2() with { EmployeeNationalId = "1012345678", AccountNumber = SaudiBankExportTestData.IbanA, BicCode = "RJHISARI" };
-        var result = AnbConnectCsvGenerator.Generate(Header(), new[] { Row1(), dup }, 1m);
+        var result = AnbConnectCsvGenerator.Generate(Header(), new[] { Row1(), dup }, 1m, ValueDateRules);
         result.Errors.Select(e => e.Code).Should().Contain(new[] { "duplicate_employee_id", "duplicate_account", "total_mismatch" });
     }
 
@@ -200,14 +212,14 @@ public class SaudiBankExportTests
     [InlineData("12AB")]
     [InlineData("123456789012345678901")]
     public void Generator_Rejects_BadBatchNumber(string batch) =>
-        AnbConnectCsvGenerator.Generate(Header(batch), new[] { Row1() }, 6300m).Errors
+        AnbConnectCsvGenerator.Generate(Header(batch), new[] { Row1() }, 6300m, ValueDateRules).Errors
             .Should().Contain(e => e.Code == "batch_reference_invalid");
 
     [Fact]
     public void Generator_Rejects_IbanAsMainAccount_AndUnknownBatchType()
     {
         var h = Header() with { MainAccountNumber = SaudiBankExportTestData.IbanA, BatchType = "payroll" };
-        var codes = AnbConnectCsvGenerator.Generate(h, new[] { Row1() }, 6300m).Errors.Select(e => e.Code);
+        var codes = AnbConnectCsvGenerator.Generate(h, new[] { Row1() }, 6300m, ValueDateRules).Errors.Select(e => e.Code);
         codes.Should().Contain(new[] { "main_account_invalid", "batch_type_invalid" });
     }
 
