@@ -49,6 +49,19 @@ public sealed partial class GovernmentMigrationTests
         down.Should().NotContainAny("AddColumn", "AlterColumn", "CreateTable", "migrationBuilder.Sql(");
     }
 
+    private const string BodyCheck = "body IN ('qiwa','gosi','muqeem','takamol','bank_anb','bank_file')";
+
+    [Fact]
+    public void TheExchangeBodyCheck_AllowsTheGenericBankFileChannel_TheSameInTheMigrationItsDesignerTheSnapshotAndTheModel()
+    {
+        var (id, up, _) = Load();
+        var dir = Path.Combine(SourceScan.ResolveApiRoot(), "Migrations");
+        up.Should().Contain($"\"ck_government_exchanges__body\", \"{BodyCheck}\"");
+        File.ReadAllText(Path.Combine(dir, $"{id}_{Name}.Designer.cs")).Should().Contain($"\"ck_government_exchanges__body\", \"{BodyCheck}\"");
+        File.ReadAllText(Path.Combine(dir, "ZayraDbContextModelSnapshot.cs")).Should().Contain($"\"ck_government_exchanges__body\", \"{BodyCheck}\"");
+        File.ReadAllText(Path.Combine(SourceScan.ResolveApiRoot(), "Data", "ZayraDbContext.cs")).Should().Contain($"\"ck_government_exchanges__body\", \"{BodyCheck}\"");
+    }
+
     [Fact]
     public void TheCredentialTable_KeepsARevokedRow_OnlyWithItsSecretWiped()
     {

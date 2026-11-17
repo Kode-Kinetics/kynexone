@@ -6107,7 +6107,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("government_exchanges", t =>
             {
-                t.HasCheckConstraint("ck_government_exchanges__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb')");
+                t.HasCheckConstraint("ck_government_exchanges__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb','bank_file')");
                 t.HasCheckConstraint("ck_government_exchanges__channel", "channel IN ('file_out','file_in','manual','api')");
                 t.HasCheckConstraint("ck_government_exchanges__environment", "environment IS NULL OR environment IN ('sandbox','production')");
                 t.HasCheckConstraint("ck_government_exchanges__state",

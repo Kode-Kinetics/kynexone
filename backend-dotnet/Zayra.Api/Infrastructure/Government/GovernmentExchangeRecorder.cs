@@ -419,7 +419,9 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
     private static void Validate(GovernmentExchangeAttempt a)
     {
         if (a.TenantId == Guid.Empty) throw new ArgumentException("A tenant is required.", nameof(a));
-        if (!GovernmentBodies.IsKnown(a.Body)) throw new ArgumentException($"Unknown body '{a.Body}'.", nameof(a));
+        if (!GovernmentBodies.IsLedgerBody(a.Body)) throw new ArgumentException($"Unknown body '{a.Body}'.", nameof(a));
+        if (!GovernmentBodies.IsKnown(a.Body) && a.Channel == GovernmentExchangeChannels.Api)
+            throw new ArgumentException($"The ledger-only body '{a.Body}' is recorded on a file channel, never api.", nameof(a));
         if (!GovernmentExchangeChannels.All.Contains(a.Channel, StringComparer.Ordinal)) throw new ArgumentException($"Unknown channel '{a.Channel}'.", nameof(a));
         if (!GovernmentExchangeStates.IsKnown(a.State)) throw new ArgumentException($"Unknown state '{a.State}'.", nameof(a));
         if (string.IsNullOrWhiteSpace(a.Operation) || a.Operation.Length > 64) throw new ArgumentException("An operation of at most 64 characters is required.", nameof(a));

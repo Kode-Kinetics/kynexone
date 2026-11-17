@@ -108,7 +108,7 @@ namespace Zayra.Api.Migrations
                 {
                     table.PrimaryKey("PK_government_exchanges", x => x.id);
                     table.CheckConstraint("ck_government_exchanges__api_environment", "channel <> 'api' OR environment IS NOT NULL");
-                    table.CheckConstraint("ck_government_exchanges__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb')");
+                    table.CheckConstraint("ck_government_exchanges__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb','bank_file')");
                     table.CheckConstraint("ck_government_exchanges__channel", "channel IN ('file_out','file_in','manual','api')");
                     table.CheckConstraint("ck_government_exchanges__counts", "state_version >= 1 AND poll_count >= 0 AND (item_count IS NULL OR item_count >= 0)");
                     table.CheckConstraint("ck_government_exchanges__environment", "environment IS NULL OR environment IN ('sandbox','production')");

@@ -16,6 +16,18 @@ public static class GovernmentBodies
 
     public static bool IsKnown(string? body) => body is not null && All.Contains(body, StringComparer.Ordinal);
 
+    /// <summary>
+    /// The generic bank returned-file channel. A LEDGER-ONLY body: the exchange ledger records files a customer's bank sent back, from
+    /// any bank. It is deliberately NOT in <see cref="All"/>, so it has no credential, base URL, capability, live gate or configuration
+    /// section, and the recorder takes it on a file channel only (never api).
+    /// </summary>
+    public const string BankFile = "bank_file";
+
+    public static readonly IReadOnlyList<string> LedgerOnly = [BankFile];
+
+    /// <summary>A body the exchange ledger may record: every counterparty in <see cref="All"/> plus the ledger-only ones.</summary>
+    public static bool IsLedgerBody(string? body) => IsKnown(body) || (body is not null && LedgerOnly.Contains(body, StringComparer.Ordinal));
+
     /// <summary>True for a bank (its configuration lives under <c>Government:Banks:{BankId}</c>).</summary>
     public static bool IsBank(string body) => body.StartsWith("bank_", StringComparison.Ordinal);
 

@@ -17384,7 +17384,7 @@ namespace Zayra.Api.Migrations
                         {
                             t.HasCheckConstraint("ck_government_exchanges__api_environment", "channel <> 'api' OR environment IS NOT NULL");
 
-                            t.HasCheckConstraint("ck_government_exchanges__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb')");
+                            t.HasCheckConstraint("ck_government_exchanges__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb','bank_file')");
 
                             t.HasCheckConstraint("ck_government_exchanges__channel", "channel IN ('file_out','file_in','manual','api')");
 
