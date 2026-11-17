@@ -160,6 +160,8 @@ test.describe('no screen reads one oversized page as the whole list', () => {
   const DEFAULT_PAGE_BY_DESIGN: Array<{ file: string; call: string; why: string }> = [
     { file: 'src/views/PerformancePage.tsx', call: 'pipApi.terminationQueue()',
       why: 'The endpoint returns the whole queue and takes no page (PIPController.TerminationQueue).' },
+    { file: 'src/views/ManagerRecruitment.tsx', call: 'interviewsApi.mine()',
+      why: 'A line manager’s own panel list: the endpoint returns the caller’s 100 most recent interviews and takes no page (InterviewsController.Mine).' },
   ];
 
   test('the paged API methods are found (the check below is not vacuous)', () => {
@@ -202,7 +204,8 @@ test.describe('no screen reads one oversized page as the whole list', () => {
     const overtime = read('src/views/OvertimePage.tsx');
     expect(overtime).toContain("overtimeApi.allRequests({ status: 'PendingManager' })");
     expect(overtime).toContain("overtimeApi.allRequests({ status: 'PendingHR' })");
-    expect(overtime).toContain('setRequests(await overtimeApi.allRequests({ status }));');
+    // HR managers read both approval steps like the administrator (the manager-step company setting lets HR decide step 1); everyone else reads step 1.
+    expect(overtime).toContain("setRequests(await overtimeApi.allRequests({ status: 'PendingManager' }));");
     // History lists page with the server's total instead of calling the first page the list.
     expect(overtime.match(/<ListWindowFooter /g)).toHaveLength(2);
     expect(read('src/views/TimesheetsPage.tsx')).toContain('<ListWindowFooter shown={rows.length} total={list.total} noun="timesheets"');
