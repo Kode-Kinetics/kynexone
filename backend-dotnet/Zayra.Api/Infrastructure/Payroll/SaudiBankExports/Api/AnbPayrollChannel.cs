@@ -6,6 +6,11 @@ namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 /// ANB behind the bank-neutral <see cref="IBankPayrollChannel"/>. Thin: it picks the two frozen files by the
 /// generator's own file names, passes the neutral options through as ANB's request headers, and maps the
 /// status read onto the batch with <see cref="AnbPayrollStatusMapper"/>. NOT LIVE and not registered.
+/// <para>TODO(wiring wave, security R-3): the client only refuses a handler that follows redirects. Registration
+/// must use <see cref="AnbHttpHandlerFactory.CreateHandler"/> as the named client's primary handler with no extra
+/// delegating handlers (no retry or resilience handler), and add a DI test for that plus a test that the factory
+/// handler refuses a loopback/private target. Note: the factory sets UseProxy=false, so an environment with a
+/// mandatory egress proxy needs an explicit decision.</para>
 /// <para>ANB's fee headers (feescategorycode, feesandvataccount, feesfrequency) have no published meaning
 /// and are not sent through this channel.</para>
 /// </summary>

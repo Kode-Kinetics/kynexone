@@ -381,6 +381,7 @@ public sealed partial class AnbPayrollApiClient
         BankPayrollPhase? phase = null;
         var payrollStatus = string.Empty;
         string? reason = null;
+        DateTimeOffset? payrollCreatedAt = null;
         int? itemCount = null, pageCount = null;
         var page = 1;
         var pages = 0;
@@ -398,6 +399,8 @@ public sealed partial class AnbPayrollApiClient
                 throw new BankChannelException(BankChannelCodes.PagePayrollMismatch);
             if (parsed.Page != page) throw new BankChannelException(BankChannelCodes.PageMismatch);
             if (parsed.Data.Count > MaxTake) throw new BankChannelException(BankChannelCodes.PollInconsistent);
+            if (parsed.ItemCount == 0 && parsed.Data.Count > 0) throw new BankChannelException(BankChannelCodes.PollInconsistent);
+            payrollCreatedAt ??= parsed.CreatedAt;
 
             if (itemCount is null)
             {
@@ -437,7 +440,8 @@ public sealed partial class AnbPayrollApiClient
         Safe(() => _log.LogInformation(
             "ANB payroll status read {BankPayrollId}: {Phase}, {Pages} page(s), {Distinct} of {ItemCount} line(s), {Collapsed} duplicate(s), complete {Complete}",
             id, phase, pages, merger.DistinctKeys, itemCount, merger.Collapsed, complete));
-        return new AnbPayrollStatusSnapshot(id, payrollStatus, MaskText(reason), lines, itemCount ?? 0, pages, merger.Collapsed, complete);
+        return new AnbPayrollStatusSnapshot(id, payrollStatus, MaskText(reason), lines, itemCount ?? 0, pages, merger.Collapsed, complete,
+            payrollCreatedAt);
     }
 
     /// <summary>
@@ -509,7 +513,7 @@ public sealed partial class AnbPayrollApiClient
     }
 
     private sealed record StatusPage(string? Id, string? PayrollId, string Status, string? Reason, List<AnbStatusLine> Data,
-        int Page, int ItemCount, int PageCount, bool HasNextPage)
+        int Page, int ItemCount, int PageCount, bool HasNextPage, DateTimeOffset? CreatedAt)
     {
         public static StatusPage Parse(string text)
         {
@@ -523,7 +527,7 @@ public sealed partial class AnbPayrollApiClient
                 var lines = data.EnumerateArray().Select(ParseLine).ToList();
                 return new StatusPage(
                     OptStr(root, "id"), OptStr(root, "payrollId"), ReqStr(root, "status"), OptStr(root, "reason"), lines,
-                    Int(meta, "page"), Int(meta, "itemCount"), Int(meta, "pageCount"), Bool(meta, "hasNextPage"));
+                    Int(meta, "page"), Int(meta, "itemCount"), Int(meta, "pageCount"), Bool(meta, "hasNextPage"), Date(root, "createdAt"));
             }
             catch (Exception ex) when (ex is JsonException or FormatException or InvalidOperationException or OverflowException)
             {
@@ -876,14 +880,38 @@ public sealed partial class AnbPayrollApiClient
         return new Endpoint(c.Environment!.Trim(), baseUrl!, tokenUrl!, c.Scope!.Trim(), auth == AuthBasic);
     }
 
-    /// <summary>Lower-cased DNS suffixes. A blank, wildcard or dot-only entry is dropped, so an allow-list that
-    /// would allow everything ends up empty and is refused.</summary>
-    private static List<string> HostSuffixes(string raw) =>
-        raw.Split(',')
-            .Select(s => s.Trim().Trim('.').ToLowerInvariant())
-            .Where(s => s.Length > 0 && s.All(ch => ch is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '-' or '.'))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
+    /// <summary>
+    /// Lower-cased DNS suffixes, or an empty list when the setting is unusable. Every non-blank entry must be a
+    /// registrable domain: letters, digits and hyphens in at least two labels, not a bare TLD and not a known
+    /// public second-level suffix such as com.sa or co.uk (a short list, not the full public-suffix list: the
+    /// value is operator configuration). One bad entry refuses the whole list; a wildcard or dot-only entry is bad.
+    /// </summary>
+    private static List<string> HostSuffixes(string raw)
+    {
+        var result = new List<string>();
+        foreach (var entry in raw.Split(','))
+        {
+            var s = entry.Trim().Trim('.').ToLowerInvariant();
+            if (s.Length == 0)
+            {
+                if (entry.Trim().Length > 0) return new List<string>(); // "." or ".." alone
+                continue;
+            }
+            var labels = s.Split('.');
+            if (labels.Any(l => l.Length == 0 || l.Length > 63 || l[0] == '-' || l[^1] == '-'
+                                || !l.All(ch => ch is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '-')))
+                return new List<string>();
+            if (labels.Length < 2) return new List<string>();
+            if (labels.Length == 2 && labels[1].Length == 2 && PublicSecondLevelLabels.Contains(labels[0])) return new List<string>();
+            if (!result.Contains(s)) result.Add(s);
+        }
+        return result;
+    }
+
+    private static readonly HashSet<string> PublicSecondLevelLabels = new(StringComparer.Ordinal)
+    {
+        "com", "net", "org", "gov", "edu", "med", "sch", "ac", "co", "mil", "ltd", "plc", "nic", "biz", "info",
+    };
 
     /// <summary>Absolute https, no user info, query or fragment, a DNS name (never an IP literal) with at least
     /// two labels, under one of the allowed suffixes.</summary>
@@ -895,7 +923,7 @@ public sealed partial class AnbPayrollApiClient
             return null;
         var host = u.IdnHost.ToLowerInvariant();
         if (!host.Contains('.') || host == "localhost" || host.EndsWith(".localhost", StringComparison.Ordinal)) return null;
-        return suffixes.Any(s => host.EndsWith("." + s, StringComparison.Ordinal)) ? u : null;
+        return suffixes.Any(s => host == s || host.EndsWith("." + s, StringComparison.Ordinal)) ? u : null;
     }
 
     private static bool SameEnvironment(Endpoint endpoint, BankChannelScope scope) =>

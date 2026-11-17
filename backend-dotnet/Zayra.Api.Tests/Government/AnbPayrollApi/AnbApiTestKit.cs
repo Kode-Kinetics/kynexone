@@ -37,7 +37,7 @@ internal static class AnbApiTestKit
         GrantType = "client_credentials",
         Scope = "payroll",
         ClientAuthMethod = "client_secret_basic",
-        AllowedHostSuffixes = "test",
+        AllowedHostSuffixes = "anb-sandbox.test,anb-auth.test,anb-sandbox-2.test",
     };
 
     public static AnbPayrollApiClient Client(HttpMessageHandler handler, out ListLogger<AnbPayrollApiClient> log,
