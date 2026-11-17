@@ -20,7 +20,7 @@ namespace Zayra.Api.Tests.ReleaseA;
 /// terms take effect on confirmation. An allowance that was NEVER confirmed is still refused (422), and nobody confirms what they changed.
 /// SQLite payroll (the real PayrollRunProcessor) and the real matrix service on the same database.
 /// </summary>
-public class CashAllowanceRependKeepsPayingTests
+public partial class CashAllowanceRependKeepsPayingTests
 {
     private const string Car = "ALW_CAR";
     private static readonly DateOnly June1 = new(2026, 6, 1);
@@ -164,6 +164,7 @@ public class CashAllowanceRependKeepsPayingTests
         public Guid Tid { get; } = Guid.NewGuid();
         public Guid CompanyId { get; private set; }
         public Employee A { get; private set; } = null!;
+        public Employee B { get; private set; } = null!;
         public EntitlementMatrixService Service { get; private set; } = null!;
         public readonly Guid Hr = Guid.NewGuid();
         public readonly Guid FinanceA = Guid.NewGuid();
@@ -173,7 +174,7 @@ public class CashAllowanceRependKeepsPayingTests
         {
             var w = new World();
             (w.Db, w._conn) = PayrollProrationArrearsTests.CreateDb();
-            (w.CompanyId, w.A, _) = await PayrollProrationArrearsTests.SeedAsync(w.Db, w.Tid);
+            (w.CompanyId, w.A, w.B) = await PayrollProrationArrearsTests.SeedAsync(w.Db, w.Tid);
             w.Db.TenantFeatureFlags.AddRange(
                 new TenantFeatureFlag { TenantId = w.Tid, FeatureKey = FeatureKeys.ReleaseA, IsEnabled = true },
                 new TenantFeatureFlag { TenantId = w.Tid, FeatureKey = FeatureKeys.BenefitDefinitionV1, IsEnabled = true });
@@ -235,6 +236,19 @@ public class CashAllowanceRependKeepsPayingTests
             await Db.SaveChangesAsync();
             Db.ChangeTracker.Clear();
         }
+
+        /// <summary>Sets a run's status as approval, lock or void leave it (the month counts as committed from Approved on).</summary>
+        public async Task MarkAsync(PayrollRun run, string status)
+        {
+            var row = await Db.PayrollRuns.SingleAsync(r => r.Id == run.Id);
+            row.Status = status;
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+        }
+
+        /// <summary>The car allowance version in effect on a date, as stored (not payroll's view).</summary>
+        public async Task<PayComponent?> InEffectAsync(DateOnly date) =>
+            CashAllowanceDefinitions.InEffect((await CashAllowanceDefinitions.VersionsAsync(Db, Tid, [Car], default, companyId: CompanyId))[Car], date);
 
         public Task<PayrollEarning> LineAsync(PayrollRun run, Employee e) =>
             Db.PayrollEarnings.AsNoTracking().SingleAsync(x => x.PayrollRunId == run.Id && x.EmployeeId == e.Id && x.ComponentCode == Car);
