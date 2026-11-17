@@ -16,7 +16,8 @@ public sealed record BankConfirmationRow(
     string? ReasonCode,
     string? ReasonText,
     string? BankReference,
-    DateOnly? ValueDate);
+    DateOnly? ValueDate,
+    string? OutcomeReason = null); // why a non-terminal outcome was given, e.g. accepted_credit_not_confirmed
 
 /// <summary>A row that could not be parsed. Never dropped: it is returned to the caller.</summary>
 /// <summary><see cref="DetailAr"/> is an optional Arabic rendering of <see cref="Detail"/> (null for parsers that only speak English).</summary>
@@ -49,37 +50,87 @@ public interface IBankConfirmationParser
 /// </summary>
 public static class BankOutcomeVocabulary
 {
+    // PRINCIPLE: a salary moves to Paid or Returned ONLY on an unambiguous bank word; anything unclear is
+    // held for a person. Wrongly Paid = an unpaid salary believed paid; wrongly Returned = someone paid twice.
+    //
+    // Deliberately in NO list, so a file using them is an unknown_outcome error that confirms nothing:
+    //   P, Y, OK, YES, SETTLE, CREDIT, COMPLETE  — say the bank answered, not that an account was credited;
+    //   R, N, NO, NOK                            — one or two letters, or a bare negative, mean too many things;
+    //   UNPAID                                   — "not yet paid", not "returned";
+    //   REVERSED                                 — the bank reversing a duplicate: the employee WAS paid.
     private static readonly HashSet<string> PaidTokens = new(StringComparer.OrdinalIgnoreCase)
     {
-        "PAID", "P", "ACSC", "ACSP", "ACCC", "SETTLED", "SETTLE", "SUCCESS", "SUCCESSFUL", "SUCCEEDED",
-        "CREDITED", "CREDIT", "COMPLETED", "COMPLETE", "EXECUTED", "OK", "Y", "YES", "TRANSFERRED",
+        "PAID", "ACSC", "ACCC", "SETTLED", "CREDITED",
     };
 
     private static readonly HashSet<string> ReturnedTokens = new(StringComparer.OrdinalIgnoreCase)
     {
         "RJCT", "REJECT", "REJECTED", "RETURN", "RETURNED", "RTRN", "BOUNCE", "BOUNCED", "FAIL", "FAILED",
-        "FAILURE", "UNPAID", "R", "DECLINED", "REVERSED", "CANCELLED_BY_BANK", "NOK", "N", "NO",
+        "FAILURE", "DECLINED", "CANCELLED_BY_BANK",
     };
 
+    // Settlement still in process. ISO 20022 ACSP (AcceptedSettlementInProcess) and ACWP (AcceptedWithoutPosting)
+    // are here, not in Paid.
     private static readonly HashSet<string> PendingTokens = new(StringComparer.OrdinalIgnoreCase)
     {
-        "PDNG", "PENDING", "ACCP", "ACTC", "ACWC", "RCVD", "RECEIVED", "INPROGRESS", "IN_PROGRESS",
+        "PDNG", "PENDING", "ACCP", "ACSP", "ACWP", "ACTC", "ACWC", "RCVD", "RECEIVED", "INPROGRESS", "IN_PROGRESS",
         "PROCESSING", "SUBMITTED", "QUEUED", "AWAITING",
     };
 
+    // "The bank accepted the file": never proof that an employee's account was credited. Read as Pending with
+    // the reason accepted_credit_not_confirmed — informational, the payment record is left as it is.
+    //
+    // TODO(wave 2, per-bank word list): a small per-bank list, default OFF, may say that for ONE named bank one
+    // of these words does mean credited. That list is the only thing allowed to promote them to Paid, and only
+    // for that bank. It plugs in here (Read would take the bank's list); it is NOT built yet.
+    private static readonly HashSet<string> AcceptedCreditNotConfirmedTokens = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "SUCCESS", "SUCCESSFUL", "SUCCEEDED", "COMPLETED", "EXECUTED", "TRANSFERRED",
+    };
+
     /// <summary>Canonical outcome, or null when the token is not in the vocabulary.</summary>
-    public static string? Canonicalise(string? raw)
+    public static string? Canonicalise(string? raw) => Read(raw).Outcome;
+
+    /// <summary>Canonical outcome plus, for a non-terminal outcome, the reason it was given.</summary>
+    public static BankOutcomeReading Read(string? raw)
     {
         var token = (raw ?? string.Empty).Trim().Replace(' ', '_');
-        if (token.Length == 0) return null;
-        if (PaidTokens.Contains(token)) return BankConfirmationOutcomes.Paid;
-        if (ReturnedTokens.Contains(token)) return BankConfirmationOutcomes.Returned;
-        if (PendingTokens.Contains(token)) return BankConfirmationOutcomes.Pending;
-        return null;
+        if (token.Length == 0) return BankOutcomeReading.Unrecognised;
+        if (PaidTokens.Contains(token)) return new(BankConfirmationOutcomes.Paid, null);
+        if (ReturnedTokens.Contains(token)) return new(BankConfirmationOutcomes.Returned, null);
+        if (PendingTokens.Contains(token)) return new(BankConfirmationOutcomes.Pending, BankOutcomeReasons.PendingInformational);
+        if (AcceptedCreditNotConfirmedTokens.Contains(token))
+            return new(BankConfirmationOutcomes.Pending, BankOutcomeReasons.AcceptedCreditNotConfirmed);
+        return BankOutcomeReading.Unrecognised;
     }
 
     public static IReadOnlyList<string> KnownTokens =>
-        PaidTokens.Concat(ReturnedTokens).Concat(PendingTokens).OrderBy(t => t, StringComparer.Ordinal).ToList();
+        TokenSets.Values.SelectMany(t => t).OrderBy(t => t, StringComparer.Ordinal).ToList();
+
+    /// <summary>Every word list by name, for the invariant tests.</summary>
+    internal static IReadOnlyDictionary<string, IReadOnlyCollection<string>> TokenSets =>
+        new Dictionary<string, IReadOnlyCollection<string>>
+        {
+            [BankConfirmationOutcomes.Paid] = PaidTokens,
+            [BankConfirmationOutcomes.Returned] = ReturnedTokens,
+            [BankConfirmationOutcomes.Pending] = PendingTokens,
+            [BankOutcomeReasons.AcceptedCreditNotConfirmed] = AcceptedCreditNotConfirmedTokens,
+        };
+}
+
+/// <summary>What a bank status word means: a canonical outcome (null when unrecognised) and, for Pending, why.</summary>
+public sealed record BankOutcomeReading(string? Outcome, string? Reason)
+{
+    public static readonly BankOutcomeReading Unrecognised = new(null, null);
+}
+
+/// <summary>Why a bank line was recorded as evidence without changing the payment record.</summary>
+public static class BankOutcomeReasons
+{
+    /// <summary>The bank has the instruction and settlement is still in process.</summary>
+    public const string PendingInformational = "pending_informational";
+    /// <summary>The bank accepted the file; nothing proves the employee's account was credited.</summary>
+    public const string AcceptedCreditNotConfirmed = "accepted_credit_not_confirmed";
 }
 
 /// <summary>
@@ -142,7 +193,8 @@ public sealed class GenericCsvBankConfirmationParser : IBankConfirmationParser
             }
 
             var raw = Pick(map, StatusAliases) ?? string.Empty;
-            var outcome = BankOutcomeVocabulary.Canonicalise(raw);
+            var reading = BankOutcomeVocabulary.Read(raw);
+            var outcome = reading.Outcome;
             if (outcome is null)
                 errors.Add(new BankConfirmationParseError(rowNo, "unknown_outcome",
                     $"Status '{raw}' is not a recognised bank outcome. Guessing would risk reading a returned "
@@ -159,7 +211,8 @@ public sealed class GenericCsvBankConfirmationParser : IBankConfirmationParser
                 ReasonCode: Trim(Pick(map, ReasonCodeAliases)),
                 ReasonText: Trim(Pick(map, ReasonTextAliases)),
                 BankReference: Trim(Pick(map, BankRefAliases)),
-                ValueDate: ParseDate(Pick(map, ValueDateAliases))));
+                ValueDate: ParseDate(Pick(map, ValueDateAliases)),
+                OutcomeReason: reading.Reason));
         }
 
         return new BankConfirmationParseResult(rows, errors);
@@ -268,7 +321,8 @@ public sealed class WpsAckBankConfirmationParser : IBankConfirmationParser
             }
 
             var raw = parts[4].Trim();
-            var outcome = BankOutcomeVocabulary.Canonicalise(raw);
+            var reading = BankOutcomeVocabulary.Read(raw);
+            var outcome = reading.Outcome;
             if (outcome is null)
                 errors.Add(new BankConfirmationParseError(rowNo, "unknown_outcome",
                     $"Status '{raw}' is not a recognised bank outcome."));
@@ -284,7 +338,8 @@ public sealed class WpsAckBankConfirmationParser : IBankConfirmationParser
                 ReasonCode: parts.Length > 5 ? GenericCsvBankConfirmationParser.Trim(parts[5]) : null,
                 ReasonText: parts.Length > 6 ? GenericCsvBankConfirmationParser.Trim(parts[6]) : null,
                 BankReference: parts.Length > 8 ? GenericCsvBankConfirmationParser.Trim(parts[8]) : null,
-                ValueDate: parts.Length > 7 ? GenericCsvBankConfirmationParser.ParseDate(parts[7]) : null));
+                ValueDate: parts.Length > 7 ? GenericCsvBankConfirmationParser.ParseDate(parts[7]) : null,
+                OutcomeReason: reading.Reason));
         }
 
         if (declared >= 0 && declared != rows.Count)
