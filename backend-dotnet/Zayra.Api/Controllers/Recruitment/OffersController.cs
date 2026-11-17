@@ -129,6 +129,7 @@ public class OffersController : ControllerBase
     /// recruitment.approve, other than the offer's author.</summary>
     [HttpGet("{id:guid}/approver-options")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [OfferAudience(OfferAudienceRequirement.Manager)]
     public async Task<IActionResult> ApproverOptions(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();

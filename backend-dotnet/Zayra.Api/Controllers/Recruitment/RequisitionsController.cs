@@ -6,6 +6,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Recruitment;
@@ -31,6 +32,54 @@ public class RequisitionsController : ControllerBase
         _approvals = approvals;
     }
 
+    /// <summary>True for HR and above (anyone holding a broad recruitment key). A line manager holds only the narrow "raise" key and is limited to
+    /// the requisitions they raised themselves, for their own department.</summary>
+    private bool SeesAllRequisitions =>
+        InterviewPanel.IsCoordinator(User) || User.IsInRole("HR Director")
+        || new[] { "recruitment.read", "recruitment.write", "recruitment.approve", "recruitment.delete" }.Any(k => User.HasClaim("permission", k));
+
+    /// <summary>The departments a narrow caller may raise for: the one their own employee record sits in, and any they head.</summary>
+    private async Task<bool> MayRaiseForDepartmentAsync(Guid tenantId, Guid? departmentId, CancellationToken ct)
+    {
+        if (departmentId is not Guid wanted || this.GetUserId() is not Guid me) return false;
+        var employeeIds = await _db.EmployeeUserAccounts.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.UserId == me && a.Status == "Active").Select(a => a.EmployeeId).ToListAsync(ct);
+        if (employeeIds.Count == 0) return false;
+        var own = await _db.Employees.AsNoTracking()
+            .AnyAsync(e => e.TenantId == tenantId && employeeIds.Contains(e.Id) && !e.IsDeleted && e.DepartmentId == wanted, ct);
+        return own || await _db.Departments.AsNoTracking()
+            .AnyAsync(d => d.TenantId == tenantId && d.Id == wanted && !d.IsDeleted && d.ManagerEmployeeId != null && employeeIds.Contains(d.ManagerEmployeeId.Value), ct);
+    }
+
+    private IActionResult DepartmentNotYours() => StatusCode(StatusCodes.Status403Forbidden, new
+    {
+        error = "requisition_department_not_yours",
+        message = "You can raise a requisition only for the department you belong to or lead.",
+        messageAr = "يمكنك رفع طلب توظيف للقسم الذي تنتمي إليه أو تقوده فقط.",
+    });
+
+    /// <summary>The departments the caller may raise a requisition for: the one their own employee record sits in and any they head. A line manager
+    /// has no access to the organisation catalogue, so the "raise" form reads its department list from here.</summary>
+    [HttpGet("my-departments")]
+    [HasPermission("recruitment.read", "recruitment.requisition.raise")]
+    public async Task<IActionResult> MyDepartments(CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId()!.Value;
+        if (this.GetUserId() is not Guid me) return Ok(new { items = Array.Empty<object>() });
+        var employeeIds = await _db.EmployeeUserAccounts.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.UserId == me && a.Status == "Active").Select(a => a.EmployeeId).ToListAsync(ct);
+        var ownDepartment = new List<Guid>();
+        if (employeeIds.Count > 0)
+            ownDepartment = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && employeeIds.Contains(e.Id) && !e.IsDeleted && e.DepartmentId != null)
+                .Select(e => e.DepartmentId!.Value).ToListAsync(ct);
+        var items = await _db.Departments.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.IsActive
+                && (ownDepartment.Contains(d.Id) || (d.ManagerEmployeeId != null && employeeIds.Contains(d.ManagerEmployeeId.Value))))
+            .OrderBy(d => d.NameEn).Select(d => new { id = d.Id, name = d.NameEn, nameAr = d.NameAr }).ToListAsync(ct);
+        return Ok(new { items });
+    }
+
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] string? status,
@@ -43,6 +92,7 @@ public class RequisitionsController : ControllerBase
         pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = this.GetTenantId()!.Value;
         var query = _db.ManpowerRequisitions.Where(r => r.TenantId == tenantId);
+        if (!SeesAllRequisitions) { var me = this.GetUserId(); query = query.Where(r => r.RequestedByUserId == me); }
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(r => r.Status == status);
         if (!string.IsNullOrWhiteSpace(priority)) query = query.Where(r => r.Priority == priority);
 
@@ -56,6 +106,7 @@ public class RequisitionsController : ControllerBase
     {
         var tenantId = this.GetTenantId()!.Value;
         var r = await _db.ManpowerRequisitions.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
+        if (r is not null && !SeesAllRequisitions && r.RequestedByUserId != this.GetUserId()) return NotFound();
         return r is null ? NotFound() : Ok(r);
     }
 
@@ -65,6 +116,7 @@ public class RequisitionsController : ControllerBase
     {
         var tenantId = this.GetTenantId()!.Value;
         var userId = this.GetUserId();
+        if (!SeesAllRequisitions && !await MayRaiseForDepartmentAsync(tenantId, req.DepartmentId, ct)) return DepartmentNotYours();
         var number = await _svc.GenerateRequisitionNumberAsync(tenantId, ct);
 
         var dept = req.DepartmentId.HasValue
@@ -117,6 +169,11 @@ public class RequisitionsController : ControllerBase
         var tenantId = this.GetTenantId()!.Value;
         var r = await _db.ManpowerRequisitions.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         if (r is null) return NotFound();
+        if (!SeesAllRequisitions)
+        {
+            if (r.RequestedByUserId != this.GetUserId()) return NotFound();
+            if (req.DepartmentId is not null && !await MayRaiseForDepartmentAsync(tenantId, req.DepartmentId, ct)) return DepartmentNotYours();
+        }
         if (r.Status is not ("Draft" or "Rejected")) return BadRequest(new { message = "Only Draft or Rejected requisitions can be edited." });
 
         // The placement is picked from the organisation's records: an id the request names must be an active record of this organisation
@@ -148,6 +205,11 @@ public class RequisitionsController : ControllerBase
     public async Task<IActionResult> Submit(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
+        if (!SeesAllRequisitions)
+        {
+            var me = this.GetUserId();
+            if (!await _db.ManpowerRequisitions.AsNoTracking().AnyAsync(x => x.Id == id && x.TenantId == tenantId && x.RequestedByUserId == me, ct)) return NotFound();
+        }
 
         // ONE serialized unit: lock, read, route, start the approval, stamp the requisition, commit. Before
         // this the approval was saved by CreateRequestAsync and the requisition by a second SaveChanges, with

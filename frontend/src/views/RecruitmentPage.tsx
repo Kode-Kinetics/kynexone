@@ -75,6 +75,8 @@ import { msg } from '../i18n/translations';
 import { useOfferLetterT } from '../i18n/offerLetter';
 import { useOfferLifecycleT } from '../i18n/offerLifecycle';
 import { raisedByViewer } from '../lib/requisitionDecision';
+import { isManagerRecruitmentUser, recruitmentAccess } from '../lib/recruitmentAccess';
+import { ManagerRecruitment } from './ManagerRecruitment';
 import { endOfLocalDayInstant, localInputToInstant } from '../lib/localDateTime';
 import { policyTaskDescription, policyTaskForm, policyTaskProblem, readPolicyFormDraft, retainPolicyFormDraft, type PolicyFormDraftBundle, type PolicyTemplateTaskForm } from '../lib/policyFormDrafts';
 import {
@@ -3075,6 +3077,13 @@ function RecruitmentAITab() {
 type Tab = 'overview' | 'requisitions' | 'openings' | 'candidates' | 'workforce' | 'interviews' | 'assessments' | 'offers' | 'onboarding' | 'reports' | 'ai';
 
 export function RecruitmentPage({ initialTab, initialOfferDesigner = false }: { initialTab?: Tab; initialOfferDesigner?: boolean } = {}) {
+  const { hasPermission } = useAuth();
+  // A line manager (only the two narrow keys) gets their own small screen; HR gets the workspace below.
+  if (isManagerRecruitmentUser(recruitmentAccess(hasPermission))) return <ManagerRecruitment />;
+  return <RecruitmentWorkspace initialTab={initialTab} initialOfferDesigner={initialOfferDesigner} />;
+}
+
+function RecruitmentWorkspace({ initialTab, initialOfferDesigner = false }: { initialTab?: Tab; initialOfferDesigner?: boolean } = {}) {
   const t = useT();
   const navigationGuard = useNavigationGuard();
   const [tab, setTab] = useState<Tab>(initialTab ?? 'overview');
