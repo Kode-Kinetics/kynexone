@@ -598,6 +598,17 @@ test.describe('fix batch 2: the flow', () => {
     });
   }
 
+  test('H: Fix for a missing BIC opens on the BIC field, empty as the employee record is', async ({ page }) => {
+    const extra: Handler = (path, _s, method) => (path === '/api/employees/203' && method === 'GET' ? { id: 203, employeeCode: 'EVT2-0004', fullName: 'Nora Alharbi', wpsBankDetails: '' } : undefined);
+    await boot(page, { locale: 'en', url, routes: bankHandler({ validation: BLOCKER, extra }), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-guide-primary')).toBeEnabled({ timeout: 90_000 });
+    await page.getByTestId('bank-guide-primary').click();
+    await page.getByTestId('bank-blocker-fix').click();
+    const bic = page.getByRole('dialog').getByLabel('BIC (SWIFT) code');
+    await expect(bic).toBeFocused({ timeout: 15_000 });
+    await expect(bic).toHaveValue('');
+  });
+
 });
 
 test.describe('Payroll Runs on a locked run', () => {
@@ -744,11 +755,13 @@ test.describe('walk-through as a payroll officer (EN, 1440)', () => {
     await snap(page, 'walk-05-check-blocked');
     await page.getByTestId('bank-blocker-fix').click();
     await expect(drawer.getByLabel('Employee (from this batch)')).toHaveValue('203', { timeout: 15_000 });
+    // The drawer opens on the missing BIC, empty as the employee record is (the shot is taken before anything is typed).
+    await expect(drawer.getByLabel('BIC (SWIFT) code')).toBeFocused({ timeout: 15_000 });
+    await snap(page, 'walk-06-fix-drawer');
     await drawer.locator('input[dir="ltr"]').nth(0).fill('ARNBSARI');
     await drawer.locator('input[dir="ltr"]').nth(1).fill('Riyadh');
     await drawer.locator('input[dir="ltr"]').nth(2).fill('Olaya');
     await drawer.locator('input[dir="ltr"]').nth(3).fill('Building 10');
-    await snap(page, 'walk-06-fix-drawer');
     await drawer.locator('form button[type="submit"]').click();
     await expect(drawer.locator('form button[type="submit"]')).toBeDisabled({ timeout: 15_000 });
     await page.keyboard.press('Escape');

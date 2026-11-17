@@ -108,9 +108,10 @@ test.describe('a blocker says where it is cured', () => {
     expect(bankFixTarget({ field: 'paymentDate' })).toEqual({ kind: 'input', field: 'paymentDate' });
   });
   test('a missing or invalid BIC, and a missing address, open the beneficiary editor for THAT employee', () => {
-    expect(bankFixTarget({ code: 'bic_missing', employeeId: 203 })).toEqual({ kind: 'beneficiary', employeeId: 203 });
-    expect(bankFixTarget({ code: 'bic_invalid', employeeId: '204' })).toEqual({ kind: 'beneficiary', employeeId: 204 });
-    expect(bankFixTarget({ code: 'employee_address_missing', employeeId: 205, field: null })).toEqual({ kind: 'beneficiary', employeeId: 205 });
+    // The editor opens on the field the finding names.
+    expect(bankFixTarget({ code: 'bic_missing', employeeId: 203 })).toEqual({ kind: 'beneficiary', employeeId: 203, focus: 'bicCode' });
+    expect(bankFixTarget({ code: 'bic_invalid', employeeId: '204' })).toEqual({ kind: 'beneficiary', employeeId: 204, focus: 'bicCode' });
+    expect(bankFixTarget({ code: 'employee_address_missing', employeeId: 205, field: null })).toEqual({ kind: 'beneficiary', employeeId: 205, focus: 'employeeAddress1' });
   });
   test('an account number or ID is changed in People only', () => {
     expect(bankFixTarget({ code: 'account_missing', employeeId: 206 })).toEqual({ kind: 'people', employeeId: 206 });

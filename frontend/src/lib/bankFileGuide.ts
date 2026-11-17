@@ -57,7 +57,8 @@ export interface BankIssueLike { code?: string; field?: string | null; employeeI
 export type BankFixTarget =
   | { kind: 'setup'; field: string }
   | { kind: 'input'; field: 'batchReference' | 'paymentDate' }
-  | { kind: 'beneficiary'; employeeId: number }
+  /** `focus`: the editor field the finding names (it takes focus when the editor opens). */
+  | { kind: 'beneficiary'; employeeId: number; focus: 'bicCode' | 'employeeAddress1' }
   | { kind: 'people'; employeeId: number }
   | { kind: 'none' };
 
@@ -73,7 +74,8 @@ export function bankFixTarget(issue: BankIssueLike): BankFixTarget {
   const employeeId = issue.employeeId == null || issue.employeeId === '' ? NaN : Number(issue.employeeId);
   if (!Number.isFinite(employeeId)) return { kind: 'none' };
   const code = issue.code ?? '';
-  if (code === 'bic_missing' || code === 'bic_invalid' || code === 'employee_address_missing') return { kind: 'beneficiary', employeeId };
+  if (code === 'bic_missing' || code === 'bic_invalid') return { kind: 'beneficiary', employeeId, focus: 'bicCode' };
+  if (code === 'employee_address_missing') return { kind: 'beneficiary', employeeId, focus: 'employeeAddress1' };
   if (code.startsWith('account_') || code === 'employee_id_invalid' || code === 'duplicate_account' || code === 'duplicate_employee_id') return { kind: 'people', employeeId };
   return { kind: 'none' };
 }

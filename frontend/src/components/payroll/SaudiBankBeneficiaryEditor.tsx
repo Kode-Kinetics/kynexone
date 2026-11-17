@@ -85,7 +85,9 @@ const riyadhToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Riy
 
 type Loaded = { id: number; label: string; parsed: Parsed };
 
-export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChange, initialEmployeeId, lockEmployee = false, onSentForApproval }: {
+export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChange, initialEmployeeId, lockEmployee = false, onSentForApproval, focusField }: {
+  /** The field the blocker names: it takes focus once the employee's details are loaded. */
+  focusField?: keyof Form;
   /** Opened from one blocker's Fix: the employee cannot be switched and there is no reload. */
   lockEmployee?: boolean;
   /** The change was submitted for approval (not applied yet). */
@@ -145,6 +147,16 @@ export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChan
     void fetchOne(initialEmployeeId, false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialEmployeeId]);
+
+  // Focus lands on the field the finding is about (the BIC for a missing BIC), once, after the employee's own values are in the form.
+  const focusedOnce = useRef(false);
+  useEffect(() => {
+    if (!focusField || !loaded || loading || focusedOnce.current) return;
+    focusedOnce.current = true;
+    const frame = requestAnimationFrame(() => document.getElementById(`${uid}-${focusField}`)?.focus());
+    return () => cancelAnimationFrame(frame);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusField, loaded, loading]);
 
   const onSelect = (v: string) => {
     const id = v ? Number(v) : null;

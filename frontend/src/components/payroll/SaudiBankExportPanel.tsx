@@ -622,7 +622,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   // The guided flow's drawers and small disclosures. A drawer never survives a batch change.
   const [setupOpen, setSetupOpen] = useState(false);
   const [formatsOpen, setFormatsOpen] = useState(false);
-  const [beneficiary, setBeneficiary] = useState<{ employeeId: number | null; locked?: boolean } | null>(null);
+  const [beneficiary, setBeneficiary] = useState<{ employeeId: number | null; locked?: boolean; focus?: 'bicCode' | 'employeeAddress1' } | null>(null);
   // Employees whose bank-detail fix was sent for approval (not applied yet): their blocker says so until the batch changes.
   const [sentForApproval, setSentForApproval] = useState<ReadonlySet<number>>(new Set());
   const [refEditing, setRefEditing] = useState(false);
@@ -914,7 +914,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
     else if (target.kind === 'input') { if (target.field === 'batchReference') setRefEditing(true); setPendingFocus(target.field); }
     else if (target.kind === 'beneficiary') {
       const known = employeeIds?.includes(target.employeeId);
-      setBeneficiary({ employeeId: known ? target.employeeId : null, locked: !!known });
+      setBeneficiary({ employeeId: known ? target.employeeId : null, locked: !!known, focus: target.focus });
     }
   };
 
@@ -1218,7 +1218,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
       {employeeIds && beneficiary !== null && (
         <Modal isOpen={beneficiary !== null} title={c.employeeBankTitle} size="lg" placement="end" onClose={() => setBeneficiary(null)} closeLabel={t('Close')}>
           <SaudiBankBeneficiaryEditor key={`${batchId}-${beneficiary?.employeeId ?? 'any'}`} employeeIds={employeeIds} employeeLabels={employeeLabels}
-            initialEmployeeId={beneficiary?.employeeId ?? undefined} lockEmployee={!!beneficiary?.locked}
+            initialEmployeeId={beneficiary?.employeeId ?? undefined} lockEmployee={!!beneficiary?.locked} focusField={beneficiary?.focus}
             onChange={() => setValidation(null)}
             onSentForApproval={(id) => setSentForApproval((prev) => new Set(prev).add(id))} />
         </Modal>
