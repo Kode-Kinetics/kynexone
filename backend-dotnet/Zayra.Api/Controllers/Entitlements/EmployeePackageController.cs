@@ -484,6 +484,13 @@ public static class EmployeePackageViewMasking
                     ? l with { Amount = null, MonthlyCash = null, ResolvedAmount = null }
                     : l.Rate is not null ? l with { ResolvedAmount = null } : l).ToList(),
         },
+        // A frozen or proposed row's resolved figure is worked out from the salary (25% of basic = 2,000): with the grade's rate beside it, it gives the
+        // salary away. Left out too.
+        FrozenRows = view.FrozenRows.Select(r => r with { ResolvedAmount = null }).ToList(),
+        Proposal = view.Proposal is null ? null : view.Proposal with
+        {
+            Rows = view.Proposal.Rows.Select(r => r with { ResolvedAmount = null, ResolvedBasisSalaryId = null }).ToList(),
+        },
     };
 }
 

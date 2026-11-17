@@ -7,6 +7,7 @@ using Zayra.Api.Application.Entitlements;
 using Zayra.Api.Controllers.Entitlements;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Entitlements;
+using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests.ReleaseA;
 
@@ -46,6 +47,46 @@ public sealed class PackageViewSalaryAmountsTests
         view.SalaryAmountsHidden.Should().BeFalse();
         view.Package.Lines.Single(l => l.ComponentCode == "HOUSING").MonthlyCash.Should().Be(2000m);
         view.Package.Lines.Single(l => l.ComponentCode == "TRANSPORT").MonthlyCash.Should().Be(800m);
+    }
+
+    [Fact]
+    public async Task WithoutEmployeesSensitive_AFrozenRowsResolvedFigureIsLeftOut_WithItTheFigureIsShown()
+    {
+        var (db, s) = await SeededAsync();
+        var resolver = new EntitlementResolver(db);
+        await new EntitlementWriter(db, new FixedTenantClock(PackageSeed.FreezeDay), resolver).FreezeTermAsync(s.TenantId, s.Term.Id, default);
+        await db.SaveChangesAsync();
+        // A rate-based frozen row, as the writer witnesses one: 25% of basic = SAR 2,000 (the figure gives the salary away beside the rate).
+        foreach (var row in await db.EmployeeEntitlements.ToListAsync()) { row.Rate = 0.25m; row.ResolvedAmount = 2000m; }
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var hidden = await GetAsync(db, s, "entitlements.read");
+        var shown = await GetAsync(db, s, "entitlements.read", "employees.sensitive");
+
+        shown.FrozenRows.Should().NotBeEmpty().And.OnlyContain(r => r.ResolvedAmount == 2000m);
+        hidden.FrozenRows.Should().HaveCount(shown.FrozenRows.Count).And.OnlyContain(r => r.ResolvedAmount == null);
+    }
+
+    [Fact]
+    public async Task WithoutEmployeesSensitive_AProposedRowsResolvedFigureIsLeftOut()
+    {
+        var (db, s) = await SeededAsync();
+        var resolver = new EntitlementResolver(db);
+        var proposal = (await new EntitlementWriter(db, new FixedTenantClock(Today), resolver).ProposeAsync(s.TenantId, s.Term.Id, default))!;
+        proposal = proposal with { Rows = proposal.Rows.Select(r => r with { Rate = 0.25m, ResolvedAmount = 2000m, ResolvedBasisSalaryId = s.Salary.Id }).ToList() };
+        var job = new BackgroundJob { TenantId = s.TenantId, JobType = PackageFreezeJobHandler.JobType, IdempotencyKey = "k", CreatedByUserId = Guid.NewGuid() };
+        db.BackgroundJobs.Add(job);
+        db.BackgroundJobItems.Add(new BackgroundJobItem { TenantId = s.TenantId, JobId = job.Id, ItemKey = PackageFreezeJobHandler.ItemKey(s.Term.Id),
+            ResultJson = System.Text.Json.JsonSerializer.Serialize(proposal) });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var hidden = await GetAsync(db, s, "entitlements.read");
+        var shown = await GetAsync(db, s, "entitlements.read", "employees.sensitive");
+
+        shown.Proposal!.Rows.Should().NotBeEmpty().And.OnlyContain(r => r.ResolvedAmount == 2000m);
+        hidden.Proposal!.Rows.Should().HaveCount(shown.Proposal.Rows.Count).And.OnlyContain(r => r.ResolvedAmount == null && r.ResolvedBasisSalaryId == null);
     }
 
     private static async Task<(ZayraDbContext Db, PackageSeed Seed)> SeededAsync()
