@@ -326,6 +326,8 @@ public static class ModuleCatalog
                 "/api/country-packs", "/api/statutory-rules", "/api/migrations", "/api/pricing",
                 "/api/features", "/api/admin", "/api/company-tax-policies",
                 "/api/company-compliance-profiles", "/api/finance/gl", "/api/finance/rates", "/api/finance/opening-balance-journals",
+                // Government and bank connection settings: capabilities (read by every screen) and integration credentials.
+                "/api/government",
             ],
             NavPaths = ["/setup", "/tenant-admin", "/tax-policies", "/compliance-profiles", "/opening-balances"],
         },

@@ -49,7 +49,8 @@ public static class ProductionReadinessEvidence
                 RedisDependency(config),
                 QiwaDependency(config),
                 dbProbe.Healthy && includeDetail ? await SmtpDependencyAsync(db, config, ct) : SmtpNotEvaluated(config),
-                workers),
+                workers,
+                GovernmentDependencies(config)),
             tenantCounts?.Total ?? 0,
             tenantCounts?.Active ?? 0,
             pendingMigrations,
@@ -210,7 +211,8 @@ public static class ProductionReadinessEvidence
             "ok",
             DateTime.UtcNow,
             new TelemetryWindow("24h", since),
-            new DependencyModes(RedisDependency(config), QiwaDependency(config), await SmtpDependencyAsync(db, config, ct), workers),
+            new DependencyModes(RedisDependency(config), QiwaDependency(config), await SmtpDependencyAsync(db, config, ct), workers,
+                GovernmentDependencies(config)),
             new GovernanceTelemetry(controlledOverrides24h, latestControlledOverrideAtUtc),
             new ReportingTelemetry(
                 reportRuns.Count,
@@ -342,6 +344,29 @@ public static class ProductionReadinessEvidence
     }
 
     /// <summary>
+    /// Every government and bank body's deployment-level mode, generically (G1 the recorded agreement, G4 the operator switch).
+    /// Qiwa keeps its own detail. No other body has a live adapter yet, so none of them can be "live" whatever is configured:
+    /// the tenant gates (consent, credential) are per tenant and reported by GET /api/government/capabilities.
+    /// </summary>
+    public static IReadOnlyDictionary<string, DependencyMode> GovernmentDependencies(IConfiguration config)
+    {
+        var modes = new Dictionary<string, DependencyMode>(StringComparer.Ordinal);
+        foreach (var body in Zayra.Api.Infrastructure.Government.GovernmentBodies.All)
+        {
+            if (body == Zayra.Api.Infrastructure.Government.GovernmentBodies.Qiwa) { modes[body] = QiwaDependency(config); continue; }
+            var agreement = Zayra.Api.Infrastructure.Government.GovernmentLivePolicy.HasPartnerAgreement(config, body);
+            var operatorOn = Zayra.Api.Infrastructure.Government.GovernmentLivePolicy.OperatorEnabled(config, body);
+            modes[body] = !operatorOn
+                ? new DependencyMode("disabled", false, Detail: "The operator switch is off for this service. Nothing is sent to it.")
+                : !agreement
+                    ? new DependencyMode("disabled", false, Detail: "No agreement with this service is recorded for this server. Nothing is sent to it.")
+                    : new DependencyMode("not_connected", false,
+                        Detail: "An agreement is recorded, but KynexOne has no live connection to this service yet. Nothing is sent to it.");
+        }
+        return modes;
+    }
+
+    /// <summary>
     /// What will actually happen to an email sent from this server right now. F09: this used to ask
     /// only "does ANY tenant have an Smtp.Host row?", so it reported the platform relay every tenant
     /// falls back to as not_configured, and one tenant's relay as if it served everyone.
@@ -430,7 +455,8 @@ public sealed record ReadinessDependencies(
     DependencyMode Redis,
     DependencyMode Qiwa,
     DependencyMode Smtp,
-    WorkerFleetReadiness Workers);
+    WorkerFleetReadiness Workers,
+    IReadOnlyDictionary<string, DependencyMode>? Government = null);
 
 public sealed record DependencyProbe(string Status, bool Healthy, long LatencyMs, string? Error);
 
@@ -452,7 +478,8 @@ public sealed record TelemetryEvidence(
     QueueHealthEvidence Queues);
 
 public sealed record TelemetryWindow(string Duration, DateTime SinceUtc);
-public sealed record DependencyModes(DependencyMode Redis, DependencyMode Qiwa, DependencyMode Smtp, WorkerFleetReadiness Workers);
+public sealed record DependencyModes(DependencyMode Redis, DependencyMode Qiwa, DependencyMode Smtp, WorkerFleetReadiness Workers,
+    IReadOnlyDictionary<string, DependencyMode>? Government = null);
 public sealed record GovernanceTelemetry(int ControlledOverrides24h, DateTime? LatestControlledOverrideAtUtc);
 
 public sealed record WorkerFleetReadiness(
