@@ -36,15 +36,21 @@ public class LegacyEnrollmentUnderReleaseATests
     }
 
     [Fact]
-    public async Task Enroll_IsNotRefusedAsMoved_WhenReleaseAIsOff()
+    public async Task Enroll_StillEnrolsAnEligibleEmployee_WhenReleaseAIsOff()
     {
         await using var db = InMemory();
         var (tid, _, employee, plan) = await SeedLegacyAsync(db, releaseA: false);
+        var grade = new Grade { TenantId = tid, Code = "G1", Name = "Grade 1", Level = 10 };
+        db.Grades.Add(grade);
+        (await db.Employees.SingleAsync(e => e.Id == employee.Id)).GradeId = grade.Id;
+        db.BenefitEligibilityRules.Add(new BenefitEligibilityRule { TenantId = tid, BenefitPlanId = plan.Id, GradeId = grade.Id, EffectiveFrom = new DateOnly(2024, 1, 1), IsActive = true });
+        await db.SaveChangesAsync();
 
         var result = await Benefits(db, tid).Enroll(new BenefitEnrollmentRequest(plan.Id, employee.Id, null, new DateOnly(2026, 6, 1), null), default);
 
-        if (result is ConflictObjectResult c)
-            JsonSerializer.Serialize(c.Value, Web).Should().NotContain("moved_to_benefits_by_grade");
+        var enrolled = result.Should().BeOfType<OkObjectResult>("without release_a the legacy system is still the authority").Subject;
+        JsonSerializer.SerializeToElement(enrolled.Value, Web).GetProperty("employeeId").GetInt32().Should().Be(employee.Id);
+        (await db.BenefitEnrollments.CountAsync(e => e.TenantId == tid && e.EmployeeId == employee.Id && e.Status == "Active")).Should().Be(1);
     }
 
     // ── 2. Payroll skips a legacy enrolment with payment terms, and says so ───────────────────────
