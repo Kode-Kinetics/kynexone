@@ -6,6 +6,9 @@ import type { ReleaseADict } from './types';
  * allowance lines that cannot be used. Whole sentences with {placeholders} so Arabic orders its own words.
  */
 const pairs: Array<[string, string]> = [
+  // The confirm panel: a change confirmed after a month was approved applies from the next month.
+  ['If this allowance was changed after it was confirmed, months already approved or locked keep the terms they were paid on, and the change applies from the next month. Until then the grid shows the terms in effect today.',
+    'إذا تغيّر هذا البدل بعد تأكيده، تحتفظ الأشهر المعتمدة أو المقفلة بالشروط التي صُرفت عليها، ويسري التغيير من الشهر التالي. وحتى ذلك الحين يعرض الجدول الشروط السارية اليوم.'],
   // Payroll run findings (server codes CASH_ALLOWANCE_CHANGE_WAITING_FOR_FINANCE, LEGACY_BENEFIT_ENROLMENT_SKIPPED), translated with their details.
   ['{name} ({code}): a change is waiting for Finance since {date}, so this run paid the last confirmed terms. Ask another Finance approver to confirm the change in Benefits by grade.',
     '{name} ({code}): يوجد تغيير بانتظار المالية منذ {date}، لذلك صرف هذا المسير آخر شروط مؤكدة. اطلب من معتمد آخر في المالية تأكيد التغيير في المزايا حسب الدرجة.'],
