@@ -140,6 +140,18 @@ for (const locale of ['en', 'ar'] as const) {
       expect(errors).toEqual([]);
     });
 
+    test('a benefit nothing pays or claims yet says so on its row; a paid one does not', async ({ page }) => {
+      const { errors } = await boot(page, locale);
+      const note = say(locale, 'Recorded entitlement. Payout and claims for this benefit are not connected yet.');
+      const notes = page.getByTestId('recorded-only-note');
+      await expect(notes).toHaveCount(4);
+      for (const code of ['AIR_TICKET', 'MEDICAL', 'EDUCATION', 'PER_DIEM'])
+        await expect(page.getByRole('rowheader').filter({ hasText: benefitName(locale, code) }).getByTestId('recorded-only-note'), code).toHaveText(note);
+      for (const code of ['HOUSING', 'TRANSPORT', 'OTHER_ALLOWANCES'])
+        await expect(page.getByRole('rowheader').filter({ hasText: benefitName(locale, code) }).getByTestId('recorded-only-note'), code).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
     test('publish dry run: what changes, who it reaches, and the not-yet-started value it replaces', async ({ page }) => {
       const { errors, publishes } = await boot(page, locale);
       await cellButton(page, locale, 'HOUSING', 'G3').click();

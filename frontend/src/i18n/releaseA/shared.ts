@@ -11,6 +11,7 @@ export const shared: ReleaseADict = {
     'Deductions': 'Deductions',
     'This feature is not enabled for your account yet.': 'This feature is not enabled for your account yet.',
     'This screen is being prepared and will open here.': 'This screen is being prepared and will open here.',
+    'Recorded entitlement. Payout and claims for this benefit are not connected yet.': 'Recorded entitlement. Payout and claims for this benefit are not connected yet.',
   },
   ar: {
     'Benefits by grade': 'المزايا حسب الدرجة',
@@ -21,5 +22,6 @@ export const shared: ReleaseADict = {
     'Deductions': 'الاستقطاعات',
     'This feature is not enabled for your account yet.': 'هذه الميزة غير مفعّلة لحسابك بعد.',
     'This screen is being prepared and will open here.': 'هذه الشاشة قيد الإعداد وستُفتح هنا.',
+    'Recorded entitlement. Payout and claims for this benefit are not connected yet.': 'استحقاق مُسجَّل فقط. لم يُربط بعد صرف هذه الميزة أو المطالبة بها.',
   },
 };
