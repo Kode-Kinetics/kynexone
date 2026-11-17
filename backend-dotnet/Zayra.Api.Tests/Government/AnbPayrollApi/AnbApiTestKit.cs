@@ -139,7 +139,7 @@ internal static class AnbApiTestKit
     };
 
     public static object Page(string payrollStatus, IReadOnlyList<object> data, int page, int take, int itemCount,
-        string id = PayrollId, string? reason = null)
+        string id = PayrollId, string? reason = null, string? createdAt = null)
     {
         var pageCount = (int)Math.Ceiling(itemCount / (double)take);
         return new
@@ -147,6 +147,7 @@ internal static class AnbApiTestKit
             id,
             status = payrollStatus,
             reason = reason ?? string.Empty,
+            createdAt,
             payrollId = id,
             data,
             meta = new { page, take, itemCount, pageCount, hasPreviousPage = page > 1, hasNextPage = page < pageCount },

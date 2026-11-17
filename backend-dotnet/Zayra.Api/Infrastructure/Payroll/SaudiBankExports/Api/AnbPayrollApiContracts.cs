@@ -161,4 +161,5 @@ public sealed record AnbPayrollStatusSnapshot(
     int ItemCount,
     int PagesFetched,
     int DuplicateLinesCollapsed,
-    bool Complete);
+    bool Complete,
+    DateTimeOffset? PayrollCreatedAt = null);
