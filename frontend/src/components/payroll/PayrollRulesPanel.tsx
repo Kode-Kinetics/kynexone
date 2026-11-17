@@ -28,6 +28,11 @@ const OPTIONS: Partial<Record<PayrollRuleKey, { value: string; label: string }[]
   proration_basis: [{ value: 'Calendar30', label: '30-day month' }, { value: 'CalendarActual', label: 'Actual days in the month' }],
   absence_deduction_base: [{ value: 'Basic', label: 'Basic wage' }, { value: 'Gross', label: 'Full monthly package' }],
   recon_signoff_required: [{ value: 'true', label: 'Require the sign-off' }, { value: 'false', label: 'Do not require the sign-off' }],
+  overtime_auto_approve: [{ value: 'false', label: 'Require an approval step' }, { value: 'true', label: 'Approve automatically' }],
+  overtime_late_approval_mode: [{ value: 'Refuse', label: 'Refuse the approval' }, { value: 'BackPay', label: 'Carry into the next payroll run' }],
+  overtime_budget_mode: [{ value: 'Off', label: 'Do not check budgets' }, { value: 'Warn', label: 'Warn when over budget' }, { value: 'Block', label: 'Block approvals over budget' }],
+  overtime_manager_files_for_team: [{ value: 'true', label: 'Managers may file for their team' }, { value: 'false', label: 'Only HR files for others' }],
+  overtime_hr_approves_manager_step: [{ value: 'true', label: 'HR may approve the manager step' }, { value: 'false', label: 'Only the line manager approves step 1' }],
 };
 
 /** Plain-words warning per server warning code. */
@@ -38,6 +43,7 @@ const WARNING_TEXT: Record<string, string> = {
   PROBATION_OVER_180: 'This is longer than the 180-day statutory maximum even with written agreement (Art. 53). It is recorded against the person who confirms it.',
   RECON_THRESHOLD_CHANGED: 'Any change to this setting changes how closely payroll is reviewed. It needs a second person\'s approval and is recorded against the person who confirms it.',
   RECON_SIGNOFF_OFF: 'Turning this off lets a payroll run be approved without a recorded manpower and value reconciliation sign-off. It is recorded against the person who confirms it.',
+  OVERTIME_AUTO_APPROVE_ON: 'Overtime will be approved, and become payable, the moment it is filed, with no manager or HR check. It needs a second person\'s approval and is recorded against the person who confirms it.',
 };
 
 const LABELS: Record<PayrollRuleKey, { label: string; help: string }> = {
@@ -64,6 +70,26 @@ const LABELS: Record<PayrollRuleKey, { label: string; help: string }> = {
   recon_signoff_required: {
     label: 'Reconciliation sign-off before approval',
     help: 'Whether a manpower and value reconciliation must be signed off before a payroll run can be approved. Leave empty for the default: required.',
+  },
+  overtime_auto_approve: {
+    label: 'Approve overtime automatically',
+    help: 'When on, overtime is approved the moment it is filed, with no manager or HR step. Leave empty for the default: off.',
+  },
+  overtime_late_approval_mode: {
+    label: 'Overtime approved after its month closed',
+    help: 'Refuse the approval, or carry the pay into the next open payroll run as back pay. Leave empty to use the account-wide setting (default: refuse).',
+  },
+  overtime_budget_mode: {
+    label: 'Overtime budgets',
+    help: 'What happens when approving overtime takes a department over its monthly overtime budget. Approved overtime is always counted against the budget. Leave empty for the default: off.',
+  },
+  overtime_manager_files_for_team: {
+    label: 'Line managers file overtime for their team',
+    help: 'Whether a line manager may file overtime on behalf of their own team members. Leave empty for the default: allowed.',
+  },
+  overtime_hr_approves_manager_step: {
+    label: 'HR may approve the manager step',
+    help: 'Whether an HR Manager may take the first (line manager) approval step. The final step still needs a different person. Leave empty for the default: allowed.',
   },
 };
 
@@ -306,7 +332,7 @@ function RulesEditor({ views, companyId, onDirty, onCancel, onConfirm, onSaved }
   const warnings = changedWarnings(form, initial);
   const changes = ruleFormToChanges(form, initial);
   // The sign-off switch is the company's own control, not a statutory minimum: its confirmation says so.
-  const statutory = warnings.some(w => w.code !== 'RECON_SIGNOFF_OFF' && w.code !== 'RECON_THRESHOLD_CHANGED');
+  const statutory = warnings.some(w => w.code !== 'RECON_SIGNOFF_OFF' && w.code !== 'RECON_THRESHOLD_CHANGED' && w.code !== 'OVERTIME_AUTO_APPROVE_ON');
   useEffect(() => { onDirty(changes.length > 0); return () => onDirty(false); }, [changes.length, onDirty]);
 
   const set = (key: PayrollRuleKey, value: string) => {

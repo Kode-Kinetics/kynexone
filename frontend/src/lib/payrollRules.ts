@@ -6,12 +6,16 @@
 export type PayrollRuleKey =
   | 'rest_day_work_mode' | 'rest_day_multiplier' | 'holiday_multiplier' | 'leave_cashout_on_exit'
   | 'leave_cashout_basis' | 'max_probation_days' | 'proration_basis' | 'absence_deduction_base'
-  | 'recon_variance_pct' | 'recon_variance_min_amount' | 'recon_signoff_required' | 'arrears_deduction_cap_pct';
+  | 'recon_variance_pct' | 'recon_variance_min_amount' | 'recon_signoff_required' | 'arrears_deduction_cap_pct'
+  | 'overtime_auto_approve' | 'overtime_late_approval_mode' | 'overtime_budget_mode' | 'overtime_manager_files_for_team'
+  | 'overtime_hr_approves_manager_step';
 
 export const PAYROLL_RULE_KEYS: readonly PayrollRuleKey[] = [
   'rest_day_work_mode', 'rest_day_multiplier', 'holiday_multiplier', 'leave_cashout_on_exit',
   'leave_cashout_basis', 'max_probation_days', 'proration_basis', 'absence_deduction_base',
   'recon_variance_pct', 'recon_variance_min_amount', 'recon_signoff_required', 'arrears_deduction_cap_pct',
+  'overtime_auto_approve', 'overtime_late_approval_mode', 'overtime_budget_mode', 'overtime_manager_files_for_team',
+  'overtime_hr_approves_manager_step',
 ];
 
 export const OVERTIME_FLOOR = 1.5;
@@ -51,6 +55,8 @@ export const EMPTY_RULE_FORM: PayrollRuleForm = {
   rest_day_work_mode: '', rest_day_multiplier: '', holiday_multiplier: '', leave_cashout_on_exit: '',
   leave_cashout_basis: '', max_probation_days: '', proration_basis: '', absence_deduction_base: '',
   recon_variance_pct: '', recon_variance_min_amount: '', recon_signoff_required: '', arrears_deduction_cap_pct: '',
+  overtime_auto_approve: '', overtime_late_approval_mode: '', overtime_budget_mode: '', overtime_manager_files_for_team: '',
+  overtime_hr_approves_manager_step: '',
 };
 
 export function ruleFormFromViews(views: readonly PayrollRuleView[]): PayrollRuleForm {
@@ -66,6 +72,11 @@ const ONE_OF: Partial<Record<PayrollRuleKey, string[]>> = {
   absence_deduction_base: ['Basic', 'Gross'],
   leave_cashout_on_exit: ['true', 'false'],
   recon_signoff_required: ['true', 'false'],
+  overtime_auto_approve: ['true', 'false'],
+  overtime_late_approval_mode: ['Refuse', 'BackPay'],
+  overtime_budget_mode: ['Off', 'Warn', 'Block'],
+  overtime_manager_files_for_team: ['true', 'false'],
+  overtime_hr_approves_manager_step: ['true', 'false'],
 };
 
 /** A plain invariant-culture decimal, as the server parses it (digits with an optional fraction; no sign, exponent or grouping). */
@@ -101,9 +112,10 @@ export function validateRuleForm(form: PayrollRuleForm): PayrollRuleErrors {
 }
 
 /** The warning code for a value below a statutory minimum, or null. Assumes the value passed validation. */
-export function warningFor(key: PayrollRuleKey, raw: string): 'BELOW_OVERTIME_FLOOR' | 'LEAVE_CASHOUT_OFF' | 'PROBATION_OVER_90' | 'PROBATION_OVER_180' | 'RECON_SIGNOFF_OFF' | 'RECON_THRESHOLD_CHANGED' | null {
+export function warningFor(key: PayrollRuleKey, raw: string): 'BELOW_OVERTIME_FLOOR' | 'LEAVE_CASHOUT_OFF' | 'PROBATION_OVER_90' | 'PROBATION_OVER_180' | 'RECON_SIGNOFF_OFF' | 'RECON_THRESHOLD_CHANGED' | 'OVERTIME_AUTO_APPROVE_ON' | null {
   const value = raw.trim();
   if (value === '') return null;
+  if (key === 'overtime_auto_approve' && value === 'true') return 'OVERTIME_AUTO_APPROVE_ON';
   if ((key === 'rest_day_multiplier' || key === 'holiday_multiplier') && Number(value) < OVERTIME_FLOOR) return 'BELOW_OVERTIME_FLOOR';
   if (key === 'leave_cashout_on_exit' && value === 'false') return 'LEAVE_CASHOUT_OFF';
   if (key === 'recon_signoff_required' && value === 'false') return 'RECON_SIGNOFF_OFF';

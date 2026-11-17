@@ -24,6 +24,11 @@ public static class PayrollRuleKeys
     /// <summary>The most a month's deductions may take, as a percentage of the wage due, once unpaid-leave arrears are
     /// collected. Default 50 (KSA Labour Law Art. 93); a company may only set a LOWER percentage, never a higher one.</summary>
     public const string ArrearsDeductionCapPct = "arrears_deduction_cap_pct";
+    public const string OvertimeAutoApprove = "overtime_auto_approve";
+    public const string OvertimeLateApprovalMode = "overtime_late_approval_mode";
+    public const string OvertimeBudgetMode = "overtime_budget_mode";
+    public const string OvertimeManagerFilesForTeam = "overtime_manager_files_for_team";
+    public const string OvertimeHrApprovesManagerStep = "overtime_hr_approves_manager_step";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
@@ -61,6 +66,11 @@ public sealed record CompanyPayrollRuleSet(
     /// <summary>The cap on a month's deductions once unpaid-leave arrears are collected, as a percentage of the wage due
     /// (<see cref="PayrollRuleKeys.ArrearsDeductionCapPct"/>). 50 unless the company chose lower.</summary>
     public decimal ArrearsDeductionCapPct { get; init; } = CompanyPayrollRules.MaxArrearsDeductionCapPct;
+    public bool OvertimeAutoApprove { get; init; }
+    public string? OvertimeLateApprovalMode { get; init; }
+    public string OvertimeBudgetMode { get; init; } = string.Empty;
+    public bool OvertimeManagerFilesForTeam { get; init; }
+    public bool OvertimeHrApprovesManagerStep { get; init; }
 }
 
 /// <summary>One rule as shown on the settings screen.</summary>

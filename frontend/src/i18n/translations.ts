@@ -14,6 +14,7 @@ import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { hireWizard } from './hireWizard';
 import { demoFixes } from './demoFixes';
+import { overtimeSettings } from './overtimeSettings';
 import { settledService } from './settledService';
 import { onboardingP3 } from './onboardingP3';
 import { setupExperience } from './setupExperience';
@@ -1671,6 +1672,7 @@ const en: Dict = {
   ...employeeCompletion.en,
   ...hireWizard.en,
   ...demoFixes.en,
+  ...overtimeSettings.en,
   ...settledService.en,
   ...onboardingP2.en,
   ...onboardingP3.en,
@@ -3281,6 +3283,7 @@ const ar: Dict = {
   ...employeeCompletion.ar,
   ...hireWizard.ar,
   ...demoFixes.ar,
+  ...overtimeSettings.ar,
   ...settledService.ar,
   ...onboardingP2.ar,
   ...onboardingP3.ar,
