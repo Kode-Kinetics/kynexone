@@ -9,7 +9,7 @@ const view = (key: string, value: string | null, extra: object = {}) => ({
   key, value, isSet: value != null, warningCode: null, warning: null, acknowledged: false,
   acknowledgedAtUtc: null, acknowledgedBy: null, acknowledgementNote: null, ...extra,
 });
-const KEYS = ['rest_day_work_mode', 'rest_day_multiplier', 'holiday_multiplier', 'leave_cashout_on_exit', 'leave_cashout_basis', 'max_probation_days', 'proration_basis', 'absence_deduction_base', 'recon_variance_pct', 'recon_variance_min_amount', 'recon_signoff_required', 'overtime_auto_approve', 'overtime_late_approval_mode', 'overtime_budget_mode', 'overtime_manager_files_for_team', 'overtime_hr_approves_manager_step'];
+const KEYS = ['rest_day_work_mode', 'rest_day_multiplier', 'holiday_multiplier', 'leave_cashout_on_exit', 'leave_cashout_basis', 'max_probation_days', 'proration_basis', 'absence_deduction_base', 'recon_variance_pct', 'recon_variance_min_amount', 'recon_signoff_required', 'overtime_auto_approve', 'overtime_late_approval_mode', 'overtime_budget_mode', 'overtime_manager_files_for_team', 'overtime_hr_approves_manager_step', 'overtime_manager_step_required'];
 const rules = (overrides: Record<string, object> = {}, extra: object = {}) => ({
   companyId: 'fixture-company',
   rules: KEYS.map(key => (overrides[key] ?? view(key, null))),
@@ -212,15 +212,25 @@ test('turning the reconciliation sign-off off needs the recorded acknowledgement
   }]);
 });
 
+test('budget Warn and Block are disabled until the company has a budget', async ({ page }) => {
+  await open(page);
+  await panel(page).getByRole('button', { name: 'Edit payroll rules' }).click();
+  const budget = editor(page).getByLabel('Overtime budgets');
+  await expect(budget.locator('option[value="Block"]')).toBeDisabled();
+  await expect(budget.locator('option[value="Warn"]')).toBeDisabled();
+  await expect(budget.locator('option[value="Off"]')).toBeEnabled();
+  await expect(editor(page).getByTestId('overtime-budget-none')).toHaveText('Define a budget first');
+});
+
 test('the overtime company settings are listed with their defaults, and turning auto-approve on needs a confirmation', async ({ page }) => {
   const puts: unknown[] = [];
-  await open(page);
+  await open(page, rules({}, { overtimeBudgetsDefined: true }));
   await page.route('**/api/payroll/company-rules', async route => {
     if (route.request().method() !== 'PUT') return route.fallback();
     puts.push(route.request().postDataJSON());
     return route.fulfill({ status: 202, json: rules() });
   });
-  for (const key of ['overtime_auto_approve', 'overtime_late_approval_mode', 'overtime_budget_mode', 'overtime_manager_files_for_team', 'overtime_hr_approves_manager_step'])
+  for (const key of ['overtime_auto_approve', 'overtime_late_approval_mode', 'overtime_budget_mode', 'overtime_manager_files_for_team', 'overtime_hr_approves_manager_step', 'overtime_manager_step_required'])
     await expect(panel(page).getByTestId(`payroll-rule-${key}`)).toContainText('Platform default');
   await panel(page).getByRole('button', { name: 'Edit payroll rules' }).click();
   await expect(editor(page).getByLabel('Overtime budgets')).toBeVisible();

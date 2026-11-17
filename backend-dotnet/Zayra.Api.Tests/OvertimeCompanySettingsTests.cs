@@ -73,18 +73,62 @@ public class OvertimeCompanySettingsTests
 
     // ── the "Requires Manager Approval" policy flag ─────────────────────────────────────────────────
 
+    /// <summary>
+    /// The legacy policy flag "Requires Manager Approval" is NOT read: a policy that holds false today (an unticked box, an API
+    /// create that omitted it) keeps its manager step after deploy. Whether step 1 exists is the company's own
+    /// overtime_manager_step_required setting, Required unless the company turns it off (with a second person).
+    /// </summary>
     [Theory]
-    [InlineData(true, "PendingManager")]
-    [InlineData(false, "PendingHR")]
-    public async Task RequiresManagerApproval_DecidesWhetherTheManagerStepExists(bool requiresManager, string expected)
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task TheLegacyPolicyFlag_DoesNotRemoveTheManagerStep(bool legacyFlag)
     {
         var (w, _) = await CompanyWorldAsync();
-        w.Policy.RequiresApproval = requiresManager;
+        w.Policy.RequiresApproval = legacyFlag;
         await w.Db.SaveChangesAsync();
 
         var created = (await FileAsHrAsync(w)).Result.Should().BeOfType<CreatedResult>().Subject.Value.Should().BeOfType<OvertimeRequest>().Subject;
 
+        created.Status.Should().Be("PendingManager");
+    }
+
+    [Theory]
+    [InlineData("true", "PendingManager")]
+    [InlineData("false", "PendingHR")]
+    public async Task TheCompanysManagerStepSetting_DecidesWhetherStepOneExists(string required, string expected)
+    {
+        var (w, _) = await CompanyWorldAsync((PayrollRuleKeys.OvertimeManagerStepRequired, required));
+
+        var created = (await FileAsHrAsync(w)).Result.Should().BeOfType<CreatedResult>().Subject.Value.Should().BeOfType<OvertimeRequest>().Subject;
+
         created.Status.Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task TheCompanysManagerStepSetting_AppliesToDetectedOvertimeToo()
+    {
+        var (w, _) = await CompanyWorldAsync((PayrollRuleKeys.OvertimeManagerStepRequired, "false"));
+        var day = Day;
+        w.Db.AttendanceDailyRecords.Add(new AttendanceDailyRecord
+        {
+            TenantId = w.TenantId, EmployeeId = w.Subject.Id, EmployeeName = w.Subject.FullName, WorkDate = day,
+            FirstInUtc = At(8), LastOutUtc = At(19), TotalWorkedMinutes = 600, OvertimeMinutes = 120, Status = "Present",
+        });
+        await w.Db.SaveChangesAsync();
+
+        var result = await Controller(w, Guid.NewGuid(), new[] { "HR Manager" }, new[] { "overtime.write" })
+            .DetectFromAttendance(new DetectOvertimeRequest(day, day, null), CancellationToken.None);
+
+        ((DetectOvertimeResult)((OkObjectResult)result.Result!).Value!).Created.Should().ContainSingle().Which.Status.Should().Be("PendingHR");
+    }
+
+    [Fact]
+    public void TurningTheManagerStepOff_WarnsSoASecondPersonDecidesIt()
+    {
+        CompanyPayrollRules.Evaluate(PayrollRuleKeys.OvertimeManagerStepRequired, "false").Warning!.Code.Should().Be("OVERTIME_MANAGER_STEP_OFF");
+        CompanyPayrollRules.Evaluate(PayrollRuleKeys.OvertimeManagerStepRequired, "true").Warning.Should().BeNull();
+        CompanyPayrollRules.Evaluate(PayrollRuleKeys.OvertimeManagerStepRequired, "maybe").Error.Should().NotBeNull();
+        PayrollRuleKeys.All.Should().Contain(PayrollRuleKeys.OvertimeManagerStepRequired);
     }
 
     // ── (2) late approval, per company ──────────────────────────────────────────────────────────────
@@ -209,6 +253,21 @@ public class OvertimeCompanySettingsTests
         (await ApproveAsAdminAsync(w, r.Id)).Should().BeOfType<OkObjectResult>();
         var amount = (await w.Db.OvertimeCalculations.SingleAsync(x => x.OvertimeRequestId == r.Id)).Amount;
         (await ConsumedAsync(w, b.Id)).Should().Be(10m + amount);
+    }
+
+    [Fact]
+    public async Task ConvertingApprovedOvertimeToCompOff_GivesItsAmountBackToTheBudget()
+    {
+        var (w, r, b) = await BudgetWorldAsync("Block", budget: 1_000_000m, consumed: 10m);
+        (await ApproveAsAdminAsync(w, r.Id)).Should().BeOfType<OkObjectResult>();
+        (await ConsumedAsync(w, b.Id)).Should().BeGreaterThan(10m, "premise: the approval consumed budget");
+
+        w.Db.ChangeTracker.Clear();
+        var converted = await Controller(w, Guid.NewGuid(), new[] { "Admin" }, new[] { "overtime.policy_manage" })
+            .CreateCompOffConversion(new CompOffConversionRequest(r.Id, 1m), CancellationToken.None);
+
+        converted.Result.Should().BeOfType<CreatedResult>();
+        (await ConsumedAsync(w, b.Id)).Should().Be(10m, "overtime taken as time off is no longer an overtime cost to the budget");
     }
 
     // ── (4) managers filing for their team ──────────────────────────────────────────────────────────
@@ -345,14 +404,26 @@ public class OvertimeCompanySettingsTests
         d.OvertimeBudgetMode.Should().Be("Off");
         d.OvertimeManagerFilesForTeam.Should().BeTrue();
         d.OvertimeHrApprovesManagerStep.Should().BeTrue();
+        d.OvertimeManagerStepRequired.Should().BeTrue("the manager step exists unless the company turns it off");
     }
 
+    /// <summary>
+    /// A change to the late-approval mode or the budget mode needs a second person in BOTH directions: tightening can stop
+    /// overtime being paid, loosening lifts a control (an HR approver could otherwise switch Block off, approve over budget, and
+    /// switch it back). Auto-approve ON raises its own warning, which sends it to a second person (see the service tests).
+    /// </summary>
     [Theory]
-    [InlineData(PayrollRuleKeys.OvertimeLateApprovalMode, "BackPay", "Refuse", true)]   // late overtime stops being paid automatically
-    [InlineData(PayrollRuleKeys.OvertimeLateApprovalMode, "Refuse", "BackPay", false)]
-    [InlineData(PayrollRuleKeys.OvertimeBudgetMode, "Warn", "Block", true)]             // approvals over budget stop
-    [InlineData(PayrollRuleKeys.OvertimeBudgetMode, "Block", "Off", false)]
+    [InlineData(PayrollRuleKeys.OvertimeLateApprovalMode, "BackPay", "Refuse", true)]
+    [InlineData(PayrollRuleKeys.OvertimeLateApprovalMode, "Refuse", "BackPay", true)]
+    [InlineData(PayrollRuleKeys.OvertimeLateApprovalMode, null, "BackPay", true)]
+    [InlineData(PayrollRuleKeys.OvertimeLateApprovalMode, "BackPay", null, true)]
+    [InlineData(PayrollRuleKeys.OvertimeBudgetMode, "Warn", "Block", true)]
+    [InlineData(PayrollRuleKeys.OvertimeBudgetMode, "Block", "Off", true)]
+    [InlineData(PayrollRuleKeys.OvertimeBudgetMode, "Block", "Warn", true)]
+    [InlineData(PayrollRuleKeys.OvertimeBudgetMode, "Warn", "Off", true)]
+    [InlineData(PayrollRuleKeys.OvertimeBudgetMode, "Off", "Warn", true)]
+    [InlineData(PayrollRuleKeys.OvertimeBudgetMode, "Block", "Block", false)]
     [InlineData(PayrollRuleKeys.OvertimeAutoApprove, "false", "true", false)]
-    public void ChangesThatCanStopOvertimeBeingPaid_NeedASecondPerson(string key, string from, string to, bool lowers) =>
-        CompanyPayrollRules.LowersPay(key, from, to).Should().Be(lowers);
+    public void ChangingTheLateOrBudgetMode_NeedsASecondPerson_InBothDirections(string key, string? from, string? to, bool needsApproval) =>
+        CompanyPayrollRules.LowersPay(key, from, to).Should().Be(needsApproval);
 }

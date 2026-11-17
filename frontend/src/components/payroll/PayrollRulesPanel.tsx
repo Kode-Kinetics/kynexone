@@ -33,6 +33,7 @@ const OPTIONS: Partial<Record<PayrollRuleKey, { value: string; label: string }[]
   overtime_budget_mode: [{ value: 'Off', label: 'Do not check budgets' }, { value: 'Warn', label: 'Warn when over budget' }, { value: 'Block', label: 'Block approvals over budget' }],
   overtime_manager_files_for_team: [{ value: 'true', label: 'Managers may file for their team' }, { value: 'false', label: 'Only HR files for others' }],
   overtime_hr_approves_manager_step: [{ value: 'true', label: 'HR may approve the manager step' }, { value: 'false', label: 'Only the line manager approves step 1' }],
+  overtime_manager_step_required: [{ value: 'true', label: 'Line manager approves first' }, { value: 'false', label: 'Straight to HR, no manager step' }],
 };
 
 /** Plain-words warning per server warning code. */
@@ -43,6 +44,7 @@ const WARNING_TEXT: Record<string, string> = {
   PROBATION_OVER_180: 'This is longer than the 180-day statutory maximum even with written agreement (Art. 53). It is recorded against the person who confirms it.',
   RECON_THRESHOLD_CHANGED: 'Any change to this setting changes how closely payroll is reviewed. It needs a second person\'s approval and is recorded against the person who confirms it.',
   RECON_SIGNOFF_OFF: 'Turning this off lets a payroll run be approved without a recorded manpower and value reconciliation sign-off. It is recorded against the person who confirms it.',
+  OVERTIME_MANAGER_STEP_OFF: 'Overtime will go straight to HR with no line-manager approval step. It needs a second person\'s approval and is recorded against the person who confirms it.',
   OVERTIME_AUTO_APPROVE_ON: 'Overtime will be approved, and become payable, the moment it is filed, with no manager or HR check. It needs a second person\'s approval and is recorded against the person who confirms it.',
 };
 
@@ -87,6 +89,10 @@ const LABELS: Record<PayrollRuleKey, { label: string; help: string }> = {
     label: 'Line managers file overtime for their team',
     help: 'Whether a line manager may file overtime on behalf of their own team members. Leave empty for the default: allowed.',
   },
+  overtime_manager_step_required: {
+    label: 'Line-manager approval step',
+    help: 'Whether overtime is approved by the line manager before HR gives the final approval. Leave empty for the default: required.',
+  },
   overtime_hr_approves_manager_step: {
     label: 'HR may approve the manager step',
     help: 'Whether an HR Manager may take the first (line manager) approval step. The final step still needs a different person. Leave empty for the default: allowed.',
@@ -114,6 +120,7 @@ export function PayrollRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
   const [rules, setRules] = useState<PayrollRuleView[]>([]);
   const [pending, setPending] = useState<PendingPayrollRuleChange[]>([]);
   const [annualLeaveTypeFound, setAnnualLeaveTypeFound] = useState(true);
+  const [overtimeBudgetsDefined, setOvertimeBudgetsDefined] = useState(false);
   const [cashOutNoticeSeen, setCashOutNoticeSeen] = useState(true);
   const [rejecting, setRejecting] = useState<{ id: string; note: string } | null>(null);
   const [deciding, setDeciding] = useState<string | null>(null);
@@ -141,6 +148,7 @@ export function PayrollRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
       setRules(view.rules);
       setPending(view.pending ?? []);
       setAnnualLeaveTypeFound(view.annualLeaveTypeFound ?? true);
+      setOvertimeBudgetsDefined(view.overtimeBudgetsDefined ?? false);
       setLoadError(null);
     } catch (error) {
       setRules([]);
@@ -297,7 +305,7 @@ export function PayrollRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
       <SettingsDrawer open={editing} title={t('Edit payroll rules')} description={t('Changes apply to payroll processed from now on.')}
         onClose={() => setEditing(false)} testId="payroll-rules-editor">
         {editing && (
-          <RulesEditor views={rules} companyId={companyId} onDirty={setDirty} onCancel={() => setEditing(false)}
+          <RulesEditor views={rules} companyId={companyId} budgetsDefined={overtimeBudgetsDefined} onDirty={setDirty} onCancel={() => setEditing(false)}
             onConfirm={setConfirm}
             onSaved={async status => {
               setEditing(false); setConfirm(null);
@@ -311,8 +319,8 @@ export function PayrollRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
   );
 }
 
-function RulesEditor({ views, companyId, onDirty, onCancel, onConfirm, onSaved }: {
-  views: PayrollRuleView[]; companyId: string; onDirty: (dirty: boolean) => void; onCancel: () => void;
+function RulesEditor({ views, companyId, budgetsDefined, onDirty, onCancel, onConfirm, onSaved }: {
+  views: PayrollRuleView[]; companyId: string; budgetsDefined: boolean; onDirty: (dirty: boolean) => void; onCancel: () => void;
   onConfirm: (state: ConfirmState | null) => void; onSaved: (status: 'applied' | 'pending') => void | Promise<void>;
 }) {
   const t = useT();
@@ -332,7 +340,7 @@ function RulesEditor({ views, companyId, onDirty, onCancel, onConfirm, onSaved }
   const warnings = changedWarnings(form, initial);
   const changes = ruleFormToChanges(form, initial);
   // The sign-off switch is the company's own control, not a statutory minimum: its confirmation says so.
-  const statutory = warnings.some(w => w.code !== 'RECON_SIGNOFF_OFF' && w.code !== 'RECON_THRESHOLD_CHANGED' && w.code !== 'OVERTIME_AUTO_APPROVE_ON');
+  const statutory = warnings.some(w => w.code !== 'RECON_SIGNOFF_OFF' && w.code !== 'RECON_THRESHOLD_CHANGED' && w.code !== 'OVERTIME_AUTO_APPROVE_ON' && w.code !== 'OVERTIME_MANAGER_STEP_OFF');
   useEffect(() => { onDirty(changes.length > 0); return () => onDirty(false); }, [changes.length, onDirty]);
 
   const set = (key: PayrollRuleKey, value: string) => {
@@ -389,13 +397,17 @@ function RulesEditor({ views, companyId, onDirty, onCancel, onConfirm, onSaved }
             {options ? (
               <select id={id} className={input} value={form[key]} onChange={event => set(key, event.target.value)}>
                 <option value="">{t('Platform default')}</option>
-                {options.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
+                {options.map(o => (
+                  // Budget Warn/Block act on a department budget; the server refuses them until one exists.
+                  <option key={o.value} value={o.value} disabled={key === 'overtime_budget_mode' && !budgetsDefined && o.value !== 'Off'}>{t(o.label)}</option>
+                ))}
               </select>
             ) : (
               <input id={id} className={input} value={form[key]} inputMode="decimal" onChange={event => set(key, event.target.value)}
                 aria-invalid={errors[key] ? true : undefined} aria-describedby={`${id}-help`} />
             )}
             <p id={`${id}-help`} className={`mt-1 text-xs leading-5 ${errors[key] ? 'text-rose-600' : 'text-slate-500 dark:text-slate-400'}`}>{errors[key] ? t(errors[key]!) : t(LABELS[key].help)}</p>
+            {key === 'overtime_budget_mode' && !budgetsDefined && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400" data-testid="overtime-budget-none">{t('Define a budget first')}</p>}
             {code && <p className="mt-1 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300" role="status"><AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />{t(WARNING_TEXT[code])}</p>}
           </div>
         );

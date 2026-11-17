@@ -38,6 +38,10 @@ public static class PayrollRuleKeys
     public const string OvertimeManagerFilesForTeam = "overtime_manager_files_for_team";
     /// <summary>An HR Manager may take the first (line manager) approval step; the final step stays with someone else. Default true.</summary>
     public const string OvertimeHrApprovesManagerStep = "overtime_hr_approves_manager_step";
+    /// <summary>Whether overtime has a line-manager approval step before HR's. Required (true) unless the company turns it off,
+    /// which needs a second person. The legacy policy flag "Requires Manager Approval" is deliberately NOT read: existing policies
+    /// may hold false without anyone having chosen it, and a deploy must not remove anyone's manager step.</summary>
+    public const string OvertimeManagerStepRequired = "overtime_manager_step_required";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
@@ -45,6 +49,7 @@ public static class PayrollRuleKeys
         LeaveCashOutBasis, MaxProbationDays, ProrationBasis, AbsenceDeductionBase,
         ReconVariancePct, ReconVarianceMinAmount, ReconSignoffRequired, ArrearsDeductionCapPct,
         OvertimeAutoApprove, OvertimeLateApprovalMode, OvertimeBudgetMode, OvertimeManagerFilesForTeam, OvertimeHrApprovesManagerStep,
+        OvertimeManagerStepRequired,
     };
 }
 
@@ -95,6 +100,8 @@ public sealed record CompanyPayrollRuleSet(
     public bool OvertimeManagerFilesForTeam { get; init; } = true;
     /// <summary><see cref="PayrollRuleKeys.OvertimeHrApprovesManagerStep"/>: allowed unless the company turned it off.</summary>
     public bool OvertimeHrApprovesManagerStep { get; init; } = true;
+    /// <summary><see cref="PayrollRuleKeys.OvertimeManagerStepRequired"/>: required unless the company turned it off.</summary>
+    public bool OvertimeManagerStepRequired { get; init; } = true;
 }
 
 /// <summary>One rule as shown on the settings screen.</summary>
@@ -141,6 +148,7 @@ public static class CompanyPayrollRules
     public const string WarnReconSignoffOff = "RECON_SIGNOFF_OFF";
     public const string WarnReconThresholdChanged = "RECON_THRESHOLD_CHANGED";
     public const string WarnOvertimeAutoApproveOn = "OVERTIME_AUTO_APPROVE_ON";
+    public const string WarnOvertimeManagerStepOff = "OVERTIME_MANAGER_STEP_OFF";
 
     /// <summary>Validates one value. Returns an error for a value that is meaningless (never for a legal-minimum
     /// shortfall) and the warning for one that is below a statutory minimum.</summary>
@@ -198,6 +206,12 @@ public static class CompanyPayrollRules
                 if (!bool.TryParse(v, out var on)) return ($"{key} must be true or false.", null);
                 return (null, on ? new PayrollRuleWarning(key, WarnOvertimeAutoApproveOn,
                     "Overtime will be approved, and become payable, the moment it is filed, with no manager or HR check. It needs a second person's approval and is recorded against the person who confirms it.") : null);
+            }
+            case PayrollRuleKeys.OvertimeManagerStepRequired:
+            {
+                if (!bool.TryParse(v, out var required)) return ($"{key} must be true or false.", null);
+                return (null, required ? null : new PayrollRuleWarning(key, WarnOvertimeManagerStepOff,
+                    "Overtime will go straight to HR with no line-manager approval step. It needs a second person's approval and is recorded against the person who confirms it."));
             }
             case PayrollRuleKeys.OvertimeManagerFilesForTeam:
             case PayrollRuleKeys.OvertimeHrApprovesManagerStep:
@@ -436,6 +450,7 @@ public static class CompanyPayrollRules
             OvertimeBudgetMode = Get(PayrollRuleKeys.OvertimeBudgetMode, d.OvertimeBudgetMode),
             OvertimeManagerFilesForTeam = Bool(PayrollRuleKeys.OvertimeManagerFilesForTeam) ?? d.OvertimeManagerFilesForTeam,
             OvertimeHrApprovesManagerStep = Bool(PayrollRuleKeys.OvertimeHrApprovesManagerStep) ?? d.OvertimeHrApprovesManagerStep,
+            OvertimeManagerStepRequired = Bool(PayrollRuleKeys.OvertimeManagerStepRequired) ?? d.OvertimeManagerStepRequired,
         };
         bool? Bool(string key) => v.TryGetValue(key, out var x) && bool.TryParse(x?.Trim(), out var b) ? b : null;
     }
@@ -503,12 +518,11 @@ public static class CompanyPayrollRules
                     && (o ?? RestDayWorkModes.PaidPremium) == RestDayWorkModes.PaidPremium;
             case PayrollRuleKeys.ProrationBasis:
                 return true;
-            // Late overtime stops being paid automatically.
+            // Any change, in either direction (o != n here): tightening can stop overtime being paid, loosening lifts a
+            // control the person who approves overtime could otherwise switch off, use and switch back on.
             case PayrollRuleKeys.OvertimeLateApprovalMode:
-                return n == "Refuse" && o != "Refuse";
-            // Approvals over budget stop.
             case PayrollRuleKeys.OvertimeBudgetMode:
-                return n == OvertimeBudgetModes.Block && o != OvertimeBudgetModes.Block;
+                return true;
             default:
                 return false; // max_probation_days moves no pay; a value over the statutory limit is caught by its warning
         }

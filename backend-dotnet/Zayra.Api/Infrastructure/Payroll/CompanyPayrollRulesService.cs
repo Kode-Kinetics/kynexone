@@ -49,9 +49,11 @@ public sealed class CompanyPayrollRulesService(ZayraDbContext _db, IAuditService
         // The leave payout on exit pays only a leave type coded ANNUAL or categorised Annual: tell HR when there is none.
         var annualLeaveTypeFound = (await _db.LeaveTypes.AsNoTracking().Where(t => t.TenantId == tenantId).ToListAsync(ct))
             .Any(Zayra.Api.Infrastructure.Payroll.LeaveEncashmentCalculator.IsAnnualType);
+        // Budget Warn/Block act only on a department budget; until the company has one the screen shows them disabled.
+        var overtimeBudgetsDefined = await OvertimeBudgetsDefinedAsync(tenantId, companyId, ct);
         return new
         {
-            companyId, rules, effective, annualLeaveTypeFound,
+            companyId, rules, effective, annualLeaveTypeFound, overtimeBudgetsDefined,
             pending = pending.Select(r => new
             {
                 r.Id, r.RequestedBy, r.RequestedAtUtc, r.Reason, r.EffectiveFrom,
@@ -81,6 +83,15 @@ public sealed class CompanyPayrollRulesService(ZayraDbContext _db, IAuditService
             var (errors, warnings) = CompanyPayrollRules.Validate(changes);
             if (errors.Count > 0)
                 return Fail(400, new { code = "ERR_PAYROLL_RULE_INVALID", message = string.Join(" ", errors), errors });
+            // Budget Warn or Block with no budget would be a control that does nothing: refused until a budget exists.
+            if (changes.Any(c => c.Key == PayrollRuleKeys.OvertimeBudgetMode && c.Value?.Trim() is OvertimeBudgetModes.Warn or OvertimeBudgetModes.Block)
+                && !await OvertimeBudgetsDefinedAsync(tenantId, companyId, ct))
+                return Fail(400, new
+                {
+                    code = "overtime_budget_none",
+                    message = "This company has no overtime budget yet, so Warn and Block would do nothing. Define a budget first.",
+                    messageAr = "لا توجد لهذه الشركة ميزانية للعمل الإضافي بعد، لذلك لن يكون للتنبيه أو المنع أي أثر. حدد ميزانية أولا.",
+                });
 
             var needsApproval = warnings.Count > 0
                 || changes.Any(c => CompanyPayrollRules.LowersPay(c.Key, before.GetValueOrDefault(c.Key), c.Value));
@@ -148,6 +159,11 @@ public sealed class CompanyPayrollRulesService(ZayraDbContext _db, IAuditService
             return Done(202, new { status = "PendingApproval", requestId = pending.Id, view = await ViewAsync(tenantId, companyId, ct) });
         }, ct);
     }
+
+    /// <summary>Whether any overtime budget exists for a department of this company.</summary>
+    private Task<bool> OvertimeBudgetsDefinedAsync(Guid tenantId, Guid companyId, CancellationToken ct) =>
+        _db.OvertimeBudgets.AsNoTracking().AnyAsync(b => b.TenantId == tenantId && b.DepartmentId != null
+            && _db.Departments.Any(d => d.TenantId == tenantId && d.Id == b.DepartmentId && d.CompanyId == companyId), ct);
 
     public async Task<RuleOutcome> DecideAsync(Guid tenantId, Guid? userId, Guid id, bool approve, string? note, CancellationToken ct)
     {

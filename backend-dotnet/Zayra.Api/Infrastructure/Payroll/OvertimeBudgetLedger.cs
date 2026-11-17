@@ -43,6 +43,12 @@ public static class OvertimeBudgetLedger
         if (budget is not null) budget.ConsumedAmount += amount;
     }
 
+    /// <summary>Gives an amount back (overtime converted to time off is no longer an overtime cost). Never below zero.</summary>
+    public static void Release(OvertimeBudget? budget, decimal amount)
+    {
+        if (budget is not null) budget.ConsumedAmount = Math.Max(0m, budget.ConsumedAmount - amount);
+    }
+
     public static object Refusal(OvertimeBudget budget, decimal amount) => new
     {
         code = "overtime_budget_exceeded",

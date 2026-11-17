@@ -486,8 +486,8 @@ public class OvertimeController : ControllerBase
             // detect-from-attendance (which de-duplicates on it), so a caller-supplied value was a forgery hook.
             Source = "Manual",
             Reason = req.Reason ?? string.Empty,
-            // The policy's "Requires Manager Approval" decides whether the line-manager step exists at all.
-            Status = FirstStep(policy),
+            // The company's overtime_manager_step_required decides whether the line-manager step exists (default: it does).
+            Status = FirstStep(companyRules),
             CreatedBy = GetUserId()
         };
         _db.OvertimeRequests.Add(request);
@@ -498,8 +498,12 @@ public class OvertimeController : ControllerBase
         return Created($"/api/overtime/requests/{request.Id}", request);
     }
 
-    /// <summary>The step a new request starts at: the line manager's, unless the policy says no manager approval is needed.</summary>
-    private static string FirstStep(OvertimePolicy policy) => policy.RequiresApproval ? "PendingManager" : "PendingHR";
+    /// <summary>
+    /// The step a new request starts at: the line manager's, unless the employing company turned that step off
+    /// (overtime_manager_step_required). The legacy policy flag "Requires Manager Approval" is not read, as before this setting
+    /// existed: policies that hold false without anyone having chosen it must keep their manager step.
+    /// </summary>
+    private static string FirstStep(CompanyPayrollRuleSet companyRules) => companyRules.OvertimeManagerStepRequired ? "PendingManager" : "PendingHR";
 
     /// <summary>
     /// overtime_auto_approve: the company approves overtime the moment it is filed. Exactly what a final approval writes (the
@@ -617,6 +621,13 @@ public class OvertimeController : ControllerBase
             .Select(x => new { x.Id, x.BranchId, x.DepartmentId, x.GradeId })
             .ToDictionaryAsync(x => x.Id, ct);
         var policyByEmployee = new Dictionary<int, OvertimePolicy?>();
+        var rulesByEmployee = new Dictionary<int, CompanyPayrollRuleSet>();
+        async Task<CompanyPayrollRuleSet> RulesForAsync(int employeeId)
+        {
+            if (!rulesByEmployee.TryGetValue(employeeId, out var known))
+                rulesByEmployee[employeeId] = known = await OvertimeCompanyRulesAsync(tenantId, null, employeeId, ct);
+            return known;
+        }
         async Task<OvertimePolicy?> PolicyForAsync(int employeeId)
         {
             if (policyByEmployee.TryGetValue(employeeId, out var known)) return known;
@@ -686,7 +697,7 @@ public class OvertimeController : ControllerBase
                         ? $"Auto-detected from processed attendance; capped by policy '{policy.Name}' "
                           + $"({limits.RoundedMinutes} min detected, {limits.ExcessMinutes} min not payable)"
                         : "Auto-detected from processed attendance",
-                    Status = FirstStep(policy),
+                    Status = FirstStep(await RulesForAsync(record.EmployeeId)),
                     AttendanceDailyRecordId = record.Id,
                     CreatedBy = GetUserId()
                 };
@@ -1030,29 +1041,55 @@ public class OvertimeController : ControllerBase
             return BadRequest(new { message = $"Comp-off days cannot exceed {maxDays:0.##} for {request.ApprovedMinutes} approved minutes ({CompOffHoursPerWorkingDay:0.##} hours per working day)." });
         if (await _db.OvertimeCompOffConversions.AnyAsync(x => x.TenantId == tenantId && x.OvertimeRequestId == req.OvertimeRequestId && x.Status != "Rejected", ct))
             return Conflict(new { message = "This overtime request has already been converted to comp-off." });
-        // OVT-01: the same overtime must never be both cash and leave. Cash already paid cannot be taken back
-        // here; cash still waiting for payroll is withdrawn in the same save as the credit.
-        var impacts = await _db.OvertimePayrollImpacts.Where(x => x.TenantId == tenantId && x.OvertimeRequestId == request.Id).ToListAsync(ct);
+        // OVT-01: the same overtime must never be both cash and leave. Cash already paid cannot be taken back here.
+        var impacts = await _db.OvertimePayrollImpacts.AsNoTracking().Where(x => x.TenantId == tenantId && x.OvertimeRequestId == request.Id).ToListAsync(ct);
         if (impacts.Any(x => x.Status is "Processed" or "CarriedForward" || x.PayrollRunId != null))
-            return Conflict(new { message = "This overtime has already been paid through payroll and cannot be converted to comp-off." });
-        _db.OvertimePayrollImpacts.RemoveRange(impacts);
-        await SaveAudit("overtime.compoff.cash_withdrawn", "OvertimeRequest", request.Id.ToString(), ct);
-        var compOff = new OvertimeCompOffConversion { TenantId = tenantId, OvertimeRequestId = req.OvertimeRequestId, EmployeeId = request.EmployeeId, OvertimeHours = Math.Round(request.ApprovedMinutes / 60m, 2), CompOffDays = grantedDays, Status = "Approved" };
-        _db.OvertimeCompOffConversions.Add(compOff);
-        _db.CompOffCredits.Add(new CompOffCredit
-        {
-            TenantId = tenantId, EmployeeId = request.EmployeeId, EmployeeName = request.EmployeeName,
-            OvertimeCompOffConversionId = compOff.Id,
-            WorkedDate = request.WorkDate, WorkType = "Overtime", HoursWorked = compOff.OvertimeHours,
-            DaysEarned = grantedDays, Status = "Approved", ApprovedByName = User.Identity?.Name ?? "HR",
-            ApprovedAtUtc = DateTime.UtcNow
-        });
-        await SaveAudit("overtime.compoff.created", "OvertimeCompOffConversion", compOff.Id.ToString(), ct);
+            return Conflict(CashAlreadyPaid());
+        OvertimeCompOffConversion compOff;
         try
         {
-            // Conversion, leave credit and audit are one implicit transaction. The request and
-            // conversion unique keys make the initial Any check advisory rather than authoritative.
-            await _db.SaveChangesAsync(ct);
+            // Under the employee's overtime-entry lock, in one transaction: the cash still waiting for payroll is withdrawn by a
+            // compare-and-swap DELETE (only rows still PendingPayroll and unowned), the department budget gets the amount back,
+            // and the credit is written. The read above is advisory: a payroll run that consumed the impact meanwhile leaves
+            // fewer rows to withdraw, and the whole conversion rolls back (cash paid, so no day off). The DELETE row lock is taken
+            // before the budget row lock; payroll takes neither the entry lock nor budget rows, so no cycle with its lock order.
+            compOff = await OvertimeEntryGuard.RunAsync(_db, tenantId, new[] { request.EmployeeId }, async () =>
+            {
+                var pendingIds = impacts.Select(x => x.Id).ToList();
+                var pending = _db.OvertimePayrollImpacts.Where(x => x.TenantId == tenantId && pendingIds.Contains(x.Id)
+                    && x.Status == "PendingPayroll" && x.PayrollRunId == null);
+                int withdrawn;
+                if (_db.Database.IsRelational()) withdrawn = await pending.ExecuteDeleteAsync(ct);
+                else
+                {
+                    var rows = await pending.ToListAsync(ct);
+                    _db.OvertimePayrollImpacts.RemoveRange(rows);
+                    withdrawn = rows.Count;
+                }
+                if (withdrawn != pendingIds.Count) throw new OvertimeCashPaidMeanwhileException();
+                var budget = await OvertimeBudgetLedger.ForUpdateAsync(_db, tenantId, request.EmployeeId, request.WorkDate, ct);
+                OvertimeBudgetLedger.Release(budget, impacts.Sum(x => x.Amount));
+                await SaveAudit("overtime.compoff.cash_withdrawn", "OvertimeRequest", request.Id.ToString(), ct);
+                var conversion = new OvertimeCompOffConversion { TenantId = tenantId, OvertimeRequestId = req.OvertimeRequestId, EmployeeId = request.EmployeeId, OvertimeHours = Math.Round(request.ApprovedMinutes / 60m, 2), CompOffDays = grantedDays, Status = "Approved" };
+                _db.OvertimeCompOffConversions.Add(conversion);
+                _db.CompOffCredits.Add(new CompOffCredit
+                {
+                    TenantId = tenantId, EmployeeId = request.EmployeeId, EmployeeName = request.EmployeeName,
+                    OvertimeCompOffConversionId = conversion.Id,
+                    WorkedDate = request.WorkDate, WorkType = "Overtime", HoursWorked = conversion.OvertimeHours,
+                    DaysEarned = grantedDays, Status = "Approved", ApprovedByName = User.Identity?.Name ?? "HR",
+                    ApprovedAtUtc = DateTime.UtcNow
+                });
+                await SaveAudit("overtime.compoff.created", "OvertimeCompOffConversion", conversion.Id.ToString(), ct);
+                // The request and conversion unique keys make the initial Any check advisory rather than authoritative.
+                await _db.SaveChangesAsync(ct);
+                return conversion;
+            }, ct);
+        }
+        catch (OvertimeCashPaidMeanwhileException)
+        {
+            _db.ChangeTracker.Clear();
+            return Conflict(CashAlreadyPaid());
         }
         catch (DbUpdateException ex) when (
             ex.InnerException is Npgsql.PostgresException
@@ -1062,6 +1099,16 @@ public class OvertimeController : ControllerBase
         }
         return Created($"/api/overtime/comp-off-conversions/{compOff.Id}", compOff);
     }
+
+    private static object CashAlreadyPaid() => new
+    {
+        code = "overtime_already_paid",
+        message = "This overtime has already been paid through payroll and cannot be converted to comp-off.",
+        messageAr = "صُرف هذا العمل الإضافي بالفعل عبر مسير الرواتب، ولا يمكن تحويله إلى يوم تعويضي.",
+    };
+
+    /// <summary>A payroll run consumed the overtime's cash between the conversion's read and its withdrawal.</summary>
+    private sealed class OvertimeCashPaidMeanwhileException : Exception;
 
     /// <summary>Hours in one working day for comp-off: the 240 h / 30 d statutory monthly basis (8 h/day).</summary>
     internal const decimal CompOffHoursPerWorkingDay = 8m;
