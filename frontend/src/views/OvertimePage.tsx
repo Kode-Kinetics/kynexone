@@ -355,7 +355,8 @@ function OTRequestsTable({ requests, onApprove, onReject, showActions, canDecide
   );
 
   return (
-    <div className="overflow-x-auto">
+    // Focusable and named, so a keyboard user can scroll the table sideways on a phone (axe scrollable-region-focusable).
+    <div className="overflow-x-auto" tabIndex={0} role="region" aria-label={t('Overtime requests')}>
       <table className="w-full min-w-[640px] text-sm">
         <thead>
           <tr className="border-b border-slate-100 dark:border-white/[0.07]">

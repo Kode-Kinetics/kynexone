@@ -109,8 +109,8 @@ for (const locale of ['en', 'ar'] as const) {
       // 1. The employee files for themselves: no employee picker is offered.
       await openTab(page, locale, 'Submit OT');
       await expect(page.getByText(tr(locale, 'Submitting overtime for: Employee #{id}', { id: 7 }))).toBeVisible();
-      await page.getByLabel(tr(locale, 'Start time')).fill('18:00');
-      await page.getByLabel(tr(locale, 'End time')).fill('20:00');
+      await page.getByLabel(tr(locale, 'Start time'), { exact: true }).fill('18:00');
+      await page.getByLabel(tr(locale, 'End time'), { exact: true }).fill('20:00');
       await page.getByPlaceholder(tr(locale, 'Reason for overtime…')).fill('Month-end close');
       expect(await seriousAxe(page)).toEqual([]);
       await page.getByRole('button', { name: tr(locale, 'Submit OT Request') }).click();
