@@ -206,8 +206,11 @@ public class BenefitsController : ControllerBase
         return Ok(await GradeBenefitDefaults.PreviewAsync(_db, tenantId.Value, employee, start, ct));
     }
 
+    // The legacy Benefits page opens for employees.write; these reads resolved to employees.read, so a line manager or recruiter listed every plan through
+    // the API. The enrolment reads' gate (HR writers, payroll and finance readers) is the page's audience, never wider (LegacyBenefitsReadGateTests).
     [HttpGet("plans")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Finance,Auditor")]
+    [HasPermission("employees.write", "payroll.read", "finance.gl.read")]
     public async Task<IActionResult> ListPlans([FromQuery] Guid? companyId, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -364,6 +367,7 @@ public class BenefitsController : ControllerBase
 
     [HttpGet("plans/{planId:guid}/eligibility")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Finance,Auditor")]
+    [HasPermission("employees.write", "payroll.read", "finance.gl.read")]
     public async Task<IActionResult> ListEligibility(Guid planId, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
