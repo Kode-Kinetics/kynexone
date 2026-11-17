@@ -49,7 +49,8 @@ public static class ProductionReadinessEvidence
                 RedisDependency(config),
                 QiwaDependency(config),
                 dbProbe.Healthy && includeDetail ? await SmtpDependencyAsync(db, config, ct) : SmtpNotEvaluated(config),
-                workers),
+                workers,
+                OfferSwitches(config)),
             tenantCounts?.Total ?? 0,
             tenantCounts?.Active ?? 0,
             pendingMigrations,
@@ -315,6 +316,11 @@ public static class ProductionReadinessEvidence
         }
     }
 
+    /// <summary>The effective offer switches (appsettings default, environment override), so an operator can see why an offer will not send or be accepted.</summary>
+    public static OfferSwitchEvidence OfferSwitches(IConfiguration config) => new(
+        config.GetValue<bool>(Zayra.Api.Infrastructure.Recruitment.OfferLifecycleService.EnablementKey),
+        config.GetValue<bool>(Zayra.Api.Infrastructure.Recruitment.OfferDispatchWorker.EnablementKey));
+
     private static DependencyMode RedisDependency(IConfiguration config)
     {
         var configured = !string.IsNullOrWhiteSpace(config["REDIS_URL"] ?? Environment.GetEnvironmentVariable("REDIS_URL"));
@@ -430,7 +436,11 @@ public sealed record ReadinessDependencies(
     DependencyMode Redis,
     DependencyMode Qiwa,
     DependencyMode Smtp,
-    WorkerFleetReadiness Workers);
+    WorkerFleetReadiness Workers,
+    OfferSwitchEvidence? OfferLifecycle = null);
+
+/// <summary>The effective values of the two offer switches, so an operator can see why an offer will not send.</summary>
+public sealed record OfferSwitchEvidence(bool ManagedLifecycleEnabled, bool DispatchWorkerEnabled);
 
 public sealed record DependencyProbe(string Status, bool Healthy, long LatencyMs, string? Error);
 
