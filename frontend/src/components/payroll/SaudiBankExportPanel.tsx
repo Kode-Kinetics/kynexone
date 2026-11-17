@@ -1017,7 +1017,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
             {exclusions.map((x) => (
               <tr key={x.employeeId}>
                 <td className="px-3 py-2 text-fg">{employeeLabels?.[x.employeeId] ? <EmployeeLabelText label={employeeLabels[x.employeeId]} /> : <bdi className="font-mono">{x.employeeCode}</bdi>}</td>
-                <td className="px-3 py-2 text-fg-muted">{x.reasonCode === 'zero_net' ? t('Net pay is zero') : x.reasonCode === 'paid_outside_bank_file' ? t('Paid in cash or by cheque') : x.reason}</td>
+                <td className="px-3 py-2 text-fg-muted">{x.reasonCode === 'zero_net' ? t('Net pay is zero') : x.reasonCode === 'paid_outside_bank_file' ? t('Not in the bank file: to be paid by cash or cheque') : x.reason}</td>
                 <td className="px-3 py-2 text-end tabular-nums text-fg"><bdi dir="ltr">{fx.number(x.amount, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</bdi></td>
               </tr>
             ))}
@@ -1120,7 +1120,12 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   const createAside = (
     <div className="space-y-3">
       <p className="flex items-center gap-1.5 text-body font-semibold text-fg"><FileText className="h-4 w-4" aria-hidden="true" />{t('The file will be created with these details')}</p>
-      {notVerified && <p className="inline-flex items-center gap-1 rounded-full bg-warning-soft px-2 py-0.5 text-meta font-medium text-warning-fg"><AlertTriangle className="h-3 w-3" aria-hidden="true" />{t('Your bank hasn’t confirmed this format yet')}</p>}
+      {notVerified && (
+        <div className="space-y-1" data-testid="bank-format-unconfirmed">
+          <p className="inline-flex items-center gap-1 rounded-full bg-warning-soft px-2 py-0.5 text-meta font-medium text-warning-fg"><AlertTriangle className="h-3 w-3" aria-hidden="true" />{t('Your bank hasn’t confirmed this format yet')}</p>
+          <p className="text-meta text-fg-muted">{t('Send your bank a test file before the first live run.')}</p>
+        </div>
+      )}
       {recap(recapRows)}
       <p className="flex items-start gap-1.5 border-t border-line pt-3 text-meta" data-testid="bank-pays-nobody"><Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />{t('Creating the file moves no money. Your bank pays once you hand it the file.')}</p>
     </div>

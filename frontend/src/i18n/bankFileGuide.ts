@@ -254,7 +254,6 @@ const ar: Record<string, string> = {
   'The employee’s bank account changed after the run was locked.': 'تغيّر الحساب البنكي للموظف بعد قفل المسير.',
   'Fix the highlighted fields.': 'صحّح الحقول المحددة.',
   'Net pay is zero': 'صافي الأجر صفر',
-  'Paid in cash or by cheque': 'يُدفع نقدًا أو بشيك',
   'The request failed. Please try again.': 'فشل الطلب. حاول مرة أخرى.',
   'The bank file needs your employer account and establishment details. You enter them once and every later run uses them.': 'يحتاج ملف البنك إلى بيانات حساب صاحب العمل والمنشأة. تُدخلها مرة واحدة وتستخدمها كل المسيرات التالية.',
   // ── Fix batch 1 (reviews) ──
@@ -285,6 +284,8 @@ const ar: Record<string, string> = {
   'WPS bank file': 'ملف بنكي لحماية الأجور',
   'Your bank reports the salaries to WPS (Mudad). KynexOne does not send anything to Mudad.': 'يُبلغ بنكك عن الرواتب إلى نظام حماية الأجور (مدد). لا يرسل KynexOne أي شيء إلى مدد.',
   'Your bank produces the signed WPS file. Upload it in Mudad yourself within the legal window. KynexOne does not send anything to Mudad.': 'يُعدّ بنكك ملف حماية الأجور الموقّع. ارفعه بنفسك في منصة مدد خلال المهلة النظامية. لا يرسل KynexOne أي شيء إلى مدد.',
+  'Not in the bank file: to be paid by cash or cheque': 'خارج ملف البنك: يُدفع نقدًا أو بشيك',
+  'Send your bank a test file before the first live run.': 'أرسل إلى بنكك ملفًا تجريبيًا قبل أول مسير فعلي.',
   'We suggested the next working day. Past days, Fridays and Saturdays can’t be chosen. Check public holidays with your bank.': 'اقترحنا أقرب يوم عمل. لا يمكن اختيار يوم مضى ولا الجمعة أو السبت. تحقق من العطل الرسمية مع بنكك.',
   '{count} employees · {amount} · credit date {date} · file reference {ref}. Record this only after the bank has the file.': '{count} موظفًا · {amount} · تاريخ الإيداع {date} · الرقم المرجعي للملف {ref}. سجّل ذلك فقط بعد أن يتسلّم البنك الملف.',
 };

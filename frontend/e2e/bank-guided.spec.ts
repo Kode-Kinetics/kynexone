@@ -586,6 +586,18 @@ test.describe('fix batch 2: the flow', () => {
     await expect(bar.locator('[data-bucket="paid"]')).toHaveClass(/bg-success/);
   });
 
+  for (const locale of LOCALES) {
+    test(`F and G: cash is "still to pay", and the unconfirmed format names its next step (${locale})`, async ({ page }) => {
+      await boot(page, { locale, url, routes: bankHandler(), waitMs: 2500, stages: 'default' });
+      const check = page.getByTestId('bank-step-body-check');
+      await expect(check).toContainText(say(locale, 'Not in the bank file: to be paid by cash or cheque'), { timeout: 90_000 });
+      if (locale === 'en') await expect(check).not.toContainText('Paid in cash or by cheque');
+      await page.getByTestId('bank-guide-primary').click();
+      await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'create');
+      await expect(page.getByTestId('bank-step-body-create')).toContainText(say(locale, 'Send your bank a test file before the first live run.'));
+    });
+  }
+
 });
 
 test.describe('Payroll Runs on a locked run', () => {
