@@ -46,7 +46,11 @@ public class WpsReturnedFileRefusalTests
             ("header_after_rows", new("header_after_rows", Build() + "[FILE-REF]\tOTHER\n")),
             ("header_tag_duplicated", new("header_tag_duplicated", Build().Replace("[DEST-ID]\tXXXX\n", "[DEST-ID]\tXXXX\n[DEST-ID]\tOTHR\n"))),
             ("header_total_invalid", new("header_total_invalid", System.Text.RegularExpressions.Regex.Replace(Build(), @"\[32A-AMT\]\t[0-9,]+", "[32A-AMT]\tabc"))),
-            ("header_total_unverifiable", new("header_total_unverifiable", Build(rowOverride: x => RowLine(x, "", "\t[TRN-STATUS]\tPAID").Replace("[32B-AMT]\t\t", "")))),
+            ("header_total_unverifiable", new("header_total_unverifiable", 
+                // only the FIRST line lacks its [32B-AMT]; the other two are clean and paid, so they would be applied if the refusal were lost
+                WpsReturnedFileOracle.Build(Rows3, rowOverride: x => x.MolId == Rows3[0].MolId
+                    ? RowLine(x, "", "\t[TRN-STATUS]\tPAID").Replace("[32B-AMT]\t\t", "")
+                    : RowLine(x, WpsReturnedFileOracle.Amount(x.Net), "\t[TRN-STATUS]\tPAID")))),
             ("mol_establishment_id_invalid", new("mol_establishment_id_invalid", Build(h => h with { MolEstablishmentId = "ABC-DEF" }))),
             ("mol_establishment_id_placeholder", new("mol_establishment_id_placeholder", Build(h => h with { MolEstablishmentId = "0-0000000" }))),
             ("stray_value", new("stray_value", Build().Replace("[DEST-ID]\tXXXX\n", "[DEST-ID]\tXXXX\tEXTRA\n"))),
@@ -60,7 +64,9 @@ public class WpsReturnedFileRefusalTests
             ("duplicate_mol_id", new("duplicate_mol_id", WpsReturnedFileOracle.Build(Rows3.Append(Rows3[0] with { Iban = WpsReturnedFileOracle.SaIban(80, 999_999_999_999L) }).ToList()))),
             ("duplicate_iban", new("duplicate_iban", WpsReturnedFileOracle.Build(new[] { Rows3[0], Rows3[1], Rows3[2] with { Iban = Rows3[0].Iban } }))),
             ("net_identity_failed", new("net_identity_failed",
-                WpsReturnedFileOracle.Build(Rows3, declaredTotal: Rows3.Sum(r => r.Net) + 3m, rowOverride: x => RowLine(x, WpsReturnedFileOracle.Amount(x.Net + 1m), "\t[TRN-STATUS]\tPAID")),
+                // only the FIRST line's net is off by 1,00; the header total allows for it, so nothing else is wrong with the file
+                WpsReturnedFileOracle.Build(Rows3, declaredTotal: Rows3.Sum(r => r.Net) + 1m, rowOverride: x => RowLine(x,
+                    WpsReturnedFileOracle.Amount(x.MolId == Rows3[0].MolId ? x.Net + 1m : x.Net), "\t[TRN-STATUS]\tPAID")),
                 BatchTotal: 1_000_000m)),
             ("file_too_large", new("file_too_large", new string('x', WpsReturnedFileValidator.MaxContentChars + 1))),
             ("line_too_long", new("line_too_long", "[DEST-ID]\t" + new string('x', WpsReturnedFileValidator.MaxLineChars + 1) + "\n")),
