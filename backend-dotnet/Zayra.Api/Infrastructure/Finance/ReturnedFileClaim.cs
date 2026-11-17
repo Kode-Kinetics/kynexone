@@ -52,9 +52,21 @@ public sealed class ReturnedFileClaim(IGovernmentExchangeRecorder recorder) : IR
     public const string BoundToOtherBatchCode = "file_ref_bound_to_other_batch";
     public const string InProgressCode = "returned_file_import_in_progress";
     public const string AlreadyImportedCode = "returned_file_already_imported";
+    /// <summary>409 at save: the claim this import held was taken over (or is too old to be safe), so it applied nothing.</summary>
+    public const string TakenOverCode = "returned_file_claim_taken_over";
     public const string SubjectType = "PaymentBatch";
     public const int MaxAttempts = 20;
     public static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(15);
+    /// <summary>A claim older than <see cref="StaleAfter"/> less this is no longer safe to save under: a takeover could start during the
+    /// save. Far longer than any save (the command timeout is 30 seconds).</summary>
+    public static readonly TimeSpan FenceMargin = TimeSpan.FromMinutes(2);
+
+    /// <summary>The replay key without its "#attempt" suffix, plus the '#': every attempt at the same file starts with it.</summary>
+    public static string AttemptPrefix(string replayKey)
+    {
+        var hash = replayKey.LastIndexOf('#');
+        return (hash < 0 ? replayKey : replayKey[..hash]) + "#";
+    }
 
     public async Task<ReturnedFileClaimOutcome> ClaimAsync(ReturnedFileClaimRequest request, CancellationToken ct)
     {

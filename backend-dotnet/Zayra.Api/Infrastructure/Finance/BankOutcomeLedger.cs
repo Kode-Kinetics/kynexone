@@ -101,6 +101,15 @@ public static class BankOutcomeLedger
         IEnumerable<PayrollPaymentRecord> records, IReadOnlyDictionary<Guid, DateTime> settledAt) =>
         records.Where(r => IsRejected(r) && settledAt.ContainsKey(r.PaymentBatchId)).ToList();
 
+    /// <summary>
+    /// Returned records in a batch whose net settlement journal is live (owner ruling 2026-11-17, the same test as
+    /// <see cref="RejectedAfterSettlement"/>). Only these need the returned-money GL correction: before settlement no journal
+    /// credited Cash/Bank for them. A Returned record in an unsettled batch still reads Returned and still blocks settlement.
+    /// </summary>
+    public static IReadOnlyList<PayrollPaymentRecord> ReturnedAfterSettlement(
+        IEnumerable<PayrollPaymentRecord> records, IReadOnlyDictionary<Guid, DateTime> settledAt) =>
+        records.Where(r => IsReturned(r) && settledAt.ContainsKey(r.PaymentBatchId)).ToList();
+
     /// <summary>The row that made the record Rejected: an applied rejection, or a person's confirm_duplicate_not_paid.</summary>
     public static BankPaymentConfirmation? RejectionDecision(Guid paymentRecordId, IEnumerable<BankPaymentConfirmation> confirmations) =>
         confirmations
@@ -130,14 +139,32 @@ public static class BankOutcomeLedger
         wpsStatus is WpsStatuses.Paid or WpsStatuses.Reconciled
         && (coverage.FailedCount > 0 || coverage.UnconfirmedCount > 0 || openHolds > 0);
 
-    /// <summary>The open holds for a person on one batch, read fresh: the settle and Reconciled gates refuse while any is open.</summary>
+    /// <summary>The open holds on one batch, read fresh: the settle and Reconciled gates refuse while any is open (<see cref="BlockingHolds"/>).</summary>
     public static async Task<IReadOnlyList<UnresolvedBankHold>> OpenHoldsAsync(ZayraDbContext db, Guid tenantId, Guid batchId, CancellationToken ct)
     {
         var records = await db.PayrollPaymentRecords.AsNoTracking()
             .Where(r => r.TenantId == tenantId && r.PaymentBatchId == batchId).ToListAsync(ct);
         var confirmations = await db.BankPaymentConfirmations.AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.PaymentBatchId == batchId).ToListAsync(ct);
-        return UnresolvedHolds(records, confirmations);
+        return BlockingHolds(records, confirmations);
+    }
+
+    /// <summary>
+    /// Every open hold that blocks settle and Reconciled and stops a batch reading clean (CTO-GATE 8.4 ruling 11): the holds for a
+    /// person (<see cref="UnresolvedHolds"/>) and the open amount-mismatch holds (<see cref="OpenAmountMismatchHolds"/>).
+    /// </summary>
+    public static IReadOnlyList<UnresolvedBankHold> BlockingHolds(
+        IEnumerable<PayrollPaymentRecord> records, IEnumerable<BankPaymentConfirmation> confirmations)
+    {
+        var recordList = records.ToList();
+        var confirmationList = confirmations.ToList();
+        var holds = UnresolvedHolds(recordList, confirmationList).ToList();
+        var live = recordList.Where(r => !PaymentRecordStatuses.IsCancelled(r.Status)).ToDictionary(r => r.Id);
+        foreach (var m in OpenAmountMismatchHolds(confirmationList))
+            if (live.TryGetValue(m.PaymentRecordId, out var r))
+                holds.Add(new UnresolvedBankHold(r.Id, r.EmployeeId, r.Amount, r.Status ?? string.Empty, BankOutcomeHolds.AmountMismatch,
+                    m.RawOutcome, m.ReasonCode, m.ImportedAtUtc));
+        return holds;
     }
 
     /// <summary>
@@ -180,14 +207,27 @@ public static class BankOutcomeLedger
                                        && (c.HoldReason == BankOutcomeHolds.DuplicateOriginalReceivedConfirmed
                                            || c.HoldReason == BankOutcomeHolds.DuplicateNotPaidConfirmed)))
                 hold = duplicate;
-            else if (rows[^1] is { Applied: false } latest && latest.HoldReason == BankOutcomeHolds.FailedOutcomeChanged)
-                hold = latest;
+            else if (rows.LastOrDefault(c => c.HoldReason == BankOutcomeHolds.FailedOutcomeChanged) is { } swap
+                     // A swap hold clears ONLY through its exit (allow_failed_outcome_change) or a reasoned reversal to Paid
+                     // (allowReturnReversal), never because a later file repeats the earlier word (final gate P1-1).
+                     && !rows.Any(c => c.ImportedAtUtc >= swap.ImportedAtUtc && c != swap && ResolvesSwap(c)))
+                hold = swap;
             if (hold is not null)
                 open.Add(new UnresolvedBankHold(r.Id, r.EmployeeId, r.Amount, r.Status ?? string.Empty, hold.HoldReason!,
                     hold.RawOutcome, hold.ReasonCode, hold.ImportedAtUtc));
         }
         return open;
     }
+
+    /// <summary>
+    /// An applied line that only a reasoned decision can produce on a failed record: the other failed outcome (the
+    /// allow_failed_outcome_change exit) or Paid (allowReturnReversal with a reason). Without one, such a line is held.
+    /// </summary>
+    private static bool ResolvesSwap(BankPaymentConfirmation c) =>
+        c.Applied && PaymentRecordStatuses.IsFailed(c.PreviousStatus)
+        && (c.Outcome == BankConfirmationOutcomes.Paid
+            || (c.Outcome is BankConfirmationOutcomes.Returned or BankConfirmationOutcomes.Rejected
+                && !string.Equals(c.PreviousStatus, c.Outcome, StringComparison.OrdinalIgnoreCase)));
 
     /// <summary>The hold as the screens and reports show it, with its plain EN/AR text.</summary>
     public static object View(UnresolvedBankHold h)
@@ -196,6 +236,7 @@ public static class BankOutcomeLedger
         {
             BankOutcomeHolds.DuplicateRejection => BankOutcomeLabels.HeldDuplicateRejection,
             BankOutcomeHolds.PaidThenRejected => BankOutcomeLabels.HeldRejectionAfterPaid,
+            BankOutcomeHolds.AmountMismatch => BankOutcomeLabels.HeldAmountMismatch,
             _ => BankOutcomeLabels.HeldFailedOutcomeChanged,
         };
         return new
@@ -213,9 +254,7 @@ public static class BankOutcomeLedger
     /// </summary>
     public static object FailedLine(PayrollPaymentRecord r, string outcome, BankText label, IEnumerable<BankPaymentConfirmation> confirmations)
     {
-        var latest = confirmations
-            .Where(c => c.PaymentRecordId == r.Id && c.Applied && c.Outcome == outcome)
-            .OrderByDescending(c => c.ImportedAtUtc).ThenByDescending(c => c.CreatedAtUtc).FirstOrDefault();
+        var latest = LatestApplied(r.Id, outcome, confirmations);
         var reason = latest is null ? null : BankStatusReasonCatalogue.Describe(latest.ReasonCode);
         return new
         {
@@ -227,8 +266,18 @@ public static class BankOutcomeLedger
         };
     }
 
+    /// <summary>The bank's latest APPLIED line of <paramref name="outcome"/> on a record: the one row every report reads its reason,
+    /// value date and bank reference from (a held line never speaks for the record).</summary>
+    public static BankPaymentConfirmation? LatestApplied(Guid paymentRecordId, string outcome, IEnumerable<BankPaymentConfirmation> confirmations) =>
+        confirmations
+            .Where(c => c.PaymentRecordId == paymentRecordId && c.Applied && c.Outcome == outcome)
+            .OrderByDescending(c => c.ImportedAtUtc).ThenByDescending(c => c.CreatedAtUtc).FirstOrDefault();
+
     private static bool IsRejected(PayrollPaymentRecord r) =>
         string.Equals(r.Status, PaymentRecordStatuses.Rejected, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsReturned(PayrollPaymentRecord r) =>
+        string.Equals(r.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>Plain wording shared by the payment-batch endpoints.</summary>

@@ -211,7 +211,7 @@ public static class WpsReturnedFileReconciler
             {
                 var reason = BankStatusReasonCatalogue.Describe(code);
                 // A duplicate usually means the EARLIER payment went through: never "not paid", never "owed".
-                return code == "DUPL"
+                return BankStatusReasonCatalogue.IsDuplicate(code)
                     ? Line(WpsReconciliationClass.HeldForPerson, code,
                         $"{reason.English} This salary may already have been paid by the earlier payment. Check on the bank statement whether the earlier payment arrived before doing anything else. Nothing was applied for this employee.",
                         $"{reason.Arabic} قد يكون هذا الراتب قد صُرف بالعملية السابقة. تحقق من كشف حساب البنك هل وصلت العملية السابقة قبل أي إجراء آخر. لم يُطبَّق أي شيء لهذا الموظف.")

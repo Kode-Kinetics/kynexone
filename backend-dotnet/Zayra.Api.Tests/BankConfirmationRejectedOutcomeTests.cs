@@ -157,6 +157,7 @@ public class BankConfirmationRejectedOutcomeTests
     {
         using var db = NewDb();
         var s = Seed(db);
+        SettlementJournalFixture.Settle(db, s.BatchId);   // the correction applies to a settled batch (owner ruling 2026-11-17)
 
         var result = await Import(db, s, parserKey, word, "AC04");
 

@@ -1,5 +1,6 @@
 using System.Text;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
@@ -88,6 +89,17 @@ public class BankConfirmationsController : ControllerBase
         // SEAM (wave 2, Setting 3): a second approver for these exits. Not built here.
         var (fileName, content, exits, readError) = await ReadPayloadAsync(ct);
         if (readError is not null) return readError;
+        // An exit sets a status the bank's word did not say (it can mark a salary Paid), so it needs the manual-Paid permission on
+        // top of the import's (final gate security P2-D). The plain import keeps payroll.export alone.
+        if (exits is { Count: > 0 } && !HasPermission(Infrastructure.Payroll.PaymentPermissions.WpsStatus))
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = BankLineExitKinds.NeedsPaymentStatusPermissionCode,
+                message = "Resolving a held bank line needs the permission to record payment status (payroll.wps_status.update) as "
+                        + "well as the import permission. Ask a person who holds it to send the exit.",
+                messageAr = "تتطلب معالجة سطر بنكي معلّق صلاحية تسجيل حالة الدفع (payroll.wps_status.update) إضافةً إلى صلاحية "
+                          + "الاستيراد. اطلب من شخص يملكها إرسال الإجراء.",
+            });
 
         var options = new BankConfirmationImportOptions(
             acknowledgeAmountMismatch, allowReturnReversal, returnReversalReason?.Trim(), allowCrossBatchReimport, dryRun,
@@ -98,7 +110,9 @@ public class BankConfirmationsController : ControllerBase
         if (refusal is not null) return StatusCode(refusal.Status, refusal.Payload);
 
         // Saved through the service so the returned-file claim lands (or is released when the save fails).
-        if (!dryRun && !result!.Duplicate) await _service.SaveAsync(result, ct);
+        // A refusal here means the import's claim was taken over while it ran: nothing was saved (final gate P2-9).
+        if (!dryRun && !result!.Duplicate && await _service.SaveAsync(result, ct) is { } fenced)
+            return StatusCode(fenced.Status, fenced.Payload);
 
         return Ok(Project(result!));
     }
@@ -129,6 +143,8 @@ public class BankConfirmationsController : ControllerBase
         var settledAt = await BankOutcomeLedger.SettledAtAsync(_db, tid.Value, new[] { batch }, ct);
         var rejectedAfterSettlement = BankOutcomeLedger.RejectedAfterSettlement(records, settledAt).Sum(r => r.Amount);
         var heldForPerson = BankOutcomeLedger.UnresolvedHolds(records, confirmations);
+        // Open amount-mismatch holds block too, so they count against "clean" (CTO-GATE 8.4 ruling 11).
+        var blockingHolds = BankOutcomeLedger.BlockingHolds(records, confirmations).Count;
 
         return Ok(new
         {
@@ -139,9 +155,10 @@ public class BankConfirmationsController : ControllerBase
             batch.Currency,
             coverage,
             // A batch whose WPS status reads Paid/Reconciled while money came back or is unaccounted for.
-            presentsCleanButIsNot = BankOutcomeLedger.PresentsCleanButIsNot(batch.WpsStatus, coverage, heldForPerson.Count),
+            presentsCleanButIsNot = BankOutcomeLedger.PresentsCleanButIsNot(batch.WpsStatus, coverage, blockingHolds),
             // Only money that left and came back. A rejection never left, so it is reported on its own.
-            returnedAmountAwaitingGlCorrection = coverage.ReturnedTotal,
+            // Only after the batch's settlement journal credited Cash/Bank for it (owner ruling 2026-11-17).
+            returnedAmountAwaitingGlCorrection = BankOutcomeLedger.ReturnedAfterSettlement(records, settledAt).Sum(r => r.Amount),
             rejectedAmountNotPaid = coverage.RejectedTotal,
             // Of those: rejections that arrived after the settlement journal credited Cash/Bank for them (C1).
             rejectedAfterSettlementAwaitingGlCorrection = rejectedAfterSettlement,

@@ -202,6 +202,19 @@ public sealed class WpsReturnedFileBankConfirmationParser : IContextualBankConfi
                         BankReference: fr.TrnRef, ValueDate: fr.TrnDate));
                     break;
                 }
+                case WpsReconciliationClass.HeldForPerson when _statusColumnVerified && BankStatusReasonCatalogue.IsDuplicate(line.ReasonCode):
+                {
+                    // A duplicate in the status field (final gate P2-5): the line is recorded as HELD for a person, with the duplicate
+                    // hold's blocker and exits, exactly as on the other readers. It is never applied, so nothing reads Paid or owed.
+                    var fr = fileRows[line.FileLine!.Value];
+                    errors.Add(new(fr.Line, line.Classification, line.ReasonEn, line.ReasonAr));
+                    if (string.IsNullOrWhiteSpace(line.EmployeeCode)) break;
+                    rows.Add(new BankConfirmationRow(
+                        RowNumber: fr.Line, WpsReference: null, EmployeeCode: line.EmployeeCode, Iban: null, Amount: fr.Net,
+                        RawOutcome: fr.TrnStatus ?? string.Empty, Outcome: BankConfirmationOutcomes.Rejected,
+                        ReasonCode: line.ReasonCode, ReasonText: null, BankReference: fr.TrnRef, ValueDate: fr.TrnDate));
+                    break;
+                }
                 default:
                     // Unknown / missing / ambiguous / invalid / account missing / status not recognised: reported, never applied.
                     errors.Add(new(line.FileLine ?? 0, line.Classification, line.ReasonEn, line.ReasonAr));

@@ -59,6 +59,16 @@ public static class BankLineExitKinds
     };
 
     public static bool NeedsBankReference(string kind) => kind != AllowFailedOutcomeChange;
+
+    /// <summary>The column limits of what an exit carries: the reason (as the confirmation's reason text is bounded) and the bank's
+    /// reference (bank_payment_confirmations.bank_reference, 140).</summary>
+    public const int MaxReasonLength = 500;
+    public const int MaxBankReferenceLength = 140;
+
+    /// <summary>403: an exit needs payroll.wps_status.update besides the import's payroll.export.</summary>
+    public const string NeedsPaymentStatusPermissionCode = "exit_needs_payment_status_permission";
+    /// <summary>403: nobody resolves a hold on their own salary.</summary>
+    public const string OwnRecordCode = "exit_on_own_payment_record";
 }
 
 /// <summary>Per-employee outcome tallies for a batch, as the ledger of record sees them.</summary>
@@ -178,9 +188,26 @@ public sealed class BankConfirmationService
     /// <summary>
     /// Saves an import and settles its returned-file claim: Recorded when the save succeeds; Failed when it throws, so the same file
     /// can be imported again (the exception is rethrown). Callers save an import through this, never with a bare SaveChanges.
+    /// <para>FENCING (final gate P2-9): before anything is saved, the claim this import holds must still be the live attempt: not
+    /// taken over by a later import, and not so old that one may take it over while this save runs. Otherwise nothing is saved, the
+    /// import's pending changes are dropped, and the refusal (409) is returned; null when the import was saved.</para>
     /// </summary>
-    public async Task SaveAsync(BankConfirmationImportResult result, CancellationToken ct)
+    public async Task<JournalExportRefusal?> SaveAsync(BankConfirmationImportResult result, CancellationToken ct)
     {
+        if (result.ReturnedFileClaim is { } held && _claim is not null && !await ClaimStillLiveAsync(held, ct))
+        {
+            _db.ChangeTracker.Clear();
+            try { await _claim.SettleAsync(held, saved: false, CancellationToken.None); }
+            catch (Exception releaseError) when (releaseError is GovernmentExchangeConflictException or DbUpdateException or KeyNotFoundException) { }
+            return new JournalExportRefusal(409, new
+            {
+                error = ReturnedFileClaim.TakenOverCode,
+                message = "This import took too long and another import of the same file may have taken its place, so nothing was "
+                        + "applied. Check the payment batch, then import the file again if it is still needed.",
+                messageAr = "استغرق هذا الاستيراد وقتًا طويلًا وربما حلّ محله استيراد آخر للملف نفسه، لذلك لم يُطبَّق أي شيء. راجع دفعة "
+                          + "الرواتب ثم أعد استيراد الملف إذا كان لا يزال مطلوبًا.",
+            });
+        }
         try
         {
             await _db.SaveChangesAsync(ct);
@@ -202,6 +229,24 @@ public sealed class BankConfirmationService
             try { await _claim.SettleAsync(landed, saved: true, ct); }
             catch (Exception settleError) when (settleError is GovernmentExchangeConflictException or DbUpdateException or KeyNotFoundException) { }
         }
+        return null;
+    }
+
+    /// <summary>
+    /// True while the claim is the live attempt for its file: still Attempted, younger than <see cref="ReturnedFileClaim.StaleAfter"/>
+    /// less <see cref="ReturnedFileClaim.FenceMargin"/> (so no takeover can start while this save runs), and no later attempt for the
+    /// same file exists. Read tenant-pinned from the ledger, fresh.
+    /// </summary>
+    private async Task<bool> ClaimStillLiveAsync(ReturnedFileClaimTicket ticket, CancellationToken ct)
+    {
+        var claim = await _db.GovernmentExchanges.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.TenantId == ticket.TenantId && x.Id == ticket.ClaimId, ct);
+        if (claim is null || claim.State != GovernmentExchangeStates.Attempted) return false;
+        if (claim.CreatedAtUtc <= DateTime.UtcNow - (ReturnedFileClaim.StaleAfter - ReturnedFileClaim.FenceMargin)) return false;
+        var attempts = ReturnedFileClaim.AttemptPrefix(claim.IdempotencyKey);
+        return !await _db.GovernmentExchanges.AsNoTracking()
+            .AnyAsync(x => x.TenantId == ticket.TenantId && x.Body == claim.Body && x.Operation == claim.Operation && x.Id != claim.Id
+                           && x.IdempotencyKey.StartsWith(attempts) && x.CreatedAtUtc >= claim.CreatedAtUtc, ct);
     }
 
     public IReadOnlyList<IBankConfirmationParser> Parsers => _parsers;
@@ -234,6 +279,16 @@ public sealed class BankConfirmationService
         BankConfirmationImportOptions options, Guid? actorId, string actorName, CancellationToken ct)
     {
         if (ExitShapeRefusal(options) is { } exitShapeRefusal) return (null, exitShapeRefusal);
+        // An exit's own words reach the sealed audit row and the response: IBAN- and ID-shaped text is masked first.
+        if (options.AnyExit)
+            options = options with
+            {
+                Exits = options.Exits!.Select(e => e with
+                {
+                    Reason = e.Reason is null ? null : GovernmentLogScrubber.Mask(e.Reason),
+                    BankReference = e.BankReference is null ? null : GovernmentLogScrubber.Mask(e.BankReference),
+                }).ToList(),
+            };
 
         var parser = FindParser(parserKey);
         if (parser is null)
@@ -411,6 +466,19 @@ public sealed class BankConfirmationService
         var codeById = employeeCodes.ToDictionary(e => e.Id, e => e.EmployeeCode ?? string.Empty);
         var (exitFor, exitRefusal) = ResolveExits(options, records, priorConfirmations, toApply, codeById);
         if (exitRefusal is not null) return (null, exitRefusal);
+        // Nobody resolves a hold on their own salary (final gate security P2-D): any login linked to the record's employee is refused.
+        foreach (var named in exitFor.Keys)
+        {
+            var subject = records.Single(r => r.Id == named);
+            if (await Approvals.SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, actorId, subject.EmployeeId, ct))
+                return (null, new JournalExportRefusal(403, new
+                {
+                    error = BankLineExitKinds.OwnRecordCode,
+                    message = "You cannot resolve a held bank line on your own salary. Ask another person who may record payment status.",
+                    messageAr = "لا يمكنك معالجة سطر بنكي معلّق على راتبك أنت. اطلب ذلك من شخص آخر مخوّل بتسجيل حالة الدفع.",
+                    paymentRecordId = named,
+                }));
+        }
 
         // ── 2c. Claim the file before anything is applied (returned-file parser only) ──────────────
         // The claim is written in the ledger's own unit of work and committed before this import applies anything, so a concurrent
@@ -452,7 +520,8 @@ public sealed class BankConfirmationService
             // The status a person's reasoned exit sets when it differs from the bank's word (null: none).
             string? personStatus = null;
 
-            if (BankStatusReasonCatalogue.IsDuplicate(row.ReasonCode)
+            var duplicate = BankStatusReasonCatalogue.IsDuplicate(row.ReasonCode, row.ReasonText);
+            if (duplicate
                 && exit?.Kind is BankLineExitKinds.ConfirmOriginalPaymentReceived or BankLineExitKinds.ConfirmDuplicateNotPaid)
             {
                 // The DUPL exits (CTO follow-up 2). The person checked the original payment with the bank.
@@ -486,7 +555,7 @@ public sealed class BankConfirmationService
                     kind = exit.Kind, from = previous, to, reason = exit.Reason, bankReference = exit.BankReference,
                 });
             }
-            else if (BankStatusReasonCatalogue.IsDuplicate(row.ReasonCode))
+            else if (duplicate)
             {
                 // CTO ruling 4: a duplicate refusal usually means the ORIGINAL payment went through. Whatever the word, it
                 // is never "not paid, still owed" and never "paid": held for a person to check the original payment.
@@ -749,11 +818,11 @@ public sealed class BankConfirmationService
         IReadOnlyList<PayrollPaymentRecord> records, IReadOnlyList<BankPaymentConfirmation> confirmations, CancellationToken ct)
     {
         result.Coverage = Coverage(records);
-        // Only money that LEFT and came back is "returned". A rejection is reported apart; it needs a GL correction only when
-        // the batch was settled before it arrived.
-        result.ReturnedAmountAwaitingGlCorrection = result.Coverage.ReturnedTotal;
-        result.RejectedAmountNotPaid = result.Coverage.RejectedTotal;
         var settledAt = await BankOutcomeLedger.SettledAtAsync(_db, tenantId, new[] { batch }, ct);
+        // Only money that LEFT and came back is "returned", and it needs the GL correction only once the batch's settlement journal
+        // credited Cash/Bank for it (owner ruling 2026-11-17). A rejection is reported apart, by the same settlement test.
+        result.ReturnedAmountAwaitingGlCorrection = BankOutcomeLedger.ReturnedAfterSettlement(records, settledAt).Sum(r => r.Amount);
+        result.RejectedAmountNotPaid = result.Coverage.RejectedTotal;
         result.RejectedAfterSettlementAwaitingGlCorrection =
             BankOutcomeLedger.RejectedAfterSettlement(records, settledAt).Sum(r => r.Amount);
         foreach (var r in records.Where(r => string.Equals(r.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase)))
@@ -788,6 +857,22 @@ public sealed class BankConfirmationService
                         ? "This exit needs a reason and the bank's reference (for example a statement line or the bank's letter)."
                         : "This exit needs a reason: it changes what the GL must correct.",
                     kind = e.Kind, paymentRecordId = e.PaymentRecordId, employeeReference = e.EmployeeReference,
+                });
+            if (e.Reason!.Trim().Length > BankLineExitKinds.MaxReasonLength)
+                return new JournalExportRefusal(400, new
+                {
+                    error = "exit_reason_too_long",
+                    message = $"An exit's reason is at most {BankLineExitKinds.MaxReasonLength} characters.",
+                    messageAr = $"سبب الإجراء لا يتجاوز {BankLineExitKinds.MaxReasonLength} حرفًا.",
+                    kind = e.Kind,
+                });
+            if (e.BankReference is { } reference && reference.Trim().Length > BankLineExitKinds.MaxBankReferenceLength)
+                return new JournalExportRefusal(400, new
+                {
+                    error = "exit_bank_reference_too_long",
+                    message = $"An exit's bank reference is at most {BankLineExitKinds.MaxBankReferenceLength} characters.",
+                    messageAr = $"مرجع البنك في الإجراء لا يتجاوز {BankLineExitKinds.MaxBankReferenceLength} حرفًا.",
+                    kind = e.Kind,
                 });
         }
         return null;
@@ -852,7 +937,7 @@ public sealed class BankConfirmationService
 
     private static bool ExitFits(string kind, BankConfirmationRow row, PayrollPaymentRecord record)
     {
-        var duplicate = BankStatusReasonCatalogue.IsDuplicate(row.ReasonCode);
+        var duplicate = BankStatusReasonCatalogue.IsDuplicate(row.ReasonCode, row.ReasonText);
         return kind switch
         {
             BankLineExitKinds.AllowPaidToRejected or BankLineExitKinds.ConfirmPaidDespiteRejection =>

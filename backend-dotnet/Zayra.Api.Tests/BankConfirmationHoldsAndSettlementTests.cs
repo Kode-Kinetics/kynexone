@@ -142,6 +142,8 @@ public class BankConfirmationHoldsAndSettlementTests
             new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
             new(ClaimTypes.Name, "Payroll Officer"),
             new("permission", "payroll.export"),
+            // A request carrying exits also needs the manual-Paid permission (final gate security P2-D).
+            new("permission", "payroll.wps_status.update"),
             new("is_group_scope", "true"),
         }, "Test"));
         return new BankConfirmationsController(db, Service(db))
@@ -204,6 +206,9 @@ public class BankConfirmationHoldsAndSettlementTests
     {
         using var db = NewDb();
         var w = Seed(db);
+        // Settled first: returned money needs the correction only once the settlement journal credited Cash/Bank (owner ruling
+        // 2026-11-17). The unsettled case is BankOutcomeHoldClosureTests.AReturnBeforeSettlement_*.
+        Settle(db, w, DateTime.UtcNow.AddDays(-1));
         await Import(db, w, "RETURNED", "AC04");
 
         var h = await Handoff(db, w);
@@ -484,6 +489,7 @@ public class BankConfirmationHoldsAndSettlementTests
     {
         using var db = NewDb();
         var w = Seed(db, PaymentRecordStatuses.Returned);
+        Settle(db, w, DateTime.UtcNow.AddDays(-4));   // the correction figure exists only for a settled batch (owner ruling 2026-11-17)
         // What an import before F1 left behind: an RJCT line stored as Returned, counted as returned money.
         db.BankPaymentConfirmations.Add(new BankPaymentConfirmation
         {
@@ -897,6 +903,7 @@ public class BankConfirmationHoldsAndSettlementTests
     {
         using var db = NewDb();
         var w = Seed(db, (100m, "Pending"), (200m, "Pending"), (300m, "Pending"), (400m, "Pending"));
+        Settle(db, w, DateTime.UtcNow.AddDays(-1));   // the returned figure is a GL correction only after settlement (owner ruling 2026-11-17)
 
         var result = await Import(db, w, null,
             ("W1", 100m, "PAID", null), ("W2", 200m, "RETURNED", "AC04"), ("W3", 300m, "RJCT", "AC01"));

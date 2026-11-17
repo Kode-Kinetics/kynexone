@@ -6005,7 +6005,7 @@ public partial class PayrollController : ControllerBase
                 unconfirmedPayments = new { count = cov.UnconfirmedCount, total = cov.UnconfirmedTotal },
                 confirmationCoverage = cov.ConfirmationCoverage,
                 presentsCleanButIsNot = Infrastructure.Finance.BankOutcomeLedger.PresentsCleanButIsNot(b.WpsStatus, cov,
-                    Infrastructure.Finance.BankOutcomeLedger.UnresolvedHolds(
+                    Infrastructure.Finance.BankOutcomeLedger.BlockingHolds(
                         d4Records.Where(r => r.PaymentBatchId == b.Id), d4Confirmations.Where(c => c.PaymentBatchId == b.Id)).Count),
                 acceptanceEvidenceCount = evidence.Count,
                 latestEvidenceId = latestEvidence?.EvidenceId,

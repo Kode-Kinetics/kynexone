@@ -283,6 +283,7 @@ public class WpsReturnedFileImportPathTests
     {
         using var db = NewDb();
         var s = Seed(db, 2);
+        SettlementJournalFixture.Settle(db, s.BatchId);   // the correction applies to a settled batch (owner ruling 2026-11-17)
         var rows = s.Rows.Select(r => r with { Status = "PAID" }).ToList();
         rows[0] = rows[0] with { Status = "RETURNED" };
 
@@ -311,7 +312,9 @@ public class WpsReturnedFileImportPathTests
         result.RejectedApplied.Should().Be(0);
         result.RejectedAmountNotPaid.Should().Be(0m, "a duplicate may already have been paid: it is never counted as not paid");
         Reload(db, s.Records[0]).Status.Should().Be("Pending");
-        db.BankPaymentConfirmations.Should().NotContain(c => c.PaymentRecordId == s.Records[0].Id);
+        // Held for a person (final gate P2-5): recorded, never applied, with the duplicate hold and its exits.
+        db.BankPaymentConfirmations.Should().ContainSingle(c => c.PaymentRecordId == s.Records[0].Id && !c.Applied
+                                                               && c.HoldReason == BankOutcomeHolds.DuplicateRejection);
         var errors = JsonSerializer.Serialize(result.ParseErrors, Readable);
         errors.Should().Contain("held_for_person").And.Contain("earlier payment").And.NotContain("owed");
     }
