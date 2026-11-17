@@ -426,6 +426,8 @@ test.describe('the reviews\' rules', () => {
     const drawer = page.getByRole('dialog');
     const who = drawer.getByLabel('Employee (from this batch)');
     await expect(who).toHaveValue('203', { timeout: 15_000 });
+    // Type only once the employee's details are loaded (the BIC takes focus then); typing earlier is overwritten by the load.
+    await expect(drawer.getByLabel('BIC (SWIFT) code')).toBeFocused({ timeout: 15_000 });
     await expect(who).toBeDisabled();
     await expect(drawer.getByRole('button', { name: 'Reload employee' })).toHaveCount(0);
     for (const [i, v] of ['ARNBSARI', 'Riyadh', 'Olaya', 'Building 10'].entries()) await drawer.locator('input[dir="ltr"]').nth(i).fill(v);
@@ -958,6 +960,7 @@ test.describe('mockup-matching screenshots', () => {
     await page.getByTestId('bank-guide-primary').click();
     await page.getByTestId('bank-blocker-fix').click();
     const drawer = page.getByRole('dialog');
+    await expect(drawer.getByLabel('BIC (SWIFT) code')).toBeFocused({ timeout: 15_000 });
     for (const [i, v] of ['ARNBSARI', 'Riyadh', 'Olaya', 'Building 10'].entries()) await drawer.locator('input[dir="ltr"]').nth(i).fill(v);
     await drawer.locator('form button[type="submit"]').click();
     await expect(drawer).toContainText('Submitted for separate approval', { timeout: 15_000 });

@@ -129,8 +129,6 @@ const runCard = (page: Page, period: string): Locator =>
   content(page).locator('[role="button"]').filter({ hasText: period }).first();
 const approvalCard = (page: Page): Locator =>
   content(page).locator('div.surface').filter({ hasText: /^Payroll Run —/ }).first();
-const batchCard = (page: Page, number: string): Locator =>
-  content(page).locator('[role="button"]').filter({ hasText: number }).first();
 
 interface RunRow {
   id: string; status: string; employeeCount: number;
@@ -902,7 +900,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           "The control is enabled, the blocking notice is gone, and the batch's total equals the "
           + "run's net pay with one payment line per employee.",
         record: { type: 'PayrollPaymentBatch' },
-        mustShowOnScreen: /Draft/,
+        mustShowOnScreen: /No bank file yet|Bank setup needed/, // IntelliFlow is Saudi: the guided flow says no bank file yet
         act: async (ctx) => {
           await gotoPayroll(admin.page);
           await openTab(admin.page, 'Bank / WPS Files');
@@ -927,8 +925,9 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
 
           expect(batch.totalAmount, "the batch total must equal the run's net-pay total").toBeCloseTo(netTotal, 2);
           expect(batch.currency, 'the batch must be denominated in the tenant currency').toBe(currency);
-          await expect(batchCard(admin.page, batchNumber)).toBeVisible({ timeout: 60_000 });
-          await expect(batchCard(admin.page, batchNumber)).toContainText(`${currency} ${netRendered}`);
+          const facts = content(admin.page).getByTestId('bank-file-facts');
+          await expect(facts).toContainText(batchNumber, { timeout: 60_000 });
+          await expect(facts).toContainText(`${currency} ${netRendered}`);
           ctx.note(`Batch ${batchNumber} created in Draft for ${currency} ${netRendered}.`);
         },
         persisted: async (ctx) => {
@@ -959,20 +958,17 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           + "employee and a total equal to the run's net pay. The run stays Locked, the batch is not "
           + 'settled, and no payment record says paid.',
         record: { type: 'PayrollPaymentBatch', id: batchId },
-        mustShowOnScreen: /(File generated|Generated)(?![a-z])/,
+        // For a Saudi batch this wage file is the INTERNAL register, not the bank file: the screen must keep saying so.
+        mustShowOnScreen: /No bank file yet|Bank setup needed/,
         act: async (ctx) => {
-          const attempt = admin.page.waitForResponse(
-            (r) => r.url().includes(`/api/payroll/payment-batches/${batchId}/wps-file`)
-              && r.request().method() === 'POST',
-          );
-          await batchCard(admin.page, batchNumber).getByRole('button', { name: 'Generate WPS/SIF' }).click();
-          const exported = await attempt;
+          // The Saudi guided flow no longer offers the register button; the same endpoint is called with the admin's session.
+          const exported = await ctx.api('POST', `/api/payroll/payment-batches/${batchId}/wps-file`, { token: admin.token, recordId: batchId });
           expect(
-            exported.status(),
+            exported.status,
             "the operator's own Generate WPS/SIF must complete; a 422 here means an ACTIVE employee has "
             + 'drifted pay-blocked',
           ).toBe(200);
-          const file = (await exported.json()) as {
+          const file = exported.json as {
             sifFileName: string; employeeCount: number; totalSalaryAmount: number; fileHash: string;
           };
           expect(file.employeeCount, 'one record per employee on the run').toBe(employeeCount);
@@ -985,11 +981,14 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           await gotoPayroll(admin.page);
           await openTab(admin.page, 'Bank / WPS Files');
           expect(await selectRun(admin.page, period)).toBe(runId);
-          const filed = batchCard(admin.page, batchNumber);
-          await expect(filed, 'a batch with a wage file must read as File Generated').toContainText(/(File generated|Generated)(?![a-z])/);
+          await expect(content(admin.page).getByTestId('bank-file-facts')).toContainText(batchNumber, { timeout: 60_000 });
           await expect(
-            filed.getByRole('button', { name: 'Generate WPS/SIF' }),
-            'a batch that already has a wage file must not offer to generate another',
+            content(admin.page).getByTestId('bank-guide-chip'),
+            'the register must not read as the bank file',
+          ).toHaveAttribute('data-chip', /^(no_file|setup|attention)$/);
+          await expect(
+            content(admin.page).getByRole('button', { name: 'Generate WPS/SIF' }),
+            'the Saudi bank-file flow does not offer the register button',
           ).toHaveCount(0);
           ctx.note(
             `${file.sifFileName}: ${file.employeeCount} records, total ${file.totalSalaryAmount}, `

@@ -26,7 +26,8 @@ test.describe('Payroll — attendance check on the Validation tab', () => {
     await tab.click();
     await expect(tab).toHaveAttribute('aria-current', 'page');
 
-    const picker = content(page).locator('select[aria-label="Select payroll run"]');
+    // The run is chosen in the run bar (one picker for every Payroll section).
+    const picker = content(page).locator('#pipeline-run-picker');
     const options = picker.locator('option:not([value=""])');
     await expect(options.first(), 'the provisioned tenant must have at least one payroll run').toBeAttached();
     const runId = (await options.first().getAttribute('value'))!;
