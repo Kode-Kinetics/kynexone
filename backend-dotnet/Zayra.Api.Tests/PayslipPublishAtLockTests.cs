@@ -117,7 +117,7 @@ public class PayslipPublishAtLockTests
 
         var slip = await db.PayrollSlips.AsNoTracking().SingleAsync(s => s.RunId == run.Id && s.EmployeeId == first.Id);
         var payslip = await db.Payslips.AsNoTracking().SingleAsync(p => p.PayrollRunId == run.Id && p.EmployeeId == first.Id);
-        (await db.PayslipComponents.AsNoTracking().Where(c => c.PayslipId == payslip.Id && c.ComponentType == "Net").SumAsync(c => c.Amount))
+        (await db.PayslipComponents.AsNoTracking().Where(c => c.PayslipId == payslip.Id && c.ComponentType == "Net").ToListAsync()).Sum(c => c.Amount)
             .Should().Be(slip.NetSalary, "the published payslip shows the locked figures, not the ones generated before the reopen");
         (await db.Payslips.AsNoTracking().CountAsync(p => p.PayrollRunId == run.Id)).Should().Be(emps.Count);
     }
