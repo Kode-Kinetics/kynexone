@@ -452,7 +452,7 @@ test.describe('Pay out waits for the bank to confirm the payments', () => {
     });
 
     test(`[${locale}] the stage is Done once every payment is confirmed`, async ({ page }) => {
-      await open(page, `/payroll?tab=runs&run=${RUN_PREV}`, { batches: [{ ...BATCH, unconfirmedPayments: { count: 0, total: 0 }, confirmationCoverage: 1 }], locale });
+      await open(page, `/payroll?tab=runs&run=${RUN_PREV}`, { batches: [{ ...BATCH, unconfirmedPayments: { count: 0, total: 0 }, confirmationCoverage: 1, unresolvedReturns: { count: 0, total: 0 } }], locale });
       await expect(paidStage(page)).toHaveAttribute('data-state', 'done');
       await expect(paidStage(page)).toContainText(WORDS[locale].done);
       await expect(page.getByTestId('stage-reason-paid')).toHaveCount(0);

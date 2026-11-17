@@ -48,12 +48,21 @@ test.describe('the last stage waits for the bank to confirm', () => {
     }
   });
 
-  test('Done once every payment is confirmed, even before the batch status is moved to Paid', () => {
-    const { m, stage } = last([batch({ unconfirmedPayments: { count: 0, total: 0 }, confirmationCoverage: 1 })]);
+  test('Done once every payment is confirmed and none came back, even before the batch status is moved to Paid', () => {
+    const { m, stage } = last([batch({ unconfirmedPayments: { count: 0, total: 0 }, confirmationCoverage: 1, unresolvedReturns: { count: 0, total: 0 } })]);
     expect(stage.state).toBe('done');
     expect(stage.reason).toBeNull();
     expect(m.payOut?.status).toBe('confirmed');
     expect(m.next).toMatchObject({ kind: 'none', label: 'none' });
+  });
+
+  test('every payment answered but some returned (or returns not reported): not Done, and the next step is Payment Tracking', () => {
+    for (const unresolvedReturns of [{ count: 2, total: 500 }, undefined]) {
+      const { m, stage } = last([batch({ unconfirmedPayments: { count: 0, total: 0 }, confirmationCoverage: 1, unresolvedReturns })]);
+      expect(stage.state).toBe('current');
+      expect(m.payOut?.status).toBe('confirmed');
+      expect(m.next).toMatchObject({ kind: 'goto', tab: 'payment-tracking' });
+    }
   });
 
   test('Done when the batch is Paid or Reconciled, or the run itself is Paid', () => {

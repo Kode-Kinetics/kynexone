@@ -13,7 +13,8 @@
  *     the INTERNAL payroll register, so it never says "file" on its own. Other batches (WPS / SIF): WPS status Generated or later.
  *  2. Submitted and the bank's answer: the batch's effective WPS status (Submitted, Accepted, Rejected, Paid, Reconciled).
  *  3. Answered x of y: the open batch's payment records when the tab has them (Paid, Returned, Rejected answer; Pending waits; Cancelled
- *     is out of the count), otherwise the batch list's unconfirmed payments and coverage (awaitingBankConfirmation).
+ *     is out of the count), otherwise the batch list's unconfirmed payments and coverage (awaitingBankConfirmation). Returned payments:
+ *     the records, otherwise the batch list's unresolvedReturns. A return, or returns not reported, never reads as "confirmed".
  *  4. Check passed: the panel's validation (this session only). It moves the stage from step 2 to step 3 and never changes the chip.
  *  5. Setup: the panel's saved employer setup; absent means complete.
  *  6. Run locked: run.status === 'Locked'.
@@ -75,6 +76,8 @@ export interface PayOut {
   total?: number;
   /** The record-level split (only from the payment records). */
   split?: PayOutSplit;
+  /** Payments the bank returned or rejected (from the records, else the batch list's unresolved returns); absent when not reported. */
+  returned?: number;
 }
 
 export interface PayOutExportFacts {
@@ -215,9 +218,13 @@ export function derivePayOut(input: PayOutInput): PayOut {
     let answered: number | undefined;
     let total: number | undefined;
     let waiting: boolean | null;
+    // Money that came back: from the records, or (run bar, picker, pipeline: no records) from the batch list.
+    let returned: number | undefined;
     if (split && split.total > 0) {
-      answered = split.paid + split.returned; total = split.total; waiting = split.waiting > 0;
+      answered = split.paid + split.returned; total = split.total; waiting = split.waiting > 0; returned = split.returned;
     } else {
+      const r = batch.unresolvedReturns?.count;
+      if (typeof r === 'number') returned = r;
       const count = batch.unconfirmedPayments?.count;
       if (typeof count === 'number') {
         waiting = count > 0;
@@ -225,11 +232,12 @@ export function derivePayOut(input: PayOutInput): PayOut {
         if (w?.total !== undefined && w.confirmed !== undefined) { answered = w.confirmed; total = w.total; }
       } else waiting = null; // an older API: the wait is said without counts
     }
-    const counts = { ...(answered !== undefined && total !== undefined ? { answered, total } : {}), ...(split ? { split } : {}) };
+    const counts = { ...(answered !== undefined && total !== undefined ? { answered, total } : {}), ...(split ? { split } : {}), ...(returned !== undefined ? { returned } : {}) };
     if (waiting === false) {
-      // Every payment answered. Returned ones still need paying again (Payment Tracking), so only an all-paid batch is "done".
-      const returns = (split?.returned ?? 0) > 0;
-      return result('confirmed', batch, [...front, returns ? step('response', 'current', 'here') : step('response', 'done', 'confirmed')],
+      // Every payment answered. Returned ones still need paying again (Payment Tracking), and returns not reported are not known to be
+      // zero: only a batch with NO returns is "done".
+      const clean = returned === 0;
+      return result('confirmed', batch, [...front, clean ? step('response', 'done', 'confirmed') : step('response', 'current', 'here')],
         can.settle ? { kind: 'settle', disabled: false } : null, false, counts);
     }
     return result('submitted', batch, [...front, step('response', 'current', 'waiting')], { kind: 'record_response', disabled: false }, false, counts);
@@ -299,7 +307,7 @@ export function payOutTone(p: PayOut): PayOutTone {
     case 'attention': case 'rejected': return 'danger';
     case 'created': case 'downloaded': return 'neutral';
     case 'submitted': return 'info';
-    case 'confirmed': return (p.split?.returned ?? 0) > 0 ? 'warning' : 'success';
+    case 'confirmed': return p.returned === 0 ? 'success' : p.returned === undefined ? 'info' : 'warning';
     case 'settled': return 'success';
   }
 }
@@ -321,7 +329,8 @@ export function payOutLabel(t: Translate, p: PayOut): string {
         : t('Submitted — waiting for the bank');
     case 'rejected': return t('Rejected by the bank');
     case 'confirmed':
-      if ((p.split?.returned ?? 0) > 0 && p.total !== undefined) return t('Bank answered {total} of {total} — {returned} returned', { total: p.total, returned: p.split!.returned });
+      if ((p.returned ?? 0) > 0) return t('{count} returned: needs attention', { count: p.returned! });
+      if (p.returned === undefined) return t('Bank answered every payment');
       return p.total ? t('Bank confirmed {total} of {total}', { total: p.total }) : t('Bank confirmed every payment');
     case 'settled': return t('Paid — settled');
   }

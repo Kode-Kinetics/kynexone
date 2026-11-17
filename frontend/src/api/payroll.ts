@@ -429,6 +429,8 @@ export interface PayrollPaymentBatch {
   mudadNote?: string | null;
   /** Payments the bank has not confirmed yet (neither paid, returned nor rejected). Absent from an older API. */
   unconfirmedPayments?: { count: number; total: number };
+  /** Payments the bank returned or rejected that are not paid again yet (money that did NOT reach the employee). Absent from an older API. */
+  unresolvedReturns?: { count: number; total: number };
   /** Share (0..1) of the batch's payments the bank has spoken about: paid, returned or rejected. Absent from an older API. */
   confirmationCoverage?: number;
 }

@@ -3483,7 +3483,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
   const responsePurpose = (data: BankPanelData | null | undefined) => {
     switch (payOut.status) {
       case 'rejected': return batchRow?.wpsRejectionReason ? t('The bank rejected this file: {reason}. No one in it was paid.', { reason: batchRow.wpsRejectionReason }) : t('The bank rejected this file. No one in it was paid.');
-      case 'confirmed': return (payOut.split?.returned ?? 0) > 0 ? t('The bank answered every payment. Pay the returned ones again from Payment Tracking.') : t('The bank confirmed every payment.');
+      case 'confirmed': return (payOut.returned ?? 0) > 0 ? t('The bank answered every payment. Pay the returned ones again from Payment Tracking.') : t('The bank confirmed every payment.');
       case 'settled': return t('Paid and settled.');
       default: return data?.bankName
         ? t('Submitted to {bank} — waiting for the bank’s confirmation. Record what the bank confirms or returns in Payment Tracking.', { bank: data.bankName })

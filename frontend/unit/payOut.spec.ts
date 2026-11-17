@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import {
-  derivePayOut, payOutLabel, payOutNeedsFile, payOutStageState, splitFromRecords,
+  derivePayOut, payOutLabel, payOutNeedsFile, payOutStageState, payOutTone, splitFromRecords,
   type PayOut, type PayOutInput, type PayOutNextKind, type PayOutStage, type PayOutStatus,
 } from '../src/lib/payOut';
 import { attentionFor, derivePipeline, payOutForRun, type PipelineBatch, type PipelineInput } from '../src/lib/payrollPipeline';
@@ -28,6 +28,8 @@ const records = (paid: number, returned: number, pending: number) => [
   ...Array.from({ length: pending }, () => ({ status: 'Pending', amount: 100 })),
   { status: 'Cancelled', amount: 999 },
 ];
+/** What the batch list says when the bank answered every payment and none came back. */
+const ALL_PAID = { unconfirmedPayments: { count: 0, total: 0 }, confirmationCoverage: 1, unresolvedReturns: { count: 0, total: 0 } };
 const sub = (status: string, over: Partial<PipelineBatch> = {}) => batch({ status: 'FileGenerated', wpsStatus: status, effectiveWpsStatus: status, bankFileGenerated: true, ...over });
 
 interface Row {
@@ -69,8 +71,16 @@ const ROWS: Row[] = [
   { name: '5b rejected', input: { batches: [sub('Rejected', { allowedNextStatuses: ['Generated'] })] }, status: 'rejected', stage: 'response', next: 'prepare_corrected', disabled: false, label: 'Rejected by the bank' },
   { name: '5b rejected, may not redo', input: { batches: [sub('Rejected')] }, status: 'rejected', stage: 'response', next: 'prepare_corrected', disabled: true, label: 'Rejected by the bank' },
   { name: '5c all confirmed (records)', input: { batches: [sub('Accepted')], records: records(121, 0, 0) }, status: 'confirmed', stage: 'finished', next: 'settle', disabled: false, label: 'Bank confirmed 121 of 121' },
-  { name: '5c all confirmed, no settle permission', input: { batches: [sub('Accepted', { unconfirmedPayments: { count: 0, total: 0 }, confirmationCoverage: 1 })], can: { ...ALL, settle: false } }, status: 'confirmed', stage: 'finished', next: null, label: 'Bank confirmed every payment' },
-  { name: '5c all answered, some returned', input: { batches: [sub('Accepted')], records: records(118, 3, 0) }, status: 'confirmed', stage: 'response', next: 'settle', disabled: false, label: 'Bank answered 121 of 121 — 3 returned' },
+  { name: '5c all confirmed, no settle permission', input: { batches: [sub('Accepted', { ...ALL_PAID })], can: { ...ALL, settle: false } }, status: 'confirmed', stage: 'finished', next: null, label: 'Bank confirmed every payment' },
+  { name: '5c all answered, some returned', input: { batches: [sub('Accepted')], records: records(118, 3, 0) }, status: 'confirmed', stage: 'response', next: 'settle', disabled: false, label: '3 returned: needs attention' },
+  // Without the payment records (run bar, run picker, pipeline): the batch list's unresolved returns decide. Never "confirmed" over a return.
+  { name: '5c accepted, batch list only, 2 returned', input: { batches: [sub('Accepted', { ...ALL_PAID, unresolvedReturns: { count: 2, total: 5000 } })] }, status: 'confirmed', stage: 'response', next: 'settle', disabled: false, label: '2 returned: needs attention' },
+  { name: '5c submitted, batch list only, 1 returned', input: { batches: [sub('Submitted', { ...ALL_PAID, unresolvedReturns: { count: 1, total: 900 } })] }, status: 'confirmed', stage: 'response', next: 'settle', disabled: false, label: '1 returned: needs attention' },
+  { name: '5c accepted, batch list only, no returns', input: { batches: [sub('Accepted', { ...ALL_PAID })] }, status: 'confirmed', stage: 'finished', next: 'settle', disabled: false, label: 'Bank confirmed every payment' },
+  { name: '5c submitted, batch list only, no returns', input: { batches: [sub('Submitted', { ...ALL_PAID })] }, status: 'confirmed', stage: 'finished', next: 'settle', disabled: false, label: 'Bank confirmed every payment' },
+  { name: '5c accepted, returns not reported', input: { batches: [sub('Accepted', { unconfirmedPayments: { count: 0, total: 0 }, confirmationCoverage: 1 })] }, status: 'confirmed', stage: 'response', next: 'settle', disabled: false, label: 'Bank answered every payment' },
+  { name: '5c submitted, returns not reported', input: { batches: [sub('Submitted', { unconfirmedPayments: { count: 0, total: 0 }, confirmationCoverage: 1 })] }, status: 'confirmed', stage: 'response', next: 'settle', disabled: false, label: 'Bank answered every payment' },
+  { name: '5a waiting with a return, batch list only', input: { batches: [sub('Submitted', { unconfirmedPayments: { count: 3, total: 300 }, confirmationCoverage: 0.4, unresolvedReturns: { count: 1, total: 100 } })] }, status: 'submitted', stage: 'response', next: 'record_response', disabled: false, label: 'Submitted — waiting for the bank (3 of 5 waiting)' },
   { name: 'F settled', input: { batches: [sub('Paid')] }, status: 'settled', stage: 'finished', next: null, label: 'Paid — settled' },
   { name: 'F run paid', input: { run: { status: 'Paid' }, batches: [] }, status: 'settled', stage: 'finished', next: null, label: 'Paid — settled' },
   { name: 'register only (WPS Generated, no bank file)', input: { batches: [batch({ wpsStatus: 'Generated', effectiveWpsStatus: 'Generated' })] }, status: 'no_file', stage: 'check', next: 'check', disabled: false, label: 'No bank file yet' },
@@ -160,6 +170,10 @@ test.describe('every consumer agrees, for every state', () => {
       const attention = attentionFor(input.run as { id: string; status: string }, (input.batches ?? []) as PipelineBatch[]);
       if (input.run!.status === 'Locked' && !input.exportFacts && !input.downloaded && !input.records) expect(attention === 'export').toBe(payOutNeedsFile(p));
 
+      // Green only when the bank confirmed every payment and none came back (or the money is settled).
+      const tone = payOutTone(p);
+      if (tone === 'success') expect(p.status === 'settled' || (p.status === 'confirmed' && p.returned === 0)).toBe(true);
+      if ((p.returned ?? 0) > 0) { expect(tone).not.toBe('success'); expect(paid.state).not.toBe('done'); expect(label).toMatch(/returned: needs attention|waiting/); }
       // No word of money moving before it did.
       if (!['confirmed', 'settled'].includes(p.status)) expect(label).not.toMatch(/Paid|Exported|confirmed/);
       if (!['created', 'downloaded', 'submitted', 'rejected', 'confirmed', 'settled'].includes(p.status)) expect(label).not.toMatch(/created|generated/i);
@@ -253,7 +267,7 @@ test.describe('the words', () => {
   const KEYS = [
     'No payment batch yet', 'Bank setup needed', 'No bank file yet', 'Needs a fix', 'File created — not sent', 'Downloaded — not yet submitted',
     'Submitted — waiting for the bank ({waiting} of {total} waiting)', 'Submitted — waiting for the bank', 'Rejected by the bank',
-    'Bank answered {total} of {total} — {returned} returned', 'Bank confirmed {total} of {total}', 'Bank confirmed every payment', 'Paid — settled',
+    '{count} returned: needs attention', 'Bank answered every payment', 'Bank confirmed {total} of {total}', 'Bank confirmed every payment', 'Paid — settled',
   ];
   test('every status has an Arabic sentence', () => {
     for (const k of KEYS) expect(LOCALE_DICTS.ar[k], k).toBeTruthy();
