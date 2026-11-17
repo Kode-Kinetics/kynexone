@@ -1271,6 +1271,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
     public DbSet<Employee> Employees => Set<Employee>();
     public DbSet<FieldEncryptionKey> FieldEncryptionKeys => Set<FieldEncryptionKey>();
+    /// <summary>Customer secrets for government and bank bodies, envelope-encrypted (GovernmentCredentialStore). Never read directly.</summary>
+    public DbSet<GovernmentCredential> GovernmentCredentials => Set<GovernmentCredential>();
+    /// <summary>The attempt ledger for government and bank exchanges. Written only by GovernmentExchangeRecorder.</summary>
+    public DbSet<GovernmentExchange> GovernmentExchanges => Set<GovernmentExchange>();
     public DbSet<Position> Positions => Set<Position>();
     public DbSet<AttendanceRecord> AttendanceRecords => Set<AttendanceRecord>();
     public DbSet<AttendanceDevice> AttendanceDevices => Set<AttendanceDevice>();
@@ -6053,6 +6057,81 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => x.TenantId).IsUnique().HasFilter("status = 'Active'").HasDatabaseName("ux_field_encryption_keys_one_active");
         });
         Infrastructure.FieldEncryption.FieldEncryptionModel.Apply(modelBuilder, withChecks: Database.IsNpgsql());
+
+        // Government and bank integration foundation (AddGovernmentCredentialsAndExchanges; owner Platform/Security). Both tables
+        // are tenant-owned and company-scoped, and ship dark: nothing writes them until a body is switched on.
+        modelBuilder.Entity<GovernmentCredential>(entity =>
+        {
+            entity.ToTable("government_credentials", t =>
+            {
+                t.HasCheckConstraint("ck_government_credentials__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb')");
+                t.HasCheckConstraint("ck_government_credentials__environment", "environment IN ('sandbox','production')");
+                t.HasCheckConstraint("ck_government_credentials__kind", "kind IN ('oauth_client','api_key','private_key','certificate')");
+                t.HasCheckConstraint("ck_government_credentials__version", "credential_version >= 1 AND dek_version BETWEEN 1 AND 250");
+                // A field-encryption envelope: format byte, DEK version, nonce, tag; never an empty or plaintext value.
+                // PostgreSQL functions, so PostgreSQL only (the SQLite test host builds this model too).
+                if (Database.IsNpgsql())
+                    t.HasCheckConstraint("ck_government_credentials__ciphertext", "octet_length(ciphertext) >= 30 AND get_byte(ciphertext, 0) IN (1, 2)");
+                t.HasCheckConstraint("ck_government_credentials__rotation", "(rotated_at_utc IS NULL) = (credential_version = 1)");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Body).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.Environment).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Kind).HasMaxLength(24).IsRequired();
+            entity.Property(x => x.Ciphertext).HasColumnType("bytea").IsRequired();
+            entity.Property(x => x.Fingerprint).HasMaxLength(64).IsRequired();
+            // One credential per (tenant, body, environment) tenant-wide, and one per company: the store's lookup, company first.
+            entity.HasIndex(x => new { x.TenantId, x.Body, x.Environment }).IsUnique().HasFilter("company_id IS NULL")
+                .HasDatabaseName("ux_government_credentials__tenant_body_env");
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Body, x.Environment }).IsUnique().HasFilter("company_id IS NOT NULL")
+                .HasDatabaseName("ux_government_credentials__company_body_env");
+            entity.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<GovernmentExchange>(entity =>
+        {
+            entity.ToTable("government_exchanges", t =>
+            {
+                t.HasCheckConstraint("ck_government_exchanges__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb')");
+                t.HasCheckConstraint("ck_government_exchanges__channel", "channel IN ('file_out','file_in','manual','api')");
+                t.HasCheckConstraint("ck_government_exchanges__environment", "environment IS NULL OR environment IN ('sandbox','production')");
+                t.HasCheckConstraint("ck_government_exchanges__state",
+                    "state IN ('Attempted','Recorded','Simulated','Refused','Failed','SubmitIntended','Accepted','RejectedStructure','Unknown','Validated','InProgress','Completed')");
+                // The honesty rule in the database: only a live attempt on the api channel may claim the body has it.
+                t.HasCheckConstraint("ck_government_exchanges__live_states",
+                    "state NOT IN ('Accepted','Validated','InProgress','Completed') OR (is_live AND channel = 'api')");
+                t.HasCheckConstraint("ck_government_exchanges__live_channel", "NOT is_live OR channel = 'api'");
+                if (Database.IsNpgsql()) // the ~ operator is PostgreSQL's
+                    t.HasCheckConstraint("ck_government_exchanges__hashes",
+                    "(request_sha256 IS NULL OR request_sha256 ~ '^[0-9a-f]{64}$') AND (response_sha256 IS NULL OR response_sha256 ~ '^[0-9a-f]{64}$') "
+                    + "AND (artifact_sha256 IS NULL OR artifact_sha256 ~ '^[0-9a-f]{64}$')");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Body).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.Operation).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.Channel).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Environment).HasMaxLength(16);
+            entity.Property(x => x.SubjectType).HasMaxLength(64);
+            entity.Property(x => x.SubjectId).HasMaxLength(64);
+            entity.Property(x => x.IdempotencyKey).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.State).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.RequestSha256).HasMaxLength(64);
+            entity.Property(x => x.ResponseSha256).HasMaxLength(64);
+            entity.Property(x => x.ArtifactSha256).HasMaxLength(64);
+            entity.Property(x => x.MaskedPreview).HasMaxLength(512);
+            entity.Property(x => x.ErrorCode).HasMaxLength(64);
+            entity.Property(x => x.ExternalReference).HasMaxLength(128);
+            entity.Property(x => x.Adapter).HasMaxLength(64).IsRequired();
+            // One attempt per (tenant, body, operation, idempotency key): two people pressing Submit get one row.
+            entity.HasIndex(x => new { x.TenantId, x.Body, x.Operation, x.IdempotencyKey }).IsUnique()
+                .HasDatabaseName("ux_government_exchanges__tenant_body_operation_key");
+            // The history of one subject (a payment batch, an employee): GET /api/government/exchanges?body=&subjectId=.
+            entity.HasIndex(x => new { x.TenantId, x.Body, x.SubjectType, x.SubjectId, x.CreatedAtUtc })
+                .HasDatabaseName("ix_government_exchanges__tenant_subject");
+            entity.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        });
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

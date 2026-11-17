@@ -627,6 +627,8 @@ builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.ITakamolProvid
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.IGovernmentProvider>(sp => sp.GetRequiredService<Zayra.Api.Infrastructure.Government.DisabledMuqeemProvider>());
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.IGovernmentProvider>(sp => sp.GetRequiredService<Zayra.Api.Infrastructure.Government.DisabledGosiProvider>());
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.IGovernmentProvider>(sp => sp.GetRequiredService<Zayra.Api.Infrastructure.Government.DisabledTakamolProvider>());
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Government.Credentials.GovernmentCredentialStore>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Government.IGovernmentExchangeRecorder, Zayra.Api.Infrastructure.Government.GovernmentExchangeRecorder>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Operations.WorkerHeartbeatReporter>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Reports.ReportScheduleWorker>();
 builder.Services.AddHostedService<AiInsightEngine>();

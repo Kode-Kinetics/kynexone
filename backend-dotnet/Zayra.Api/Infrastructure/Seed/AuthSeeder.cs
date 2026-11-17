@@ -35,8 +35,10 @@ public class AuthSeeder : IAuthSeeder
     /// a candidate, an assessment, a slate, a development plan or a report is withheld: succession is HR-confidential and
     /// Admin is the technical role. HR Director and HR Manager receive them by explicit grant below, and an Admin can still
     /// grant them to anyone (PrivilegeCeiling).</para>
+    /// <para>gov.credentials.manage: government and bank integration credentials are given to no built-in role, Admin included;
+    /// the tenant grants the key to a named person (an Admin may grant it, PrivilegeCeiling).</para>
     public static readonly IReadOnlyList<string> AdminWithheldPermissions =
-        ["attendance.evidence.view", "succession.nominate", "succession.assess", "succession.calibrate", "succession.slates.read", "succession.slates.manage", "succession.devplans.read", "succession.devplans.manage", "succession.reports.read", "succession.self"];
+        ["attendance.evidence.view", "succession.nominate", "succession.assess", "succession.calibrate", "succession.slates.read", "succession.slates.manage", "succession.devplans.read", "succession.devplans.manage", "succession.reports.read", "succession.self", "gov.credentials.manage"];
 
     /// <summary>
     /// SUC — the 12 succession keys. Granted ONLY by these explicit lists, never by a prefix bundle (a future succession.*
@@ -78,7 +80,7 @@ public class AuthSeeder : IAuthSeeder
                   FROM roles r
                   CROSS JOIN permissions p
                   WHERE r.name = 'Admin'
-                    AND p.permission_key NOT IN ('attendance.evidence.view', 'succession.nominate', 'succession.assess', 'succession.calibrate', 'succession.slates.read', 'succession.slates.manage', 'succession.devplans.read', 'succession.devplans.manage', 'succession.reports.read', 'succession.self')
+                    AND p.permission_key NOT IN ('attendance.evidence.view', 'succession.nominate', 'succession.assess', 'succession.calibrate', 'succession.slates.read', 'succession.slates.manage', 'succession.devplans.read', 'succession.devplans.manage', 'succession.reports.read', 'succession.self', 'gov.credentials.manage')
                     AND NOT EXISTS (
                         SELECT 1 FROM role_permissions rp
                         WHERE rp.role_id = r.id AND rp.permission_id = p.id)
@@ -175,7 +177,7 @@ public class AuthSeeder : IAuthSeeder
         // and does not by default open employees' face images; the tenant can still grant the key to anyone, Admin users
         // included, and an Admin can grant it: PrivilegeCeiling treats withheld keys as within an Admin's reach).
         var adminRole = await EnsureRole(tenantId, "Admin", "Tenant system administrator with full access",
-            permissions.Where(x => x.Key is not "attendance.evidence.view" and not "succession.nominate" and not "succession.assess" and not "succession.calibrate" and not "succession.slates.read" and not "succession.slates.manage" and not "succession.devplans.read" and not "succession.devplans.manage" and not "succession.reports.read" and not "succession.self").ToList(), 1, false, cancellationToken);
+            permissions.Where(x => x.Key is not "attendance.evidence.view" and not "succession.nominate" and not "succession.assess" and not "succession.calibrate" and not "succession.slates.read" and not "succession.slates.manage" and not "succession.devplans.read" and not "succession.devplans.manage" and not "succession.reports.read" and not "succession.self" and not "gov.credentials.manage").ToList(), 1, false, cancellationToken);
 
         // Level 2 — HR Director: full HR + payroll visibility + reports + compliance.
         // Release A: entitlements.* (benefits by grade) and contracts.renewal.* (decides renewals).
@@ -541,6 +543,10 @@ public class AuthSeeder : IAuthSeeder
             ("shifts.manage", "Shifts", "Manage shift definitions and policies"),
             // QIWA (Saudi workforce platform)
             ("qiwa.configure", "QIWA", "Configure QIWA establishment credentials and connection"),
+            // Government and bank integration credentials (GovernmentCredentialsController). Held by NO built-in role, Admin
+            // included (AdminWithheldPermissions): the tenant gives it to a named person deliberately. Save, rotate and remove
+            // also need a fresh step-up, and nothing is stored until the server's field-encryption key wrapping is on.
+            ("gov.credentials.manage", "Government", "Save, rotate and remove the credentials KynexOne uses to connect to government and bank services (never shown back)"),
             ("qiwa.sync", "QIWA", "Trigger and manage QIWA employee sync operations"),
             ("qiwa.read", "QIWA", "View QIWA connection status and sync logs"),
             // Finance — GL configuration (Phase 2)

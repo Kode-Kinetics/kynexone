@@ -1,6 +1,4 @@
-using System.Text.Json;
-using System.Text.Json.Nodes;
-using Zayra.Api.Application.Common;
+using Zayra.Api.Infrastructure.Government;
 
 namespace Zayra.Api.Infrastructure.Qiwa;
 
@@ -22,25 +20,6 @@ public static class QiwaResponseScrubber
         "request_id", "reference", "reference_number", "transaction_id", "correlation_id",
     };
 
-    public static string? Scrub(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw)) return raw;
-        JsonNode? node;
-        try { node = JsonNode.Parse(raw); }
-        catch (JsonException) { return JsonSerializer.Serialize(new { scrubbed = "non-JSON response withheld", length = raw.Length }); }
-        if (node is not JsonObject obj)
-            return JsonSerializer.Serialize(new { scrubbed = "non-object response withheld", length = raw.Length });
-
-        var kept = new JsonObject();
-        foreach (var (key, value) in obj)
-        {
-            if (!KeptKeys.Contains(key) || value is not JsonValue scalar) continue;
-            kept[key] = scalar.TryGetValue<string>(out var text)
-                ? JsonValue.Create(SensitiveFieldClassifier.MaskEmbedded(text))
-                : scalar.DeepClone();
-        }
-        var withheld = obj.Count - kept.Count;
-        if (withheld > 0) kept["withheld_fields"] = withheld;
-        return kept.ToJsonString();
-    }
+    /// <summary>Delegates to the shared <see cref="GovernmentLogScrubber"/> with Qiwa's allow-list.</summary>
+    public static string? Scrub(string? raw) => GovernmentLogScrubber.ScrubJson(raw, KeptKeys);
 }

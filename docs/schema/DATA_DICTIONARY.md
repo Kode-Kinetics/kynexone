@@ -1192,3 +1192,21 @@ person does and ticks; there is no integration. Tasks never block activation unl
 - **Owner / retention** — Finance (Payroll Engineering maintains it). Kept as long as the ledger lines it explains (class E, 84 months, like the payroll run); deleted with its run by a void in the same unit of work as the reversing journal; removed by whole-tenant erasure.
 - **RLS shape** — (a) tenant-scoped, with the company predicate the other `ICompanyScopedOperational` payroll witnesses carry.
 - **No cost-centre column** — traceability of the expense's cost centre lives on the ledger lines, not here.
+
+### `government_credentials`
+- **Purpose** — a customer's (establishment's) secret for a government or bank body: an OAuth client secret, API key, private key or certificate. Deployment (vendor) secrets never live here; they stay in configuration.
+- **Tier** T · **Domain** Integrations · **RLS** shape (a)
+- **Columns** — `id`, `tenant_id`, `company_id uuid NULL` (null = tenant-wide; the store looks up the company's own first), `body varchar(32)`, `environment varchar(16)`, `kind varchar(24)`, `ciphertext bytea` (a field-encryption envelope under the tenant DEK; AAD = tenant + company + body + environment + version), `dek_version`, `credential_version` (1, then +1 per rotation), `fingerprint varchar(64)` (keyed, from the tenant's blind-index root), `expires_at_utc`, `last_used_at_utc`, `created_at_utc`, `created_by`, `rotated_at_utc`, `rotated_by`.
+- **Rel** — `tenant_id → tenants` (RESTRICT; tenant erasure sweeps it), `company_id → companies` (CASCADE).
+- **Constraint** — `ck_government_credentials__body`, `__environment`, `__kind`, `__version`, `__ciphertext` (an envelope, never plaintext), `__rotation` (rotated ⇔ version > 1).
+- **Indexes** — `ux_government_credentials__tenant_body_env` (UNIQUE, `WHERE company_id IS NULL`) and `ux_government_credentials__company_body_env` (UNIQUE, `WHERE company_id IS NOT NULL`): the store's lookup, company then tenant.
+- **Lifecycle** — written only by `GovernmentCredentialStore` (PUT/DELETE `/api/government/credentials/{body}`, permission `gov.credentials.manage`, step-up), each change audited (`government.credential.saved|rotated|removed`, fingerprint only). The store refuses everything while no field-encryption KEK is configured. No API returns the secret.
+
+### `government_exchanges`
+- **Purpose** — one attempt to exchange something with a government or bank body, on any channel (`file_out`, `file_in`, `manual`, `api`). Domain state stays in each body's own tables; this is the attempt history.
+- **Tier** T · **Domain** Integrations · **RLS** shape (a)
+- **Columns** — `id`, `tenant_id`, `company_id uuid NULL`, `body`, `operation varchar(64)`, `channel`, `environment`, `subject_type`, `subject_id`, `idempotency_key varchar(128)`, `state varchar(32)` (`Attempted`, `Recorded`, `Simulated`, `Refused`, `Failed`, `SubmitIntended`, `Accepted`, `RejectedStructure`, `Unknown`, `Validated`, `InProgress`, `Completed`), `request_sha256`, `response_sha256`, `artifact_sha256` (the frozen artifact sent), `masked_preview varchar(512)` (IBAN- and ID-shaped text masked), `http_status`, `error_code`, `external_reference`, `adapter`, `is_live`, `actor_user_id`, `approval_request_id`, `job_id`, `created_at_utc`, `updated_at_utc`, `completed_at_utc`. Never a request or response body.
+- **Rel** — `tenant_id → tenants` (RESTRICT), `company_id → companies` (CASCADE).
+- **Constraint** — `ck_government_exchanges__body`, `__channel`, `__environment`, `__state`, `__hashes` (lower-case hex SHA-256), `__live_states` (`Accepted`/`Validated`/`InProgress`/`Completed` only when `is_live` on the `api` channel), `__live_channel`.
+- **Indexes** — `ux_government_exchanges__tenant_body_operation_key` (UNIQUE: two submits with one key are one row), `ix_government_exchanges__tenant_subject` (a subject's history, newest last).
+- **Lifecycle** — written only by `GovernmentExchangeRecorder` (`BeginAsync` before anything is sent, `UpdateAsync` after), each write staging its audit row in the same save (`government.exchange.recorded|updated`). `is_live` comes from the adapter, never from the caller.

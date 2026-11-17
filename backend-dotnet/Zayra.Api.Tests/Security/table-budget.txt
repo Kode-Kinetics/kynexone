@@ -173,6 +173,8 @@ EosbProvisionSnapshots
 GlAdjustmentRequests
 GoalProgressUpdates
 GosiContributionRules
+GovernmentCredentials
+GovernmentExchanges
 GradeEntitlements
 GradePayScaleComponents
 Grades
