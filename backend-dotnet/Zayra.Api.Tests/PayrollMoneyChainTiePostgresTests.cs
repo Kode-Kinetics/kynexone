@@ -85,6 +85,50 @@ public sealed class PayrollMoneyChainTiePostgresTests
             .Should().Be(gross, "the settlement payable cleared by the run reaches the ERP");
     }
 
+    /// <summary>
+    /// Lock now writes payslip rows, so it meets the company write guard. A user scoped to the run's company locks a month in
+    /// which one employee has since moved to a sister company: the payslips belong to the RUN's company (the company that pays
+    /// the month), so Lock succeeds and every slip gets one published payslip. Built with an HttpContextAccessor so the guard
+    /// actually runs, as it does in production.
+    /// </summary>
+    [Fact]
+    public async Task ScopedLocker_EmployeeMovedToASisterCompany_LockStillPublishesEveryPayslip_InTheRunsCompany()
+    {
+        var w = await SeedAsync();
+        Guid sister;
+        await using (var db = _fx.CreateDb())
+        {
+            var c = new Company { TenantId = w.TenantId, LegalNameEn = $"Sister {Guid.NewGuid():N}"[..14], CountryCode = "SAU", Jurisdiction = "KSA-mainland", IsActive = true, DefaultCurrency = "SAR" };
+            db.Companies.Add(c);
+            await db.SaveChangesAsync();
+            sister = c.Id;
+        }
+        var runId = await NewRunAsync(w, PayrollRunTypes.Regular, includesRecurringPay: true, settlesFinalSettlements: false);
+        await ProcessAsync(w, runId);
+        await ApproveAsync(w, runId);
+        await using (var db = _fx.CreateDb())
+        {
+            (await db.Employees.SingleAsync(e => e.Id == w.ExpatId)).CompanyId = sister;   // transferred after the pay month
+            await db.SaveChangesAsync();
+        }
+
+        var scopedUser = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", w.TenantId.ToString()), new Claim(ClaimTypes.NameIdentifier, w.Locker.ToString()),
+            new Claim(ClaimTypes.Name, "Scoped finance"), new Claim(ClaimTypes.Role, "Finance Controller"),
+            new Claim("entity_access", JsonSerializer.Serialize(new { c = w.CompanyId, r = "Finance Controller" })),
+            new Claim("permission", "payroll.read"), new Claim("permission", "payroll.lock"),
+        }, "Test"));
+        await using (var scoped = _fx.CreateDbWithAccessor(new HttpContextAccessor { HttpContext = new DefaultHttpContext { User = scopedUser } }))
+            Ok(await Payroll(scoped, w, w.Locker, "Finance Controller", scopedUser).Lock(runId, Ct), "scoped lock");
+
+        await using var read = _fx.CreateDb();
+        var payslips = await read.Payslips.IgnoreQueryFilters().AsNoTracking().Where(p => p.PayrollRunId == runId).ToListAsync();
+        payslips.Select(p => p.EmployeeId).Should().BeEquivalentTo(new[] { w.SaudiId, w.ExpatId });
+        payslips.Should().OnlyContain(p => p.IsPublishedToEss && p.CompanyId == w.CompanyId,
+            "a month's payslips belong to the company that paid it, whatever company the employee is in today");
+    }
+
     // ══ The chain ════════════════════════════════════════════════════════════════════════════════════
 
     /// <summary>Asserts every tie for a Locked run (creating the batch, the wage file and the settlement on the way) and returns
@@ -353,7 +397,7 @@ public sealed class PayrollMoneyChainTiePostgresTests
 
     private static void Ok(IActionResult r, string step) => r.Should().BeOfType<OkObjectResult>($"{step} must succeed: {Body(r)}");
 
-    private static PayrollController Payroll(ZayraDbContext db, World w, Guid userId, string role)
+    private static PayrollController Payroll(ZayraDbContext db, World w, Guid userId, string role, ClaimsPrincipal? user = null)
     {
         var rules = new StubRuleReader()
             .Set("ot.hourly_base", "wage").Set("ot.standard_multiplier", 1.5m).Set("ot.restday_multiplier", 2.0m)
@@ -372,6 +416,7 @@ public sealed class PayrollMoneyChainTiePostgresTests
                 new Claim("permission", "payroll.export"),
             }, "Test")),
         };
+        if (user is not null) http.User = user;
         return new PayrollController(db, new _TieScope(), new HttpContextAccessor { HttpContext = http }, new _TieNotifications(),
             new _TieKsaResolver(rules), rules, new _TieLetters(), new MemoryDocumentStorage(), new PdfRenderGate(4))
         {

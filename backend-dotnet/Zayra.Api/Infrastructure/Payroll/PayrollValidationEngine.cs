@@ -38,7 +38,7 @@ public static class PayrollValidationEngine
     /// deduction is the whole of the employee's deductions, and an instalment was deferred. Any other zero net keeps the
     /// non-overridable ZERO_NET_WITH_GROSS Error.
     /// </summary>
-    public const string ZeroNetUnpaidLeaveDebtDeferred = "ZERO_NET_UNPAID_LEAVE_DEBT_DEFERRED";
+    public const string ZeroNetUnpaidLeave = "ZERO_NET_UNPAID_LEAVE";
 
     /// <summary>
     /// S1/A2(c) — the LAST-RESORT default only. The ceiling was a compiled constant checked against a
@@ -314,7 +314,7 @@ public static class PayrollValidationEngine
                      && slip.GrossSalary - slip.Deductions == slip.NetSalary
                      && ctx.DebtDeferredEmployeeIds.Contains(slip.EmployeeId)
                      && UnpaidLeaveIsTheWholeDeduction(ctx, slip))
-                Warn(ZeroNetUnpaidLeaveDebtDeferred,
+                Warn(ZeroNetUnpaidLeave,
                     $"Employee {slip.EmployeeCode} nets zero: unpaid leave took the whole wage ({slip.GrossSalary:N2}) this month, " +
                     "and the loan or advance instalment due was carried forward to the next run, not written off. Nothing is " +
                     "paid to them, so they are left out of the bank file. Check the leave, then approve.",

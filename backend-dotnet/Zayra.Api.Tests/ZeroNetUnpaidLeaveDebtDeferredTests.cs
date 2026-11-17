@@ -9,17 +9,18 @@ using static Zayra.Api.Tests.PayNext;
 namespace Zayra.Api.Tests;
 
 /// <summary>
-/// A recurring-run employee whose unpaid leave takes the whole month, and who also owes a loan instalment, nets exactly zero:
-/// the leave takes the whole wage, and the instalment, with nothing left to fund it, is carried forward (never written off).
-/// That used to raise the non-overridable ZERO_NET_WITH_GROSS Error, so the run could not be approved or locked until the
-/// person was excluded. It is now a DISTINCT Warning, <see cref="PayrollValidationEngine.ZeroNetUnpaidLeaveDebtDeferred"/>,
-/// raised ONLY when net is 0, gross is positive, gross − deductions is exactly net (nothing hidden by the clamp at zero), the
-/// unpaid-leave deduction is the whole of the deductions, and a loan or advance instalment was carried forward. Every other
-/// zero net keeps the Error (PayrollOvertimeLopTests "LOP exceeding salary blocks" stays unchanged).
+/// A recurring-run employee whose unpaid leave takes the whole month nets exactly zero: the leave takes the whole earned wage
+/// (the per-slice cap stops it taking more), and any loan or advance instalment, with nothing left to fund it, is carried
+/// forward (never written off). That used to raise the non-overridable ZERO_NET_WITH_GROSS Error, so the run could not be
+/// approved or locked until the person was excluded. It is now a DISTINCT Warning, <see cref="PayrollValidationEngine.ZeroNetUnpaidLeave"/>,
+/// raised ONLY when net is 0, gross is positive, gross − deductions is exactly net (nothing hidden by the clamp at zero) and
+/// the month's own unpaid-leave deduction is the whole of the employee's deductions, with or without a deferred instalment.
+/// The approver must acknowledge it by count, and the count is sealed into the approval's audit entry. Every other zero net
+/// keeps the Error (PayrollOvertimeLopTests "LOP exceeding salary blocks" stays unchanged).
 /// </summary>
 public class ZeroNetUnpaidLeaveDebtDeferredTests
 {
-    private const string Warning = PayrollValidationEngine.ZeroNetUnpaidLeaveDebtDeferred;
+    private const string Warning = PayrollValidationEngine.ZeroNetUnpaidLeave;
 
     // ══ Engine: the rule, both ways ═══════════════════════════════════════════════════════════════
 
@@ -29,17 +30,21 @@ public class ZeroNetUnpaidLeaveDebtDeferredTests
         var results = Engine(gross: 6_000m, deductions: 6_000m, net: 0m, deferred: true, ("LEAVE", "Leave", 6_000m));
 
         results.Should().ContainSingle(r => r.Code == Warning).Which.Severity.Should().Be("Warning");
-        results.Single(r => r.Code == Warning).Message.Should().Contain("E1").And.Contain("6,000.00");
+        results.Single(r => r.Code == Warning).Message.Should().Contain("E1").And.Contain("6,000.00").And.Contain("instalment");
         results.Should().NotContain(r => r.Code == "ZERO_NET_WITH_GROSS");
     }
 
+    /// <summary>Deliberately changed (CTO decision, P2-3): this used to pin the Error for a full unpaid month with no loan. The
+    /// per-slice cap means a full unpaid month legitimately earns nothing; the Error was for LOP EXCEEDING salary, which the cap
+    /// now prevents. So it is the same explained Warning, without the instalment sentence.</summary>
     [Fact]
-    public void UnpaidLeaveTakesTheWholeWage_ButNoInstalmentWasDeferred_KeepsTheError()
+    public void UnpaidLeaveTakesTheWholeWage_WithNoInstalmentAtAll_IsTheSameWarning()
     {
         var results = Engine(gross: 6_000m, deductions: 6_000m, net: 0m, deferred: false, ("LEAVE", "Leave", 6_000m));
 
-        results.Should().Contain(r => r.Code == "ZERO_NET_WITH_GROSS" && r.Severity == "Error");
-        results.Should().NotContain(r => r.Code == Warning);
+        results.Should().ContainSingle(r => r.Code == Warning).Which.Severity.Should().Be("Warning");
+        results.Single(r => r.Code == Warning).Message.Should().NotContain("instalment");
+        results.Should().NotContain(r => r.Code == "ZERO_NET_WITH_GROSS");
     }
 
     [Fact]
@@ -108,8 +113,22 @@ public class ZeroNetUnpaidLeaveDebtDeferredTests
 
         await ReconTestSupport.SignOffAsync(db, run.Id);
         db.ChangeTracker.Clear();
-        var approved = await Payroll(db, co.TenantId, Checker).Approve(run.Id, new PayrollDecisionRequest("reviewed"), CancellationToken.None);
+        // The warning must be ACKNOWLEDGED by count, like the pay-population warnings: a bare approval is refused.
+        var unacknowledged = await Payroll(db, co.TenantId, Checker).Approve(run.Id, new PayrollDecisionRequest("reviewed"), CancellationToken.None);
+        Status(unacknowledged).Should().Be(409);
+        Json(unacknowledged).GetProperty("error").GetString().Should().Be("zero_net_not_acknowledged");
+        Json(unacknowledged).GetProperty("zeroNetCount").GetInt32().Should().Be(1);
+        db.ChangeTracker.Clear();
+        var approved = await Payroll(db, co.TenantId, Checker).Approve(run.Id, new PayrollDecisionRequest("reviewed", ExpectedZeroNetCount: 1), CancellationToken.None);
         approved.Should().BeOfType<OkObjectResult>(Json(approved).ToString());
+        // Who and when: the approval's audit entry (actor, timestamp) carries the acknowledged count and the employees.
+        var audit = await db.PayrollAuditLogs.AsNoTracking()
+            .Where(a => a.EntityId == run.Id.ToString() && a.Action.StartsWith("payroll.run.") && a.Action.EndsWith("approved")).ToListAsync();
+        audit.Should().ContainSingle();
+        audit[0].UserId.Should().Be(Checker);
+        var data = System.Text.Json.JsonDocument.Parse(audit[0].MetadataJson).RootElement.GetProperty("data");
+        data.GetProperty("zeroNetAcknowledged").GetInt32().Should().Be(1);
+        data.GetProperty("zeroNetEmployees").EnumerateArray().Select(x => x.GetInt32()).Should().Equal(leaver.Id);
         db.ChangeTracker.Clear();
         await SetStatus(db, run.Id, "Approved");   // the Finance step of the ladder is not what this test is about
         var locked = await Payroll(db, co.TenantId, Checker).Lock(run.Id, CancellationToken.None);
@@ -118,6 +137,16 @@ public class ZeroNetUnpaidLeaveDebtDeferredTests
 
         var payer = Payroll(db, co.TenantId, Checker);
         payer.ControllerContext.HttpContext = Ctx(co.TenantId, Checker, "payroll.read", "payroll.export");   // the payment-batch key
+
+        // The bank pre-check agrees with the batch: a zero net has no payable line, so it is not an error there either.
+        var precheck = await payer.WpsValidation(run.Id, CancellationToken.None);
+        precheck.Should().BeOfType<OkObjectResult>();
+        var precheckJson = Json(precheck);
+        precheckJson.GetProperty("blockingErrors").EnumerateArray()
+            .Where(x => x.TryGetProperty("employeeId", out var id) && id.ValueKind == System.Text.Json.JsonValueKind.Number && id.GetInt32() == leaver.Id)
+            .Select(x => x.GetProperty("code").GetString()).Should().BeEmpty("the zero-net employee is left out of the bank file, so the pre-check must not flag them");
+        db.ChangeTracker.Clear();
+
         var batch = await payer.CreatePaymentBatch(run.Id, new PayrollPaymentBatchRequest("WPS", "SAR"), CancellationToken.None);
         batch.Should().BeOfType<CreatedResult>(batch is ObjectResult ? Json(batch).ToString() : batch.GetType().Name);
         db.ChangeTracker.Clear();
@@ -126,8 +155,10 @@ public class ZeroNetUnpaidLeaveDebtDeferredTests
         records.Should().ContainSingle(r => r.EmployeeId == colleague.Id).Which.Amount.Should().BeGreaterThan(0m);
     }
 
+    /// <summary>Deliberately changed (CTO decision, P2-3): a full unpaid month with no loan is the same Warning, and approves
+    /// once acknowledged. It used to pin the blocking Error.</summary>
     [Fact]
-    public async Task FullUnpaidMonthWithoutAnyLoan_KeepsTheBlockingError()
+    public async Task FullUnpaidMonthWithoutAnyLoan_IsTheWarning_AndApprovesOnceAcknowledged()
     {
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
@@ -140,10 +171,12 @@ public class ZeroNetUnpaidLeaveDebtDeferredTests
         await Process(db, co, run.Id);
 
         var findings = await Findings(db, run.Id);
-        findings.Should().Contain(r => r.Code == "ZERO_NET_WITH_GROSS" && r.Severity == "Error" && r.EmployeeId == e.Id);
-        findings.Should().NotContain(r => r.Code == Warning);
-        Status(await Payroll(db, co.TenantId, Checker).Approve(run.Id, new PayrollDecisionRequest("reviewed"), CancellationToken.None))
-            .Should().Be(422, "any other zero net still blocks approval");
+        findings.Should().ContainSingle(r => r.Code == Warning && r.EmployeeId == e.Id).Which.Severity.Should().Be("Warning");
+        findings.Should().NotContain(r => r.Code == "ZERO_NET_WITH_GROSS");
+        await ReconTestSupport.SignOffAsync(db, run.Id);
+        db.ChangeTracker.Clear();
+        var approved = await Payroll(db, co.TenantId, Checker).Approve(run.Id, new PayrollDecisionRequest("reviewed", ExpectedZeroNetCount: 1), CancellationToken.None);
+        approved.Should().BeOfType<OkObjectResult>(Json(approved).ToString());
     }
 
     // ══ Harness ═══════════════════════════════════════════════════════════════════════════════════

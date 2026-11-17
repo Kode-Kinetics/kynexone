@@ -10932,8 +10932,11 @@ public record EmployeeSalaryStructureRequest(int EmployeeId, Guid? SalaryStructu
 /// the bank/WPS file). Required when the run has any.</param>
 /// <param name="ExpectedPayWarningCount">Acknowledges, by count, the employees the run pays with a pay-population
 /// warning (no last working day, "On leave" with no approved leave, deleted but owed wages). Required when it has any.</param>
+/// <param name="ExpectedZeroNetCount">Acknowledges, by count, the employees who net zero because unpaid leave took the whole
+/// wage (ZERO_NET_UNPAID_LEAVE). Required when the run has any.</param>
 public record PayrollDecisionRequest(string? Notes, int? ExpectedExcludedCount = null, int? ExpectedOverriddenCount = null,
-    int? ExpectedOutsideBankCount = null, int? ExpectedUncostedCount = null, int? ExpectedPayWarningCount = null);
+    int? ExpectedOutsideBankCount = null, int? ExpectedUncostedCount = null, int? ExpectedPayWarningCount = null,
+    int? ExpectedZeroNetCount = null);
 /// <param name="ExpectedOutsideBankCount">Only for a run locked before payment methods were frozen: acknowledges,
 /// by count, the cash/cheque employees the batch will leave out of the bank file.</param>
 public record PayrollPaymentBatchRequest(string? PaymentMethod, string? Currency, int? ExpectedOutsideBankCount = null);
