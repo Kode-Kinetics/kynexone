@@ -112,7 +112,7 @@ jobs:
     # Runs prebuilt output (--no-build), so it needs no compile memory. The 32 GB runner is billed
     # per minute even on a public repo; the standard runner is not. Keep this lane on the free runner.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: [changes, backend-build]
     if: needs.changes.outputs.docs_only != 'true'
     steps:
