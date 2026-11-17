@@ -174,4 +174,68 @@ public sealed class GovernmentExchangeRecorderTests
         row.RequestSha256.Should().HaveLength(64);
         row.ResponseSha256.Should().HaveLength(64);
     }
+
+    // ── E1: a payroll submission is keyed on its PAYMENT BATCH, so it must name one ───────────────────────────────────────
+
+    private static GovernmentExchangeAttempt PaymentBatchSubmission(Guid tenant, string key, string? subjectType = "PaymentBatch", string? subjectId = null,
+        string operation = "payroll.submit", string state = GovernmentExchangeStates.SubmitIntended) =>
+        Attempt(tenant, key, state, new LiveDouble()) with
+        {
+            Operation = operation, SubjectType = subjectType, SubjectId = subjectId ?? Guid.NewGuid().ToString(),
+        };
+
+    [Theory]
+    [InlineData("Employee", "a-guid")]
+    [InlineData(null, "a-guid")]
+    [InlineData("PaymentBatch", "B-001")]
+    [InlineData("PaymentBatch", "42")]
+    public async Task E1_ASubmission_ThatDoesNotNameAPaymentBatchById_IsRefused(string? subjectType, string subjectId)
+    {
+        var (recorder, db) = Create();
+        await using var _db = db;
+        var attempt = PaymentBatchSubmission(Guid.NewGuid(), "k", subjectType, subjectId == "a-guid" ? Guid.NewGuid().ToString() : subjectId);
+
+        var begin = () => recorder.BeginAsync(attempt, default);
+
+        await begin.Should().ThrowAsync<ArgumentException>("the batch lock is the payment batch's id; without it two submissions of one batch could both send");
+        (await db.GovernmentExchanges.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task E1_TheSubjectId_IsStoredInOneCanonicalForm_SoACasingChangeCannotDodgeTheLock()
+    {
+        var (recorder, db) = Create();
+        await using var _db = db;
+        var tenant = Guid.NewGuid();
+        var batch = Guid.NewGuid();
+        await recorder.BeginAsync(PaymentBatchSubmission(tenant, "lower", subjectId: batch.ToString()), default);
+
+        var upper = () => recorder.BeginAsync(PaymentBatchSubmission(tenant, "upper", subjectId: batch.ToString("B").ToUpperInvariant()), default);
+
+        (await upper.Should().ThrowAsync<GovernmentExchangeConflictException>()).Which.Code.Should().Be(GovernmentExchangeRecorder.BatchHeldCode);
+        (await db.GovernmentExchanges.SingleAsync()).SubjectId.Should().Be(batch.ToString("D"));
+    }
+
+    [Fact]
+    public async Task E1_ASubmissionIntent_UnderAnotherOperationName_IsRefused()
+    {
+        var (recorder, db) = Create();
+        await using var _db = db;
+
+        var begin = () => recorder.BeginAsync(PaymentBatchSubmission(Guid.NewGuid(), "k", operation: "payroll.submit.v2"), default);
+
+        await begin.Should().ThrowAsync<ArgumentException>("an intent outside the submission operation would hold no batch");
+    }
+
+    [Fact]
+    public async Task E1_APayrollSubmission_CannotStartAsAPlainAttempt_WhichWouldEarnAReceiptOutsideTheLock()
+    {
+        var (recorder, db) = Create();
+        await using var _db = db;
+
+        var begin = () => recorder.BeginAsync(PaymentBatchSubmission(Guid.NewGuid(), "k", state: GovernmentExchangeStates.Attempted), default);
+
+        await begin.Should().ThrowAsync<ArgumentException>();
+        (await db.GovernmentExchanges.CountAsync()).Should().Be(0);
+    }
 }

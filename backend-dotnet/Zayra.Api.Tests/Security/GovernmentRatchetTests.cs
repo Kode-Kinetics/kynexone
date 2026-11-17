@@ -439,6 +439,64 @@ public sealed partial class GovernmentRatchetTests
     public void TheBankClientConstructionScan_FindsEveryWayToBuildOne(string code, bool found) =>
         BankClientConstructions(code).Should().HaveCount(found ? 1 : 0);
 
+    /// <summary>The files that may ask the policy for a decision from gates they computed themselves (the gate services).</summary>
+    private static readonly string[] DecisionMakers =
+    [
+        "Infrastructure/Government/GovernmentLivePolicy.cs",
+        "Infrastructure/Government/GovernmentCapabilities.cs",
+        "Infrastructure/Qiwa/QiwaLiveAdapterPolicy.cs",
+        "Infrastructure/Qiwa/QiwaSyncWorker.cs",
+    ];
+
+    [GeneratedRegex(@"\b(?:GovernmentLivePolicy\s*\.\s*Decide(?:LiveWrite)?|QiwaLiveAdapterPolicy\s*\.\s*DecideLiveWrite|new\s+GovernmentLiveGates)\s*\(")]
+    private static partial Regex DecisionRequest();
+
+    [GeneratedRegex(@"\bGovernmentLiveDecision\b[^;=(){}]*=\s*new\s*\(")]
+    private static partial Regex TargetTypedDecision();
+
+    /// <summary>
+    /// E6: a decision is made only by the policy, and nothing outside the policy can choose what goes into it. The decision has no
+    /// public or protected constructor and no settable property (an <c>init</c> setter counts); the gates are not a public type; every
+    /// policy method that returns a decision is internal; and only the gate services ask the policy at all.
+    /// </summary>
+    [Fact]
+    public void I2_TheDecision_AndTheGatesItIsMadeFrom_CannotBeSetOutsideThePolicy()
+    {
+        const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+        var decision = typeof(GovernmentLiveDecision);
+        decision.IsSealed.Should().BeTrue("a subclass could claim to be open");
+        decision.GetConstructors(all).Should().OnlyContain(c => c.IsAssembly || c.IsPrivate, "only the policy constructs a decision");
+        decision.GetProperties(all).Where(p => p.SetMethod is { } set && !set.IsPrivate).Select(p => p.Name)
+            .Should().BeEmpty("a decision's tenant, company, environment, body and verdict are fixed when the policy makes it");
+        decision.GetFields(all).Where(f => !f.IsPrivate || !f.IsInitOnly).Select(f => f.Name).Should().BeEmpty();
+
+        typeof(GovernmentLiveGates).IsPublic.Should().BeFalse("anyone holding a public gates type could pass four trues");
+        typeof(GovernmentLivePolicy).GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Where(m => m.ReturnType == decision).Select(m => m.Name)
+            .Should().BeEmpty("the overloads that take gates or gate answers are internal; the gate services compute G1-G4 themselves");
+        typeof(Zayra.Api.Infrastructure.Qiwa.QiwaLiveAdapterPolicy).GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Where(m => m.ReturnType == decision).Select(m => m.Name).Should().BeEmpty();
+
+        var files = Source().ToList();
+        var askers = files.Where(f => !DecisionMakers.Contains(f.Relative))
+            .Select(f => (f.Relative, Code: SourceScan.StripCSharpComments(f.Code)))
+            .SelectMany(f => DecisionRequest().Matches(f.Code).Concat(TargetTypedDecision().Matches(f.Code))
+                .Select(m => $"{f.Relative}:{SourceScan.LineOf(f.Code, m.Index)}: {m.Value.Trim()}")).ToList();
+        files.Where(f => DecisionMakers.Contains(f.Relative)).Should().HaveCount(DecisionMakers.Length, "an allowance for a file that is gone must be removed");
+        askers.Should().BeEmpty("only the gate services ask the policy for a decision; everything else is handed one.\n  " + string.Join("\n  ", askers));
+    }
+
+    [Theory]
+    [InlineData("var d = GovernmentLivePolicy.DecideLiveWrite(cfg, scope, body, gates);", true)]
+    [InlineData("var d = GovernmentLivePolicy . Decide (scope, body, gates);", true)]
+    [InlineData("var g = new GovernmentLiveGates(true, true, true, true);", true)]
+    [InlineData("GovernmentLiveDecision open = new(t, c, body, true, null, env, true);", true)]
+    [InlineData("var d = QiwaLiveAdapterPolicy.DecideLiveWrite(cfg, t, true, true, env);", true)]
+    [InlineData("Task<GovernmentLiveDecision> DecideAsync(string body, BankChannelScope scope, bool write, CancellationToken ct);", false)]
+    [InlineData("var mode = QiwaLiveAdapterPolicy.Decide(builder.Configuration);", false)]
+    public void TheDecisionRequestScan_FindsEveryWayToAskOrBuild(string code, bool found) =>
+        DecisionRequest().Matches(code).Concat(TargetTypedDecision().Matches(code)).Should().HaveCount(found ? 1 : 0);
+
     [Fact]
     public void I_OnlyThePolicyMakesDecisions_AndEveryGovernmentWriteGoesThroughTheWriteCheck()
     {

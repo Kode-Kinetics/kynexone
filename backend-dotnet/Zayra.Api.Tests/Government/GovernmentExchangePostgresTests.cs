@@ -245,6 +245,131 @@ public sealed class GovernmentExchangePostgresTests(PostgresFixture fixture)
             recorder.BeginAsync(Intent(tenantId, company, "env-sandbox-2", "B-ENV"), CancellationToken.None));
     }
 
+    // ── E1: one open submission per PAYMENT BATCH (its id), whatever file, batch number or debit account it is sent with ──────────
+
+    private static GovernmentExchangeAttempt Submission(Guid tenant, Guid company, Guid paymentBatchId, string key, string environment = "sandbox",
+        string batchReference = "R-1", string accountFingerprint = "acct-fp-synthetic", char artifact = 'a') =>
+        new(tenant, company, GovernmentBodies.BankAnb, "payroll.submit", GovernmentExchangeChannels.Api, key, GovernmentExchangeStates.SubmitIntended,
+            new RequestContext("127.0.0.1", "test", Guid.NewGuid(), tenant), new LiveBank(), Environment: environment, SubjectType: "PaymentBatch",
+            SubjectId: paymentBatchId.ToString(), RequestBody: "synthetic"u8.ToArray(), ArtifactSha256: new string(artifact, 64),
+            AccountFingerprint: accountFingerprint, BatchReference: batchReference, TotalAmount: 2_997_000.50m, ItemCount: 3000);
+
+    [Fact]
+    public async Task E1_ARegeneratedFile_ForAPaymentBatchAlreadySubmitted_IsRefused()
+    {
+        var (tenantId, company, _) = await SeedAsync();
+        var recorder = new GovernmentExchangeRecorder(fixture.CreateDb);
+        var batch = Guid.NewGuid();
+        await recorder.BeginAsync(Submission(tenantId, company, batch, "first"), CancellationToken.None);
+
+        // The same payment batch, its file generated again: new bytes and a new batch number for the bank.
+        var regenerated = () => recorder.BeginAsync(Submission(tenantId, company, batch, "second", batchReference: "R-1-REGENERATED", artifact: 'b'),
+            CancellationToken.None);
+
+        var conflict = await Assert.ThrowsAsync<GovernmentExchangeConflictException>(regenerated);
+        Assert.Equal(GovernmentExchangeRecorder.BatchHeldCode, conflict.Code);
+        await using var verify = fixture.CreateDb();
+        Assert.Equal(1, await verify.GovernmentExchanges.IgnoreQueryFilters().CountAsync(x => x.TenantId == tenantId && x.SubjectId == batch.ToString()));
+    }
+
+    [Fact]
+    public async Task E1_AChangedDebitAccount_ForAPaymentBatchAlreadySubmitted_IsRefused()
+    {
+        var (tenantId, company, _) = await SeedAsync();
+        var recorder = new GovernmentExchangeRecorder(fixture.CreateDb);
+        var batch = Guid.NewGuid();
+        await recorder.BeginAsync(Submission(tenantId, company, batch, "first"), CancellationToken.None);
+
+        // The employer's debit account changed (a new fingerprint, re-approved), and the same batch is sent again.
+        var otherAccount = () => recorder.BeginAsync(Submission(tenantId, company, batch, "second", accountFingerprint: "acct-fp-changed"),
+            CancellationToken.None);
+
+        var conflict = await Assert.ThrowsAsync<GovernmentExchangeConflictException>(otherAccount);
+        Assert.Equal(GovernmentExchangeRecorder.BatchHeldCode, conflict.Code);
+    }
+
+    [Fact]
+    public async Task E1_ConcurrentSubmissions_OfOnePaymentBatch_WithDifferentFilesAndAccounts_YieldOneRow()
+    {
+        var (tenantId, company, _) = await SeedAsync();
+        var recorder = new GovernmentExchangeRecorder(fixture.CreateDb);
+        var batch = Guid.NewGuid();
+        var n = 0;
+
+        var results = await RaceAsync(8, () =>
+        {
+            var i = Interlocked.Increment(ref n);
+            return Try(() => recorder.BeginAsync(Submission(tenantId, company, batch, $"race-{i}", batchReference: $"R-{i}",
+                accountFingerprint: $"acct-fp-{i}", artifact: (char)('a' + i)), CancellationToken.None));
+        });
+
+        Assert.Single(results.OfType<GovernmentExchangeRecordResult>(), r => r.Created);
+        Assert.Equal(7, results.OfType<GovernmentExchangeConflictException>().Count());
+        await using var verify = fixture.CreateDb();
+        Assert.Equal(1, await verify.GovernmentExchanges.IgnoreQueryFilters().CountAsync(x => x.TenantId == tenantId && x.SubjectId == batch.ToString()));
+    }
+
+    [Fact]
+    public async Task E1_TheDatabaseItself_HoldsThePaymentBatch_WithoutTheRecordersPreCheck()
+    {
+        var (tenantId, company, _) = await SeedAsync();
+        var batch = Guid.NewGuid().ToString();
+        GovernmentExchange Row(string reference, string fingerprint) => new()
+        {
+            TenantId = tenantId, CompanyId = company, Body = GovernmentBodies.BankAnb, Operation = "payroll.submit", Channel = GovernmentExchangeChannels.Api,
+            Environment = "production", IdempotencyKey = Guid.NewGuid().ToString(), State = GovernmentExchangeStates.SubmitIntended, Adapter = "x",
+            SubjectType = "PaymentBatch", SubjectId = batch, ArtifactSha256 = new string('a', 64), AccountFingerprint = fingerprint, BatchReference = reference,
+        };
+        await using (var db = fixture.CreateDb())
+        {
+            db.GovernmentExchanges.Add(Row("R-1", "acct-fp-1"));
+            await db.SaveChangesAsync();
+        }
+        await using (var db = fixture.CreateDb())
+        {
+            db.GovernmentExchanges.Add(Row("R-2", "acct-fp-2"));
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        }
+    }
+
+    [Fact]
+    public async Task E1_ThePaymentBatch_InSandboxAndInProduction_DoesNotCollide()
+    {
+        var (tenantId, company, _) = await SeedAsync();
+        var recorder = new GovernmentExchangeRecorder(fixture.CreateDb);
+        var batch = Guid.NewGuid();
+
+        var sandbox = await recorder.BeginAsync(Submission(tenantId, company, batch, "env-s", "sandbox"), CancellationToken.None);
+        var production = await recorder.BeginAsync(Submission(tenantId, company, batch, "env-p", "production"), CancellationToken.None);
+
+        Assert.True(sandbox.Created);
+        Assert.True(production.Created);
+        // Within one environment the payment batch is still held, whatever its batch number.
+        var again = await Assert.ThrowsAsync<GovernmentExchangeConflictException>(() =>
+            recorder.BeginAsync(Submission(tenantId, company, batch, "env-s-2", "sandbox", batchReference: "R-OTHER"), CancellationToken.None));
+        Assert.Equal(GovernmentExchangeRecorder.BatchHeldCode, again.Code);
+    }
+
+    [Fact]
+    public async Task E1_ReturnedFileRows_AndOtherRowsAboutTheBatch_DoNotHoldIt()
+    {
+        var (tenantId, company, _) = await SeedAsync();
+        var recorder = new GovernmentExchangeRecorder(fixture.CreateDb);
+        var batch = Guid.NewGuid();
+        var ctx = new RequestContext("127.0.0.1", "test", Guid.NewGuid(), tenantId);
+        // A returned file bound to the batch (the claim row of the returned-file reader) and the file KynexOne generated for it.
+        await recorder.BeginAsync(new GovernmentExchangeAttempt(tenantId, company, GovernmentBodies.BankFile, "returned_file.bind", GovernmentExchangeChannels.FileIn,
+            $"{company}|FILE-REF-1", GovernmentExchangeStates.Recorded, ctx, Environment: "production", SubjectType: "PaymentBatch",
+            SubjectId: batch.ToString()), CancellationToken.None);
+        await recorder.BeginAsync(new GovernmentExchangeAttempt(tenantId, company, GovernmentBodies.BankAnb, "payroll.file", GovernmentExchangeChannels.FileOut,
+            $"file-{batch}", GovernmentExchangeStates.Recorded, ctx, Environment: "production", SubjectType: "PaymentBatch",
+            SubjectId: batch.ToString(), ArtifactSha256: new string('c', 64)), CancellationToken.None);
+
+        var submit = await recorder.BeginAsync(Submission(tenantId, company, batch, "after-files", "production"), CancellationToken.None);
+
+        Assert.True(submit.Created, "neither a returned-file claim nor a generated file is a submission of the batch");
+    }
+
     [Fact]
     public async Task TheDatabase_RefusesALiveOnlyStateOnANonLiveRow_AndAnIntentWithoutItsBatch()
     {
