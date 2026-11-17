@@ -87,7 +87,7 @@ const CASES: Case[] = [
   {
     name: '2 blocked', opts: { validation: BLOCKER },
     act: async page => { await page.getByTestId('bank-guide-primary').click(); },
-    want: l => ({ stage: 'check', chip: 'attention', chipText: say(l, 'Needs a fix'), strip: 'check', primary: say(l, 'Check again') }),
+    want: l => ({ stage: 'check', chip: 'attention', chipText: say(l, 'Needs a fix'), strip: 'check', primary: say(l, 'Check again'), next: say(l, 'Next: fix each problem, then check again.') }),
   },
   {
     name: '3 file details', opts: {},

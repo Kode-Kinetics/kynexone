@@ -133,7 +133,9 @@ function nextLine(t: T, p: PayOut): string | null {
       return t('Next: Check employees.');
     case 'setup': return t('Next: Check employees — then choose the credit date.');
     case 'check':
-      return p.steps[1].state === 'blocked' && p.steps[1].reason !== 'validation_blocked'
+      // A blocked check: the next thing to do is the fix, not step 3.
+      if (p.steps[1].reason === 'validation_blocked') return t('Next: fix each problem, then check again.');
+      return p.steps[1].state === 'blocked'
         ? t('Next: Check employees, once this is cleared.')
         : t('Next: File details — choose the salary credit date and create the file.');
     case 'create': return t('Next: Send to bank — download the file and hand it to your bank.');
