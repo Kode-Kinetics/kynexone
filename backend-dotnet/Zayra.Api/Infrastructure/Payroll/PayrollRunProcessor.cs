@@ -3776,6 +3776,9 @@ public sealed class PayrollRunProcessor
     /// <item>Everything else is unchanged: persisted driver, else the compiled switch.</item>
     /// </list></para>
     /// </summary>
+    /// <summary>The payslip component code of an "Overtime Back Pay" adjustment (ADJ_ + the normalised adjustment type).</summary>
+    internal const string OvertimeBackPayComponentCode = "ADJ_OVERTIME_BACK_PAY";
+
     internal static string EarningDriverKeyFor(IReadOnlyList<GlDriverRow> drivers, string componentCode, string source)
     {
         var direct = ResolveDriverForComponent(drivers, componentCode, source, GlDriverCategories.Earning);
@@ -3792,6 +3795,14 @@ public sealed class PayrollRunProcessor
         // settlement its own account by a SPECIFIC predicate still wins — that is the rule above.
         if (FinalSettlementComponents.IsSettlementEarning(componentCode))
             return EarningDriverKey(componentCode, source);
+
+        // Late-approved overtime paid as an "Overtime Back Pay" adjustment is overtime expense, exactly as the OVERTIME line it
+        // stands in for: it resolves through the tenant's own OVERTIME driver (so an account remap of it applies too). The
+        // persisted catch-all EARN:OTHER claimed it before, so on every seeded tenant late overtime landed in 5099 Other
+        // Earnings while on-time overtime landed in 5005; the journal balanced and nothing reported it. A driver that claims
+        // the back-pay code by a specific predicate still wins (above).
+        if (string.Equals(componentCode, OvertimeBackPayComponentCode, StringComparison.Ordinal))
+            return ResolveDriverForComponent(drivers, "OVERTIME", source, GlDriverCategories.Earning)?.Key ?? "EARN:OVERTIME";
 
         var settles = PayrollArrearsComponents.SourceComponent(componentCode);
         if (!string.Equals(settles, componentCode, StringComparison.Ordinal))
