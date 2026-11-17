@@ -43,6 +43,20 @@ test.describe('role catalog is generated from AuthSeeder.cs', () => {
     expect(roleDefinition(catalog, 'Employee').permissions).toEqual(expect.arrayContaining(['dashboard.read', 'ess.read', 'ess.write']));
   });
 
+  test('the Admin withheld set is read from AuthSeeder.AdminWithheldPermissions, not copied', () => {
+    expect(catalog.adminWithheld).toContain('gov.credentials.manage');
+    expect(catalog.adminWithheld).toContain('attendance.evidence.view');
+    // The policy's set IS the declared set, and Admin is granted exactly the catalog minus it.
+    expect([...ADMIN_WITHHELD].sort()).toEqual([...catalog.adminWithheld].sort());
+    expect(roleDefinition(catalog, 'Admin').permissions).not.toContain('gov.credentials.manage');
+  });
+
+  test('the declared withheld list and the Admin bundle agree, or the parser refuses', () => {
+    const source: string = require('node:fs').readFileSync(require('./role-catalog').AUTH_SEEDER_PATH, 'utf8');
+    // Dropping a key from the declared list while the Admin bundle still withholds it is drift: fail loudly.
+    expect(() => parseAuthSeeder(source.replace(', "gov.credentials.manage"];', '];'))).toThrow(/AdminWithheldPermissions/);
+  });
+
   test('evaluates the predicate bundles (HR Director, HR Manager) rather than skipping them', () => {
     const hrDirector = roleDefinition(catalog, 'HR Director').permissions;
     expect(hrDirector).toContain('employees.write');
