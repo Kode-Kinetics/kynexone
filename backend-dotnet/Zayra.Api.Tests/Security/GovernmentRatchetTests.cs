@@ -360,7 +360,13 @@ public sealed partial class GovernmentRatchetTests
         writes.Should().BeEmpty("every POST, PUT, PATCH or DELETE to a body goes through GovernmentHttp.ExchangeAsync, which refuses it without "
             + "a live-write decision (four gates plus the legal clearance).\n  " + string.Join("\n  ", writes));
         var http = Source().Single(f => f.Relative == GovernmentHttpFile).Code;
-        http.Should().Contain("!IsRead(method) && !decision.AllowsWrites", "the transport itself refuses a write without the write grade");
+        http.Should().Contain("!IsRead(method) && (!decision.AllowsWrites || decision.Environment is null)", "the transport itself refuses a write without the write grade");
+        http.Should().Contain("requireIntent: !IsRead(method)", "and a write without a committed intent");
+
+        var receipts = Source().Where(f => f.Relative != "Infrastructure/Government/GovernmentExchangeRecorder.cs")
+            .SelectMany(f => Regex.Matches(f.Code, @"new\s+GovernmentExchangeIntentReceipt\s*\(").Select(m => $"{f.Relative}:{SourceScan.LineOf(f.Code, m.Index)}")).ToList();
+        receipts.Should().BeEmpty("only the recorder, after its own commit, makes an intent receipt");
+        typeof(GovernmentExchangeIntentReceipt).GetConstructors().Should().BeEmpty();
 
         WritesOutsideTheCheckedPath("using var resp = await _http.ExchangeAsync(decision, env, HttpMethod.Post, \"/x\", body, null, ct);").Should().BeEmpty();
         WritesOutsideTheCheckedPath("var req = new HttpRequestMessage(HttpMethod.Post, uri); await client.SendAsync(req);").Should().ContainSingle();

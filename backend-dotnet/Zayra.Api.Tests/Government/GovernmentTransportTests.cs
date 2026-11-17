@@ -71,6 +71,16 @@ public sealed class GovernmentTransportTests
         otherHost.Should().Throw<GovernmentTransportRefusedException>().Which.Code.Should().Be(GovernmentHttp.CredentialBindingCode);
         var otherBody = () => http.RequireBoundTo(Credential("sandbox", null), GovernmentBodies.Gosi, "sandbox");
         otherBody.Should().Throw<GovernmentTransportRefusedException>();
+
+        // The token host is compared at use too, against the environment's token URL (or the API URL when none is set).
+        var withToken = new GovernmentHttp(new SingleHandlerFactory(new CountingHandler()),
+            Config((GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox"), "https://api.bank-sandbox.example.test"),
+                (GovernmentHttp.TokenUrlKey(GovernmentBodies.BankAnb, "sandbox"), "https://auth.bank-sandbox.example.test")));
+        UnsealedGovernmentCredential Tokened(string tokenHost) =>
+            new(GovernmentBodies.BankAnb, "sandbox", GovernmentCredentialKinds.OAuthClient, null, 1, "synthetic", "client", "api.bank-sandbox.example.test", tokenHost);
+        withToken.RequireBoundTo(Tokened("auth.bank-sandbox.example.test"), GovernmentBodies.BankAnb, "sandbox");
+        var otherTokenHost = () => withToken.RequireBoundTo(Tokened("auth.evil.example.test"), GovernmentBodies.BankAnb, "sandbox");
+        otherTokenHost.Should().Throw<GovernmentTransportRefusedException>().Which.Code.Should().Be(GovernmentHttp.CredentialBindingCode);
     }
 
     [Theory]
@@ -112,9 +122,12 @@ public sealed class GovernmentTransportTests
             => Task.FromResult<string?>(decision.AllowsWrites ? "synthetic-token" : null);
         public Task<QiwaApiResult> PushEmployeeAsync(string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)
             => Task.FromResult(new QiwaApiResult(false, "NO_DECISION", null, null));
-        public Task<QiwaApiResult> PushEmployeeAsync(GovernmentLiveDecision decision, string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)
+        public List<GovernmentExchangeIntentReceipt?> Intents { get; } = [];
+        public Task<QiwaApiResult> PushEmployeeAsync(GovernmentLiveDecision decision, string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey,
+            CancellationToken ct, GovernmentExchangeIntentReceipt? intent = null)
         {
             Environments.Add(decision.Environment);
+            Intents.Add(intent);
             return Task.FromResult(new QiwaApiResult(decision.AllowsWrites, null, null, "{\"status\":\"ok\"}"));
         }
         public Task<QiwaApiResult> GetEmployeeStatusAsync(string accessToken, string establishmentId, string employeeIdNumber, CancellationToken ct)
@@ -130,14 +143,17 @@ public sealed class GovernmentTransportTests
         db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = tenantId, FeatureKey = FeatureKeys.GovQiwaApi, IsEnabled = true, ConfigJson = GovernmentApiTests.StampedConsent("identity") });
         await db.SaveChangesAsync();
         var config = Config((QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true"), (QiwaLiveAdapterPolicy.PartnerAgreementKey, "AGR-SYNTHETIC"),
-            (GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Qiwa), "LEGAL-SYNTHETIC-1"));
+            (GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Qiwa, "production"), "LEGAL-SYNTHETIC-1"));
         var adapter = new LiveDouble();
 
         await new QiwaSyncWorker(new GovernmentReviewRegressionTests.SingleDbScopeFactory(db), adapter, new QiwaOAuthTokenCache(), protection,
             NullLogger<QiwaSyncWorker>.Instance, configuration: config).ProcessOnceAsync(CancellationToken.None);
 
         adapter.Environments.Should().Equal("sandbox");
+        adapter.Intents.Should().ContainSingle().Which.Should().NotBeNull("a live push carries the receipt of its committed intent");
         (await db.QiwaSyncLogs.IgnoreQueryFilters().SingleAsync(l => l.Id == logId)).Status.Should().Be(QiwaSyncLogStatuses.Success);
+        var ledger = await db.GovernmentExchanges.IgnoreQueryFilters().AsNoTracking().SingleAsync();
+        (ledger.Body, ledger.Environment, ledger.State, ledger.IsLive).Should().Be((GovernmentBodies.Qiwa, "sandbox", GovernmentExchangeStates.Completed, true));
     }
 
     [Fact]
@@ -147,13 +163,14 @@ public sealed class GovernmentTransportTests
         await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
         var (_, logId) = await GovernmentReviewRegressionTests.SeedQiwaAsync(db, protection);
         var config = Config((QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true"), (QiwaLiveAdapterPolicy.PartnerAgreementKey, "AGR-SYNTHETIC"),
-            (GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Qiwa), "LEGAL-SYNTHETIC-1"));
+            (GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Qiwa, "production"), "LEGAL-SYNTHETIC-1"));
         var adapter = new LiveDouble();
 
         await new QiwaSyncWorker(new GovernmentReviewRegressionTests.SingleDbScopeFactory(db), adapter, new QiwaOAuthTokenCache(), protection,
             NullLogger<QiwaSyncWorker>.Instance, configuration: config).ProcessOnceAsync(CancellationToken.None);
 
         adapter.Environments.Should().BeEmpty("agreement, switch, clearance and a credential are not enough: the tenant's consent record is G2");
-        (await db.QiwaSyncLogs.IgnoreQueryFilters().SingleAsync(l => l.Id == logId)).Status.Should().Be(QiwaSyncLogStatuses.DeadLetter);
+        (await db.QiwaSyncLogs.IgnoreQueryFilters().SingleAsync(l => l.Id == logId)).Status.Should().Be(QiwaSyncLogStatuses.Pending,
+            "not opted in yet is a pause: the queue waits for the consent");
     }
 }

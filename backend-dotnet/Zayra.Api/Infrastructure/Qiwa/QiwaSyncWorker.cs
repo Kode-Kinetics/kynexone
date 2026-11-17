@@ -173,10 +173,22 @@ public sealed class QiwaSyncWorker : BackgroundService
                 await QiwaLiveAdapterPolicy.HasTenantConsentAsync(db, tenantId, ct),
                 credential is { } qiwaCredential && !string.IsNullOrWhiteSpace(qiwaCredential.ClientId) && !string.IsNullOrWhiteSpace(qiwaCredential.EncryptedClientSecret),
                 GovernmentEnvironments.IsKnown(environment) ? environment : GovernmentEnvironments.Sandbox);
-            if (_adapter.IsLiveIntegration && !decision.IsOpen)
+            // A TRANSIENT closed gate (the operator's kill switch, a tenant not yet opted in, a missing production clearance) leaves
+            // the queue Pending, exactly like a switched-off qiwa_integration module: re-opening the gate resumes it. Only a
+            // configuration fault (no agreement, no credential, mismatched environments) dead-letters.
+            if (_adapter.IsLiveIntegration && !decision.IsOpen && TransientGateReasons.Contains(decision.ReasonCode ?? string.Empty))
             {
-                var reason = $"{GovernmentLivePolicy.RefusedCode}: {decision.ReasonCode}";
-                _log.LogWarning("QiwaSyncWorker: live Qiwa calls are refused for tenant {TenantId} ({ReasonCode}).", tenantId, decision.ReasonCode);
+                _log.LogInformation("QiwaSyncWorker: live Qiwa calls are paused for tenant {TenantId} ({ReasonCode}); the queue is kept.", tenantId, decision.ReasonCode);
+                continue;
+            }
+            var environmentMismatch = _adapter.IsLiveIntegration
+                && connection?.Environment is { } connectionEnvironment && credential?.Environment is { } credentialEnvironment
+                && !string.Equals(connectionEnvironment, credentialEnvironment, StringComparison.Ordinal);
+            if (_adapter.IsLiveIntegration && (!decision.IsOpen || environmentMismatch))
+            {
+                var reasonCode = environmentMismatch ? EnvironmentMismatchReason : decision.ReasonCode;
+                var reason = $"{GovernmentLivePolicy.RefusedCode}: {reasonCode}";
+                _log.LogWarning("QiwaSyncWorker: live Qiwa calls are refused for tenant {TenantId} ({ReasonCode}).", tenantId, reasonCode);
                 foreach (var log in group)
                 {
                     if (!await TryClaimAsync(db, log, now, ct)) continue;
@@ -184,7 +196,7 @@ public sealed class QiwaSyncWorker : BackgroundService
                     log.Status           = QiwaSyncLogStatuses.DeadLetter;
                     log.DeadLetterReason = reason;
                     log.CompletedAtUtc   = now;
-                    Audit(db, tenantId, "qiwa.sync_live_refused", log.EmployeeId, new { syncLogId = log.Id, reasonCode = decision.ReasonCode });
+                    Audit(db, tenantId, "qiwa.sync_live_refused", log.EmployeeId, new { syncLogId = log.Id, reasonCode });
                 }
                 await db.SaveChangesAsync(ct);
                 continue;
@@ -340,13 +352,44 @@ public sealed class QiwaSyncWorker : BackgroundService
             establishmentId, employee.WorkLocationId, employee.ContractReference);
 
         QiwaApiResult result;
+        Guid? ledgerId = null;
         try
         {
-            result = await _adapter.PushEmployeeAsync(decision, token, payload, log.Id, ct);
+            // A live push is announced first: an intent committed in the ledger on its own (never inside this pass's unsaved work),
+            // whose receipt is the only thing that lets the transport send. A new key per claim keeps Qiwa's retry behaviour; the
+            // sync-log id stays the Idempotency-Key Qiwa sees.
+            GovernmentExchangeIntentReceipt? intent = null;
+            if (_adapter.IsLiveIntegration)
+            {
+                var recorded = await new GovernmentExchangeRecorder(_scopeFactory).BeginAsync(new GovernmentExchangeAttempt(
+                    tenantId, employee.CompanyId, GovernmentBodies.Qiwa, "employee.push", GovernmentExchangeChannels.Api,
+                    $"{log.Id:N}:{log.LastRetriedAtUtc?.Ticks ?? 0}", GovernmentExchangeStates.Attempted,
+                    new Zayra.Api.Application.Auth.RequestContext(null, "qiwa-sync-worker", null, tenantId), _adapter,
+                    Environment: decision.Environment, SubjectType: "Employee", SubjectId: employee.Id.ToString()), ct);
+                intent = recorded.Receipt;
+                ledgerId = recorded.Exchange.Id;
+            }
+            result = await _adapter.PushEmployeeAsync(decision, token, payload, log.Id, ct, intent);
         }
         catch (Exception ex)
         {
             result = new QiwaApiResult(false, "EXCEPTION", ex.Message, null);
+        }
+
+        if (ledgerId is { } exchangeId)
+        {
+            // The outcome of the announced push, recorded on its own as well. Completed is a live-only claim (the recorder checks).
+            try
+            {
+                await new GovernmentExchangeRecorder(_scopeFactory).UpdateAsync(tenantId, exchangeId, new GovernmentExchangeOutcome(
+                    result.Success && _adapter.IsLiveIntegration ? GovernmentExchangeStates.Completed : GovernmentExchangeStates.Failed,
+                    new Zayra.Api.Application.Auth.RequestContext(null, "qiwa-sync-worker", null, tenantId),
+                    ErrorCode: result.ErrorCode, Completed: true), ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log.LogWarning("QiwaSyncWorker: the ledger outcome of exchange {ExchangeId} was not recorded ({ErrorType}).", exchangeId, ex.GetType().Name);
+            }
         }
 
         log.LastRetriedAtUtc = DateTime.UtcNow;
@@ -406,6 +449,14 @@ public sealed class QiwaSyncWorker : BackgroundService
                 connection.Status = QiwaConnectionStatuses.ApiError;
         }
     }
+
+    /// <summary>Closed-gate reasons that are a pause, not a fault: the queue stays Pending.</summary>
+    private static readonly HashSet<string> TransientGateReasons = new(StringComparer.Ordinal)
+    {
+        GovernmentLivePolicy.OperatorDisabled, GovernmentLivePolicy.TenantNotOptedIn, GovernmentLivePolicy.LiveWritesNeedLegalClearance,
+    };
+
+    public const string EnvironmentMismatchReason = "qiwa_connection_and_credential_environment_differ";
 
     /// <summary>Codes meaning the call was refused before (or instead of) sending; retrying cannot change them.</summary>
     private static readonly HashSet<string> RefusedBeforeSending = new(StringComparer.Ordinal)

@@ -17,8 +17,19 @@ public sealed class GovernmentHttpTests
     private const string QiwaProductionHost = "api.qiwa.tech";
     private static readonly GovernmentLiveDecision Open = GovernmentLivePolicy.Decide(GovernmentBodies.Gosi, new GovernmentLiveGates(true, true, true, true));
     private static readonly GovernmentLiveDecision OpenWrite = GovernmentLivePolicy.DecideLiveWrite(
-        Config((GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Gosi), "LEGAL-SYNTHETIC-1")), GovernmentBodies.Gosi,
-        new GovernmentLiveGates(true, true, true, true), "sandbox");
+        Config(), GovernmentBodies.Gosi, new GovernmentLiveGates(true, true, true, true), "sandbox");
+
+    /// <summary>A committed intent for one body and environment, made the only way there is: by the recorder.</summary>
+    internal static async Task<GovernmentExchangeIntentReceipt> IntentAsync(string body, string environment)
+    {
+        var (recorder, db) = GovernmentExchangeRecorderTests.Create();
+        await using var _ = db;
+        var tenant = Guid.NewGuid();
+        var recorded = await recorder.BeginAsync(new GovernmentExchangeAttempt(tenant, null, body, "test.write", Zayra.Api.Models.GovernmentExchangeChannels.Api,
+            Guid.NewGuid().ToString("N"), Zayra.Api.Models.GovernmentExchangeStates.Attempted,
+            new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "test", null, tenant), Environment: environment), default);
+        return recorded.Receipt!;
+    }
 
     [Fact]
     public void BaseUrl_ComesFromTheAllowList_PerEnvironment_AndAnUnlistedEnvironmentIsRefused()
@@ -76,7 +87,8 @@ public sealed class GovernmentHttpTests
         var factory = new SingleHandlerFactory(handler);
         var http = new GovernmentHttp(factory, Config((GovernmentHttp.BaseUrlKey(GovernmentBodies.Gosi, "sandbox"), "https://gosi-sandbox.example.test")));
 
-        using var response = await http.ExchangeAsync(OpenWrite, "sandbox", HttpMethod.Post, "/submit", new StringContent("{}"), null, default);
+        using var response = await http.ExchangeAsync(OpenWrite, "sandbox", HttpMethod.Post, "/submit", new StringContent("{}"), null, default,
+            await IntentAsync(GovernmentBodies.Gosi, "sandbox"));
 
         response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
         handler.Calls.Should().Be(1);
@@ -110,7 +122,7 @@ public sealed class GovernmentHttpTests
     /// <summary>An open live-write decision for one tenant's Qiwa environment (agreement, switch, clearance, consent, credential).</summary>
     internal static GovernmentLiveDecision QiwaDecision(string environment) => QiwaLiveAdapterPolicy.DecideLiveWrite(
         Config((QiwaLiveAdapterPolicy.PartnerAgreementKey, "synthetic-agreement"), (QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true"),
-            (GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Qiwa), "LEGAL-SYNTHETIC-1")),
+            (GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Qiwa, "production"), "LEGAL-SYNTHETIC-1")),
         tenantConsent: true, credential: true, environment);
 
     private static readonly QiwaEmployeePayload Payload = new("E", "1", "NationalId", "SA", "Saudi", "1", "7-1", "W", "C");
@@ -122,7 +134,8 @@ public sealed class GovernmentHttpTests
         var adapter = QiwaAdapter(handler);
 
         var token = await adapter.AcquireAccessTokenAsync(QiwaDecision("sandbox"), "synthetic-id", "synthetic-credential", default);
-        var push = await adapter.PushEmployeeAsync(QiwaDecision("sandbox"), "synthetic-token", Payload, Guid.NewGuid(), default);
+        var push = await adapter.PushEmployeeAsync(QiwaDecision("sandbox"), "synthetic-token", Payload, Guid.NewGuid(), default,
+            await IntentAsync(GovernmentBodies.Qiwa, "sandbox"));
         var status = await adapter.GetEmployeeStatusAsync(QiwaDecision("sandbox"), "synthetic-token", "7-1", "1", default);
 
         token.Should().BeNull();
@@ -138,7 +151,8 @@ public sealed class GovernmentHttpTests
         var handler = new CountingHandler();
         var adapter = QiwaAdapter(handler, (GovernmentHttp.BaseUrlKey(GovernmentBodies.Qiwa, "sandbox"), "https://qiwa-sandbox.example.test"));
 
-        await adapter.PushEmployeeAsync(QiwaDecision("sandbox"), "synthetic-token", Payload, Guid.NewGuid(), default);
+        await adapter.PushEmployeeAsync(QiwaDecision("sandbox"), "synthetic-token", Payload, Guid.NewGuid(), default,
+            await IntentAsync(GovernmentBodies.Qiwa, "sandbox"));
 
         handler.Uris.Should().ContainSingle().Which.Host.Should().Be("qiwa-sandbox.example.test");
     }
@@ -149,7 +163,8 @@ public sealed class GovernmentHttpTests
         var handler = new CountingHandler();
         var adapter = QiwaAdapter(handler);
 
-        await adapter.PushEmployeeAsync(QiwaDecision("production"), "synthetic-token", Payload, Guid.NewGuid(), default);
+        await adapter.PushEmployeeAsync(QiwaDecision("production"), "synthetic-token", Payload, Guid.NewGuid(), default,
+            await IntentAsync(GovernmentBodies.Qiwa, "production"));
 
         handler.Uris.Should().ContainSingle().Which.Should().Be(new Uri("https://api.qiwa.tech/api/v1/establishments/7-1/employees"));
     }
@@ -169,7 +184,10 @@ public sealed class GovernmentHttpTests
         // A closed decision (no consent) sends nothing either, even to the production host.
         var closed = QiwaLiveAdapterPolicy.DecideLiveWrite(Config((QiwaLiveAdapterPolicy.PartnerAgreementKey, "a"), (QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true")),
             tenantConsent: false, credential: true, "production");
-        (await adapter.PushEmployeeAsync(closed, "synthetic-token", Payload, Guid.NewGuid(), default)).Success.Should().BeFalse();
+        (await adapter.PushEmployeeAsync(closed, "synthetic-token", Payload, Guid.NewGuid(), default, await IntentAsync(GovernmentBodies.Qiwa, "production"))).Success.Should().BeFalse();
+        // And an open decision without a committed intent sends nothing.
+        (await adapter.PushEmployeeAsync(QiwaDecision("production"), "synthetic-token", Payload, Guid.NewGuid(), default)).ErrorCode
+            .Should().Be(GovernmentHttp.WriteWithoutIntentCode);
         handler.Calls.Should().Be(0);
     }
 }

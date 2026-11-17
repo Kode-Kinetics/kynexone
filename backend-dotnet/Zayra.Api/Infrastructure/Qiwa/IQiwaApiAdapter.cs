@@ -40,8 +40,12 @@ public interface IQiwaApiAdapter : IGovernmentAdapter
     Task<string?> AcquireAccessTokenAsync(GovernmentLiveDecision decision, string clientId, string clientSecret, CancellationToken ct)
         => AcquireAccessTokenAsync(clientId, clientSecret, decision.Environment ?? GovernmentEnvironments.Sandbox, ct);
 
-    /// <summary>The employee push under a live-write decision. See <see cref="AcquireAccessTokenAsync(GovernmentLiveDecision, string, string, CancellationToken)"/>.</summary>
-    Task<QiwaApiResult> PushEmployeeAsync(GovernmentLiveDecision decision, string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)
+    /// <summary>
+    /// The employee push under a live-write decision and the recorder's receipt for the committed intent of this push (a live
+    /// adapter sends nothing without it). See <see cref="AcquireAccessTokenAsync(GovernmentLiveDecision, string, string, CancellationToken)"/>.
+    /// </summary>
+    Task<QiwaApiResult> PushEmployeeAsync(GovernmentLiveDecision decision, string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey,
+        CancellationToken ct, GovernmentExchangeIntentReceipt? intent = null)
         => PushEmployeeAsync(accessToken, payload, idempotencyKey, ct);
 
     /// <summary>The status lookup under a decision for the tenant's environment.</summary>

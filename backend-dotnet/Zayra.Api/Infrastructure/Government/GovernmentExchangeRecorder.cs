@@ -46,8 +46,38 @@ public sealed record GovernmentExchangeOutcome(
     bool Completed = false,
     bool IsPoll = false);
 
-/// <summary>The ledger row, and whether this call created it (false: the idempotency key had already been used).</summary>
-public sealed record GovernmentExchangeRecordResult(GovernmentExchange Exchange, bool Created);
+/// <summary>
+/// The ledger row, and whether this call created it (false: the idempotency key had already been used). <see cref="Receipt"/> is
+/// set only when this call CREATED an intent on the api channel and it is committed: the one thing that lets the transport send.
+/// A replayed key gets no receipt, so a retried job can never send twice; the outcome of the first is a person's to resolve.
+/// </summary>
+public sealed record GovernmentExchangeRecordResult(GovernmentExchange Exchange, bool Created, GovernmentExchangeIntentReceipt? Receipt = null);
+
+/// <summary>
+/// Proof that an intent row is durably committed BEFORE an outbound call. Only <see cref="GovernmentExchangeRecorder"/> creates one
+/// (internal constructor; ratchet), and only after its own commit outside any caller transaction, so a rollback of the caller's work
+/// cannot erase the record of a call that was made. <see cref="GovernmentHttp"/> refuses every non-GET call that does not carry one
+/// for the same body and environment.
+/// </summary>
+public sealed class GovernmentExchangeIntentReceipt
+{
+    internal GovernmentExchangeIntentReceipt(Guid exchangeId, Guid tenantId, string body, string environment, string idempotencyKey, string? artifactSha256)
+    {
+        ExchangeId = exchangeId;
+        TenantId = tenantId;
+        Body = body;
+        Environment = environment;
+        IdempotencyKey = idempotencyKey;
+        ArtifactSha256 = artifactSha256;
+    }
+
+    public Guid ExchangeId { get; }
+    public Guid TenantId { get; }
+    public string Body { get; }
+    public string Environment { get; }
+    public string IdempotencyKey { get; }
+    public string? ArtifactSha256 { get; }
+}
 
 /// <summary>A ledger write that collides with another one (a reused key, a held batch, a bank id, a lost update): 409.</summary>
 public sealed class GovernmentExchangeConflictException(string code, string message) : InvalidOperationException(message)
@@ -99,6 +129,8 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
     public const int MaxIdempotencyKeyLength = 128;
 
     public const string CallerHasUnsavedChangesCode = "exchange_caller_has_unsaved_changes";
+    /// <summary>An intent (or an outcome that follows a call) inside a caller's open transaction: refused, it would not be durable.</summary>
+    public const string IntentMustBeCommittedCode = "exchange_intent_must_be_committed";
     private const string Savepoint = "gov_exchange_ledger";
 
     private readonly Func<(ZayraDbContext Db, IAuditService Audit, IAsyncDisposable Owner)> _open;
@@ -139,10 +171,15 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
     /// conflict the write is rolled back (savepoint) or thrown away (fresh unit) and <paramref name="onConflict"/> runs in a clean state.
     /// </summary>
     private async Task<T> RunAsync<T>(Func<ZayraDbContext, IAuditService, Task<T>> work,
-        Func<ZayraDbContext, Task<T>>? onConflict, CancellationToken ct)
+        Func<ZayraDbContext, Task<T>>? onConflict, CancellationToken ct, bool mustBeDurable = false)
     {
         if (_ambient?.Database.CurrentTransaction is { } tx)
         {
+            // An intent, or an outcome that follows a call, must be committed on its own BEFORE (or after) the call: inside the
+            // caller's transaction a later rollback would erase the record of a call that was made. Refused, never written there.
+            // This also means the recorder never opens a second connection while the caller holds the tenant's audit lock.
+            if (mustBeDurable)
+                throw new InvalidOperationException($"{IntentMustBeCommittedCode}: commit (or leave) your transaction, then record the intent; it must be durable before the call.");
             if (_ambient.ChangeTracker.HasChanges())
                 throw new InvalidOperationException($"{CallerHasUnsavedChangesCode}: save your own changes before recording a government exchange in the same transaction.");
             await tx.CreateSavepointAsync(Savepoint, ct);
@@ -182,6 +219,7 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
             throw new GovernmentExchangeConflictException(IllegalTransitionCode, $"An attempt cannot start in state '{attempt.State}'.");
 
         var requestSha = Sha256(attempt.RequestBody);
+        var isIntent = attempt.Channel == GovernmentExchangeChannels.Api && GovernmentExchangeStates.Intents.Contains(attempt.State, StringComparer.Ordinal);
         return await RunAsync(async (db, audit) =>
         {
             var existing = await FindByKeyAsync(db, attempt.TenantId, attempt.Body, attempt.Operation, attempt.IdempotencyKey, ct);
@@ -190,7 +228,7 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
             var holding = GovernmentExchangeStates.HoldsTheBatch.ToArray();
             if (attempt.AccountFingerprint is not null && attempt.BatchReference is not null
                 && await db.GovernmentExchanges.AsNoTracking().AnyAsync(x => x.TenantId == attempt.TenantId && x.Body == attempt.Body
-                        && x.AccountFingerprint == attempt.AccountFingerprint && x.BatchReference == attempt.BatchReference
+                        && x.Environment == attempt.Environment && x.AccountFingerprint == attempt.AccountFingerprint && x.BatchReference == attempt.BatchReference
                         && holding.Contains(x.State), ct))
                 throw new GovernmentExchangeConflictException(BatchHeldCode, "This batch already has an open or completed submission.");
 
@@ -198,7 +236,11 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
             db.GovernmentExchanges.Add(row);
             Stage(audit, "government.exchange.recorded", null, row, attempt.Context);
             await db.SaveChangesAsync(ct);
-            return new GovernmentExchangeRecordResult(row, true);
+            // Committed in this unit of work (an intent is never written inside a caller's transaction), so it is durable now.
+            var receipt = isIntent
+                ? new GovernmentExchangeIntentReceipt(row.Id, row.TenantId, row.Body, row.Environment!, row.IdempotencyKey, row.ArtifactSha256)
+                : null;
+            return new GovernmentExchangeRecordResult(row, true, receipt);
         },
         // Lost a race on a unique key. If the caller can see the winner and it carries the same content, hand it back; otherwise it
         // is a conflict (another company's row, another submission of the batch, another payload), never a 500.
@@ -208,7 +250,7 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
             if (winner is null)
                 throw new GovernmentExchangeConflictException(KeyInUseCode, "This attempt collides with another exchange record.");
             return new GovernmentExchangeRecordResult(SameContentOrConflict(winner, attempt, requestSha), false);
-        }, ct);
+        }, ct, mustBeDurable: isIntent);
     }
 
     private static GovernmentExchange NewRow(GovernmentExchangeAttempt attempt, string? requestSha, bool isLive) => new()
@@ -255,7 +297,7 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
             if (row.ExternalReference is { } held && held != reference)
                 throw new GovernmentExchangeConflictException(BankReferenceCode, "The body's reference for this attempt is already recorded and cannot change.");
             if (await db.GovernmentExchanges.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.Body == row.Body
-                    && x.ExternalReference == reference && x.Id != row.Id, ct))
+                    && x.Environment == row.Environment && x.ExternalReference == reference && x.Id != row.Id, ct))
                 throw new GovernmentExchangeConflictException(BankReferenceCode, "The body's reference already belongs to another attempt.");
         }
 
@@ -273,7 +315,7 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
         Stage(audit, "government.exchange.updated", before, row, outcome.Context);
         await SaveOrConflictAsync(db, ct);
         return row;
-        }, null, ct);
+        }, null, ct, mustBeDurable: true);
     }
 
     public async Task<GovernmentExchange> ResolveUnknownAsync(Guid tenantId, Guid exchangeId, string resolution, string? bankReference, string reason,
@@ -297,7 +339,7 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
             if (string.IsNullOrWhiteSpace(bankReference))
                 throw new GovernmentExchangeConflictException(ResolutionRefusedCode, "\"The bank has it\" needs the bank's id for the batch.");
             if (await db.GovernmentExchanges.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.Body == row.Body
-                    && x.ExternalReference == bankReference && x.Id != row.Id, ct))
+                    && x.Environment == row.Environment && x.ExternalReference == bankReference && x.Id != row.Id, ct))
                 throw new GovernmentExchangeConflictException(BankReferenceCode, "The body's reference already belongs to another attempt.");
         }
 
@@ -314,7 +356,7 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
         Stage(audit, "government.exchange.unknown_resolved", before, row, context);
         await SaveOrConflictAsync(db, ct);
         return row;
-        }, null, ct);
+        }, null, ct, mustBeDurable: true);
     }
 
     private static async Task SaveOrConflictAsync(ZayraDbContext db, CancellationToken ct)
@@ -379,6 +421,7 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
         if (string.IsNullOrWhiteSpace(a.IdempotencyKey) || a.IdempotencyKey.Length > MaxIdempotencyKeyLength)
             throw new ArgumentException($"An idempotency key of at most {MaxIdempotencyKeyLength} characters is required.", nameof(a));
         if (a.Environment is not null && !GovernmentEnvironments.IsKnown(a.Environment)) throw new ArgumentException($"Unknown environment '{a.Environment}'.", nameof(a));
+        if (a.Channel == GovernmentExchangeChannels.Api && a.Environment is null) throw new ArgumentException("An api attempt names its environment.", nameof(a));
         foreach (var hash in new[] { a.ArtifactSha256, a.ArtifactSecondarySha256 })
             if (hash is not null && (hash.Length != 64 || !hash.All(Uri.IsHexDigit)))
                 throw new ArgumentException("An artifact hash must be a SHA-256 hex string.", nameof(a));

@@ -132,13 +132,17 @@ public sealed class GovernmentExchangePostgresTests(PostgresFixture fixture)
         Assert.Equal(winners, row.PollCount);
     }
 
+    private static GovernmentExchangeAttempt FileRecord(Guid tenant, Guid company, string key) =>
+        new(tenant, company, GovernmentBodies.Gosi, "contributions.file", GovernmentExchangeChannels.FileOut, key, GovernmentExchangeStates.Recorded,
+            new RequestContext("127.0.0.1", "test", Guid.NewGuid(), tenant));
+
     [Fact]
-    public async Task InsideTheCallersTransaction_TheLedgerUsesASavepoint_AndLeavesTheCallersWorkAlone()
+    public async Task InsideTheCallersTransaction_ARecordUsesASavepoint_AnIntentIsRefused_AndTheCallersWorkIsLeftAlone()
     {
         var (tenantId, company, _) = await SeedAsync();
         await using var caller = fixture.CreateDb();
         GovernmentExchangeRecordResult first = null!, replay = null!;
-        GovernmentExchangeConflictException otherKey = null!;
+        InvalidOperationException intent = null!, outcome = null!;
         // The production provider retries, so a user transaction runs inside its execution strategy (as the product's own do).
         await caller.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
         {
@@ -149,31 +153,96 @@ public sealed class GovernmentExchangePostgresTests(PostgresFixture fixture)
             await caller.SaveChangesAsync();
             var recorder = new GovernmentExchangeRecorder(fixture.CreateDb, ambient: caller);
 
-            first = await recorder.BeginAsync(Intent(tenantId, company, "tx-key", "B-TX"), CancellationToken.None);
-            replay = await recorder.BeginAsync(Intent(tenantId, company, "tx-key", "B-TX"), CancellationToken.None);
-            otherKey = await Assert.ThrowsAsync<GovernmentExchangeConflictException>(
-                () => recorder.BeginAsync(Intent(tenantId, company, "tx-key-2", "B-TX"), CancellationToken.None));
-            // Still usable after the refusal (rolled back to the savepoint, not an aborted transaction).
-            await recorder.UpdateAsync(tenantId, first.Exchange.Id, new GovernmentExchangeOutcome(GovernmentExchangeStates.Unknown,
-                new RequestContext("127.0.0.1", "test", null, tenantId)), CancellationToken.None);
+            // A record of something filed by hand joins the transaction under a savepoint, on the caller's own connection.
+            first = await recorder.BeginAsync(FileRecord(tenantId, company, "file-key"), CancellationToken.None);
+            replay = await recorder.BeginAsync(FileRecord(tenantId, company, "file-key"), CancellationToken.None);
+            // An intent, or an outcome, is refused here: it would not be durable.
+            intent = await Assert.ThrowsAsync<InvalidOperationException>(() => recorder.BeginAsync(Intent(tenantId, company, "tx-key", "B-TX"), CancellationToken.None));
+            outcome = await Assert.ThrowsAsync<InvalidOperationException>(() => recorder.UpdateAsync(tenantId, first.Exchange.Id,
+                new GovernmentExchangeOutcome(GovernmentExchangeStates.Failed, new RequestContext("127.0.0.1", "test", null, tenantId)), CancellationToken.None));
 
             // Unsaved work of the caller is never flushed by the ledger: it is refused instead.
             callerAudit.Stage("payroll.batch_note", "PaymentBatch", "B-TX", new RequestContext("127.0.0.1", "test", null, tenantId), "{}", company);
             var unsaved = await Assert.ThrowsAsync<InvalidOperationException>(
-                () => recorder.BeginAsync(Intent(tenantId, company, "tx-key-3", "B-OTHER"), CancellationToken.None));
+                () => recorder.BeginAsync(FileRecord(tenantId, company, "file-key-2"), CancellationToken.None));
             Assert.StartsWith(GovernmentExchangeRecorder.CallerHasUnsavedChangesCode, unsaved.Message);
             await caller.SaveChangesAsync();
             await tx.CommitAsync();
         });
 
         Assert.True(first.Created);
+        Assert.Null(first.Receipt);
         Assert.False(replay.Created);
-        Assert.Equal(GovernmentExchangeRecorder.BatchHeldCode, otherKey.Code);
+        Assert.StartsWith(GovernmentExchangeRecorder.IntentMustBeCommittedCode, intent.Message);
+        Assert.StartsWith(GovernmentExchangeRecorder.IntentMustBeCommittedCode, outcome.Message);
         await using var verify = fixture.CreateDb();
         Assert.Equal(1, await verify.AuditLogs.IgnoreQueryFilters().CountAsync(x => x.TenantId == tenantId && x.Action == "payroll.batch_prepared"));
         Assert.Equal(1, await verify.AuditLogs.IgnoreQueryFilters().CountAsync(x => x.TenantId == tenantId && x.Action == "payroll.batch_note"));
-        var row = await verify.GovernmentExchanges.IgnoreQueryFilters().SingleAsync(x => x.TenantId == tenantId && x.BatchReference == "B-TX");
-        Assert.Equal(GovernmentExchangeStates.Unknown, row.State);
+        Assert.Equal(1, await verify.GovernmentExchanges.IgnoreQueryFilters().CountAsync(x => x.TenantId == tenantId));
+        Assert.Equal(0, await verify.GovernmentExchanges.IgnoreQueryFilters().CountAsync(x => x.TenantId == tenantId && x.BatchReference == "B-TX"));
+    }
+
+    [Fact]
+    public async Task AnOuterTransactionRolledBackAfterTheIntentCall_CannotLeadToASend()
+    {
+        var (tenantId, company, _) = await SeedAsync();
+        var handler = new GovernmentLiveGateTests.CountingHandler();
+        var http = new GovernmentHttp(new GovernmentLiveGateTests.SingleHandlerFactory(handler),
+            GovernmentLiveGateTests.Config((GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox"), "https://bank-sandbox.example.test")));
+        var write = GovernmentLivePolicy.DecideLiveWrite(null, GovernmentBodies.BankAnb, new GovernmentLiveGates(true, true, true, true), "sandbox");
+        await using var caller = fixture.CreateDb();
+
+        await caller.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            await using var tx = await caller.Database.BeginTransactionAsync();
+            IAuditService callerAudit = new AuditService(caller);
+            callerAudit.Stage("payroll.batch_prepared", "PaymentBatch", "B-RB", new RequestContext("127.0.0.1", "test", null, tenantId), "{}", company);
+            await caller.SaveChangesAsync();
+            var recorder = new GovernmentExchangeRecorder(fixture.CreateDb, ambient: caller);
+
+            GovernmentExchangeIntentReceipt? receipt = null;
+            try { receipt = (await recorder.BeginAsync(Intent(tenantId, company, "rb-key", "B-RB"), CancellationToken.None)).Receipt; }
+            catch (InvalidOperationException refused) { Assert.StartsWith(GovernmentExchangeRecorder.IntentMustBeCommittedCode, refused.Message); }
+            Assert.Null(receipt);
+            await Assert.ThrowsAsync<GovernmentTransportRefusedException>(async () =>
+            {
+                using var _ = await http.ExchangeAsync(write, "sandbox", HttpMethod.Post, "/payroll/v2", new StringContent("{}"), null, CancellationToken.None, receipt);
+            });
+            await tx.RollbackAsync();
+        });
+
+        Assert.Equal(0, handler.Calls);
+        await using var verify = fixture.CreateDb();
+        Assert.Equal(0, await verify.GovernmentExchanges.IgnoreQueryFilters().CountAsync(x => x.TenantId == tenantId));
+
+        // Committed first, outside any transaction: the receipt opens exactly one send.
+        var committed = await new GovernmentExchangeRecorder(fixture.CreateDb).BeginAsync(Intent(tenantId, company, "rb-key", "B-RB"), CancellationToken.None);
+        Assert.NotNull(committed.Receipt);
+        using (await http.ExchangeAsync(write, "sandbox", HttpMethod.Post, "/payroll/v2", new StringContent("{}"), null, CancellationToken.None, committed.Receipt)) { }
+        Assert.Equal(1, handler.Calls);
+        // A replay of the same key gets no receipt: a retried job can never send twice.
+        Assert.Null((await new GovernmentExchangeRecorder(fixture.CreateDb).BeginAsync(Intent(tenantId, company, "rb-key", "B-RB"), CancellationToken.None)).Receipt);
+    }
+
+    [Fact]
+    public async Task SandboxAndProduction_WithTheSameBatchNumberAndBankId_DoNotCollide()
+    {
+        var (tenantId, company, _) = await SeedAsync();
+        var recorder = new GovernmentExchangeRecorder(fixture.CreateDb);
+        var ctx = new RequestContext("127.0.0.1", "test", null, tenantId);
+
+        var sandbox = await recorder.BeginAsync(Intent(tenantId, company, "env-sandbox", "B-ENV"), CancellationToken.None);
+        var production = await recorder.BeginAsync(Intent(tenantId, company, "env-production", "B-ENV") with { Environment = "production" }, CancellationToken.None);
+        await recorder.UpdateAsync(tenantId, sandbox.Exchange.Id, new GovernmentExchangeOutcome(GovernmentExchangeStates.Accepted, ctx, ExternalReference: "1001"), CancellationToken.None);
+        await recorder.UpdateAsync(tenantId, production.Exchange.Id, new GovernmentExchangeOutcome(GovernmentExchangeStates.Accepted, ctx, ExternalReference: "1001"), CancellationToken.None);
+
+        Assert.True(sandbox.Created);
+        Assert.True(production.Created);
+        await using var verify = fixture.CreateDb();
+        Assert.Equal(2, await verify.GovernmentExchanges.IgnoreQueryFilters().CountAsync(x => x.TenantId == tenantId && x.ExternalReference == "1001"));
+        // Within one environment the batch is still held.
+        await Assert.ThrowsAsync<GovernmentExchangeConflictException>(() =>
+            recorder.BeginAsync(Intent(tenantId, company, "env-sandbox-2", "B-ENV"), CancellationToken.None));
     }
 
     [Fact]

@@ -311,7 +311,7 @@ public sealed class SessionVerdictHardeningTests
         var adapter = Adapter(timeout);
 
         var decision = Zayra.Api.Tests.Government.GovernmentHttpTests.QiwaDecision("production");
-        var push = await adapter.PushEmployeeAsync(decision, "t", Payload, Guid.NewGuid(), CancellationToken.None);
+        var push = await adapter.PushEmployeeAsync(decision, "t", Payload, Guid.NewGuid(), CancellationToken.None, await Zayra.Api.Tests.Government.GovernmentHttpTests.IntentAsync(Zayra.Api.Infrastructure.Government.GovernmentBodies.Qiwa, "production"));
         var status = await adapter.GetEmployeeStatusAsync(decision, "t", "7-1", "1", CancellationToken.None);
         var token = await adapter.AcquireAccessTokenAsync(decision, "id", "secret", CancellationToken.None);
 

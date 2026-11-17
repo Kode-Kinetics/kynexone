@@ -75,48 +75,81 @@ public sealed class GovernmentLiveGateTests
     }
 
     [Fact]
-    public async Task LiveWrites_AreRefused_WithoutTheRecordedLegalClearance_EvenWithAllFourGatesOpen()
+    public async Task ProductionWrites_AreRefused_WithoutTheRecordedLegalClearance_EvenWithAllFourGatesOpen()
     {
         var allOpen = new GovernmentLiveGates(true, true, true, true);
         var handler = new CountingHandler();
-        var config = Config((GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox"), "https://bank-sandbox.example.test"));
+        var urls = new (string, string?)[]
+        {
+            (GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox"), "https://bank-sandbox.example.test"),
+            (GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "production"), "https://bank.example.test"),
+        };
+        var config = Config(urls);
         var http = new GovernmentHttp(new SingleHandlerFactory(handler), config);
 
         GovernmentLivePolicy.Decide(GovernmentBodies.BankAnb, allOpen).IsOpen.Should().BeTrue("reads (status polls) need only the four gates");
-        var write = GovernmentLivePolicy.DecideLiveWrite(config, GovernmentBodies.BankAnb, allOpen, "sandbox");
+        var write = GovernmentLivePolicy.DecideLiveWrite(config, GovernmentBodies.BankAnb, allOpen, "production");
 
         write.IsOpen.Should().BeFalse();
         write.ReasonCode.Should().Be(GovernmentLivePolicy.LiveWritesNeedLegalClearance);
         write.RefusalCode.Should().Be(GovernmentLivePolicy.RefusedCode);
-        var send = async () => { using var _ = await http.ExchangeAsync(write, "sandbox", HttpMethod.Post, "/payroll/v2", new StringContent("{}"), null, default); };
+        var intent = await GovernmentHttpTests.IntentAsync(GovernmentBodies.BankAnb, "production");
+        var send = async () => { using var _ = await http.ExchangeAsync(write, "production", HttpMethod.Post, "/payroll/v2", new StringContent("{}"), null, default, intent); };
         await send.Should().ThrowAsync<GovernmentTransportRefusedException>();
         handler.Calls.Should().Be(0);
 
         // Nor does an open READ decision carry a write: the transport refuses a POST without the write grade.
-        var read = GovernmentLivePolicy.Decide(GovernmentBodies.BankAnb, allOpen, "sandbox");
-        var post = async () => { using var _ = await http.ExchangeAsync(read, "sandbox", HttpMethod.Post, "/payroll/v2", new StringContent("{}"), null, default); };
+        var read = GovernmentLivePolicy.Decide(GovernmentBodies.BankAnb, allOpen, "production");
+        var post = async () => { using var _ = await http.ExchangeAsync(read, "production", HttpMethod.Post, "/payroll/v2", new StringContent("{}"), null, default, intent); };
         (await post.Should().ThrowAsync<GovernmentTransportRefusedException>()).Which.Code.Should().Be(GovernmentHttp.WriteRefusedCode);
         handler.Calls.Should().Be(0);
 
-        // Only the operator's record of the legal opinion FOR THIS BODY opens the rung; nothing else in configuration does.
-        var cleared = Config((GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.BankAnb), "LEGAL-SYNTHETIC-1"),
-            (GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox"), "https://bank-sandbox.example.test"));
-        var allowed = GovernmentLivePolicy.DecideLiveWrite(cleared, GovernmentBodies.BankAnb, allOpen, "sandbox");
+        // Only the operator's record of the legal opinion FOR THIS BODY AND FOR PRODUCTION opens the rung.
+        var cleared = Config([(GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.BankAnb, "production"), "LEGAL-SYNTHETIC-1"), .. urls]);
+        var allowed = GovernmentLivePolicy.DecideLiveWrite(cleared, GovernmentBodies.BankAnb, allOpen, "production");
         allowed.AllowsWrites.Should().BeTrue();
         using (await new GovernmentHttp(new SingleHandlerFactory(handler), cleared)
-                   .ExchangeAsync(allowed, "sandbox", HttpMethod.Post, "/payroll/v2", new StringContent("{}"), null, default)) { }
-        handler.Calls.Should().Be(1, "a cleared write is sent exactly once");
-        GovernmentLivePolicy.DecideLiveWrite(Config((GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Gosi), "LEGAL-SYNTHETIC-1")), GovernmentBodies.BankAnb, allOpen)
+                   .ExchangeAsync(allowed, "production", HttpMethod.Post, "/payroll/v2", new StringContent("{}"), null, default, intent)) { }
+        handler.Calls.Should().Be(1, "a cleared write with a committed intent is sent exactly once");
+        GovernmentLivePolicy.DecideLiveWrite(Config((GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Gosi, "production"), "LEGAL-SYNTHETIC-1")), GovernmentBodies.BankAnb, allOpen, "production")
             .AllowsWrites.Should().BeFalse("one body's clearance does not open another's");
-        GovernmentLivePolicy.DecideLiveWrite(Config((GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.BankAnb), "  ")), GovernmentBodies.BankAnb, allOpen)
+        GovernmentLivePolicy.DecideLiveWrite(Config((GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.BankAnb, "sandbox"), "LEGAL-SYNTHETIC-1")), GovernmentBodies.BankAnb, allOpen, "production")
+            .AllowsWrites.Should().BeFalse("a sandbox setting never unlocks production");
+        GovernmentLivePolicy.DecideLiveWrite(Config((GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.BankAnb, "production"), "  ")), GovernmentBodies.BankAnb, allOpen, "production")
             .IsOpen.Should().BeFalse();
-        GovernmentLivePolicy.DecideLiveWrite(Config((GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.BankAnb), "LEGAL-SYNTHETIC-1")), GovernmentBodies.BankAnb,
-            allOpen with { TenantConsent = false }).ReasonCode.Should().Be(GovernmentLivePolicy.TenantNotOptedIn, "the clearance never stands in for a gate");
+        GovernmentLivePolicy.DecideLiveWrite(Config((GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.BankAnb, "production"), "LEGAL-SYNTHETIC-1")), GovernmentBodies.BankAnb,
+            allOpen with { TenantConsent = false }, "production").ReasonCode.Should().Be(GovernmentLivePolicy.TenantNotOptedIn, "the clearance never stands in for a gate");
         // A decision made for one environment is never used for another.
         var wrongEnv = async () => { using var _ = await new GovernmentHttp(new SingleHandlerFactory(handler), cleared)
-            .ExchangeAsync(allowed, "production", HttpMethod.Get, "/status", null, null, default); };
+            .ExchangeAsync(allowed, "sandbox", HttpMethod.Get, "/status", null, null, default); };
         (await wrongEnv.Should().ThrowAsync<GovernmentTransportRefusedException>()).Which.Code.Should().Be(GovernmentHttp.EnvironmentMismatchCode);
         handler.Calls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task SandboxWrites_NeedTheFourGatesAndAnIntent_NotTheLegalClearance()
+    {
+        var allOpen = new GovernmentLiveGates(true, true, true, true);
+        var handler = new CountingHandler();
+        var config = Config((GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox"), "https://bank-sandbox.example.test"),
+            (GovernmentHttp.TokenUrlKey(GovernmentBodies.BankAnb, "sandbox"), "https://auth.bank-sandbox.example.test"));
+        var http = new GovernmentHttp(new SingleHandlerFactory(handler), config);
+        var write = GovernmentLivePolicy.DecideLiveWrite(config, GovernmentBodies.BankAnb, allOpen, "sandbox");
+
+        // The token grant, then the submit, with no clearance recorded anywhere.
+        using (await http.GrantTokenAsync(write, "sandbox", "/oauth/token", new StringContent("grant_type=client_credentials"), null, default)) { }
+        var intent = await GovernmentHttpTests.IntentAsync(GovernmentBodies.BankAnb, "sandbox");
+        using (await http.ExchangeAsync(write, "sandbox", HttpMethod.Post, "/payroll/v2", new StringContent("{}"), null, default, intent)) { }
+
+        handler.Uris.Should().Equal(new Uri("https://auth.bank-sandbox.example.test/oauth/token"), new Uri("https://bank-sandbox.example.test/payroll/v2"));
+        // Without the four gates, still nothing.
+        var closed = GovernmentLivePolicy.DecideLiveWrite(config, GovernmentBodies.BankAnb, allOpen with { TenantConsent = false }, "sandbox");
+        var token = async () => { using var _ = await http.GrantTokenAsync(closed, "sandbox", "/oauth/token", new StringContent("x"), null, default); };
+        await token.Should().ThrowAsync<GovernmentTransportRefusedException>();
+        handler.Calls.Should().Be(2);
+        // A write decision always names its environment.
+        var none = () => GovernmentLivePolicy.DecideLiveWrite(config, GovernmentBodies.BankAnb, allOpen, null!);
+        none.Should().Throw<ArgumentOutOfRangeException>();
     }
 
     [Fact]
@@ -133,7 +166,7 @@ public sealed class GovernmentLiveGateTests
         GovernmentLivePolicy.EnabledKey(GovernmentBodies.BankAnb).Should().Be("Government:Banks:Anb:Enabled", "every bank lives under one tree");
         GovernmentLivePolicy.PartnerAgreementKey(GovernmentBodies.BankAnb).Should().Be("Government:Banks:Anb:PartnerAgreementReference");
         GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox").Should().Be("Government:Banks:Anb:BaseUrls:sandbox");
-        GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.BankAnb).Should().Be("Government:Banks:Anb:LiveWrites:LegalClearanceReference");
+        GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.BankAnb, "production").Should().Be("Government:Banks:Anb:LiveWrites:production:LegalClearanceReference");
         GovernmentLivePolicy.PartnerAgreementKey(GovernmentBodies.Gosi).Should().Be("Government:Gosi:PartnerAgreementReference");
     }
 
@@ -147,13 +180,13 @@ public sealed class GovernmentLiveGateTests
         QiwaLiveAdapterPolicy.Decide(liveRequested, agreement).Should().Be(expected, "which adapter the process registers is unchanged");
         var config = Config((QiwaLiveAdapterPolicy.LiveSwitchEnvVar, liveRequested ? "true" : "false"),
             (QiwaLiveAdapterPolicy.PartnerAgreementKey, agreement ? "AGR-SYNTHETIC" : null),
-            (GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Qiwa), "LEGAL-SYNTHETIC-1"));
+            (GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Qiwa, "production"), "LEGAL-SYNTHETIC-1"));
         // Nothing is hard-coded open: without the tenant's consent or a credential a live Qiwa call is refused.
         QiwaLiveAdapterPolicy.DecideLiveWrite(config, tenantConsent: false, credential: true, "sandbox").IsOpen.Should().BeFalse();
         QiwaLiveAdapterPolicy.DecideLiveWrite(config, tenantConsent: true, credential: false, "sandbox").IsOpen.Should().BeFalse();
         QiwaLiveAdapterPolicy.DecideLiveWrite(config, tenantConsent: true, credential: true, "sandbox").AllowsWrites.Should().Be(liveRequested && agreement);
         QiwaLiveAdapterPolicy.DecideLiveWrite(Config((QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true"), (QiwaLiveAdapterPolicy.PartnerAgreementKey, "AGR"),
-                (GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Qiwa), "L"), (GovernmentLivePolicy.EnabledKey(GovernmentBodies.Qiwa), "false")),
+                (GovernmentLivePolicy.EnabledKey(GovernmentBodies.Qiwa), "false")),
             true, true, "sandbox").ReasonCode.Should().Be(GovernmentLivePolicy.OperatorDisabled, "Government:Qiwa:Enabled=false is a kill switch");
     }
 

@@ -51,7 +51,7 @@ public sealed class GovernmentCapabilitiesService(
         [GovernmentLivePolicy.NoPartnerAgreement] = ("Not connected. No agreement with this service is recorded for this server.", "غير متصل. لا توجد اتفاقية مسجلة مع هذه الخدمة لهذا الخادم."),
         [GovernmentLivePolicy.TenantNotOptedIn] = ("Not connected. Your organisation has not authorised sending data to this service.", "غير متصل. لم تأذن منشأتك بإرسال البيانات إلى هذه الخدمة."),
         [GovernmentLivePolicy.NoCredential] = ("Not connected. No valid credential for this service is on file.", "غير متصل. لا توجد بيانات اعتماد صالحة لهذه الخدمة."),
-        [GovernmentLivePolicy.LiveWritesNeedLegalClearance] = ("Submitting through this service is switched off until a legal review is recorded for this server.", "الإرسال عبر هذه الخدمة متوقف إلى أن تُسجَّل مراجعة قانونية لهذا الخادم."),
+        [GovernmentLivePolicy.LiveWritesNeedLegalClearance] = ("Production submissions through this service are switched off until a legal review is recorded for this server. The sandbox is not affected.", "الإرسال الفعلي عبر هذه الخدمة متوقف إلى أن تُسجَّل مراجعة قانونية لهذا الخادم. بيئة الاختبار غير متأثرة."),
     };
 
     public async Task<IReadOnlyList<GovernmentCapabilityDto>> GetAsync(Guid tenantId, CancellationToken ct)

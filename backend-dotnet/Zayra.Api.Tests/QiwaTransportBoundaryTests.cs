@@ -25,7 +25,7 @@ public sealed class QiwaTransportBoundaryTests
         {
             // The production environment: the one host on the built-in allow-list, so the call reaches the (throwing) handler.
             "token" => await adapter.AcquireAccessTokenAsync(Zayra.Api.Tests.Government.GovernmentHttpTests.QiwaDecision("production"), "synthetic-id", "synthetic-credential", token),
-            "push" => await adapter.PushEmployeeAsync(Zayra.Api.Tests.Government.GovernmentHttpTests.QiwaDecision("production"), "synthetic-token", new("E", "1", "NationalId", "SA", "Saudi", "1", "7-1", "W", "C"), Guid.NewGuid(), token),
+            "push" => await adapter.PushEmployeeAsync(Zayra.Api.Tests.Government.GovernmentHttpTests.QiwaDecision("production"), "synthetic-token", new("E", "1", "NationalId", "SA", "Saudi", "1", "7-1", "W", "C"), Guid.NewGuid(), token, await Zayra.Api.Tests.Government.GovernmentHttpTests.IntentAsync(Zayra.Api.Infrastructure.Government.GovernmentBodies.Qiwa, "production")),
             "status" => await adapter.GetEmployeeStatusAsync(Zayra.Api.Tests.Government.GovernmentHttpTests.QiwaDecision("production"), "synthetic-token", "7-1", "1", token),
             _ => throw new ArgumentOutOfRangeException(nameof(operation)),
         };

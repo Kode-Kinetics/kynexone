@@ -355,7 +355,10 @@ public sealed class GovernmentReviewRegressionTests : Zayra.Api.Tests.Platform.P
         }
         private sealed class DbProvider(ZayraDbContext db) : IServiceProvider
         {
-            public object? GetService(Type serviceType) => serviceType == typeof(ZayraDbContext) ? db : null;
+            public object? GetService(Type serviceType) =>
+                serviceType == typeof(ZayraDbContext) ? db
+                : serviceType == typeof(IAuditService) ? new AuditService(db)
+                : null;
         }
     }
 

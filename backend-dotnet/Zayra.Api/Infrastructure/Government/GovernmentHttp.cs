@@ -44,6 +44,8 @@ public sealed class GovernmentHttp
     public const string RedirectRefusedCode = "government_redirect_refused";
     public const string EnvironmentMismatchCode = "government_environment_mismatch";
     public const string CredentialBindingCode = "government_credential_binding_mismatch";
+    /// <summary>A write without a committed intent for the same body and environment: refused, nothing sent.</summary>
+    public const string WriteWithoutIntentCode = "government_write_without_intent";
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
     /// <summary>Largest response body a gov client will buffer.</summary>
     public const long MaxResponseBytes = 8 * 1024 * 1024;
@@ -69,6 +71,10 @@ public sealed class GovernmentHttp
 
     public static string BaseUrlKey(string body, string environment) =>
         $"Government:{GovernmentBodies.Section(body)}:BaseUrls:{environment}";
+
+    /// <summary>The token (authorisation) host's base URL, when it differs from the API host. Unset means the API base URL.</summary>
+    public static string TokenUrlKey(string body, string environment) =>
+        $"Government:{GovernmentBodies.Section(body)}:TokenUrls:{environment}";
 
     /// <summary>
     /// The primary handler of every government and bank client. Same guarantees as the bank client's own handler factory, so a
@@ -132,11 +138,26 @@ public sealed class GovernmentHttp
         return url;
     }
 
-    private Uri? Candidate(string body, string environment)
+    /// <summary>The allow-listed token base URL (its own key, else the API base URL), with the same rules.</summary>
+    public Uri ResolveTokenUrl(string body, string environment)
     {
-        var configured = _config?[BaseUrlKey(body, environment)];
+        if (!GovernmentBodies.IsKnown(body) || !GovernmentEnvironments.IsKnown(environment))
+            throw Refused(body, environment, "unknown body or environment");
+        if (string.IsNullOrWhiteSpace(_config?[TokenUrlKey(body, environment)])) return ResolveBaseUrl(body, environment);
+        var url = Candidate(body, environment, TokenUrlKey(body, environment))!;
+        if (environment != GovernmentEnvironments.Production
+            && !string.IsNullOrWhiteSpace(_config?[TokenUrlKey(body, GovernmentEnvironments.Production)])
+            && Candidate(body, GovernmentEnvironments.Production, TokenUrlKey(body, GovernmentEnvironments.Production)) is { } production
+            && string.Equals(production.Host, url.Host, StringComparison.OrdinalIgnoreCase))
+            throw Refused(body, environment, "the token URL is the production token host");
+        return url;
+    }
+
+    private Uri? Candidate(string body, string environment, string? key = null)
+    {
+        var configured = _config?[key ?? BaseUrlKey(body, environment)];
         var raw = !string.IsNullOrWhiteSpace(configured) ? configured.Trim()
-            : BuiltIn.TryGetValue((body, environment), out var builtIn) ? builtIn : null;
+            : key is null && BuiltIn.TryGetValue((body, environment), out var builtIn) ? builtIn : null;
         if (raw is null) return null;
         if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps
             || !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment)
@@ -158,6 +179,10 @@ public sealed class GovernmentHttp
             && !string.Equals(host, ResolveBaseUrl(body, environment).Host, StringComparison.OrdinalIgnoreCase))
             throw new GovernmentTransportRefusedException(CredentialBindingCode,
                 $"The credential is bound to another host than the one allow-listed for {body} ({environment}). Nothing was sent.");
+        if (credential.TokenUrlHost is { } tokenHost
+            && !string.Equals(tokenHost, ResolveTokenUrl(body, environment).Host, StringComparison.OrdinalIgnoreCase))
+            throw new GovernmentTransportRefusedException(CredentialBindingCode,
+                $"The credential is bound to another token host than the one allow-listed for {body} ({environment}). Nothing was sent.");
     }
 
     /// <summary>
@@ -165,8 +190,31 @@ public sealed class GovernmentHttp
     /// allow-listed base URL of the decision's body and <paramref name="environment"/>. Never retries; a 3xx is refused. The
     /// caller owns the response.
     /// </summary>
-    public async Task<HttpResponseMessage> ExchangeAsync(GovernmentLiveDecision decision, string environment, HttpMethod method,
-        string relativePath, HttpContent? content, Action<HttpRequestMessage>? configure, CancellationToken ct)
+    public Task<HttpResponseMessage> ExchangeAsync(GovernmentLiveDecision decision, string environment, HttpMethod method,
+        string relativePath, HttpContent? content, Action<HttpRequestMessage>? configure, CancellationToken ct,
+        GovernmentExchangeIntentReceipt? intent = null)
+        => SendAsync(decision, environment, method, baseOverride: null, relativePath, content, configure, ct, requireIntent: !IsRead(method), intent);
+
+    /// <summary>
+    /// The token grant (an OAuth POST that changes nothing at the body): a live-WRITE decision, no intent, sent once to the
+    /// allow-listed TOKEN base URL of that environment.
+    /// </summary>
+    public Task<HttpResponseMessage> GrantTokenAsync(GovernmentLiveDecision decision, string environment, string relativePath,
+        HttpContent content, Action<HttpRequestMessage>? configure, CancellationToken ct) =>
+        SendAsync(decision, environment, HttpMethod.Post, ResolveTokenUrl(decision.Body, environment), relativePath, content, configure, ct,
+            requireIntent: false, intent: null);
+
+    /// <summary>The token grant with a bound credential: its body, environment, API host and token host are checked first.</summary>
+    public Task<HttpResponseMessage> GrantTokenAsync(GovernmentLiveDecision decision, UnsealedGovernmentCredential credential, string relativePath,
+        HttpContent content, Action<HttpRequestMessage>? configure, CancellationToken ct)
+    {
+        RequireBoundTo(credential, decision.Body, credential.Environment);
+        return GrantTokenAsync(decision, credential.Environment, relativePath, content, configure, ct);
+    }
+
+    private async Task<HttpResponseMessage> SendAsync(GovernmentLiveDecision decision, string environment, HttpMethod method, Uri? baseOverride,
+        string relativePath, HttpContent? content, Action<HttpRequestMessage>? configure, CancellationToken ct,
+        bool requireIntent, GovernmentExchangeIntentReceipt? intent)
     {
         ct.ThrowIfCancellationRequested();
         if (!decision.IsOpen)
@@ -175,11 +223,16 @@ public sealed class GovernmentHttp
         if (decision.Environment is { } bound && bound != environment)
             throw new GovernmentTransportRefusedException(EnvironmentMismatchCode,
                 $"The decision for {decision.Body} was made for {bound}, not {environment}. Nothing was sent.");
-        if (!IsRead(method) && !decision.AllowsWrites)
+        if (!IsRead(method) && (!decision.AllowsWrites || decision.Environment is null))
             throw new GovernmentTransportRefusedException(WriteRefusedCode,
                 $"A {method} to {decision.Body} needs a live-write decision with the recorded legal clearance. Nothing was sent.");
 
-        var baseUrl = ResolveBaseUrl(decision.Body, environment);
+        // A write that acts at the body carries the recorder's receipt for a COMMITTED intent of this body and environment.
+        if (requireIntent && (intent is null || intent.Body != decision.Body || intent.Environment != environment))
+            throw new GovernmentTransportRefusedException(WriteWithoutIntentCode,
+                $"A {method} to {decision.Body} ({environment}) needs a committed intent for that body and environment. Nothing was sent.");
+
+        var baseUrl = baseOverride ?? ResolveBaseUrl(decision.Body, environment);
         if (string.IsNullOrEmpty(relativePath) || relativePath[0] != '/' || relativePath.StartsWith("//", StringComparison.Ordinal)
             || relativePath.Contains('\\') || relativePath.Split('?')[0].Split('/').Any(segment => segment is "." or ".."))
             throw Refused(decision.Body, environment, "the request path must be relative to the allow-listed base URL");
@@ -205,10 +258,11 @@ public sealed class GovernmentHttp
 
     /// <summary>Sends with a credential: the credential must be bound to this body, environment and host first.</summary>
     public Task<HttpResponseMessage> ExchangeAsync(GovernmentLiveDecision decision, UnsealedGovernmentCredential credential, HttpMethod method,
-        string relativePath, HttpContent? content, Action<HttpRequestMessage>? configure, CancellationToken ct)
+        string relativePath, HttpContent? content, Action<HttpRequestMessage>? configure, CancellationToken ct,
+        GovernmentExchangeIntentReceipt? intent = null)
     {
         RequireBoundTo(credential, decision.Body, credential.Environment);
-        return ExchangeAsync(decision, credential.Environment, method, relativePath, content, configure, ct);
+        return ExchangeAsync(decision, credential.Environment, method, relativePath, content, configure, ct, intent);
     }
 
     public static bool IsRead(HttpMethod method) => method == HttpMethod.Get || method == HttpMethod.Head;

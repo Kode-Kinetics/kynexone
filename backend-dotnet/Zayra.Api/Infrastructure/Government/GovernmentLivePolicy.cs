@@ -23,7 +23,7 @@ public sealed class GovernmentLiveDecision
         IsOpen = isOpen;
         ReasonCode = reasonCode;
         Environment = environment;
-        AllowsWrites = isOpen && allowsWrites;
+        AllowsWrites = isOpen && allowsWrites && environment is not null;
     }
 
     public string Body { get; }
@@ -54,10 +54,10 @@ public static class GovernmentLivePolicy
     public const string NoCredential = "no_credential";
 
     /// <summary>
-    /// The "live writes" rung (anything that changes state at the body, a payroll submission above all, and the token grants
-    /// that precede it) is refused until the operator records, for that body, the legal clearance: whether submitting payroll
-    /// payments through a bank API on a customer's behalf is payment initiation under SAMA rules. No tenant setting, consent
-    /// or credential can stand in for it.
+    /// The PRODUCTION "live writes" rung (anything that changes state at the body, a payroll submission above all, and the token
+    /// grants that precede it) is refused until the operator records, for that body and for production, the legal clearance:
+    /// whether submitting payroll payments through a bank API on a customer's behalf is payment initiation under SAMA rules. No
+    /// tenant setting, consent or credential can stand in for it. The SANDBOX rung (synthetic data) needs only the four gates.
     /// </summary>
     public const string LiveWritesNeedLegalClearance = "live_writes_need_legal_clearance";
 
@@ -65,8 +65,12 @@ public static class GovernmentLivePolicy
 
     public static string EnabledKey(string body) => $"Government:{GovernmentBodies.Section(body)}:Enabled";
 
-    /// <summary>Deployment configuration only, per body: a reference to the written legal opinion. Absent, every live write is refused.</summary>
-    public static string LegalClearanceKey(string body) => $"Government:{GovernmentBodies.Section(body)}:LiveWrites:LegalClearanceReference";
+    /// <summary>
+    /// Deployment configuration only, per body AND per environment: a reference to the written legal opinion. Only the production
+    /// key is ever read (<see cref="HasLegalClearance"/>), so a value under the sandbox key can never unlock production writes.
+    /// </summary>
+    public static string LegalClearanceKey(string body, string environment) =>
+        $"Government:{GovernmentBodies.Section(body)}:LiveWrites:{environment}:LegalClearanceReference";
 
     /// <summary>G1: the operator has recorded a partner agreement reference for this body in this deployment.</summary>
     public static bool HasPartnerAgreement(IConfiguration? config, string body) =>
@@ -79,7 +83,9 @@ public static class GovernmentLivePolicy
         return string.IsNullOrWhiteSpace(value) || (bool.TryParse(value, out var on) && on);
     }
 
-    public static bool HasLegalClearance(IConfiguration? config, string body) => !string.IsNullOrWhiteSpace(config?[LegalClearanceKey(body)]);
+    /// <summary>The production legal clearance for this body. The only clearance key that is read.</summary>
+    public static bool HasLegalClearance(IConfiguration? config, string body) =>
+        !string.IsNullOrWhiteSpace(config?[LegalClearanceKey(body, GovernmentEnvironments.Production)]);
 
     /// <summary>The decision for a READ (a status poll): the four gates.</summary>
     public static GovernmentLiveDecision Decide(string body, GovernmentLiveGates gates, string? environment = null)
@@ -93,18 +99,22 @@ public static class GovernmentLivePolicy
         Decide(body, DeploymentGates(config, body, tenantConsent, credential), environment);
 
     /// <summary>
-    /// The decision for a live WRITE: the four gates, then the body's recorded legal clearance. Anything that submits, registers,
-    /// grants a token or changes state at the body asks here, and only this decision lets <see cref="GovernmentHttp"/> send a non-GET.
+    /// The decision for a live WRITE in one named environment: the four gates and, for production only, the body's recorded legal
+    /// clearance. Anything that submits, registers, grants a token or changes state at the body asks here, and only this decision
+    /// lets <see cref="GovernmentHttp"/> send a non-GET. The environment is required, and the decision can be used for no other.
     /// </summary>
-    public static GovernmentLiveDecision DecideLiveWrite(IConfiguration? config, string body, GovernmentLiveGates gates, string? environment = null)
+    public static GovernmentLiveDecision DecideLiveWrite(IConfiguration? config, string body, GovernmentLiveGates gates, string environment)
     {
+        if (!GovernmentEnvironments.IsKnown(environment))
+            throw new ArgumentOutOfRangeException(nameof(environment), environment, "A write decision names its environment.");
         var reason = FirstClosedGate(body, gates, environment);
-        if (reason is null && !HasLegalClearance(config, body)) reason = LiveWritesNeedLegalClearance;
+        if (reason is null && environment == GovernmentEnvironments.Production && !HasLegalClearance(config, body))
+            reason = LiveWritesNeedLegalClearance;
         return new GovernmentLiveDecision(body, reason is null, reason, environment, allowsWrites: reason is null);
     }
 
     /// <summary>The write decision with the deployment half from configuration.</summary>
-    public static GovernmentLiveDecision DecideLiveWrite(IConfiguration? config, string body, bool tenantConsent, bool credential, string? environment = null) =>
+    public static GovernmentLiveDecision DecideLiveWrite(IConfiguration? config, string body, bool tenantConsent, bool credential, string environment) =>
         DecideLiveWrite(config, body, DeploymentGates(config, body, tenantConsent, credential), environment);
 
     private static GovernmentLiveGates DeploymentGates(IConfiguration? config, string body, bool tenantConsent, bool credential) =>

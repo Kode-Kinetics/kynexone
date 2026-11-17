@@ -77,7 +77,8 @@ public sealed class GovernmentApiTests
             StepUpTestKit.AlwaysConfirmed(db)), tenant, Guid.NewGuid());
 
         NewProof(controller);
-        var put = await controller.Put(GovernmentBodies.BankAnb, new GovernmentCredentialSaveRequest("sandbox", GovernmentCredentialKinds.OAuthClient, Secret, null, null), default);
+        var put = await controller.Put(GovernmentBodies.BankAnb, new GovernmentCredentialSaveRequest("sandbox", GovernmentCredentialKinds.OAuthClient, Secret, null, null,
+            "client-id-0001", "api.bank-sandbox.example.test", "auth.bank-sandbox.example.test"), default);
         var get = await controller.Get(GovernmentBodies.BankAnb, "sandbox", null, default);
 
         put.Should().BeOfType<OkObjectResult>();
@@ -241,7 +242,7 @@ public sealed class GovernmentApiTests
         var killed = Config((GovernmentLivePolicy.PartnerAgreementKey(GovernmentBodies.Gosi), "AGR-SYNTHETIC"), (GovernmentLivePolicy.EnabledKey(GovernmentBodies.Gosi), "false"));
         (await Capabilities(kit, db, killed).DecideAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default)).ReasonCode.Should().Be(GovernmentLivePolicy.OperatorDisabled);
         // Writes need the legal clearance on top, and the screen says so.
-        (await service.DecideLiveWriteAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default)).ReasonCode.Should().Be(GovernmentLivePolicy.LiveWritesNeedLegalClearance);
+        (await service.DecideLiveWriteAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default)).AllowsWrites.Should().BeTrue("the sandbox rung needs no legal clearance");
         (await service.GetAsync(tenant, default)).Single(c => c.Body == GovernmentBodies.Gosi).WritesAllowed.Should().BeFalse();
     }
 

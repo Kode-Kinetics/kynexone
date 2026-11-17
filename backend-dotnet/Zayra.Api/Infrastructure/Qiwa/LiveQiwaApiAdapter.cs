@@ -73,7 +73,7 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
 
         try
         {
-            using var resp = await _http.ExchangeAsync(decision, environment, HttpMethod.Post, TokenPath, form, null, ct);
+            using var resp = await _http.GrantTokenAsync(decision, environment, TokenPath, form, null, ct);
             var body = await resp.Content.ReadAsStringAsync(ct);
             if (!resp.IsSuccessStatusCode)
             {
@@ -136,7 +136,8 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
         return Task.FromResult(EnvironmentRequired());
     }
 
-    public async Task<QiwaApiResult> PushEmployeeAsync(GovernmentLiveDecision decision, string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)
+    public async Task<QiwaApiResult> PushEmployeeAsync(GovernmentLiveDecision decision, string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey,
+        CancellationToken ct, GovernmentExchangeIntentReceipt? intent = null)
     {
         ct.ThrowIfCancellationRequested();
         if (decision.Environment is not { } environment) return EnvironmentRequired();
@@ -163,7 +164,7 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
                     // Stable across lease expiry/retry/restart. Qiwa (or the configured gateway) can
                     // collapse a replay that occurred after an ambiguous network/commit outcome.
                     req.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey.ToString("N"));
-                }, ct);
+                }, ct, intent);
             var body = await resp.Content.ReadAsStringAsync(ct);
             if (resp.IsSuccessStatusCode)
                 return new QiwaApiResult(true, null, null, body);
