@@ -1373,19 +1373,31 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
         // A switch-off adds no version: the confirmed one ends with the committed month, and nothing is in effect after it. An inactive version would lock the
         // allowance's dates and switch for good (dates_locked_by_versions), so it could never be switched back on.
         var changeCoversLater = row.IsActive && (row.EffectiveTo is null || row.EffectiveTo >= changeFrom);
-        MatrixResult Committed() => new(StatusCodes.Status409Conflict, new
-        {
-            error = "period_committed",
-            message = $"Payroll for {committed:yyyy-MM} is already approved, locked or paid, and this change would rewrite it. Nothing was confirmed. "
-                + "Ask the person who made the change to change it again from a later month.",
-            messageAr = $"رواتب {committed:yyyy-MM} معتمدة أو مقفلة أو مدفوعة، وهذا التغيير سيعيد كتابتها. لم يُؤكَّد شيء. اطلب ممن أجرى التغيير أن يعدّله ليبدأ من شهر لاحق.",
-            earliestEffectiveFrom = nextMonth,
-        });
-        if (!keptCoversCommitted && !changeCoversLater) return (Committed(), null);
+        // The change only rewrites committed months: it is changed again to start after them (the edit compares with what payroll paid, so that is allowed).
+        if (!keptCoversCommitted && !changeCoversLater)
+            return (new(StatusCodes.Status409Conflict, new
+            {
+                error = "period_committed",
+                message = $"Payroll for {committed:yyyy-MM} is already approved, locked or paid, and this change would only rewrite months up to then. Nothing was confirmed. "
+                    + $"Change it again so it starts in {nextMonth:yyyy-MM} or later, then confirm it.",
+                messageAr = $"رواتب {committed:yyyy-MM} معتمدة أو مقفلة أو مدفوعة، وهذا التغيير لن يغيّر إلا أشهرًا حتى ذلك الشهر. لم يُؤكَّد شيء. "
+                    + $"عدّل التغيير ليبدأ في {nextMonth:yyyy-MM} أو بعده، ثم أكّده.",
+                earliestEffectiveFrom = nextMonth,
+            }), null);
+        // Another version (a removed one counts: the unique key holds it) already starts on the month the change would take: nothing an edit can do; it
+        // clears once that month is committed too and the change moves to the month after.
         if (changeCoversLater && await ScopedBypass.TenantWide(db.PayComponents, tid, "The unique key counts removed rows: a start date another version of the code already holds is taken.")
                 .AsNoTracking().AnyAsync(x => x.CompanyId == row.CompanyId && x.Code == row.Code && x.ComponentType == row.ComponentType && x.Id != row.Id
                     && x.EffectiveFrom == changeFrom, ct))
-            return (Committed(), null);
+            return (new(StatusCodes.Status409Conflict, new
+            {
+                error = "period_committed",
+                message = $"Payroll for {committed:yyyy-MM} is already approved, locked or paid, so this change would start in {changeFrom:yyyy-MM}, where another version of this allowance "
+                    + $"already starts. Nothing was confirmed. It can be confirmed once payroll for {changeFrom:yyyy-MM} is approved.",
+                messageAr = $"رواتب {committed:yyyy-MM} معتمدة أو مقفلة أو مدفوعة، لذلك سيبدأ هذا التغيير في {changeFrom:yyyy-MM} حيث تبدأ نسخة أخرى من هذا البدل. "
+                    + $"لم يُؤكَّد شيء. يمكن تأكيده بعد اعتماد رواتب {changeFrom:yyyy-MM}.",
+                earliestEffectiveFrom = changeFrom.AddMonths(1),
+            }), null);
 
         if (!keptCoversCommitted)
         {

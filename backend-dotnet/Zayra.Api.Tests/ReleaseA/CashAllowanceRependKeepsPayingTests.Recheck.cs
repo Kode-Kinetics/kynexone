@@ -40,4 +40,56 @@ public partial class CashAllowanceRependKeepsPayingTests
         (await w.InEffectAsync(July1)).Should().NotBeNull("back on from July");
         (await w.InEffectAsync(June1))!.GlDriverKey.Should().Be(CarDriver, "June keeps what it was paid on");
     }
+
+    [Fact]
+    public async Task AChangeThatOnlyRewritesCommittedMonths_IsRefused_AndTheWayOutTheRefusalNamesWorks()
+    {
+        await using var w = await World.Create();
+        // Confirmed from August; HR moves it to May only (before any month is committed); then June is approved.
+        Component(await w.As(w.Hr).AddBenefit(w.Service, Contract("Car", b =>
+        {
+            b.Code = "CAR"; b.Delivery = "SalaryAllowance"; b.Frequency = "Monthly"; b.GlDriverKey = CarDriver; b.Category = "Allowance"; b.PolicyClass = "Contractual";
+            b.EffectiveFrom = new DateOnly(2026, 8, 1);
+        }), default));
+        Status(await w.As(w.FinanceA, finance: true).ConfirmBenefit(w.Service, Car, null, default)).Should200("");
+        Component(await w.As(w.Hr).UpdateBenefit(w.Service, Car, new UpdateBenefitRequest(await w.VersionAsync(), "Car", null)
+            { EffectiveFrom = new DateOnly(2026, 5, 1), EffectiveTo = new DateOnly(2026, 5, 31) }, default));
+        await w.MarkAsync(await w.RunAsync(2026, 6), "Approved");
+
+        var refused = await w.As(w.FinanceB, finance: true).ConfirmBenefit(w.Service, Car, null, default);
+        (Status(refused), Error(refused)).Should().Be(((int?)409, "period_committed"));
+        BodyOf(refused).GetProperty("message").GetString().Should().Contain("Change it again so it starts in 2026-07 or later");
+        Arabic.IsMatch(BodyOf(refused).GetProperty("messageAr").GetString()!).Should().BeTrue();
+
+        // The way out: change it to start from July. Compared with what payroll paid (nothing before August), no committed month moves.
+        var moved = await w.As(w.Hr).UpdateBenefit(w.Service, Car, new UpdateBenefitRequest(await w.VersionAsync(), "Car", null)
+            { EffectiveFrom = July1, EffectiveTo = null }, default);
+        Status(moved).Should200(Describe(moved));
+        Status(await w.As(w.FinanceB, finance: true).ConfirmBenefit(w.Service, Car, null, default)).Should200("");
+        (await w.InEffectAsync(July1)).Should().NotBeNull();
+        (await w.InEffectAsync(new DateOnly(2026, 5, 1))).Should().BeNull("May was never paid and stays unpaid");
+    }
+
+    [Fact]
+    public async Task AStartMonthTakenByAnotherVersion_IsRefused_SayingItClearsOnceThatMonthIsApproved()
+    {
+        await using var w = await World.Create();
+        await w.AddConfirmedCarAsync();
+        Status(await w.As(w.FinanceA, finance: true).CorrectBenefit(w.Service, Car, new CorrectAllowanceRequest(June1, "Re-route", GlDriverKey: "EARN:CAR2"), default)).Should200("");
+        await w.MarkAsync(await w.RunAsync(2026, 6), "Approved");
+        w.Db.PayComponents.Add(new PayComponent
+        {
+            TenantId = w.Tid, CompanyId = null, IsOffered = true, Code = Car, NameEn = "Car", NameAr = "سيارة", ComponentType = PayComponentTypes.Earning,
+            CalcMethod = PayComponentCalcMethods.GradePackage, EntitlementClass = PayEntitlementClasses.QiwaWage, StatutoryFloor = PayStatutoryFloors.None,
+            GlDriverKey = CarDriver, IsActive = true, IsDeleted = true, EffectiveFrom = July1,
+        });
+        await w.Db.SaveChangesAsync();
+        w.Db.ChangeTracker.Clear();
+
+        var refused = await w.As(w.FinanceB, finance: true).ConfirmBenefit(w.Service, Car, null, default);
+
+        (Status(refused), Error(refused)).Should().Be(((int?)409, "period_committed"));
+        BodyOf(refused).GetProperty("message").GetString().Should().Contain("can be confirmed once payroll for 2026-07 is approved");
+        Arabic.IsMatch(BodyOf(refused).GetProperty("messageAr").GetString()!).Should().BeTrue();
+    }
 }
