@@ -220,7 +220,10 @@ function DashboardTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
 
 // ── Submit OT Tab ───────────────────────────────────────────────────────────────
 
-function SubmitOTTab({ selfEmployeeId, isEmployee }: { selfEmployeeId?: number; isEmployee?: boolean }) {
+// Filing for someone else is `overtime.write` (HR) or `overtime.file_for_team` (a line manager, own team only, when the
+// company allows it) on the API (OvertimeController.CreateRequest). Without either the picker only ever led to a 403.
+function SubmitOTTab({ selfEmployeeId, canFileForOthers }: { selfEmployeeId?: number; canFileForOthers?: boolean }) {
+  const isEmployee = !canFileForOthers;
   const t = useT();
   const [policies, setPolicies] = useState<OvertimePolicy[]>([]);
   const [otPickedEmp, setOtPickedEmp] = useState<SelectedEmployee | null>(null);
@@ -264,8 +267,8 @@ function SubmitOTTab({ selfEmployeeId, isEmployee }: { selfEmployeeId?: number; 
       });
       setSuccess(true);
     } catch (e: unknown) {
-      const serverMessage = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(serverMessage ?? t('Failed to submit overtime request.'));
+      // The server's own refusal, in Arabic when the page is Arabic and the server sent one (messageAr).
+      setError(apiErrorReason(e, t('Failed to submit overtime request.')));
     }
     setSaving(false);
   };
@@ -334,11 +337,13 @@ function SubmitOTTab({ selfEmployeeId, isEmployee }: { selfEmployeeId?: number; 
 
 // ── Requests List (reusable) ────────────────────────────────────────────────────
 
-function OTRequestsTable({ requests, onApprove, onReject, showActions }: {
+function OTRequestsTable({ requests, onApprove, onReject, showActions, canDecide }: {
   requests: OvertimeRequest[];
   onApprove?: (r: OvertimeRequest) => void;
   onReject?: (r: OvertimeRequest) => void;
   showActions?: boolean;
+  /** Whether the caller may decide this row at its current step; without it no row offers Approve or Reject. */
+  canDecide?: (r: OvertimeRequest) => boolean;
 }) {
   const t = useT();
   const fx = useFormat();
@@ -370,7 +375,7 @@ function OTRequestsTable({ requests, onApprove, onReject, showActions }: {
               <td className="px-3 py-2"><StatusBadge status={r.status} /></td>
               {showActions && (
                 <td className="px-3 py-2">
-                  {r.status.startsWith('Pending') && onApprove && onReject ? (
+                  {r.status.startsWith('Pending') && onApprove && onReject && (canDecide?.(r) ?? false) ? (
                     <div className="flex gap-2">
                       <button type="button" onClick={() => onApprove(r)} className={`${btn.sm} text-emerald-600`}><CheckCircle2 className="h-3 w-3" aria-hidden="true" /> {t('Approve')}</button>
                       <button type="button" onClick={() => onReject(r)} className={`${btn.sm} text-rose-500`}><XCircle className="h-3 w-3" aria-hidden="true" /> {t('Reject')}</button>
@@ -428,9 +433,19 @@ function MyOTTab({ selfEmployeeId, isEmployee }: { selfEmployeeId?: number; isEm
 
 // ── Team OT Tab ─────────────────────────────────────────────────────────────────
 
-function TeamOTTab() {
+function TeamOTTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; isHRManager: boolean; isManager: boolean }) {
   const t = useT();
   const fx = useFormat();
+  const { hasPermission } = useAuth();
+  // Detect resolves to `overtime.write` on the API; a line manager or a Payroll Officer without it was offered a button that
+  // only ever failed. A decision is `overtime.approve`, and each step has its decider: the line manager (or HR, when the
+  // company lets HR approve the manager step) at step 1, HR at step 2, an Admin at either.
+  const canDetect = hasPermission('overtime.write');
+  const canDecide = hasPermission('overtime.approve');
+  const canDecideRow = (r: OvertimeRequest) => canDecide && (
+    isAdmin
+    || (isHRManager && (r.status === 'PendingHR' || r.status === 'PendingManager'))
+    || (isManager && r.status === 'PendingManager'));
   const [statusFilter, setStatusFilter] = useState('');
   // Attendance-derived overtime is now capped by the same policy a hand-keyed request obeys. What
   // the policy will not pay is worked time, so it is shown to the person who ran the detection
@@ -479,9 +494,11 @@ function TeamOTTab() {
           <option value="">{t('All Statuses')}</option>
           {PENDING_STATUSES.map(s => <option key={s} value={s}>{enumLabel(t, 'OvertimeStatus', s)}</option>)}
         </select>
-        <button type="button" className={btn.ghost} onClick={detect}>
-          <RefreshCw className="h-4 w-4" aria-hidden="true" /> {t('Detect from Attendance')}
-        </button>
+        {canDetect && (
+          <button type="button" className={btn.ghost} onClick={detect}>
+            <RefreshCw className="h-4 w-4" aria-hidden="true" /> {t('Detect from Attendance')}
+          </button>
+        )}
         <p className="ms-auto text-sm text-slate-400">{t('{count, plural, one {# request} other {# requests}}', { count })}</p>
       </div>
       {list.error != null && <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{t('Overtime requests could not be loaded. {reason}', { reason: requestFailureReason(list.error) })}</p>}
@@ -512,7 +529,7 @@ function TeamOTTab() {
         </div>
       )}
       <div className="surface overflow-hidden">
-        {loading ? <p className="p-8 text-center text-sm text-slate-400">{t('Loading…')}</p> : <OTRequestsTable requests={requests} onApprove={approve} onReject={reject} showActions />}
+        {loading ? <p className="p-8 text-center text-sm text-slate-400">{t('Loading…')}</p> : <OTRequestsTable requests={requests} onApprove={approve} onReject={reject} showActions canDecide={canDecideRow} />}
         <ListWindowFooter shown={requests.length} total={list.total} noun="requests" labels={footerLabels(t, fx, requests.length, list.total)} loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
       </div>
       {rejectTarget && (
@@ -537,7 +554,9 @@ function TeamOTTab() {
 function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; isHRManager: boolean; isManager: boolean }) {
   const t = useT();
   const fx = useFormat();
-  const isFinalApprover = isAdmin || isHRManager;
+  // The final step is HR's (PendingHR) or an Admin's (any step). HR may also take the manager step when the company allows it
+  // (company overtime setting, default on): that forwards the request to step 2, where a different person decides.
+  const isFinalFor = (r: OvertimeRequest | null) => r != null && (isAdmin || (isHRManager && r.status === 'PendingHR'));
   // Approve/forward and reject are `overtime.approve` on the API (OvertimeController). A Supervisor
   // sees this queue but does not hold the key, so the buttons only ever returned 403.
   const { hasPermission } = useAuth();
@@ -556,7 +575,7 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
   const load = async () => {
     setLoading(true);
     try {
-      if (isAdmin) {
+      if (isAdmin || isHRManager) {
         // The whole queue, page by page: an approver must see every pending request, not the first 100.
         const [r1, r2] = await Promise.all([
           overtimeApi.allRequests({ status: 'PendingManager' }),
@@ -564,8 +583,7 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
         ]);
         setRequests([...r1, ...r2].sort((a, b) => (a.workDate < b.workDate ? 1 : -1)));
       } else {
-        const status = isHRManager ? 'PendingHR' : 'PendingManager';
-        setRequests(await overtimeApi.allRequests({ status }));
+        setRequests(await overtimeApi.allRequests({ status: 'PendingManager' }));
       }
       setLoadError(null);
     } catch (e) { setRequests([]); setLoadError(e); }
@@ -583,8 +601,10 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
     if (!approveModal) return;
     setSaving(true);
     try {
-      const mins = isFinalApprover ? (Number(approveMinutes) || approveModal.requestedMinutes) : approveModal.requestedMinutes;
-      await overtimeApi.approve(approveModal.id, mins, approveNotes || undefined);
+      const mins = isFinalFor(approveModal) ? (Number(approveMinutes) || approveModal.requestedMinutes) : approveModal.requestedMinutes;
+      const result = await overtimeApi.approve(approveModal.id, mins, approveNotes || undefined);
+      if (result?.budgetWarning && typeof window !== 'undefined')
+        window.dispatchEvent(new CustomEvent('zayra:error', { detail: t('Approved, but this takes the department over its overtime budget for the month.') }));
       setApproveModal(null);
       load();
     } catch (e) { notifyApiError(e, t('Approval failed.')); }
@@ -602,11 +622,11 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
     setSaving(false);
   };
 
-  const queueTitle = isAdmin ? t('All Pending Approvals') : isHRManager ? t('Pending HR Approval — Step 2') : t('Pending Your Approval — Step 1');
+  const queueTitle = isAdmin ? t('All Pending Approvals') : isHRManager ? t('Overtime awaiting HR') : t('Pending Your Approval — Step 1');
   const queueSubtitle = isAdmin
     ? t('As admin, approving any request finalises it immediately, bypassing the standard HR step.')
     : isHRManager
-    ? t('These requests have been forwarded by a manager. Adjust hours if needed, then approve or reject.')
+    ? t('Step 2 requests were forwarded by a manager: adjust hours if needed, then approve or reject. Step 1 requests have no manager decision yet: forwarding one sends it to a different HR approver for the final step.')
     : t('Approving forwards the request to HR for final review and payroll calculation.');
 
   return (
@@ -636,7 +656,7 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.employeeName || t('Employee #{id}', { id: r.employeeId })}</p>
                     <StatusBadge status={r.status} />
-                    {isAdmin && (
+                    {(isAdmin || isHRManager) && (
                       <span className={`rounded px-1.5 py-0.5 text-caption font-semibold ${r.status === 'PendingManager' ? 'bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400' : 'bg-orange-100 text-orange-600 dark:bg-orange-500/20 dark:text-orange-400'}`}>
                         {r.status === 'PendingManager' ? t('Step 1 — Manager') : t('Step 2 — HR')}
                       </span>
@@ -654,7 +674,7 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
                 {canDecide && <div className="flex shrink-0 gap-2">
                   <button type="button" className={btn.ghost} onClick={() => { setRejectModal(r); setRejectNotes(''); }}>{t('Reject')}</button>
                   <button type="button" className={btn.primary} onClick={() => openApprove(r)}>
-                    {isFinalApprover ? t('Approve') : t('Forward to HR')}
+                    {isFinalFor(r) ? t('Approve') : t('Forward to HR')}
                   </button>
                 </div>}
               </div>
@@ -665,11 +685,11 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
 
       {approveModal && (
         <Modal
-          title={isFinalApprover ? t('Approve OT — {name}', { name: approveModal.employeeName || `#${approveModal.employeeId}` }) : t('Forward to HR — {name}', { name: approveModal.employeeName || `#${approveModal.employeeId}` })}
+          title={isFinalFor(approveModal) ? t('Approve OT — {name}', { name: approveModal.employeeName || `#${approveModal.employeeId}` }) : t('Forward to HR — {name}', { name: approveModal.employeeName || `#${approveModal.employeeId}` })}
           onClose={() => setApproveModal(null)}
         >
           <div className="space-y-4">
-            {isFinalApprover ? (
+            {isFinalFor(approveModal) ? (
               <>
                 <Field label={t('Approved Minutes')} info={t('Adjust if the actual overtime differs from what was requested.')}>
                   <input type="number" aria-label={t('Approved minutes')} className={inp} value={approveMinutes} onChange={e => setApproveMinutes(e.target.value)} />
@@ -696,7 +716,7 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
             <div className="flex justify-end gap-2">
               <button type="button" className={btn.ghost} onClick={() => setApproveModal(null)}>{t('Cancel')}</button>
               <button type="button" className={btn.primary} onClick={doApprove} disabled={saving}>
-                {saving ? t('Processing…') : isFinalApprover ? t('Approve & Calculate') : t('Forward to HR')}
+                {saving ? t('Processing…') : isFinalFor(approveModal) ? t('Approve & Calculate') : t('Forward to HR')}
               </button>
             </div>
           </div>
@@ -1177,6 +1197,7 @@ export function OvertimePage() {
   const isManager  = !isAdmin && !isHRManager && (user?.roles.some(r => ['Manager', 'Supervisor'].includes(r)) ?? false);
   const isEmployee = !isAdmin && !isHRManager && !isManager;
   const selfEmployeeId = (user as { employeeId?: number } | undefined)?.employeeId;
+  const canFileForOthers = hasPermission('overtime.write') || hasPermission('overtime.file_for_team');
 
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
 
@@ -1199,9 +1220,9 @@ export function OvertimePage() {
   const renderTab = () => {
     switch (activeTab) {
       case 'dashboard':     return <DashboardTab onNavigate={setActiveTab} />;
-      case 'submit':        return <SubmitOTTab selfEmployeeId={selfEmployeeId} isEmployee={isEmployee} />;
+      case 'submit':        return <SubmitOTTab selfEmployeeId={selfEmployeeId} canFileForOthers={canFileForOthers} />;
       case 'my-ot':         return <MyOTTab selfEmployeeId={selfEmployeeId} isEmployee={isEmployee} />;
-      case 'team-ot':       return <TeamOTTab />;
+      case 'team-ot':       return <TeamOTTab isAdmin={isAdmin} isHRManager={isHRManager} isManager={isManager} />;
       case 'approvals':     return <ApprovalsTab isAdmin={isAdmin} isHRManager={isHRManager} isManager={isManager} />;
       case 'calc-preview':  return <CalcPreviewTab />;
       case 'payroll-review': return <PayrollReviewTab />;

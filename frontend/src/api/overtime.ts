@@ -182,7 +182,8 @@ export const overtimeApi = {
   }) => client.post<OvertimeRequest>('/api/overtime/requests', payload).then((r) => r.data),
 
   approve: (id: string, approvedMinutes: number, notes?: string) =>
-    client.post<OvertimeCalculation>(`/api/overtime/requests/${id}/approve`, { approvedMinutes, notes }).then((r) => r.data),
+    // A company in budget mode Warn approves over budget and says so in budgetWarning (Block refuses instead).
+    client.post<OvertimeCalculation & { budgetWarning?: { code: string; message: string; messageAr: string } }>(`/api/overtime/requests/${id}/approve`, { approvedMinutes, notes }).then((r) => r.data),
 
   reject: (id: string, notes?: string) =>
     client.post<OvertimeRequest>(`/api/overtime/requests/${id}/reject`, { approvedMinutes: 0, notes }).then((r) => r.data),
