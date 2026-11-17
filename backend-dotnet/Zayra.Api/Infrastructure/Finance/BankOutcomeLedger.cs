@@ -29,6 +29,10 @@ public static class BankOutcomeHolds
     public static readonly IReadOnlyList<string> Resolutions =
         new[] { PaidConfirmedDespiteRejection, DuplicateOriginalReceivedConfirmed, DuplicateNotPaidConfirmed };
 
+    /// <summary>True for a row that records a person's decision (a reasoned exit), not a bank line left unapplied. Such a
+    /// row is never counted as held or unmatched.</summary>
+    public static bool IsPersonDecision(string? holdReason) => holdReason is not null && Resolutions.Contains(holdReason);
+
     /// <summary>The period-handoff blocker each open hold raises.</summary>
     public static string BlockerFor(string hold) => hold switch
     {

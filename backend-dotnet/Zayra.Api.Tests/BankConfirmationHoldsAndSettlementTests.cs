@@ -5,7 +5,13 @@ using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
+using Zayra.Api.Application.Common;
+using Zayra.Api.Controllers;
 using Zayra.Api.Controllers.Finance;
+using Zayra.Api.Domain.Entities;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Models;
@@ -825,4 +831,64 @@ public class BankConfirmationHoldsAndSettlementTests
 
         db.PayrollAuditLogs.Single().MetadataJson.Should().Contain("\"settledByBank\":1");
     }
+
+    // ── An exit to Paid counts exactly like Paid everywhere (CTO, F1 close-out) ──────────────────
+
+    private static async Task<string?> DashboardPayDate(ZayraDbContext db, Guid tenantId)
+    {
+        db.Tenants.Add(new Tenant { Id = tenantId, Name = "Exits", Slug = $"exits-{tenantId:N}" });
+        db.SaveChanges();
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", tenantId.ToString()),
+            new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new Claim("permission", "payroll.read"),
+        }, "test"));
+        var ctrl = new DashboardController(db,
+            new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions())), new ExitsUnrestrictedScope())
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = principal } },
+        };
+        var full = Assert.IsType<DashboardFullDto>(Assert.IsType<OkObjectResult>(await ctrl.Full(6)).Value);
+        return full.Overview.PayrollSummary!.PayDate;
+    }
+
+    [Theory]
+    [InlineData("RJCT")]   // the bank's word disagrees with the person
+    [InlineData("PAID")]   // the bank's word agrees: still recorded as the person's decision
+    public async Task AnExitToPaid_ShowsItsPayDate_AndCountsAsPaid_Everywhere(string word)
+    {
+        using var db = NewDb();
+        var w = Seed(db);
+        await Import(db, w, word, "DUPL");
+
+        var result = await Import(db, w,
+            new BankConfirmationImportOptions(ConfirmOriginalPaymentReceived: true, OverrideReason: Reason, OverrideBankReference: Reference),
+            ("W1", 100m, word, "dupl"));
+
+        w.R(1).Status.Should().Be(PaymentRecordStatuses.Paid);
+        result.Coverage.PaidCount.Should().Be(1);
+        result.Coverage.PaidTotal.Should().Be(100m);
+        result.Coverage.UnconfirmedCount.Should().Be(0);
+
+        var h = await Handoff(db, w);
+        var coverage = h.GetProperty("payments").GetProperty("coverage");
+        coverage.GetProperty("PaidCount").GetInt32().Should().Be(1);
+        coverage.GetProperty("PaidTotal").GetDecimal().Should().Be(100m);
+        h.GetProperty("payments").GetProperty("unmatchedImportRowsLogged").GetInt32()
+            .Should().Be(1, "only the DUPL hold is a logged, unapplied line; the person's decision to Paid is not");
+
+        var history = await History(db, w);
+        var exitImport = history.GetProperty("imports").EnumerateArray().First();
+        exitImport.GetProperty("applied").GetInt32().Should().Be(1);
+        exitImport.GetProperty("held").GetInt32().Should().Be(0);
+
+        (await DashboardPayDate(db, w.TenantId)).Should().Be("2026-07-30", "a record that ends Paid through an exit has a pay date");
+    }
+}
+
+file sealed class ExitsUnrestrictedScope : IDataScopeService
+{
+    public Task<DataScope> ResolveAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct)
+        => Task.FromResult(new DataScope { Level = DataScopeLevel.Organization, AllowedEmployeeIds = null });
 }

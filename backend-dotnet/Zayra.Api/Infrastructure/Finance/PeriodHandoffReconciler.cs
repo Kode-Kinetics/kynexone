@@ -282,7 +282,9 @@ public sealed class PeriodHandoffReconciler
                 .ToList(),
             heldForPerson = heldForPerson.Select(BankOutcomeLedger.View).ToList(),
             amountMismatchHoldbacks = heldMismatches,
-            unmatchedImportRowsLogged = confirmations.Count(c => !c.Applied && c.HoldReason is not null),
+            // A person's reasoned exit is a decision, not a logged line left unapplied.
+            unmatchedImportRowsLogged = confirmations.Count(c => !c.Applied && c.HoldReason is not null
+                                                              && !BankOutcomeHolds.IsPersonDecision(c.HoldReason)),
             confirmationImports = confirmations.Select(c => c.ImportBatchId).Distinct().Count(),
         };
 

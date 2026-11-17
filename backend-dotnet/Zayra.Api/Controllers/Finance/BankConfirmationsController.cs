@@ -175,8 +175,9 @@ public class BankConfirmationsController : ControllerBase
                 importedByName = g.First().ImportedByName,
                 importedAtUtc = g.First().ImportedAtUtc,
                 rows = g.Count(),
-                applied = g.Count(c => c.Applied),
-                held = g.Count(c => !c.Applied),
+                // A person's reasoned exit counts as applied: it set the record's status.
+                applied = g.Count(c => c.Applied || BankOutcomeHolds.IsPersonDecision(c.HoldReason)),
+                held = g.Count(c => !c.Applied && !BankOutcomeHolds.IsPersonDecision(c.HoldReason)),
             }).OrderByDescending(x => x.importedAtUtc).ToList(),
             confirmations = confirmations.Select(c => new
             {
