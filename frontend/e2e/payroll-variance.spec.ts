@@ -54,7 +54,16 @@ const REPORT = {
   // A company that pays in a different currency than the tenant default (SAR) — the page must show THIS.
   currency: 'KWD',
 };
-const DUPLICATE_ERROR = 'register row 3: duplicate of row 2 for EMP-001 / NET — ignored, the first row was kept.';
+const DUPLICATE_ERROR = 'register row 3: duplicate of row 2 for EMP-001 / NET — ignored, the first row was kept. If the legacy system really has several lines for one component, add them up before uploading.';
+// What the server sends for every kind of register complaint: a stable code, its parameters and the English fallback.
+const DUPLICATE_DETAIL = { code: 'register_row_duplicate', row: 3, params: { row: '3', firstRow: '2', employeeCode: 'EMP-001', component: 'NET' }, message: DUPLICATE_ERROR };
+const ALL_ERROR_KINDS = [
+  { code: 'register_row_employee_code_required', row: 4, params: { row: '4' }, message: 'register row 4: EmployeeCode is required.' },
+  { code: 'register_row_component_required', row: 5, params: { row: '5' }, message: 'register row 5: ComponentCode is required (use GROSS, DEDUCTIONS or NET for the totals).' },
+  { code: 'register_row_amount_required', row: 6, params: { row: '6' }, message: 'register row 6: Amount is required and was blank — a blank is not read as zero.' },
+  { code: 'register_row_amount_not_a_number', row: 7, params: { row: '7', value: 'N/A' }, message: "register row 7: Amount is not a number (found 'N/A')." },
+  DUPLICATE_DETAIL,
+];
 
 type Locale = 'en' | 'ar';
 type Opts = {
@@ -162,14 +171,36 @@ for (const locale of ['en', 'ar'] as const) {
       expect(overflow).toBeLessThanOrEqual(1);
     });
 
-    test('a duplicate register row is reported as a register error, not hidden', async ({ page }, info) => {
-      await open(page, { locale, varianceBody: { ...REPORT, registerErrors: [DUPLICATE_ERROR] } });
+    test('a duplicate register row is reported as a register error, in the viewer\'s language', async ({ page }, info) => {
+      await open(page, { locale, varianceBody: { ...REPORT, registerErrors: [DUPLICATE_ERROR], registerErrorDetails: [DUPLICATE_DETAIL] } });
       await page.locator('#variance-run').selectOption(RUN_PROCESSED);
       await attach(page);
       await compare(page).click();
       await expect(page.getByRole('heading', { name: tr('{count, plural, one {# row of the register could not be read} other {# rows of the register could not be read}}', { count: 1 }) })).toBeVisible();
-      await expect(page.getByText(DUPLICATE_ERROR)).toBeVisible();
+      const expected = tr('Register row {row}: duplicate of row {firstRow} for {employeeCode} / {component} — ignored, the first row was kept. If the legacy system really has several lines for one component, add them up before uploading.',
+        { row: '\u20663\u2069', firstRow: '\u20662\u2069', employeeCode: '\u2066EMP-001\u2069', component: '\u2066NET\u2069' });
+      await expect(page.locator('li.font-mono')).toHaveText(expected);
+      if (locale === 'ar') await expect(page.locator('li.font-mono')).not.toContainText('duplicate');
       await shot(page, 'duplicate-row', locale, info.project.name);
+    });
+
+    test('a server that sends only the English register errors still shows them', async ({ page }) => {
+      await open(page, { locale, varianceBody: { ...REPORT, registerErrors: [DUPLICATE_ERROR] } });
+      await page.locator('#variance-run').selectOption(RUN_PROCESSED);
+      await attach(page);
+      await compare(page).click();
+      await expect(page.locator('li.font-mono')).toHaveText(DUPLICATE_ERROR);
+    });
+
+    test('an unreadable register is refused with the reasons in the viewer\'s language', async ({ page }) => {
+      await open(page, {
+        locale, varianceStatus: 422,
+        varianceBody: { message: 'The external register could not be read.', errors: ['The external register was empty.'], errorDetails: [{ code: 'register_empty', row: null, params: {}, message: 'The external register was empty.' }] },
+      });
+      await page.locator('#variance-run').selectOption(RUN_PROCESSED);
+      await attach(page);
+      await compare(page).click();
+      await expect(page.getByText(`${tr('The external register could not be read.')} ${tr('The external register was empty.')}`)).toBeVisible();
     });
 
     test('a run with no payslips: warned up front, and the server refusal is shown in the viewer\'s language naming the status', async ({ page }, info) => {
@@ -215,7 +246,7 @@ for (const locale of ['en', 'ar'] as const) {
 
 test.describe('parallel-run variance (Arabic only)', () => {
   test('right-to-left, and no English sentence is left on the page', async ({ page }, info) => {
-    await open(page, { locale: 'ar', varianceBody: { ...REPORT, registerErrors: [DUPLICATE_ERROR] } });
+    await open(page, { locale: 'ar', varianceBody: { ...REPORT, registerErrors: ALL_ERROR_KINDS.map((e) => e.message), registerErrorDetails: ALL_ERROR_KINDS } });
     await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
 
     // Before and after a comparison, with the run picker and the report both on screen.
@@ -240,21 +271,17 @@ function arCompare(page: Page) {
 
 /**
  * Latin words that are allowed to appear on the Arabic page: this product's own name, the CSV column and reserved
- * component codes, currency codes, employee names and codes (data), the fixture user's name, and the server's own
- * per-row diagnostics for the register file (a technical log of the uploaded file, shown verbatim in a monospace list).
+ * component codes, currency codes, and employee names and codes (data). Register errors are NOT excused: they are
+ * rendered from the server's code and parameters, so any English sentence in them is a failure.
  */
 const ALLOWED_LATIN = [
   // Table cells are read back glued together (name + component), so no word boundaries here; longest tokens first.
   /Sara Alharbi|Omar Alqahtani|Yaser Al-Ghamdi/g, /GOSI_EMPLOYEE|DEDUCTIONS|EmployeeCode|ComponentCode|Amount/g,
-  /KynexOne/g, /GROSS|NET|CSV|KWD|SAR/g, /EMP-\d+/g, /register\.csv/g,
+  /KynexOne/gi, /GROSS|NET|CSV|KWD|SAR/g, /EMP-\d+/g, /register\.csv/g,
 ];
 async function expectNoEnglish(page: Page) {
   const text = await page.locator('main').evaluate((el) => {
-    const clone = el.cloneNode(true) as HTMLElement;
-    // The per-row file diagnostics are server text about the upload, listed verbatim.
-    clone.querySelectorAll('ul.font-mono, li.font-mono').forEach((n) => n.remove());
-    // <option> text is read separately; hidden file input has none.
-    return clone.innerText;
+    return (el as HTMLElement).innerText;
   });
   let rest = text;
   for (const re of ALLOWED_LATIN) rest = rest.replace(re, ' ');

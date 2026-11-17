@@ -13,7 +13,7 @@ import { enumLabel } from '@/src/i18n/enumLabel';
 import { payrollApi, type PayrollRun } from '@/src/api/payroll';
 import {
   parallelRunApi, VARIANCE_REGISTER_TEMPLATE,
-  type VarianceLine, type VarianceReport, type VarianceToleranceType,
+  type VarianceLine, type VarianceRegisterError, type VarianceReport, type VarianceToleranceType,
 } from '@/src/api/migrations';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -57,15 +57,40 @@ function filterDefs(t: Translate): { key: LineFilter; label: string; hint: strin
 
 const PAGE_SIZE = 200;
 
+/**
+ * One register complaint in the viewer's language. The server sends a stable code and its parameters; a code this
+ * build does not know falls back to the server's English text. Literal keys so the i18n coverage check sees each one.
+ */
+function registerErrorText(t: Translate, e: VarianceRegisterError): string {
+  const p = e.params ?? {};
+  switch (e.code) {
+    case 'register_empty': return t('The external register was empty.');
+    case 'register_unreadable': return t('The external register is not readable as CSV: {reason}', { reason: p.reason });
+    case 'register_row_employee_code_required': return t('Register row {row}: EmployeeCode is required.', { row: ltr(p.row) });
+    case 'register_row_component_required': return t('Register row {row}: ComponentCode is required (use GROSS, DEDUCTIONS or NET for the totals).', { row: ltr(p.row) });
+    case 'register_row_amount_required': return t('Register row {row}: Amount is required and was blank — a blank is not read as zero.', { row: ltr(p.row) });
+    case 'register_row_amount_not_a_number': return t("Register row {row}: Amount is not a number (found '{value}').", { row: ltr(p.row), value: ltr(p.value) });
+    case 'register_row_duplicate':
+      return t('Register row {row}: duplicate of row {firstRow} for {employeeCode} / {component} — ignored, the first row was kept. If the legacy system really has several lines for one component, add them up before uploading.', {
+        row: ltr(p.row), firstRow: ltr(p.firstRow), employeeCode: ltr(p.employeeCode), component: ltr(p.component),
+      });
+    default: return e.message;
+  }
+}
+
 function errorMessage(err: unknown, t: Translate): string {
-  const anyErr = err as { response?: { data?: { code?: string; status?: string; message?: string; errors?: string[] } }; message?: string };
+  const anyErr = err as { response?: { data?: { code?: string; status?: string; message?: string; errors?: string[]; errorDetails?: VarianceRegisterError[] } }; message?: string };
   const data = anyErr?.response?.data;
   // The server's stable code is shown in the viewer's language; its English message stays for API callers.
   if (data?.code === 'run_has_no_payslips') {
     return t('This payroll run has no payslips yet (status {status}), so there is nothing to compare. Process the run first — a processed-but-unlocked run posts no GL and publishes nothing, so it is safe to compare and re-process.', { status: enumLabel(t, 'PayrollRunStatus', data.status) });
   }
+  if (Array.isArray(data?.errorDetails) && data.errorDetails.length > 0) {
+    const lines = data.errorDetails.map((d) => registerErrorText(t, d));
+    return `${t('The external register could not be read.')} ${lines.slice(0, 4).join(' · ')}${lines.length > 4 ? ` ${t('(+{count} more)', { count: lines.length - 4 })}` : ''}`;
+  }
   if (data?.message && Array.isArray(data.errors) && data.errors.length > 0) {
-    return `${data.message} ${data.errors.slice(0, 4).join(' · ')}${data.errors.length > 4 ? ` (+${data.errors.length - 4} more)` : ''}`;
+    return `${data.message} ${data.errors.slice(0, 4).join(' · ')}${data.errors.length > 4 ? ` ${t('(+{count} more)', { count: data.errors.length - 4 })}` : ''}`;
   }
   if (data?.message) return data.message;
   if (Array.isArray(data?.errors) && data.errors.length > 0) return data.errors.join(' · ');
@@ -487,7 +512,10 @@ function VarianceResult({
                 {t('These rows were not compared, so the totals above exclude them. Correct the file and run the comparison again before showing anybody this reconciliation.')}
               </p>
               <ul className="mt-3 max-h-56 space-y-1 overflow-y-auto text-xs text-rose-800 dark:text-rose-300">
-                {report.registerErrors.map((e, i) => (
+                {(report.registerErrorDetails && report.registerErrorDetails.length > 0
+                  ? report.registerErrorDetails.map((d) => registerErrorText(t, d))
+                  : report.registerErrors
+                ).map((e, i) => (
                   <li key={i} className="font-mono">{e}</li>
                 ))}
               </ul>

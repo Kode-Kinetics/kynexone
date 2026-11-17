@@ -66,6 +66,15 @@ const en: Record<string, string> = {
   'KynexOne only': 'KynexOne only',
   'Register only': 'Register only',
   'Neither': 'Neither',
+  '(+{count} more)': '(+{count} more)',
+  'The external register could not be read.': 'The external register could not be read.',
+  'The external register was empty.': 'The external register was empty.',
+  'The external register is not readable as CSV: {reason}': 'The external register is not readable as CSV: {reason}',
+  'Register row {row}: EmployeeCode is required.': 'Register row {row}: EmployeeCode is required.',
+  'Register row {row}: ComponentCode is required (use GROSS, DEDUCTIONS or NET for the totals).': 'Register row {row}: ComponentCode is required (use GROSS, DEDUCTIONS or NET for the totals).',
+  'Register row {row}: Amount is required and was blank — a blank is not read as zero.': 'Register row {row}: Amount is required and was blank — a blank is not read as zero.',
+  'Register row {row}: Amount is not a number (found \'{value}\').': 'Register row {row}: Amount is not a number (found \'{value}\').',
+  'Register row {row}: duplicate of row {firstRow} for {employeeCode} / {component} — ignored, the first row was kept. If the legacy system really has several lines for one component, add them up before uploading.': 'Register row {row}: duplicate of row {firstRow} for {employeeCode} / {component} — ignored, the first row was kept. If the legacy system really has several lines for one component, add them up before uploading.',
   'This payroll run has no payslips yet (status {status}), so there is nothing to compare. Process the run first — a processed-but-unlocked run posts no GL and publishes nothing, so it is safe to compare and re-process.': 'This payroll run has no payslips yet (status {status}), so there is nothing to compare. Process the run first — a processed-but-unlocked run posts no GL and publishes nothing, so it is safe to compare and re-process.',
 };
 
@@ -134,6 +143,15 @@ const ar: Record<string, string> = {
   'KynexOne only': 'KynexOne فقط',
   'Register only': 'الكشف فقط',
   'Neither': 'لا أحد',
+  '(+{count} more)': '(+{count} أخرى)',
+  'The external register could not be read.': 'تعذّرت قراءة الكشف السابق.',
+  'The external register was empty.': 'الكشف السابق فارغ.',
+  'The external register is not readable as CSV: {reason}': 'الكشف السابق غير قابل للقراءة كملف CSV: {reason}',
+  'Register row {row}: EmployeeCode is required.': 'الصف {row} من الكشف: رمز الموظف (EmployeeCode) مطلوب.',
+  'Register row {row}: ComponentCode is required (use GROSS, DEDUCTIONS or NET for the totals).': 'الصف {row} من الكشف: رمز المكوّن (ComponentCode) مطلوب (استخدم GROSS أو DEDUCTIONS أو NET للإجماليات).',
+  'Register row {row}: Amount is required and was blank — a blank is not read as zero.': 'الصف {row} من الكشف: المبلغ (Amount) مطلوب وكان فارغًا — الفراغ لا يُقرأ صفرًا.',
+  'Register row {row}: Amount is not a number (found \'{value}\').': 'الصف {row} من الكشف: المبلغ (Amount) ليس رقمًا (الموجود: \'{value}\').',
+  'Register row {row}: duplicate of row {firstRow} for {employeeCode} / {component} — ignored, the first row was kept. If the legacy system really has several lines for one component, add them up before uploading.': 'الصف {row} من الكشف: مكرّر للصف {firstRow} للموظف {employeeCode} / المكوّن {component} — تم تجاهله والإبقاء على الصف الأول. إذا كان النظام السابق يحتوي فعلًا على عدة بنود لمكوّن واحد، فاجمعها قبل الرفع.',
   'This payroll run has no payslips yet (status {status}), so there is nothing to compare. Process the run first — a processed-but-unlocked run posts no GL and publishes nothing, so it is safe to compare and re-process.': 'لا توجد قسائم رواتب لهذا المسير بعد (الحالة: {status})، فلا يوجد ما تتم مقارنته. عالج المسير أولًا — فالمسير المعالَج وغير المقفل لا يسجّل قيودًا في دفتر الأستاذ ولا ينشر شيئًا، فمن الآمن مقارنته وإعادة معالجته.',
 };
 
