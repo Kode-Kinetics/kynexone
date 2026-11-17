@@ -67,7 +67,8 @@ public sealed class PayrollMoneyChainTiePostgresTests
     {
         var w = await SeedAsync();
         const decimal gross = 12_345.67m;
-        var runId = await SeedApprovedSettlementRunAsync(w, w.ExpatId, gross);
+        // The Saudi national leaves: their statutory record is complete, so the wage file accepts their final payment.
+        var runId = await SeedApprovedSettlementRunAsync(w, w.SaudiId, gross);
 
         await ProcessAsync(w, runId);
         await GeneratePayslipsAsync(w, runId);
@@ -219,6 +220,9 @@ public sealed class PayrollMoneyChainTiePostgresTests
         Nationality = nationality, Status = EmployeeStatuses.Active, ContractType = "Indefinite", CountryCode = CountryCodes.Saudi,
         Salary = 7_000m, JoiningDate = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc), GosiReference = "GOSI-1",
         GosiFirstRegisteredOn = new DateOnly(2015, 1, 1), DepartmentId = deptId, IdType = idType, IdNumber = idNumber, ReadinessState = "Ready",
+        // The statutory details the pay interlock asks of a Saudi resident: a leaver (no longer Active) missing them is refused
+        // from the wage file outright, which is the control working, not what this class tests.
+        QiwaContractNumber = $"QC-{Guid.NewGuid():N}"[..12],
         WorkEmail = $"{Guid.NewGuid():N}@tie.test",
     };
 
