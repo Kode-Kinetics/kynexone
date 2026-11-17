@@ -39,8 +39,8 @@ async function expectStage(page: Page, w: Want) {
   const chip = page.getByTestId('bank-guide-chip');
   await expect(chip).toHaveAttribute('data-chip', w.chip);
   await expect(chip).toHaveText(w.chipText);
-  // The run picker never says something the page does not: the open run's option ends with the chip's words.
-  await expect(page.locator('#pipeline-run-picker option:checked')).toHaveText(new RegExp(`— ${escape(w.chipText)}$`));
+  // The status lives in the chip only: the open run's option is the period, never a second copy of the status.
+  await expect(page.locator('#pipeline-run-picker option:checked')).not.toContainText('—');
   const current = page.locator('[data-step-strip="bank-file"] [aria-current="step"]');
   if (w.strip === null) await expect(current).toHaveCount(0);
   else { await expect(current).toHaveCount(1); await expect(current).toHaveAttribute('data-step', w.strip); }
@@ -307,7 +307,7 @@ test.describe('the reviews\' rules', () => {
     // One stage source: the strip, the run bar's chip and the run picker say the same as the blocked button.
     await expect(page.locator('[data-step-strip="bank-file"] [data-step="create"]')).toHaveAttribute('data-state', 'blocked');
     await expect(page.getByTestId('bank-guide-chip')).toHaveAttribute('data-chip', 'attention');
-    await expect(page.locator('#pipeline-run-picker option:checked')).toHaveText(/— Needs a fix$/);
+    await expect(page.locator('#pipeline-run-picker')).toHaveAttribute('title', /— Needs a fix$/);
   });
 
   test('the credit date helper names public holidays and gives no day counts', async ({ page }) => {
@@ -463,6 +463,58 @@ for (const [w, h] of [[1366, 768], [1440, 900]] as const) {
       });
     }
   });
+}
+
+// ── Fix batch 2 ─────────────────────────────────────────────────────────────────────────────────────
+
+const SUB_RETURNED = withStatus(6, 1).map(r => (r.status === 'Returned' ? { ...r, returnReasonCode: 'AC04', returnReasonText: 'Account closed' } : r));
+
+for (const locale of LOCALES) {
+  for (const [w, h] of [[1440, 900], [1366, 768], [1280, 800], [390, 844]] as const) {
+    test.describe(`A: the run bar fits (${locale}, ${w})`, () => {
+      test.use({ viewport: { width: w, height: h } });
+      for (const [tab, opts] of [['runs', {}], ['bank-wps', { batches: [SUBMITTED], existingExport: FILE, records: withStatus(0, 0) }]] as const) {
+        test(tab, async ({ page }) => {
+          await boot(page, { locale, url: `/payroll?tab=${tab}&run=${RUN_ID}`, routes: bankHandler(opts as Opts), waitMs: 2500, stages: 'default' });
+          const bar = page.getByTestId('run-pipeline');
+          await expect(page.getByTestId('pipeline-folded-stage')).toBeVisible({ timeout: 90_000 });
+          if (tab === 'bank-wps') await expect(page.getByTestId('bank-guide-chip')).toHaveAttribute('data-chip', 'submitted', { timeout: 60_000 });
+          // Nothing in the bar is cut off.
+          const clipped = await bar.evaluate(el => Array.from(el.querySelectorAll<HTMLElement>('*')).filter(e => {
+            if (e.closest('.sr-only, svg')) return false;
+            const cs = getComputedStyle(e);
+            // Visually hidden labels (1px boxes) are for screen readers, not cut-off text.
+            if (cs.display === 'none' || cs.visibility === 'hidden' || e.clientWidth === 0 || e.getBoundingClientRect().width <= 1) return false;
+            return e.scrollWidth > e.clientWidth + 1;
+          }).map(e => `${e.tagName}.${e.className}`.slice(0, 120)));
+          expect(clipped).toEqual([]);
+          // The status chips never sit on the run picker.
+          const pick = (await page.locator('#pipeline-run-picker').boundingBox())!;
+          for (const chip of [page.getByTestId('pipeline-run-status'), page.getByTestId('bank-guide-chip')]) {
+            if (!(await chip.count())) continue;
+            const c = (await chip.boundingBox())!;
+            const overlap = c.x < pick.x + pick.width && pick.x < c.x + c.width && c.y < pick.y + pick.height && pick.y < c.y + c.height;
+            expect(overlap, 'chip overlaps the run picker').toBe(false);
+          }
+          // The option is the period; the status is the chip's.
+          await expect(page.locator('#pipeline-run-picker option:checked')).not.toContainText('—');
+          if (w >= 1280) {
+            expect((await bar.boundingBox())!.height, 'one row from 1280').toBeLessThanOrEqual(56);
+            await expect(page.getByTestId('pipeline-folded-stage')).toHaveText(say(locale, 'Stage {n} of 8 · {stage}', { n: 8, stage: say(locale, 'Pay out') }));
+          }
+          // The eight dots only from 1536.
+          await expect(page.getByTestId('pipeline-stage-dots')).toBeHidden();
+          if (tab === 'runs') {
+            // One button carries the next action; no separate truncating "Next:" text.
+            const next = page.getByTestId('pipeline-next');
+            await expect(page.getByTestId('pipeline-next-action')).toHaveText(say(locale, 'Create the bank file'));
+            expect((await next.innerText()).trim()).toBe((await page.getByTestId('pipeline-next-action').innerText()).trim());
+            await expect(page.getByTestId('pipeline-next-action')).toHaveAttribute('title', new RegExp(escape(say(locale, 'Open Bank / WPS'))));
+          }
+        });
+      }
+    });
+  }
 }
 
 test.describe('Payroll Runs on a locked run', () => {

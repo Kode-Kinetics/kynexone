@@ -266,10 +266,12 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
   const focusIndex = model?.focus ? STAGE_ORDER.indexOf(model.focus) : -1;
   const chipLabel = payOut && model?.focus === 'paid' ? payOutLabel(t, payOut) : null;
 
+  // The open run's option is its period only: its status is the chip's (said once). Other runs keep theirs, to choose between them.
+  const optionText = (r: PayrollRun, state: string) => (r.id === runId ? runLabel(r) : `${runLabel(r)} — ${state}`);
   const picker = (
     <select
       id="pipeline-run-picker"
-      className="select h-9 w-full min-w-0 truncate md:w-auto md:min-w-[200px] md:max-w-[320px]"
+      className="select h-9 w-full min-w-0 truncate md:w-auto md:min-w-[10rem] md:max-w-[18rem]"
       value={runId ?? ''}
       title={run ? `${runLabel(run)} — ${runState(run)}` : undefined}
       onChange={e => onSelectRun(e.target.value || null)}
@@ -278,17 +280,17 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
       <option value="">{t('Choose a run…')}</option>
       {attention.length > 0 && (
         <optgroup label={t('Needs attention')}>
-          {attention.map(r => <option key={r.id} value={r.id}>{runLabel(r)} — {attentionLabel(r)}</option>)}
+          {attention.map(r => <option key={r.id} value={r.id}>{optionText(r, attentionLabel(r))}</option>)}
         </optgroup>
       )}
       {liveOtherRuns.length > 0 && (
         <optgroup label={t('Other runs')}>
-          {liveOtherRuns.map(r => <option key={r.id} value={r.id}>{runLabel(r)} — {runState(r)}</option>)}
+          {liveOtherRuns.map(r => <option key={r.id} value={r.id}>{optionText(r, runState(r))}</option>)}
         </optgroup>
       )}
       {voidedRuns.length > 0 && (
         <optgroup label={t('Voided runs')}>
-          {voidedRuns.map(r => <option key={r.id} value={r.id}>{runLabel(r)} — {statusText(t, r.status)}</option>)}
+          {voidedRuns.map(r => <option key={r.id} value={r.id}>{optionText(r, statusText(t, r.status))}</option>)}
         </optgroup>
       )}
     </select>
@@ -309,32 +311,32 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
     >
       <h2 id="run-pipeline-title" className="sr-only">{t('Payroll run')}</h2>
       {/* One row from md on every section (items shrink and cut their text; nothing wraps to a second line). */}
-      <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-2 md:flex-nowrap">
+      <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-2 xl:flex-nowrap">
         <label htmlFor="pipeline-run-picker" className="shrink-0 text-meta text-fg-muted max-md:sr-only">{t('Payroll run')}</label>
         <div className="w-full min-w-0 md:w-auto md:shrink">{picker}</div>
         {run && model && (
           <>
-            <span className="badge badge-neutral inline-flex shrink-0 items-center gap-1">
+            <span className="badge badge-neutral inline-flex shrink-0 items-center gap-1 whitespace-nowrap" data-testid="pipeline-run-status">
               {run.status === 'Locked' && <Lock className="h-3 w-3" aria-hidden="true" />}
               <EnumLabel enum="PayrollRunStatus" value={run.status} />
             </span>
             {model.focus && (
               <>
                 {/* The eight stages at a glance (wide screens only; the words beside it carry the meaning). */}
-                <span aria-hidden="true" className="hidden items-center gap-1 min-[1440px]:flex">
+                <span aria-hidden="true" className="hidden items-center gap-1 min-[1536px]:flex" data-testid="pipeline-stage-dots">
                   {model.stages.map((stage, i) => (
                     <span key={stage.key} className={`h-1.5 w-4 rounded-full ${i === focusIndex ? 'bg-primary' : i < focusIndex || stage.state === 'done' ? 'bg-primary/40' : 'bg-line'}`} />
                   ))}
                 </span>
                 <span className="shrink-0 whitespace-nowrap text-body-sm text-fg-muted" data-testid="pipeline-folded-stage">
-                  <span className="max-[1439px]:sr-only">{stagePrefix(t, focusIndex + 1)}</span>
+                  <span className="max-md:sr-only">{stagePrefix(t, focusIndex + 1)}</span>
                   <span className="font-semibold text-fg">{stageName(t, model.focus)}</span>
                 </span>
               </>
             )}
             {chipLabel && payOut ? (
               <span
-                className={`badge ${CHIP_TONE[payOutTone(payOut)]} inline-flex min-w-0 max-w-[320px] items-center gap-1`}
+                className={`badge ${CHIP_TONE[payOutTone(payOut)]} inline-flex shrink-0 items-center gap-1 whitespace-nowrap`}
                 data-testid="bank-guide-chip"
                 data-chip={payOut.status}
                 title={chipLabel}
@@ -343,27 +345,27 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
                   : payOut.status === 'confirmed' || payOut.status === 'settled' ? <CheckCircle2 className="h-3 w-3 shrink-0" aria-hidden="true" />
                   : payOut.status === 'attention' || payOut.status === 'rejected' || payOut.status === 'setup' ? <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
                   : <Clock className="h-3 w-3 shrink-0" aria-hidden="true" />}
-                <span className="truncate">{chipLabel}</span>
+                <span>{chipLabel}</span>
               </span>
             ) : focusStage && focusStage.state !== 'done' ? (
               <span className={`badge shrink-0 ${focusStage.state === 'blocked' ? 'badge-danger' : 'badge-info'}`}>{stateName(t, focusStage.state)}</span>
             ) : null}
             <span className="hidden min-w-0 flex-1 md:block" />
             {showNext && (
-              <div className="flex min-w-0 shrink items-center gap-2" data-testid="pipeline-next">
-                <p className="min-w-0 truncate text-body-sm text-fg-muted">
-                  {nextBefore}<span className="font-semibold text-fg" data-testid="pipeline-next-title">{nextTitle(t, model.next, focusStage, payOut)}</span>{nextAfter}
-                </p>
+              <div className="flex shrink-0 items-center" data-testid="pipeline-next">
+                {/* ONE button carries the next action in its own words; where it goes is its tooltip, so nothing is cut short. */}
                 <Button
                   size="sm"
                   className="shrink-0 whitespace-nowrap"
                   disabled={model.next.disabled}
                   busy={busy}
+                  title={`${nextBefore}${nextTitle(t, model.next, focusStage, payOut)}${nextAfter} — ${actionLabel(t, model.next, false)}`}
+                  aria-label={`${nextTitle(t, model.next, focusStage, payOut)} — ${actionLabel(t, model.next, false)}`}
                   aria-describedby={model.nextReason ? 'pipeline-next-reason' : undefined}
                   onClick={() => perform(model.next)}
                   data-testid="pipeline-next-action"
                 >
-                  {actionLabel(t, model.next, busy)}
+                  {busy ? actionLabel(t, model.next, true) : <span data-testid="pipeline-next-title">{nextTitle(t, model.next, focusStage, payOut)}</span>}
                 </Button>
               </div>
             )}

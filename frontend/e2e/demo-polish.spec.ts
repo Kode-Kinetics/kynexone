@@ -334,7 +334,8 @@ for (const locale of LOCALES) {
       const chip = page.getByTestId('bank-guide-chip');
       await expect(chip).toBeVisible({ timeout: 90_000 });
       await expect(chip).toHaveText(locale === 'ar' ? 'لا يوجد ملف بنكي بعد' : 'No bank file yet');
-      await expect(page.locator('#pipeline-run-picker option:checked')).toContainText(locale === 'ar' ? 'لا يوجد ملف بنكي بعد' : 'No bank file yet');
+      // The run picker shows the period only; its tooltip carries the chip's words.
+      await expect(page.locator('#pipeline-run-picker')).toHaveAttribute('title', new RegExp(locale === 'ar' ? 'لا يوجد ملف بنكي بعد' : 'No bank file yet'));
     });
 
     test('"Open Bank / WPS" keeps the run; clearing the run leaves the tab asking for one', async ({ page }) => {

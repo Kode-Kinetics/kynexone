@@ -259,7 +259,9 @@ test.describe('Bank / WPS tab opened from the pipeline', () => {
 
   test('"Open Bank / WPS" lands on the run the pipeline was showing, with its batch listed', async ({ page }) => {
     await open(page, `/payroll?tab=runs&run=${RUN_PREV}`, { batches: [BATCH], records: [RECORD], user: PAYER });
-    await expect(page.getByTestId('pipeline-next-action')).toHaveText('Open Bank / WPS');
+    // One button carries the next action; where it goes is its tooltip.
+    await expect(page.getByTestId('pipeline-next-action')).toHaveText('Create the bank file');
+    await expect(page.getByTestId('pipeline-next-action')).toHaveAttribute('title', /Open Bank \/ WPS/);
     await page.getByTestId('pipeline-next-action').click();
     await expect(section(page, 'Bank / WPS Files')).toHaveAttribute('aria-current', 'page');
     await expect(page.locator('#pipeline-run-picker')).toHaveValue(RUN_PREV);
@@ -323,7 +325,7 @@ test.describe('processing as a background job', () => {
       processing: () => ({ runId: RUN_DRAFT, jobId: 'job-9', status: 'Failed', processedEmployees: 10, totalEmployees: 40, errorCode: 'NO_PACK', errorMessage: 'The company has no statutory pack.' }),
     });
     await expect(page.getByTestId('pipeline-processing-failed')).toContainText('The company has no statutory pack.');
-    await expect(page.getByTestId('pipeline-next-action')).toHaveText('Retry');
+    await expect(page.getByTestId('pipeline-next-action')).toHaveText('Retry processing');
   });
 });
 
@@ -399,7 +401,9 @@ test.describe('Pay out names the file that exists (a company whose bank file is 
       // The chip says it once; the run bar does not repeat it under the row.
       await expect(page.getByTestId('pipeline-next-reason')).toHaveCount(0);
       await expect(page.getByTestId('bank-guide-chip')).toHaveText(WORDS[locale].noFile);
-      await expect(page.locator('#pipeline-run-picker option:checked')).toContainText(WORDS[locale].noFile);
+      // The status is the chip's; the run picker shows the period only (its tooltip carries the status).
+      await expect(page.locator('#pipeline-run-picker option:checked')).not.toContainText(WORDS[locale].noFile);
+      await expect(page.locator('#pipeline-run-picker')).toHaveAttribute('title', new RegExp(WORDS[locale].noFile));
       await expect(paidStage(page)).not.toContainText(WORDS[locale].done);
       await shot(page, `pipeline-register-only-${locale}`);
     });
@@ -441,7 +445,8 @@ test.describe('Pay out waits for the bank to confirm the payments', () => {
       await expect(page.getByTestId('pipeline-next-title')).not.toHaveText(WORDS[locale].complete);
       await expect(page.getByTestId('pipeline-next-reason')).toHaveCount(0);
       await expect(page.getByTestId('bank-guide-chip')).toHaveText(WORDS[locale].waiting);
-      await expect(page.getByTestId('pipeline-next-action')).toHaveText(WORDS[locale].action);
+      await expect(page.getByTestId('pipeline-next-action')).toHaveText(WORDS[locale].title);
+      await expect(page.getByTestId('pipeline-next-action')).toHaveAttribute('title', new RegExp(WORDS[locale].action));
       await page.getByTestId('pipeline-next-action').click();
       await expect(page).toHaveURL(/tab=payment-tracking/);
     });
