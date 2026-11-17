@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using FluentAssertions;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports;
 
 namespace Zayra.Api.Tests.WpsReturnedFile;
@@ -75,7 +76,7 @@ public class WpsReturnedFileReconcilerTests
     }
 
     [Fact]
-    public void A_line_the_bank_rejected_is_reported_with_its_reason_code_in_both_languages()
+    public void A_line_the_bank_rejected_reads_not_paid_rejected_by_bank_in_both_languages_and_says_no_reason_code_was_given()
     {
         var rows = WpsReturnedFileOracle.Rows(3).ToList();
         rows = WithStatus(rows, "PAID").ToList();
@@ -84,12 +85,80 @@ public class WpsReturnedFileReconcilerTests
         var line = Run(rows, Expected(rows)).Lines.Single(l => l.Classification == WpsReconciliationClass.Rejected);
 
         line.EmployeeCode.Should().Be("EMP0002");
-        line.ReasonCode.Should().Be("REJECTED");
-        line.Outcome.Should().Be("Returned");
-        line.ReasonEn.Should().Contain("REJECTED").And.Contain("bank statement");
-        line.ReasonEn.Should().NotContain("not paid", "a rejection does not prove no money moved");
+        line.Outcome.Should().Be("Rejected", "a rejection is not money that came back");
+        line.ReasonCode.Should().BeNull("the file has no reason column; the status word is not a reason code");
+        line.ReasonEn.Should().Contain(BankOutcomeLabels.NotPaidRejectedByBank.English).And.Contain("REJECTED")
+            .And.Contain(BankStatusReasonCatalogue.Describe(null).English).And.Contain("bank statement");
+        line.ReasonEn.Should().NotContain("came back");
         Arabic.IsMatch(line.ReasonAr).Should().BeTrue();
-        line.ReasonAr.Should().Contain("REJECTED").And.Contain("كشف حساب البنك").And.NotContain("لم يُدفع");
+        line.ReasonAr.Should().Contain(BankOutcomeLabels.NotPaidRejectedByBank.Arabic).And.Contain("REJECTED")
+            .And.Contain(BankStatusReasonCatalogue.Describe(null).Arabic).And.Contain("كشف حساب البنك");
+    }
+
+    [Fact]
+    public void A_line_the_bank_returned_reads_the_money_came_back_in_both_languages()
+    {
+        var rows = WithStatus(WpsReturnedFileOracle.Rows(2), "PAID").ToList();
+        rows[0] = rows[0] with { Status = "RETURNED" };
+
+        var line = Run(rows, Expected(rows)).Lines.Single(l => l.Classification == WpsReconciliationClass.Returned);
+
+        line.Outcome.Should().Be("Returned");
+        line.ReasonCode.Should().BeNull();
+        line.ReasonEn.Should().Contain(BankOutcomeLabels.ReturnedMoneyCameBack.English).And.NotContain("Not paid");
+        line.ReasonAr.Should().Contain(BankOutcomeLabels.ReturnedMoneyCameBack.Arabic);
+    }
+
+    [Fact]
+    public void A_duplicate_reason_is_held_for_a_person_and_never_reads_as_not_paid_or_still_owed()
+    {
+        var rows = WithStatus(WpsReturnedFileOracle.Rows(2), "PAID").ToList();
+        rows[0] = rows[0] with { Status = "DUPL" };
+
+        var line = Run(rows, Expected(rows)).Lines[0];
+
+        line.Classification.Should().Be(WpsReconciliationClass.HeldForPerson);
+        line.Outcome.Should().BeNull("nothing is recorded until a person checks whether the earlier payment arrived");
+        line.ReasonCode.Should().Be("DUPL");
+        line.ReasonEn.Should().Contain(BankStatusReasonCatalogue.Describe("DUPL").English).And.Contain("earlier payment")
+            .And.NotContainAny("Not paid", "owed", "pay it again");
+        line.ReasonAr.Should().Contain(BankStatusReasonCatalogue.Describe("DUPL").Arabic).And.NotContain("لم يُدفع");
+    }
+
+    [Theory]
+    [InlineData("AC01")]
+    [InlineData("AC04")]
+    [InlineData("AM04")]
+    [InlineData("BE01")]
+    public void A_bank_reason_code_in_the_status_field_is_described_plainly_and_held_for_a_person(string code)
+    {
+        var rows = WithStatus(WpsReturnedFileOracle.Rows(1), code);
+        var line = Run(rows, Expected(rows)).Lines.Single();
+        line.Classification.Should().Be(WpsReconciliationClass.HeldForPerson);
+        line.Outcome.Should().BeNull();
+        line.ReasonEn.Should().Contain(BankStatusReasonCatalogue.Describe(code).English);
+        line.ReasonAr.Should().Contain(BankStatusReasonCatalogue.Describe(code).Arabic);
+    }
+
+    [Fact]
+    public void ACWC_accepted_with_change_is_held_for_a_person()
+    {
+        var rows = WithStatus(WpsReturnedFileOracle.Rows(1), "ACWC");
+        var line = Run(rows, Expected(rows)).Lines.Single();
+        line.Classification.Should().Be(WpsReconciliationClass.HeldForPerson);
+        line.Outcome.Should().BeNull();
+        line.ReasonEn.Should().Contain(BankOutcomeLabels.HeldAcceptedWithChange.English);
+        line.ReasonAr.Should().Contain(BankOutcomeLabels.HeldAcceptedWithChange.Arabic);
+    }
+
+    [Fact]
+    public void Every_word_the_reader_gives_an_outcome_reads_the_same_in_the_shared_vocabulary()
+    {
+        foreach (var word in WpsReturnedFileStatus.OutcomeWords)
+            WpsReturnedFileStatus.Classify(word).Should().Be(BankOutcomeVocabulary.Read(word).Outcome, word);
+        // The reader stays narrower: these give an outcome in the shared vocabulary but confirm nothing here.
+        foreach (var word in new[] { "SUBMITTED", "QUEUED", "AWAITING", "INPROGRESS", "TRANSFERRED" })
+            WpsReturnedFileStatus.Classify(word).Should().BeNull(word);
     }
 
     [Fact]
@@ -185,14 +254,16 @@ public class WpsReturnedFileReconcilerTests
     {
         var rows = WithStatus(WpsReturnedFileOracle.Rows(3000, arabicName: new string('س', 35)), "PAID").ToList();
         rows[10] = rows[10] with { Status = "REJECTED" };
+        rows[11] = rows[11] with { Status = "RETURNED" };
         var expected = Expected(rows).ToList();
         expected[20] = expected[20] with { Amount = expected[20].Amount + 1m };
         var file = rows.Where((_, i) => i != 30).ToList();
 
         var rec = Run(file, expected);
 
-        rec.Count(WpsReconciliationClass.MatchedPaid).Should().Be(2997);
+        rec.Count(WpsReconciliationClass.MatchedPaid).Should().Be(2996);
         rec.Count(WpsReconciliationClass.Rejected).Should().Be(1);
+        rec.Count(WpsReconciliationClass.Returned).Should().Be(1);
         rec.Count(WpsReconciliationClass.AmountMismatch).Should().Be(1);
         rec.Count(WpsReconciliationClass.MissingFromFile).Should().Be(1);
         rec.Lines.Should().HaveCount(3000);
@@ -221,8 +292,8 @@ public class WpsReturnedFileReconcilerTests
     [InlineData("R")]
     [InlineData("N")]
     [InlineData("NO")]
-    [InlineData("ACWC")]
     [InlineData("UNPAID")]
+    [InlineData("REVERSED")]
     public void A_single_letter_or_loose_word_confirms_nothing(string word)
     {
         var rows = WithStatus(WpsReturnedFileOracle.Rows(1), word);
@@ -232,23 +303,35 @@ public class WpsReturnedFileReconcilerTests
     }
 
     [Theory]
-    [InlineData("RJCT")]
-    [InlineData("REJECT")]
-    [InlineData("REJECTED")]
     [InlineData("RETURN")]
     [InlineData("RETURNED")]
     [InlineData("RTRN")]
     [InlineData("BOUNCE")]
     [InlineData("BOUNCED")]
+    public void Only_an_unambiguous_return_word_means_the_money_came_back(string word)
+    {
+        var rows = WithStatus(WpsReturnedFileOracle.Rows(1), word);
+        var line = Run(rows, Expected(rows)).Lines.Single();
+        line.Classification.Should().Be(WpsReconciliationClass.Returned);
+        line.Outcome.Should().Be("Returned");
+    }
+
+    [Theory]
+    [InlineData("RJCT")]
+    [InlineData("REJECT")]
+    [InlineData("REJECTED")]
+    [InlineData("DECLINED")]
     [InlineData("FAIL")]
     [InlineData("FAILED")]
     [InlineData("FAILURE")]
-    [InlineData("DECLINED")]
     [InlineData("CANCELLED_BY_BANK")]
-    public void Only_an_unambiguous_return_word_is_a_rejection(string word)
+    public void A_rejection_word_is_not_paid_rejected_by_bank_and_never_returned(string word)
     {
         var rows = WithStatus(WpsReturnedFileOracle.Rows(1), word);
-        Run(rows, Expected(rows)).Lines.Single().Classification.Should().Be(WpsReconciliationClass.Rejected);
+        var line = Run(rows, Expected(rows)).Lines.Single();
+        line.Classification.Should().Be(WpsReconciliationClass.Rejected);
+        line.Outcome.Should().Be("Rejected");
+        line.ReasonEn.Should().Contain(BankOutcomeLabels.NotPaidRejectedByBank.English);
     }
 
     [Theory]
@@ -281,7 +364,8 @@ public class WpsReturnedFileReconcilerTests
         rec.Lines.Single().Classification.Should().Be(WpsReconciliationClass.MatchedPending);
         rec.Lines.Single().Outcome.Should().Be("Pending");
         WpsReturnedFileStatus.Classify("ACSP").Should().Be("Pending");
-        WpsReturnedFileStatus.Classify("RJCT").Should().Be("Returned");
+        WpsReturnedFileStatus.Classify("RJCT").Should().Be("Rejected");
+        WpsReturnedFileStatus.Classify("RETURNED").Should().Be("Returned");
         WpsReturnedFileStatus.Classify("P").Should().BeNull();
     }
 
@@ -296,13 +380,15 @@ public class WpsReturnedFileReconcilerTests
         Run(rows, expected).Lines[0].Classification.Should().Be(WpsReconciliationClass.AccountMismatch);
     }
 
-    [Fact]
-    public void A_returned_line_with_a_different_amount_is_still_a_rejection()
+    [Theory]
+    [InlineData("REJECTED", WpsReconciliationClass.Rejected)]
+    [InlineData("RETURNED", WpsReconciliationClass.Returned)]
+    public void A_rejected_or_returned_line_with_a_different_amount_keeps_its_outcome(string word, string classification)
     {
-        var rows = WithStatus(WpsReturnedFileOracle.Rows(1), "REJECTED");
+        var rows = WithStatus(WpsReturnedFileOracle.Rows(1), word);
         var expected = Expected(rows).ToList();
         expected[0] = expected[0] with { Amount = expected[0].Amount + 50m };
-        Run(rows, expected).Lines.Single().Classification.Should().Be(WpsReconciliationClass.Rejected);
+        Run(rows, expected).Lines.Single().Classification.Should().Be(classification);
     }
 
     [Fact]

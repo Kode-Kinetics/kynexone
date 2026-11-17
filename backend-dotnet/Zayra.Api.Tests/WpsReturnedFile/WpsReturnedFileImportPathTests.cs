@@ -22,7 +22,7 @@ public class WpsReturnedFileImportPathTests
     private static readonly JsonSerializerOptions Readable = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     private static readonly Regex Arabic = new("[\u0600-\u06FF]");
 
-    private static ZayraDbContext NewDb() =>
+    internal static ZayraDbContext NewDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
     private static BankConfirmationService Service(ZayraDbContext db) =>
@@ -31,12 +31,12 @@ public class WpsReturnedFileImportPathTests
             new GenericCsvBankConfirmationParser(), new WpsAckBankConfirmationParser(), new WpsReturnedFileBankConfirmationParser(statusColumnVerified: true),
         });
 
-    private sealed record Seeded(Guid TenantId, Guid BatchId, IReadOnlyList<SynthRow> Rows, IReadOnlyList<PayrollPaymentRecord> Records, Company Company);
+    internal sealed record Seeded(Guid TenantId, Guid BatchId, IReadOnlyList<SynthRow> Rows, IReadOnlyList<PayrollPaymentRecord> Records, Company Company);
 
     /// <summary>A company with a configured establishment, a run, a batch, and one Pending payment record per synthetic row.</summary>
-    private static readonly DateTime BatchCreatedUtc = new(2026, 9, 20, 0, 0, 0, DateTimeKind.Utc);
+    internal static readonly DateTime BatchCreatedUtc = new(2026, 9, 20, 0, 0, 0, DateTimeKind.Utc);
 
-    private static Seeded Seed(ZayraDbContext db, int count, string establishment = "7-1234567", Guid? tenant = null, string? arabicName = null,
+    internal static Seeded Seed(ZayraDbContext db, int count, string establishment = "7-1234567", Guid? tenant = null, string? arabicName = null,
         Company? existing = null, int offset = 0, DateTime? createdUtc = null)
     {
         var tenantId = tenant ?? existing?.TenantId ?? Guid.NewGuid();
@@ -66,12 +66,12 @@ public class WpsReturnedFileImportPathTests
         return new Seeded(tenantId, batch.Id, rows, records, company);
     }
 
-    private static Task<(BankConfirmationImportResult? Result, JournalExportRefusal? Refusal)> Import(
+    internal static Task<(BankConfirmationImportResult? Result, JournalExportRefusal? Refusal)> Import(
         ZayraDbContext db, Seeded s, string content, BankConfirmationImportOptions? options = null, string format = Key) =>
         Service(db).ImportAsync(s.TenantId, s.BatchId, "returned.txt", content, format,
             options ?? new BankConfirmationImportOptions(), Guid.NewGuid(), "Payroll Officer", default);
 
-    private static PayrollPaymentRecord Reload(ZayraDbContext db, PayrollPaymentRecord r) =>
+    internal static PayrollPaymentRecord Reload(ZayraDbContext db, PayrollPaymentRecord r) =>
         db.PayrollPaymentRecords.AsNoTracking().Single(x => x.Id == r.Id);
 
     // ── Selection: OFF unless chosen ─────────────────────────────────────────
@@ -142,16 +142,20 @@ public class WpsReturnedFileImportPathTests
         db.SaveChanges();
 
         result!.PaidApplied.Should().Be(3);
-        result.ReturnedApplied.Should().Be(1);
+        result.RejectedApplied.Should().Be(1);
+        result.ReturnedApplied.Should().Be(0, "a rejection is not money that came back");
         Reload(db, s.Records[0]).Status.Should().Be("Paid");
-        Reload(db, s.Records[1]).Status.Should().Be("Returned");
+        Reload(db, s.Records[1]).Status.Should().Be("Rejected");
         Reload(db, s.Records[4]).Status.Should().Be("Pending", "an employee the file does not mention stays unconfirmed");
         result.Unconfirmed.Should().HaveCount(1);
+        result.ReturnedAmountAwaitingGlCorrection.Should().Be(0m, "no cash left for a rejected line, so the GL needs no correction");
+        result.RejectedAmountNotPaid.Should().Be(s.Records[1].Amount);
 
         var rejected = db.BankPaymentConfirmations.Single(c => c.PaymentRecordId == s.Records[1].Id);
-        rejected.Outcome.Should().Be("Returned");
-        rejected.ReasonCode.Should().Be("REJECTED");
-        rejected.ReasonText.Should().Contain("bank statement").And.NotContain("not paid");
+        rejected.Outcome.Should().Be("Rejected");
+        rejected.RawOutcome.Should().Be("REJECTED");
+        rejected.ReasonCode.Should().BeNull("the file has no reason column");
+        rejected.ReasonText.Should().Contain("Not paid: rejected by bank").And.Contain("bank statement");
         rejected.MatchedBy.Should().Be(BankConfirmationMatchModes.EmployeeCode);
         rejected.BankReference.Should().Be("BNKREF");
 
@@ -247,7 +251,7 @@ public class WpsReturnedFileImportPathTests
     }
 
     [Fact]
-    public async Task A_rejected_line_is_recorded_as_returned_even_when_its_amount_differs()
+    public async Task A_rejected_line_is_recorded_as_rejected_even_when_its_amount_differs()
     {
         using var db = NewDb();
         var s = Seed(db, 2);
@@ -259,9 +263,48 @@ public class WpsReturnedFileImportPathTests
         var (result, _) = await Import(db, s, WpsReturnedFileOracle.Build(rows));
         db.SaveChanges();
 
-        result!.ReturnedApplied.Should().Be(1);
+        result!.RejectedApplied.Should().Be(1);
+        result.ReturnedApplied.Should().Be(0);
         result.AmountMismatchesHeld.Should().BeEmpty();
+        Reload(db, s.Records[0]).Status.Should().Be("Rejected");
+    }
+
+    [Fact]
+    public async Task A_returned_line_is_recorded_as_returned_and_counts_in_the_gl_correction()
+    {
+        using var db = NewDb();
+        var s = Seed(db, 2);
+        var rows = s.Rows.Select(r => r with { Status = "PAID" }).ToList();
+        rows[0] = rows[0] with { Status = "RETURNED" };
+
+        var (result, _) = await Import(db, s, WpsReturnedFileOracle.Build(rows));
+        db.SaveChanges();
+
+        result!.ReturnedApplied.Should().Be(1);
+        result.RejectedApplied.Should().Be(0);
         Reload(db, s.Records[0]).Status.Should().Be("Returned");
+        result.ReturnedAmountAwaitingGlCorrection.Should().Be(s.Records[0].Amount);
+        db.BankPaymentConfirmations.Single(c => c.PaymentRecordId == s.Records[0].Id).ReasonText.Should().Contain("the money came back");
+    }
+
+    [Fact]
+    public async Task A_duplicate_reason_is_held_for_a_person_applies_nothing_and_never_reads_as_owed()
+    {
+        using var db = NewDb();
+        var s = Seed(db, 2);
+        var rows = s.Rows.Select(r => r with { Status = "PAID" }).ToList();
+        rows[0] = rows[0] with { Status = "DUPL" };
+
+        var (result, _) = await Import(db, s, WpsReturnedFileOracle.Build(rows));
+        db.SaveChanges();
+
+        result!.PaidApplied.Should().Be(1);
+        result.RejectedApplied.Should().Be(0);
+        result.RejectedAmountNotPaid.Should().Be(0m, "a duplicate may already have been paid: it is never counted as not paid");
+        Reload(db, s.Records[0]).Status.Should().Be("Pending");
+        db.BankPaymentConfirmations.Should().NotContain(c => c.PaymentRecordId == s.Records[0].Id);
+        var errors = JsonSerializer.Serialize(result.ParseErrors, Readable);
+        errors.Should().Contain("held_for_person").And.Contain("earlier payment").And.NotContain("owed");
     }
 
     [Fact]
@@ -572,11 +615,13 @@ public class WpsReturnedFileImportPathTests
         var s = Seed(db, 3000, arabicName: new string('م', 35));
         var rows = s.Rows.Select(r => r with { Status = "PAID" }).ToList();
         rows[7] = rows[7] with { Status = "REJECTED" };
+        rows[8] = rows[8] with { Status = "RETURNED" };
 
         var (result, refusal) = await Import(db, s, WpsReturnedFileOracle.Build(rows));
         refusal.Should().BeNull();
 
-        result!.PaidApplied.Should().Be(2999);
+        result!.PaidApplied.Should().Be(2998);
+        result.RejectedApplied.Should().Be(1);
         result.ReturnedApplied.Should().Be(1);
         result.Unconfirmed.Should().BeEmpty();
         result.Coverage.RecordCount.Should().Be(3000);

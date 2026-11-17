@@ -168,14 +168,14 @@ public sealed class WpsReturnedFileBankConfirmationParser : IContextualBankConfi
                     acceptedOnly++;
                     break;
                 case WpsReconciliationClass.MatchedPaid or WpsReconciliationClass.MatchedPending or WpsReconciliationClass.Rejected
-                    or WpsReconciliationClass.AmountMismatch when line.Outcome is not null && !_statusColumnVerified:
+                    or WpsReconciliationClass.Returned or WpsReconciliationClass.AmountMismatch when line.Outcome is not null && !_statusColumnVerified:
                     // The status column is not verified against a real bank file: nothing is applied from it.
                     unverified++;
-                    if (line.Classification is WpsReconciliationClass.AmountMismatch or WpsReconciliationClass.Rejected)
+                    if (line.Classification is WpsReconciliationClass.AmountMismatch or WpsReconciliationClass.Rejected or WpsReconciliationClass.Returned)
                         errors.Add(new(line.FileLine ?? 0, line.Classification, line.ReasonEn, line.ReasonAr));
                     break;
                 case WpsReconciliationClass.MatchedPaid or WpsReconciliationClass.MatchedPending or WpsReconciliationClass.Rejected
-                    or WpsReconciliationClass.AmountMismatch when line.Outcome is not null:
+                    or WpsReconciliationClass.Returned or WpsReconciliationClass.AmountMismatch when line.Outcome is not null:
                 {
                     var fr = fileRows[line.FileLine!.Value];
                     if (string.IsNullOrWhiteSpace(line.EmployeeCode))
@@ -185,17 +185,19 @@ public sealed class WpsReturnedFileBankConfirmationParser : IContextualBankConfi
                             "ليس للموظف رقم وظيفي، لذلك لا يمكن للاستيراد تطبيق هذا السطر."));
                         break;
                     }
-                    var returned = line.Classification == WpsReconciliationClass.Rejected;
-                    // The held amount and the returned line carry a reason the officer must see, in both languages.
-                    if (line.Classification is WpsReconciliationClass.AmountMismatch or WpsReconciliationClass.Rejected)
+                    // Rejected (not paid) and Returned (the money came back) are two outcomes, stored apart by the import.
+                    var failed = line.Classification is WpsReconciliationClass.Rejected or WpsReconciliationClass.Returned;
+                    // The held amount and the rejected or returned line carry a reason the officer must see, in both languages.
+                    if (line.Classification is WpsReconciliationClass.AmountMismatch || failed)
                         errors.Add(new(fr.Line, line.Classification, line.ReasonEn, line.ReasonAr));
-                    // A returned line is recorded as returned whatever amount the file shows; the import's own hold covers every other line.
+                    // A rejected or returned line keeps its outcome whatever amount the file shows; the import's own hold covers
+                    // every other line. The file has no reason column, so no reason code is passed on (the status word is not one).
                     rows.Add(new BankConfirmationRow(
                         RowNumber: fr.Line, WpsReference: null, EmployeeCode: line.EmployeeCode, Iban: null,
-                        Amount: returned ? null : fr.Net,
+                        Amount: failed ? null : fr.Net,
                         RawOutcome: fr.TrnStatus ?? string.Empty, Outcome: line.Outcome,
-                        ReasonCode: returned ? line.ReasonCode : null,
-                        ReasonText: returned ? line.ReasonEn : null,
+                        ReasonCode: failed ? line.ReasonCode : null,
+                        ReasonText: failed ? line.ReasonEn : null,
                         BankReference: fr.TrnRef, ValueDate: fr.TrnDate));
                     break;
                 }
