@@ -17,6 +17,7 @@
  *  4. Check passed: the panel's validation (this session only). It moves the stage from step 2 to step 3 and never changes the chip.
  *  5. Setup: the panel's saved employer setup; absent means complete.
  *  6. Run locked: run.status === 'Locked'.
+ *  7. Tie-out: the panel's batch total against the run (run net − paid outside the file). A difference blocks step 3 (Finance rule).
  */
 import { awaitingBankConfirmation, type PipelineBatch } from './payrollPipeline';
 
@@ -40,7 +41,9 @@ export type PayOutReason =
   | 'run_not_locked' | 'no_permission_create' | 'choose_batch'
   | 'checking' | 'gate_off' | 'gate_no_permission' | 'gate_failed'
   | 'validation_blocked' | 'stale' | 'create_refused'
-  | 'no_permission_setup' | 'no_permission_wps' | 'submit_not_allowed' | 'rejected_ask_admin';
+  | 'no_permission_setup' | 'no_permission_wps' | 'submit_not_allowed' | 'rejected_ask_admin'
+  /** The batch total is not the run's net pay minus what is paid outside the file (Finance rule: the file is never created). */
+  | 'tie_mismatch';
 
 export interface PayOutStep { key: PayOutStepKey; state: PayOutStepState; note: PayOutStepNote; reason?: PayOutReason }
 
@@ -83,6 +86,8 @@ export interface PayOutExportFacts {
   fileExists: boolean;
   /** The last "Create bank file" was refused (conflict, field errors). */
   createRefused?: boolean;
+  /** Batch total − (run net − paid outside the file); null or absent when the API does not say what is paid outside. */
+  tieDifference?: number | null;
 }
 
 export interface PayOutInput {
@@ -260,6 +265,10 @@ export function derivePayOut(input: PayOutInput): PayOut {
     return result('attention', batch, [done('batch'), fix('check', 'validation_blocked'), todo('create'), ...tail], { kind: 'check_again', disabled: false }, false);
   }
   if (validation === 'passed') {
+    // Finance rule: a file that does not tie to the approved run is never created. The check comes first, so this blocks step 3 only.
+    if (typeof facts?.tieDifference === 'number' && Math.abs(facts.tieDifference) >= 0.005) {
+      return result('attention', batch, [done('batch'), done('check'), fix('create', 'tie_mismatch'), ...tail], { kind: 'create_file', disabled: true, reason: 'tie_mismatch' }, false);
+    }
     if (facts?.createRefused) {
       return result('attention', batch, [done('batch'), done('check'), fix('create', 'create_refused'), ...tail], { kind: 'create_file', disabled: false }, false);
     }

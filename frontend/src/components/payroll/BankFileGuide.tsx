@@ -120,6 +120,7 @@ export const payOutReasonText = (t: T, reason: PayOutReason): string => {
     case 'no_permission_wps': return t(PAYMENT_ACTION_DENIED.wps);
     case 'submit_not_allowed': return t('This batch can’t be recorded as submitted from its current status.');
     case 'rejected_ask_admin': return t('Ask your payroll administrator.');
+    case 'tie_mismatch': return t('The file total differs from the approved run.');
   }
 };
 
@@ -227,7 +228,9 @@ export function BankFileGuide({ payOut, loading = false, confirmation = '', conf
 
   const action = payOut.next ? slots.actions?.[payOut.next.kind] : undefined;
   const disabled = !!payOut.next?.disabled || !!action?.disabled;
-  const reason = payOut.next?.reason ? payOutReasonText(t, payOut.next.reason) : action?.reason ?? null;
+  // The tie-out reason carries its amount (the tab formats it in the batch's currency); every other reason is the stage's own sentence.
+  const reason = payOut.next?.reason === 'tie_mismatch' && action?.reason ? action.reason
+    : payOut.next?.reason ? payOutReasonText(t, payOut.next.reason) : action?.reason ?? null;
   const next = viewingStep ? null : panel?.next ?? nextLine(t, payOut);
   const nextName = stage === 'batch' || stage === 'setup' ? stepName(t, 'check') : stage === 'check' ? stepName(t, 'create') : stage === 'create' ? stepName(t, 'send') : stage === 'send' && payOut.status === 'downloaded' ? stepName(t, 'response') : null;
 

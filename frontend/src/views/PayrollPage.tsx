@@ -2922,9 +2922,12 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
   };
   // Someone who can neither prepare, submit nor settle the file has nothing to do here (Finance's settle still sees the flow, read-only).
   const restricted = !paymentActionsAllowed(hasPermission, ['create', 'wps', 'settle']);
+  // The open batch against the run (run net − paid outside the file): a difference blocks step 3, in the one stage source.
+  const openRow = selectedBatch ? (batches.find(b => b.id === selectedBatch.id) ?? selectedBatch) : null;
+  const tieDifference = openRow ? tieOut(openRow, selectedRun)?.difference ?? null : null;
   const exportFacts = useMemo(() => (flow ? {
-    gate: flow.gate, setup: flow.setup, validation: flow.validation, fileExists: flow.generated, createRefused: !!flow.createRefused,
-  } : null), [flow?.gate, flow?.setup, flow?.validation, flow?.generated, flow?.createRefused]); // eslint-disable-line react-hooks/exhaustive-deps
+    gate: flow.gate, setup: flow.setup, validation: flow.validation, fileExists: flow.generated, createRefused: !!flow.createRefused, tieDifference,
+  } : null), [flow?.gate, flow?.setup, flow?.validation, flow?.generated, flow?.createRefused, tieDifference]); // eslint-disable-line react-hooks/exhaustive-deps
   const recordsRead = recordsState.status === 'ready' ? records : null;
   const payOut = derivePayOut({
     run: selectedRun ?? null, batches: batchesState.status === 'ready' ? batches as PipelineBatch[] : null, openBatchId: selectedBatch?.id ?? null,
@@ -3534,8 +3537,8 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
             },
             actions: {
               ...panel.actions,
-              // Finance rule: a file that does not tie to the approved run is not created.
-              ...(panel.actions?.create_file && tieGap !== null ? { create_file: { ...panel.actions.create_file, disabled: true, reason: t('The file total differs from the approved run by {amount}', { amount: fmtAmt(tieGap, selectedBatch?.currency) }) } } : {}),
+              // Finance rule: a file that does not tie to the approved run is not created (derivePayOut turns the button off; this names the amount).
+              ...(panel.actions?.create_file && tieGap !== null ? { create_file: { ...panel.actions.create_file, reason: t('The file total differs from the approved run by {amount}', { amount: fmtAmt(Math.abs(tieGap), selectedBatch?.currency) }) } } : {}),
               create_batch: { label: creating ? t('Creating…') : t('Create payment batch'), onClick: createBatch, busy: creating, disabled: creating || batchesState.status !== 'ready' },
               open_batch: { label: t('Open batch'), onClick: () => { const b = liveBatches.find(x => x.id === chosenBatchId); if (b) openBatch(b); }, disabled: !chosenBatchId, reason: chosenBatchId ? null : t('Choose the payment batch, then open it.') },
               record_submitted: { label: t('Record as submitted'), onClick: () => setSubmitOpen(true) },

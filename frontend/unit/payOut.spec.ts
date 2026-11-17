@@ -55,6 +55,10 @@ const ROWS: Row[] = [
   { name: '2c check stale', input: { exportFacts: facts({ validation: 'stale' }) }, status: 'no_file', stage: 'check', next: 'check_again', disabled: false, label: 'No bank file yet' },
   { name: '3a create current', input: { exportFacts: facts({ validation: 'passed' }) }, status: 'no_file', stage: 'create', next: 'create_file', disabled: false, label: 'No bank file yet' },
   { name: '3b create refused', input: { exportFacts: facts({ validation: 'passed', createRefused: true }) }, status: 'attention', stage: 'create', next: 'create_file', disabled: false, label: 'Needs a fix' },
+  // Finance rule: a file that does not tie to the approved run is never created (the check itself may pass).
+  { name: '3c file does not tie to the run', input: { exportFacts: facts({ validation: 'passed', tieDifference: -100 }) }, status: 'attention', stage: 'create', next: 'create_file', disabled: true, label: 'Needs a fix' },
+  { name: '2a a difference before the check: the check comes first', input: { exportFacts: facts({ tieDifference: -100 }) }, status: 'no_file', stage: 'check', next: 'check', disabled: false, label: 'No bank file yet' },
+  { name: '3a a difference under a cent is no difference', input: { exportFacts: facts({ validation: 'passed', tieDifference: 0.004 }) }, status: 'no_file', stage: 'create', next: 'create_file', disabled: false, label: 'No bank file yet' },
   { name: '4a file created', input: { exportFacts: facts({ fileExists: true }), batches: [batch({ bankFileGenerated: true, wpsStatus: 'Generated', effectiveWpsStatus: 'Generated', allowedNextStatuses: ['Downloaded', 'Submitted'] })] }, status: 'created', stage: 'send', next: 'download', disabled: false, label: 'File created — not sent' },
   { name: '4b downloaded (this session)', input: { downloaded: true, batches: [batch({ bankFileGenerated: true, wpsStatus: 'Generated', effectiveWpsStatus: 'Generated', allowedNextStatuses: ['Downloaded', 'Submitted'] })] }, status: 'downloaded', stage: 'send', next: 'record_submitted', disabled: false, label: 'Downloaded — not yet submitted' },
   { name: '4b downloaded, no WPS permission', input: { downloaded: true, can: { ...ALL, wps: false }, batches: [batch({ bankFileGenerated: true, wpsStatus: 'Generated', effectiveWpsStatus: 'Generated', allowedNextStatuses: ['Submitted'] })] }, status: 'downloaded', stage: 'send', next: 'record_submitted', disabled: true, label: 'Downloaded — not yet submitted' },
@@ -185,6 +189,27 @@ test.describe('the facts it reads', () => {
   test('records: Paid and Returned / Rejected answer, Pending waits, Cancelled is out', () => {
     expect(splitFromRecords([{ status: 'Paid', amount: 1 }, { status: 'Rejected', amount: 2 }, { status: 'Returned', amount: 3 }, { status: 'Pending', amount: 4.5 }, { status: 'Cancelled', amount: 9 }]))
       .toEqual({ paid: 1, returned: 2, waiting: 1, total: 4, paidAmount: 1, returnedAmount: 5, waitingAmount: 4.5, totalAmount: 10.5 });
+  });
+  test('a file that does not tie: step 3 is the blocked one, with the tie-out as its reason, and the pipeline says the same', () => {
+    const input: PayOutInput = { run: RUN, batches: [batch()], openBatchId: 'b1', can: ALL, exportFacts: facts({ validation: 'passed', tieDifference: 50 }) };
+    const p = derivePayOut(input);
+    expect(p.steps[1]).toMatchObject({ key: 'check', state: 'done', note: 'passed' });
+    expect(p.steps[2]).toMatchObject({ key: 'create', state: 'blocked', note: 'needs_fix', reason: 'tie_mismatch' });
+    expect(p.next).toEqual({ kind: 'create_file', disabled: true, reason: 'tie_mismatch' });
+    expect(payOutStageState(p)).toBe('blocked');
+    const pipeline = derivePipeline({ ...LOCKED, batches: [batch()], payOut: { can: ALL, openBatchId: 'b1', exportFacts: input.exportFacts } });
+    expect(pipeline.payOut).toEqual(p);
+  });
+  test('the money ties: the buckets add up to the file to the cent (the fixture of the walk-through)', () => {
+    // Nine people, 129,438.90 in the file: six paid, one returned, two waiting.
+    const amounts = [20838.9, 12350, 12700, 13050, 13400, 13750, 14100, 14450, 14800];
+    expect(Math.round(amounts.reduce((s, a) => s + a, 0) * 100) / 100).toBe(129438.9);
+    const split = splitFromRecords(amounts.map((amount, i) => ({ amount, status: i < 6 ? 'Paid' : i < 7 ? 'Returned' : 'Pending' })));
+    expect(split.totalAmount).toBe(129438.9);
+    expect(Math.round((split.paidAmount + split.returnedAmount + split.waitingAmount) * 100) / 100).toBe(split.totalAmount);
+    expect(split.waitingAmount).toBe(29250);
+    // Cents never drift (0.1 + 0.2).
+    expect(splitFromRecords([{ status: 'Pending', amount: 0.1 }, { status: 'Pending', amount: 0.2 }]).waitingAmount).toBe(0.3);
   });
   test('the check passing moves the step, never the chip', () => {
     const before = derivePayOut({ run: RUN, batches: [batch()], openBatchId: 'b1', can: ALL, exportFacts: facts() });

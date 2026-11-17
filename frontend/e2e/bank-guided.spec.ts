@@ -294,10 +294,16 @@ test.describe('the reviews\' rules', () => {
     const diff = page.getByTestId('bank-file-facts').locator('[data-matches]').first();
     await expect(diff).toHaveAttribute('data-matches', 'false', { timeout: 90_000 });
     await expect(page.getByTestId('bank-file-facts')).toContainText('Run net 133,588.90 − paid outside the file 4,150.00 = file 129,438.90');
+    // Before the check the difference is red but the step is still the check (it comes first).
+    await expect(page.getByTestId('bank-guide-chip')).toHaveAttribute('data-chip', 'no_file');
     await page.getByTestId('bank-guide-primary').click();
     await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'create');
     await expect(page.getByTestId('bank-guide-primary')).toBeDisabled();
-    await expect(page.getByTestId('bank-guide-primary-reason')).toContainText('The file total differs from the approved run by');
+    await expect(page.getByTestId('bank-guide-primary-reason')).toHaveText('The file total differs from the approved run by SAR 100.00');
+    // One stage source: the strip, the run bar's chip and the run picker say the same as the blocked button.
+    await expect(page.locator('[data-step-strip="bank-file"] [data-step="create"]')).toHaveAttribute('data-state', 'blocked');
+    await expect(page.getByTestId('bank-guide-chip')).toHaveAttribute('data-chip', 'attention');
+    await expect(page.locator('#pipeline-run-picker option:checked')).toHaveText(/— Needs a fix$/);
   });
 
   test('a tying file: the difference is neutral before the check and passed (green) after it', async ({ page }) => {
