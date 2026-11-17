@@ -5,7 +5,8 @@ namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 /// <summary>
 /// ANB behind the bank-neutral <see cref="IBankPayrollChannel"/>. Thin: it picks the two frozen files by the
 /// generator's own file names, passes the neutral options through as ANB's request headers, and maps the
-/// status read onto the batch with <see cref="AnbPayrollStatusMapper"/>. NOT LIVE and not registered.
+/// status read onto the batch with <see cref="AnbPayrollStatusMapper"/>. NOT LIVE and not registered. Built only by
+/// <see cref="AnbGatedChannelFactory"/>, which hands it out behind <see cref="GatedBankPayrollChannel"/>.
 /// <para>TODO(wiring wave, security R-3): the client only refuses a handler that follows redirects. Registration
 /// must use <see cref="AnbHttpHandlerFactory.CreateHandler"/> as the named client's primary handler with no extra
 /// delegating handlers (no retry or resilience handler), and add a DI test for that plus a test that the factory
@@ -20,7 +21,8 @@ public sealed class AnbPayrollChannel : IBankPayrollChannel
 
     private readonly AnbPayrollApiClient _client;
 
-    public AnbPayrollChannel(AnbPayrollApiClient client) => _client = client ?? throw new ArgumentNullException(nameof(client));
+    // Internal: built only by AnbGatedChannelFactory, behind GatedBankPayrollChannel (ratchet I).
+    internal AnbPayrollChannel(AnbPayrollApiClient client) => _client = client ?? throw new ArgumentNullException(nameof(client));
 
     public string BankId => Id;
 

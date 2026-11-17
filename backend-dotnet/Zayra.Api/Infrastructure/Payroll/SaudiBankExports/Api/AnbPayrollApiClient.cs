@@ -59,7 +59,8 @@ public sealed partial class AnbPayrollApiClient
     private readonly AnbClientLimits _limits;
     private readonly ConcurrentDictionary<string, CachedToken> _tokens = new(StringComparer.Ordinal);
 
-    public AnbPayrollApiClient(HttpMessageHandler handler, IAnbEndpointConfig config, IAnbCredentialSource credentials,
+    // Internal: built only by AnbGatedChannelFactory, behind GatedBankPayrollChannel (ratchet I). Tests reach it through InternalsVisibleTo.
+    internal AnbPayrollApiClient(HttpMessageHandler handler, IAnbEndpointConfig config, IAnbCredentialSource credentials,
         ILogger<AnbPayrollApiClient> log, TimeProvider? clock = null, AnbClientLimits? limits = null)
     {
         ArgumentNullException.ThrowIfNull(handler);

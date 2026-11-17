@@ -1,6 +1,8 @@
 using System.Globalization;
+using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Infrastructure.Finance;
+using Zayra.Api.Infrastructure.Government;
 
 namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
 
@@ -53,8 +55,18 @@ public sealed record BankSubmitOptions(string? ProfileId = null, bool AutoWpsUpl
 
 /// <param name="PriorOutcomeUnknown">True when an earlier submit of this batch ended Unknown. A later
 /// structural refusal is then NOT a safe "regenerate" signal (it may be the bank refusing a duplicate).</param>
+/// <param name="Intent">The recorder's receipt for the committed submission intent of exactly these files, and who acts.
+/// <see cref="GatedBankPayrollChannel"/> refuses a submit without one; the bank channels themselves ignore it.</param>
 public sealed record BankSubmitRequest(
-    BankChannelScope Scope, IReadOnlyList<BankArtifactFile> Files, BankSubmitOptions Options, bool PriorOutcomeUnknown = false);
+    BankChannelScope Scope, IReadOnlyList<BankArtifactFile> Files, BankSubmitOptions Options, bool PriorOutcomeUnknown = false,
+    BankSubmitIntent? Intent = null);
+
+/// <summary>The committed intent a submit is sent under (<see cref="GovernmentExchangeIntentReceipt"/>), and the actor the ledger
+/// update is recorded for.</summary>
+public sealed record BankSubmitIntent(GovernmentExchangeIntentReceipt Receipt, RequestContext Context)
+{
+    public override string ToString() => $"BankSubmitIntent({Receipt.ExchangeId})";
+}
 
 public enum BankSubmitOutcomeKind
 {
@@ -192,6 +204,16 @@ public static class BankChannelCodes
     public const string WpsNotReady = "bank_wps_not_ready";
     public const string WpsTooLarge = "bank_wps_too_large";
     public const string StatusUnknown = "bank_status_unknown";
+
+    /// <summary>The live gate refused the call (a closed gate, a read decision for a write, another environment or bank, or the
+    /// production legal clearance missing). The outcome's message carries the policy's reason code.</summary>
+    public const string GateRefused = "bank_gate_refused";
+    /// <summary>A submit without the recorder's receipt for a committed intent.</summary>
+    public const string IntentMissing = "bank_intent_missing";
+    /// <summary>The receipt is for another tenant, bank, environment or other files.</summary>
+    public const string IntentMismatch = "bank_intent_mismatch";
+    /// <summary>The receipt was already used for a send by this channel.</summary>
+    public const string IntentAlreadyUsed = "bank_intent_already_used";
 }
 
 /// <summary>A channel refused to be built or to call. No socket was opened. Names settings, never values.</summary>

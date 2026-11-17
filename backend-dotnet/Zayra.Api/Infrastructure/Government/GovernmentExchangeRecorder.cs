@@ -61,7 +61,8 @@ public sealed record GovernmentExchangeRecordResult(GovernmentExchange Exchange,
 /// </summary>
 public sealed class GovernmentExchangeIntentReceipt
 {
-    internal GovernmentExchangeIntentReceipt(Guid exchangeId, Guid tenantId, string body, string environment, string idempotencyKey, string? artifactSha256)
+    internal GovernmentExchangeIntentReceipt(Guid exchangeId, Guid tenantId, string body, string environment, string idempotencyKey, string? artifactSha256,
+        string? artifactSecondarySha256 = null)
     {
         ExchangeId = exchangeId;
         TenantId = tenantId;
@@ -69,6 +70,7 @@ public sealed class GovernmentExchangeIntentReceipt
         Environment = environment;
         IdempotencyKey = idempotencyKey;
         ArtifactSha256 = artifactSha256;
+        ArtifactSecondarySha256 = artifactSecondarySha256;
     }
 
     public Guid ExchangeId { get; }
@@ -77,6 +79,8 @@ public sealed class GovernmentExchangeIntentReceipt
     public string Environment { get; }
     public string IdempotencyKey { get; }
     public string? ArtifactSha256 { get; }
+    /// <summary>The second frozen file of a two-file submission (a bank header and body), so a receipt binds both files.</summary>
+    public string? ArtifactSecondarySha256 { get; }
 }
 
 /// <summary>A ledger write that collides with another one (a reused key, a held batch, a bank id, a lost update): 409.</summary>
@@ -238,7 +242,8 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
             await db.SaveChangesAsync(ct);
             // Committed in this unit of work (an intent is never written inside a caller's transaction), so it is durable now.
             var receipt = isIntent
-                ? new GovernmentExchangeIntentReceipt(row.Id, row.TenantId, row.Body, row.Environment!, row.IdempotencyKey, row.ArtifactSha256)
+                ? new GovernmentExchangeIntentReceipt(row.Id, row.TenantId, row.Body, row.Environment!, row.IdempotencyKey, row.ArtifactSha256,
+                    row.ArtifactSecondarySha256)
                 : null;
             return new GovernmentExchangeRecordResult(row, true, receipt);
         },
