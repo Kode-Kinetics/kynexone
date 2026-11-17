@@ -29,7 +29,7 @@ public sealed class GovernmentCapabilitiesHonestyTests
             Task.FromResult(new GovernmentProviderCapabilities(Body, "Synthetic", true, [], "synthetic"));
     }
 
-    private static async Task<GovernmentCapabilityDto> GosiAsync(string[] credentialEnvironments, bool liveAdapter = true, bool agreement = true)
+    private static async Task<GovernmentCapabilityDto> GosiAsync(string[] credentialEnvironments, bool liveAdapter = true, bool agreement = true, bool legalClearance = false)
     {
         var kit = new FeKit();
         await using var db = kit.Db(interceptors: false);
@@ -38,6 +38,8 @@ public sealed class GovernmentCapabilitiesHonestyTests
         await db.SaveChangesAsync();
         var pairs = new List<(string, string?)> { (GovernmentCredentialStore.AcceptLiveCredentialsKey, "true") };
         if (agreement) pairs.Add((GovernmentLivePolicy.PartnerAgreementKey(GovernmentBodies.Gosi), "AGR-SYNTHETIC"));
+        if (legalClearance)
+            pairs.Add((GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Gosi, GovernmentEnvironments.Production), "LEGAL-SYNTHETIC"));
         var config = Config(pairs.ToArray());
         var store = new GovernmentCredentialStore(db, kit.Keys, kit.Kek, kit.Options, new AuditService(db), config);
         foreach (var environment in credentialEnvironments)
@@ -53,7 +55,7 @@ public sealed class GovernmentCapabilitiesHonestyTests
     [Fact]
     public async Task LiveProductionCredential_ThroughTheGate_ReadsConnected()
     {
-        var c = await GosiAsync(["production"]);
+        var c = await GosiAsync(["production"], legalClearance: true);
         c.Mode.Should().Be(GovernmentCapabilityModes.Live);
         c.ReasonCode.Should().Be(GovernmentCapabilitiesService.ReasonConnected);
         c.ReasonText.Should().StartWith("Connected");
@@ -74,7 +76,7 @@ public sealed class GovernmentCapabilitiesHonestyTests
     [Fact]
     public async Task SandboxAndProductionCredentials_ReadConnected_BecauseProductionPassesTheGate()
     {
-        var c = await GosiAsync(["sandbox", "production"]);
+        var c = await GosiAsync(["sandbox", "production"], legalClearance: true);
         c.Mode.Should().Be(GovernmentCapabilityModes.Live);
         c.ReasonCode.Should().Be(GovernmentCapabilitiesService.ReasonConnected);
     }
@@ -112,5 +114,52 @@ public sealed class GovernmentCapabilitiesHonestyTests
         sandbox.En.Should().NotBe(live.En);
         sandbox.Ar.Should().NotBe(live.Ar);
         sandbox.Ar.Should().Contain("ببيئة الاختبار");
+    }
+
+    // ── F11: a read-only live connection never says "exchanges are sent" ─────────────────────────
+
+    [Fact]
+    public async Task ProductionReadOpen_ButWritesRefusedForLegalClearance_ReadsConnectedForReadingOnly()
+    {
+        var c = await GosiAsync(["production"]);
+
+        // The gate is unchanged: the mode is still live and writes are still refused.
+        c.Mode.Should().Be(GovernmentCapabilityModes.Live);
+        c.WritesAllowed.Should().BeFalse();
+        c.WritesReasonCode.Should().NotBeNullOrEmpty();
+        c.ReasonCode.Should().Be(GovernmentCapabilitiesService.ReasonConnectedReadOnly);
+        c.ReasonCode.Should().Be("connected_read_only");
+        c.ReasonText.Should().Be("Connected for reading only. KynexOne cannot send anything to this service until production submissions are switched on.");
+        c.ReasonTextAr.Should().Be("متصل للقراءة فقط. لا يستطيع KynexOne إرسال أي شيء إلى هذه الخدمة إلى أن يُفعَّل الإرسال الفعلي.");
+        c.ReasonText.Should().NotContain("are sent");
+    }
+
+    [Fact]
+    public async Task ASandboxCredentialThatAllowsSandboxWrites_DoesNotMakeAReadOnlyProductionConnectionSayExchangesAreSent()
+    {
+        // Sandbox writes need no legal clearance, so "any environment allows writes" is true here; production still refuses them.
+        var c = await GosiAsync(["sandbox", "production"]);
+
+        c.Mode.Should().Be(GovernmentCapabilityModes.Live);
+        c.ReasonCode.Should().Be(GovernmentCapabilitiesService.ReasonConnectedReadOnly);
+    }
+
+    [Fact]
+    public async Task ProductionWritesOpen_StillReadsConnected_AndNoSandboxOrSimulatorStateEverReadsReadOnly()
+    {
+        (await GosiAsync(["production"], legalClearance: true)).ReasonCode.Should().Be(GovernmentCapabilitiesService.ReasonConnected);
+        (await GosiAsync(["sandbox"])).ReasonCode.Should().Be(GovernmentCapabilitiesService.ReasonSandboxConnected);
+        (await GosiAsync([])).ReasonCode.Should().NotBe(GovernmentCapabilitiesService.ReasonConnectedReadOnly);
+    }
+
+    [Fact]
+    public void TheReadOnlyReasonText_IsDistinctInBothLanguages_AndEveryReasonHasArabic()
+    {
+        var readOnly = GovernmentCapabilitiesService.ReasonTexts[GovernmentCapabilitiesService.ReasonConnectedReadOnly];
+        var live = GovernmentCapabilitiesService.ReasonTexts[GovernmentCapabilitiesService.ReasonConnected];
+        readOnly.En.Should().NotBe(live.En);
+        readOnly.Ar.Should().NotBe(live.Ar);
+        foreach (var (_, text) in GovernmentCapabilitiesService.ReasonTexts)
+            text.Ar.Any(ch => ch is >= '؀' and <= 'ۿ').Should().BeTrue();
     }
 }
