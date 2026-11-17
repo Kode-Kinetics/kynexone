@@ -14,6 +14,8 @@ public static class GovernmentCapabilityModes
     public const string Disabled = "disabled";
     public const string FileOnly = "file_only";
     public const string Simulated = "simulated";
+    /// <summary>A credential exists and the gates are open, but only for the sandbox rung: test data only, never "connected".</summary>
+    public const string Sandbox = "sandbox";
     public const string Live = "live";
 }
 
@@ -39,11 +41,13 @@ public sealed class GovernmentCapabilitiesService(
     public const string ReasonFileOnly = "file_only";
     public const string ReasonNoLiveAdapter = "no_live_adapter";
     public const string ReasonConnected = "connected";
+    public const string ReasonSandboxConnected = "sandbox_connected";
 
     /// <summary>The user-facing sentence for every reason code, in English and Arabic.</summary>
     public static readonly IReadOnlyDictionary<string, (string En, string Ar)> ReasonTexts = new Dictionary<string, (string, string)>
     {
         [ReasonConnected] = ("Connected. Exchanges with this service are sent from KynexOne.", "متصل. تُرسل التبادلات مع هذه الخدمة من KynexOne."),
+        [ReasonSandboxConnected] = ("Sandbox connected: test data only. Nothing here reaches the live service.", "متصل ببيئة الاختبار: بيانات تجريبية فقط. لا يصل شيء من هنا إلى الخدمة الفعلية."),
         [ReasonSimulator] = ("Check only. A simulator runs on this server; nothing is sent to this service.", "للتحقق فقط. يعمل محاكٍ على هذا الخادم، ولا يُرسل شيء إلى هذه الخدمة."),
         [ReasonFileOnly] = ("File only. KynexOne prepares the file; you upload it yourself.", "ملف فقط. يجهّز KynexOne الملف، وتتولى رفعه بنفسك."),
         [ReasonNoLiveAdapter] = ("Not connected. KynexOne has no connection to this service yet.", "غير متصل. لا يوجد لدى KynexOne اتصال بهذه الخدمة بعد."),
@@ -67,18 +71,25 @@ public sealed class GovernmentCapabilitiesService(
         var adapter = AdapterFor(body);
         // The screen's answer: open in ANY environment (credentials are checked per environment, never across them).
         GovernmentLiveDecision? read = null, write = null;
+        // "Connected" (live) needs the PRODUCTION decision to be open: a sandbox-only credential reads "Sandbox connected: test data only".
+        var productionOpen = false;
+        var sandboxOpen = false;
         foreach (var environment in GovernmentEnvironments.All)
         {
             var (r, w) = body == GovernmentBodies.Qiwa
                 ? await QiwaDecisionsAsync(tenantId, environment, ct)
                 : (await DecideAsync(tenantId, null, body, environment, ct), await DecideLiveWriteAsync(tenantId, null, body, environment, ct));
+            if (r.IsOpen && environment == GovernmentEnvironments.Production) productionOpen = true;
+            if (r.IsOpen && environment == GovernmentEnvironments.Sandbox) sandboxOpen = true;
             if (read is null || (!read.IsOpen && r.IsOpen)) read = r;
             if (write is null || (!write.IsOpen && w.IsOpen)) write = w;
         }
 
         var writes = (Allowed: write!.AllowsWrites && adapter?.IsLiveIntegration == true, Reason: write.ReasonCode);
-        if (read!.IsOpen && adapter?.IsLiveIntegration == true)
+        if (productionOpen && adapter?.IsLiveIntegration == true)
             return Dto(body, GovernmentCapabilityModes.Live, ReasonConnected, [Models.GovernmentExchangeChannels.Api], writes);
+        if (sandboxOpen && adapter?.IsLiveIntegration == true)
+            return Dto(body, GovernmentCapabilityModes.Sandbox, ReasonSandboxConnected, [Models.GovernmentExchangeChannels.Api], writes);
         if (body == GovernmentBodies.Qiwa && adapter is SandboxQiwaApiAdapter)
             return Dto(body, GovernmentCapabilityModes.Simulated, ReasonSimulator, [], writes);
         if (body == GovernmentBodies.BankAnb
