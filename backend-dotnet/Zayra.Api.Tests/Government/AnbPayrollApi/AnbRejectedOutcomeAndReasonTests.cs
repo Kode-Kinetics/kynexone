@@ -246,9 +246,11 @@ public class AnbRejectedOutcomeAndReasonTests
 
         // The exit: the held line sent again, with the person's finding, a reason and the bank's reference.
         var line = BankChannelConfirmationFile.Render(PayrollId, mapped.Rows.Where(r => r.WpsReference == WpsReference(1)).ToList());
-        var exit = originalReceived
-            ? new BankConfirmationImportOptions(ConfirmOriginalPaymentReceived: true, OverrideReason: "Checked with the bank", OverrideBankReference: "STMT-0042")
-            : new BankConfirmationImportOptions(ConfirmDuplicateNotPaid: true, OverrideReason: "Checked with the bank", OverrideBankReference: "STMT-0042");
+        var exit = new BankConfirmationImportOptions(Exits: new[]
+        {
+            new BankLineExit(originalReceived ? BankLineExitKinds.ConfirmOriginalPaymentReceived : BankLineExitKinds.ConfirmDuplicateNotPaid,
+                EmployeeReference: WpsReference(1), Reason: "Checked with the bank", BankReference: "STMT-0042"),
+        });
         var (exited, exitRefusal) = await ImportAsync(db, seeded, line, exit);
         exitRefusal.Should().BeNull();
 
