@@ -82,6 +82,7 @@ import { financeGlApi } from '../api/financeGl';
 import { CostCentreLockPreview, CostingOffNote, periodLabel } from '../components/payroll/CostCentreLockPreview';
 import { VoidRunForm } from '../components/payroll/VoidRunForm';
 import { validationPanelState } from '../lib/payrollValidationState';
+import { exitLeaveMoney } from '../lib/settlementExitArrears';
 import { HeldPayPanel } from '../components/payroll/HeldPayPanel';
 import { PostedJournalsView, PostedWithoutCostCentresNote } from '../components/payroll/PostedJournals';
 import { costingNote } from '../lib/glJournalView';
@@ -4212,7 +4213,9 @@ function FinalSettlementTab() {
     try {
       // Empty terminationReason ⇒ backend uses the employee's recorded separation type.
       const res = await payrollApi.finalSettlement(Number(form.employeeId), form.lastWorkingDay, Number(form.noticePeriodDaysShort), form.terminationReason || undefined);
-      setResult(res);
+      // The calculation response does not carry unpaid-leave money no run collected; the settlement detail does.
+      const detail = await payrollApi.getFinalSettlement(res.settlementId).catch(() => null);
+      setResult({ ...res, outstandingLeaveDeductions: detail?.outstandingLeaveDeductions ?? null });
       await loadSettlements();
     } catch (e: unknown) {
       setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('Calculation failed.'));
@@ -4297,6 +4300,31 @@ function FinalSettlementTab() {
             <p className="text-xs text-slate-500 dark:text-slate-400">{t('Total Settlement Payable')}</p>
             <p className="text-2xl font-extrabold text-sapphire dark:text-cyanAccent">{result.currency} {result.totalPayable.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
           </div>
+
+          {(() => {
+            const exitLeave = exitLeaveMoney(result.outstandingLeaveDeductions);
+            if (!exitLeave) return null;
+            const money = (v: number) => fmtAmt(v, result.currency);
+            return (
+              <div className="rounded-xl border border-amber-200 px-4 py-3 text-sm dark:border-amber-500/30" data-testid="settlement-exit-arrears">
+                {exitLeave.owedByEmployee > 0 && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-slate-600 dark:text-slate-300">{t('Unpaid-leave arrears still owed at exit')}</span>
+                    <span className="font-semibold tabular-nums text-rose-500">{money(exitLeave.owedByEmployee)}</span>
+                  </div>
+                )}
+                {exitLeave.owedToEmployee > 0 && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-slate-600 dark:text-slate-300">{t('Leave deduction refunds still owed to the employee')}</span>
+                    <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{money(exitLeave.owedToEmployee)}</span>
+                  </div>
+                )}
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  {t('Leave months: {months}. No payroll run has collected these. They are shown for your information and are not included in the payable above.', { months: exitLeave.months.join(', ') })}
+                </p>
+              </div>
+            );
+          })()}
 
           <p className="text-xs text-amber-600 dark:text-amber-400">{t('This is a persisted Draft payable. Review every warning and component before submitting or approving it.')}</p>
           {result.warnings?.map(w => <p key={w} className="text-xs text-amber-600 dark:text-amber-400">{w}</p>)}
