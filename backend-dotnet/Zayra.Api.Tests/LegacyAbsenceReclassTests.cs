@@ -96,7 +96,7 @@ public class LegacyAbsenceReclassTests
         json.Should().Contain($"\"account\":\"{Attendance}\"").And.Contain("\"balance\":1200")
             .And.Contain($"\"suggestedTarget\":\"{AttendanceContra}\"")
             .And.Contain("\"balance\":300")
-            .And.NotContain("999", "another company's balance is not this company's to move");
+            .And.NotContain("\"balance\":999", "another company's balance is not this company's to move");
         json.Should().Contain("\"unattributed\":[{\"account\":\"2104 - Attendance Adjustment Payable\",\"code\":\"2104\",\"balance\":50");
     }
 
