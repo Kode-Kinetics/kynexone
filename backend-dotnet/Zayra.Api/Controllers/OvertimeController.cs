@@ -532,7 +532,10 @@ public class OvertimeController : ControllerBase
     /// carries the same rows so the operator who pressed the button sees them immediately.</para>
     /// </summary>
     [HttpPost("detect-from-attendance")]
-    [Authorize(Roles = "Admin,HR Manager,Payroll Officer")]
+    // The gate resolves to overtime.write (raising requests is filing them). Payroll Officer used to be named here although no
+    // seeded Payroll Officer holds any overtime key, so the name promised a door that always refused; it is gone. A role that
+    // holds overtime.write (HR Officer, or a custom role) still passes, exactly as before.
+    [Authorize(Roles = "Admin,HR Manager")]
     [AllowEntityReturn("Flat entity pair — no navigation properties on either. OvertimeRequest: EmployeeId, EmployeeName, WorkDate, start/end times, requested/approved minutes, Reason, Status. AttendanceException: EmployeeId, WorkDate, ExceptionType, Severity, Details — the overtime this tenant's policy will not pay, which the operator running detection has to see. Neither carries salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<DetectOvertimeResult>> DetectFromAttendance(DetectOvertimeRequest req, CancellationToken ct)
     {
@@ -698,7 +701,10 @@ public class OvertimeController : ControllerBase
     }
 
     [HttpPost("requests/{id:guid}/approve")]
-    [Authorize(Roles = "Admin,HR Manager,Manager,Supervisor")]
+    // The gate resolves to overtime.approve. Supervisor used to be named here although the seeded Supervisor does not hold
+    // overtime.approve, so it was always refused; the name is gone. A tenant that grants a Supervisor overtime.approve still
+    // passes on the permission, and is treated as a line manager below.
+    [Authorize(Roles = "Admin,HR Manager,Manager")]
     public async Task<ActionResult> Approve(Guid id, OvertimeDecisionRequest req, CancellationToken ct)
     {
         var tenantId = RequireTenant();
@@ -822,7 +828,7 @@ public class OvertimeController : ControllerBase
     }
 
     [HttpPost("requests/{id:guid}/reject")]
-    [Authorize(Roles = "Admin,HR Manager,Manager,Supervisor")]
+    [Authorize(Roles = "Admin,HR Manager,Manager")]
     public async Task<IActionResult> Reject(Guid id, OvertimeDecisionRequest req, CancellationToken ct)
     {
         var tenantId = RequireTenant();
