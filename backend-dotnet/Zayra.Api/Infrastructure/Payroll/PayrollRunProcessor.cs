@@ -1291,6 +1291,10 @@ public sealed class PayrollRunProcessor
             employees, includesRecurringPay, periodStart, periodEnd, cancellationToken);
         approvedAdjustments.RemoveAll(BenefitPayroll.IsBenefit);
         approvedAdjustments.AddRange(benefitAdjustments);
+        // Release A: a legacy enrolment that still carries payment terms is not paid; the run says so for each employee (Warning, never a stop).
+        foreach (var (legacyEmployeeId, legacyMessage) in await BenefitPayroll.LegacySkipWarningsAsync(_db, tenantId, company.Id,
+                     employees.Select(e => e.Id).ToList(), periodStart, periodEnd, cancellationToken))
+            c3Warnings.Add((BenefitPayroll.LegacyEnrollmentSkippedCode, legacyEmployeeId, legacyMessage));
         // OVT-04 / rule 11b: with overtime.late_approval_mode = BackPay, this run pays approved overtime from an EARLIER period whose own
         // run already consumed that month, as an "Overtime Back Pay" adjustment line. The matching impacts are marked Processed below,
         // in this same transaction, so no later run (or rule 11b) can pay or flag them again. Refuse mode stages nothing.

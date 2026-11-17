@@ -1983,6 +1983,15 @@ public partial class PayrollController : ControllerBase
         results.AddRange(await StandingChangedFindingsAsync(tenantId, run, runSlips.Select(s => (s.EmployeeId, s.EmployeeCode, s.IsFinalWageMonth, s.PaidToDate, s.ProrationBasis)).ToList(),
             employeeIdsForValidation, validationLastWorkingDays, valPeriodStart, valPeriodEnd, cancellationToken));
 
+        // Release A: the legacy enrolments the run did not pay are named again, so a refresh never hides them (BenefitPayroll.LegacySkipWarningsAsync).
+        foreach (var (legacyEmployeeId, legacyMessage) in await Zayra.Api.Infrastructure.Benefits.BenefitPayroll.LegacySkipWarningsAsync(_db, tenantId, company.Id,
+                     employeeIdsForValidation.ToList(), valPeriodStart, valPeriodEnd, cancellationToken))
+            results.Add(new PayrollValidationResult
+            {
+                TenantId = tenantId, PayrollRunId = id, EmployeeId = legacyEmployeeId, Severity = "Warning",
+                Code = Zayra.Api.Infrastructure.Benefits.BenefitPayroll.LegacyEnrollmentSkippedCode, Message = legacyMessage,
+            });
+
         // Replace stored results with fresh engine output.
         await _db.PayrollValidationResults
             .Where(x => x.TenantId == tenantId && x.PayrollRunId == id)
