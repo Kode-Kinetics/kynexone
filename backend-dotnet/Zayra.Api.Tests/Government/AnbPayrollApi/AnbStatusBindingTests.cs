@@ -109,8 +109,9 @@ public class AnbStatusBindingTests
 
         var mapped = AnbPayrollStatusMapper.Map(snap, Binding(batch));
 
-        mapped.Rows.Should().HaveCount(3).And.OnlyContain(r => r.Outcome == BankConfirmationOutcomes.Returned);
-        mapped.Rows.Should().OnlyContain(r => r.ReasonCode == "PAYROLL_" + payrollStatus);
+        mapped.Rows.Should().HaveCount(3).And.OnlyContain(r => r.Outcome == BankConfirmationOutcomes.Rejected,
+            "a refused payroll paid nobody: not paid, never Returned (CTO gate 8.4.2)");
+        mapped.Rows.Should().OnlyContain(r => r.ReasonCode == null, "the bank gave no reason code; a status word is not one");
         mapped.Rows.Should().OnlyContain(r => r.RawOutcome == "INITIATED", "the bank's own line word is kept");
     }
 
@@ -166,7 +167,7 @@ public class AnbStatusBindingTests
             BankChannelConfirmationFile.Render(PayrollId, AnbPayrollStatusMapper.Map(snap, Binding(batch)).Rows));
 
         parsed.Rows.Where(r => r.WpsReference == WpsReference(1)).Select(r => r.Outcome)
-            .Should().BeEquivalentTo(new[] { BankConfirmationOutcomes.Paid, BankConfirmationOutcomes.Returned });
+            .Should().BeEquivalentTo(new[] { BankConfirmationOutcomes.Paid, BankConfirmationOutcomes.Rejected });
     }
 
     [Fact]

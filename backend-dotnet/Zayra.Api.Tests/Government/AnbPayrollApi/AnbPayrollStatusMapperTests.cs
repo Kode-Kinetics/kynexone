@@ -35,7 +35,7 @@ public class AnbPayrollStatusMapperTests
     [InlineData("PAID", AnbTransactionPhase.Paid, BankConfirmationOutcomes.Paid)]
     [InlineData("PAID ", AnbTransactionPhase.Paid, BankConfirmationOutcomes.Paid)]
     [InlineData("RETURNED", AnbTransactionPhase.Returned, BankConfirmationOutcomes.Returned)]
-    [InlineData("FAILED", AnbTransactionPhase.Failed, BankConfirmationOutcomes.Returned)]
+    [InlineData("FAILED", AnbTransactionPhase.Failed, BankConfirmationOutcomes.Rejected)]   // refused by the bank: not paid, never "money came back" (CTO gate 8.4.2)
     public void TransactionStatuses_MapToTheExistingOutcomeVocabulary(string raw, AnbTransactionPhase phase, string outcome)
     {
         var mapped = AnbPayrollStatusMapper.MapTransactionStatus(raw);
@@ -118,7 +118,7 @@ public class AnbPayrollStatusMapperTests
         mapped.Complete.Should().BeTrue();
         mapped.Rows.Select(r => (r.WpsReference, r.Outcome, r.RawOutcome, r.Amount)).Should().Equal(
             (WpsReference(1), BankConfirmationOutcomes.Paid, "PAID", batch.Rows[0].SalaryAmount),
-            (WpsReference(2), BankConfirmationOutcomes.Returned, "FAILED", batch.Rows[1].SalaryAmount),
+            (WpsReference(2), BankConfirmationOutcomes.Rejected, "FAILED", batch.Rows[1].SalaryAmount),
             (WpsReference(3), BankConfirmationOutcomes.Pending, "INITIATED", batch.Rows[2].SalaryAmount),
             (WpsReference(4), BankConfirmationOutcomes.Returned, "RETURNED", batch.Rows[3].SalaryAmount));
         mapped.Rows[0].BankReference.Should().Be("TRX-1");
