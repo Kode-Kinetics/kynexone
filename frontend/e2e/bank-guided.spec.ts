@@ -556,6 +556,22 @@ test.describe('fix batch 2: the flow', () => {
     await expect(page.getByTestId('bank-batch-matches')).toHaveCount(0);
   });
 
+  for (const [w, h] of [[1440, 900], [1366, 768], [390, 844]] as const) {
+    test(`D: the last returned line is never under the action bar (${w})`, async ({ page }) => {
+      await page.setViewportSize({ width: w, height: h });
+      await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [SUBMITTED], existingExport: FILE, records: SUB_RETURNED }), waitMs: 2500, stages: 'default' });
+      const last = page.getByTestId('bank-returned-lines').locator('li').last();
+      await expect(last).toBeVisible({ timeout: 90_000 });
+      for (const target of [last, page.getByRole('button', { name: 'Download again (audit copy)' })]) {
+        await target.evaluate(el => el.scrollIntoView({ block: 'end' }));
+        await page.waitForTimeout(300);
+        const box = (await target.boundingBox())!;
+        const bar = (await page.locator('[data-action-bar]').boundingBox())!;
+        expect(box.y + box.height, 'fully above the action bar').toBeLessThanOrEqual(bar.y);
+      }
+    });
+  }
+
 });
 
 test.describe('Payroll Runs on a locked run', () => {

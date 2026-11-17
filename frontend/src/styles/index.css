@@ -845,3 +845,6 @@ textarea:focus-visible {
 @media (max-width: 639.98px) {
   html[data-has-action-bar] [data-assistant-launcher] { bottom: calc(11rem + env(safe-area-inset-bottom)); }
 }
+
+/* Content scrolled or tabbed into view stops 16px above a step's action bar, at every width (the bar measures what it covers). */
+html[data-has-action-bar] { scroll-padding-bottom: calc(var(--action-bar-cover, 6rem) + 16px); }

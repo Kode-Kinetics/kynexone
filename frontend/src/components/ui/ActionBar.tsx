@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { ChevronLeft } from 'lucide-react';
 
 /**
@@ -17,13 +17,32 @@ export function ActionBar({ back, next, nextId, nextTestId, primary }: {
 }) {
   // While a step's action bar is on screen, the floating assistant button moves above it on a phone (see index.css), so the primary keeps
   // the full width; on wider screens the inline-end padding keeps the primary clear of it.
+  const bar = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.hasActionBar = '';
-    return () => { delete root.dataset.hasActionBar; };
+    // How much of the viewport's bottom the bar covers (its height plus how far it sits above the bottom edge). The page's scroll padding
+    // and the phone's content padding read it, so content scrolled or tabbed into view never ends under the bar (index.css).
+    const measure = () => {
+      const el = bar.current;
+      if (!el) return;
+      const bottom = parseFloat(getComputedStyle(el).bottom) || 0;
+      root.style.setProperty('--action-bar-cover', `${Math.ceil(el.offsetHeight + bottom)}px`);
+    };
+    measure();
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    if (bar.current) ro?.observe(bar.current);
+    window.addEventListener('resize', measure);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', measure);
+      delete root.dataset.hasActionBar;
+      root.style.removeProperty('--action-bar-cover');
+    };
   }, []);
   return (
     <div
+      ref={bar}
       data-action-bar=""
       className="z-20 flex flex-col gap-2 border-t border-line bg-surface px-4 py-3
         max-sm:fixed max-sm:inset-x-0 max-sm:bottom-[calc(4rem+env(safe-area-inset-bottom))]

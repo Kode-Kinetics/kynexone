@@ -285,7 +285,7 @@ export function BankFileGuide({ payOut, loading = false, confirmation = '', conf
 
   return (
     <div
-      className={`[scroll-padding-bottom:96px] ${rail ? 'wide:grid wide:grid-cols-[minmax(0,1fr)_360px] wide:items-start wide:gap-6' : ''}`}
+      className={`max-sm:pb-[calc(var(--action-bar-cover,8rem)+16px)] ${rail ? 'wide:grid wide:grid-cols-[minmax(0,1fr)_360px] wide:items-start wide:gap-6' : ''}`}
       data-testid="bank-guide"
       data-stage={stage}
       aria-busy={loading || undefined}
