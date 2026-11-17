@@ -470,6 +470,9 @@ export interface PayrollPaymentRecord {
   iban: string;
   status: string;
   wpsReference: string;
+  /** The bank's reason for a returned payment (latest bank confirmation), when the bank gave one. Absent from an older server. */
+  returnReasonCode?: string | null;
+  returnReasonText?: string | null;
 }
 
 export interface PayrollApproval {

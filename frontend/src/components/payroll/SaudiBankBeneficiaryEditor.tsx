@@ -85,7 +85,20 @@ const riyadhToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Riy
 
 type Loaded = { id: number; label: string; parsed: Parsed };
 
-export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChange }: { employeeIds: number[]; /** "CODE · Name" by employee id, from the batch's records. */ employeeLabels?: Record<number, string>; onChange?: () => void }) {
+export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChange, initialEmployeeId, lockEmployee = false, onSentForApproval, focusField }: {
+  /** The field the blocker names: it takes focus once the employee's details are loaded. */
+  focusField?: keyof Form;
+  /** Opened from one blocker's Fix: the employee cannot be switched and there is no reload. */
+  lockEmployee?: boolean;
+  /** The change was submitted for approval (not applied yet). */
+  onSentForApproval?: (employeeId: number) => void;
+  employeeIds: number[];
+  /** "CODE · Name" by employee id, from the batch's records. */
+  employeeLabels?: Record<number, string>;
+  onChange?: () => void;
+  /** Opens with this employee chosen and loaded (a validation blocker's Fix names one). */
+  initialEmployeeId?: number;
+}) {
   const { locale } = useLocale();
   const c = locale === 'ar' ? AR : EN;
   const { hasPermission } = useAuth();
@@ -127,6 +140,24 @@ export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChan
     }
   };
 
+  // A blocker's Fix opens the editor on the employee it names; the employee must be one of this batch's.
+  useEffect(() => {
+    if (initialEmployeeId == null || !employeeIds.includes(initialEmployeeId)) return;
+    setSelected(initialEmployeeId);
+    void fetchOne(initialEmployeeId, false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialEmployeeId]);
+
+  // Focus lands on the field the finding is about (the BIC for a missing BIC), once, after the employee's own values are in the form.
+  const focusedOnce = useRef(false);
+  useEffect(() => {
+    if (!focusField || !loaded || loading || focusedOnce.current) return;
+    focusedOnce.current = true;
+    const frame = requestAnimationFrame(() => document.getElementById(`${uid}-${focusField}`)?.focus());
+    return () => cancelAnimationFrame(frame);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusField, loaded, loading]);
+
   const onSelect = (v: string) => {
     const id = v ? Number(v) : null;
     setSelected(id); setMsg(null);
@@ -153,7 +184,8 @@ export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChan
     setBusy(true); setMsg(null);
     try {
       const res = await employeesApi.update(id, riyadhToday(), { wpsBankDetails: JSON.stringify(next) });
-      onChange?.(); // any submitted change invalidates the parent's last validation
+      // An applied change invalidates the parent's last check; one sent for approval changes nothing yet (the parent says so).
+      if (res.status === 202) onSentForApproval?.(id); else onChange?.();
       if (!mounted.current || req !== reqRef.current) return;
       if (res.status === 202) {
         const ref = (res.data as { approvalRequestId?: string } | undefined)?.approvalRequestId ?? '';
@@ -196,12 +228,12 @@ export function SaudiBankBeneficiaryEditor({ employeeIds, employeeLabels, onChan
           <div className="flex flex-wrap items-end gap-2">
             <div className="min-w-[12rem] flex-1">
               <label htmlFor={fid('emp')} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{c.employee}</label>
-              <select id={fid('emp')} className="input w-full" value={selected ?? ''} onChange={(e) => onSelect(e.target.value)} disabled={busy}>
+              <select id={fid('emp')} className="input w-full" value={selected ?? ''} onChange={(e) => onSelect(e.target.value)} disabled={busy || (lockEmployee && selected != null)}>
                 <option value="">{c.choose}</option>
                 {ids.map((id) => <option key={id} value={id}>{loaded?.id === id ? loaded.label : employeeLabel(id, employeeLabels, (n) => `#${n}`)}</option>)}
               </select>
             </div>
-            {selected != null && (
+            {selected != null && !lockEmployee && (
               <button type="button" className={`${btnCls} border border-slate-200 text-slate-600 dark:border-white/10 dark:text-slate-300`}
                 onClick={() => { setMsg(null); void fetchOne(selected, true); }} disabled={loading || busy}>
                 <RefreshCw className="h-4 w-4" aria-hidden="true" /> {c.reload}

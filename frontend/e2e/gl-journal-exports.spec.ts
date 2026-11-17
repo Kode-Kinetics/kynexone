@@ -213,7 +213,7 @@ async function boot(page: Page, options: BootOptions = {}): Promise<State> {
     return state;
   }
   await page.goto('/payroll');
-  await page.getByRole('tab', { name: /GL Journal|قيود دفتر الأستاذ/ }).click();
+  await page.getByTestId('payroll-section-nav').getByRole('link', { name: /GL Journal|قيود دفتر الأستاذ/ }).click();
   if (options.noGlAccess) return state;
   const heading = options.locale === 'ar' ? 'إرسال القيد إلى نظام تخطيط الموارد' : 'Send journal to your ERP';
   await expect(page.getByRole('heading', { name: heading })).toBeVisible({ timeout: 60_000 });
@@ -405,7 +405,7 @@ test('a double-clicked Lock sends one request, shows no error, and each run name
     return reply({ items: [], total: 0, page: 1, pageSize: 100 });
   });
   await page.goto('/payroll');
-  await page.getByRole('tab', { name: 'Payroll Runs', exact: true }).click();
+  await page.getByTestId('payroll-section-nav').getByRole('link', { name: 'Payroll Runs', exact: true }).click();
   const card = page.locator('main [role="button"]').filter({ hasText: /Oct(?:ober)? 2026/ }).first();
   await expect(card).toContainText('Beta Services');
   // Lock opens the summary in the app's confirm dialog; a double-click on either button must still send ONE request.
@@ -481,7 +481,7 @@ test('AM-5: the GL Journal tab says when its runs or its journal could not be lo
     return reply({ items: [], total: 0, page: 1, pageSize: 100 });
   });
   await page.goto('/payroll');
-  await page.getByRole('tab', { name: /GL Journal|قيود دفتر الأستاذ/ }).click();
+  await page.getByTestId('payroll-section-nav').getByRole('link', { name: /GL Journal|قيود دفتر الأستاذ/ }).click();
   const runsError = page.getByRole('alert').filter({ hasText: 'This could not be loaded.' });
   await expect(runsError).toBeVisible();
   calls.runsRecovered = true;

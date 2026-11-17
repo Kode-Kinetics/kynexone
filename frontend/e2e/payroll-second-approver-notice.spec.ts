@@ -32,8 +32,9 @@ async function open(page: import('@playwright/test').Page, status: unknown) {
     if (p.startsWith('/api/features') || p === '/api/notifications') return json([]);
     return json([]);
   });
-  await page.goto('/payroll');
-  await page.getByRole('tab', { name: 'Employee Salary' }).click();
+  // The Payroll sections are links in the section nav (a sheet on a phone); the section's own address opens it on every width.
+  await page.goto('/payroll?tab=employee-salary');
+  await expect(page.locator('h1')).toHaveText('Employee Salary', { timeout: 30_000 });
 }
 
 test('with nobody else able to approve, the salary tab says so in advance', async ({ page }) => {

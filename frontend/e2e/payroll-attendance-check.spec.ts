@@ -20,11 +20,11 @@ test.describe('Payroll — attendance check on the Validation tab', () => {
   test('the attendance check loads for a run and matches what the API reports', async ({ page }) => {
     await tenantLogin(page, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
     await page.goto('/payroll', { waitUntil: 'domcontentloaded' });
-    await expect(content(page).getByRole('heading', { name: 'Payroll Management' })).toBeVisible({ timeout: 60_000 });
+    await expect(content(page).getByTestId('payroll-section-panel')).toBeVisible({ timeout: 60_000 });
 
-    const tab = content(page).getByRole('tab', { name: 'Validation', exact: true });
+    const tab = content(page).getByTestId('payroll-section-nav').getByRole('link', { name: 'Validation', exact: true });
     await tab.click();
-    await expect(tab).toHaveAttribute('aria-selected', 'true');
+    await expect(tab).toHaveAttribute('aria-current', 'page');
 
     const picker = content(page).locator('select[aria-label="Select payroll run"]');
     const options = picker.locator('option:not([value=""])');
