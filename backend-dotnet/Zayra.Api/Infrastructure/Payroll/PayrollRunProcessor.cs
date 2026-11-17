@@ -1296,6 +1296,10 @@ public sealed class PayrollRunProcessor
         foreach (var (legacyEmployeeId, legacyMessage) in await BenefitPayroll.LegacySkipWarningsAsync(_db, tenantId, company.Id,
                      employees.Select(e => e.Id).ToList(), periodStart, periodEnd, cancellationToken))
             c3Warnings.Add((BenefitPayroll.LegacyEnrollmentSkippedCode, legacyEmployeeId, legacyMessage));
+        // A monthly allowance whose change waits for Finance is paid on its last confirmed terms: said once per allowance (Warning, never a stop).
+        if (includesRecurringPay)
+            foreach (var (heldCode, heldName, heldSince) in await CashAllowanceDefinitions.HeldBackAsync(_db, tenantId, cashAllowanceCodes, company.Id, periodStart, cancellationToken))
+                c3Warnings.Add((CashAllowanceDefinitions.HeldBackWarningCode, null, CashAllowanceDefinitions.HeldBackMessage(heldName, heldCode, heldSince)));
         // OVT-04 / rule 11b: with overtime.late_approval_mode = BackPay, this run pays approved overtime from an EARLIER period whose own
         // run already consumed that month, as an "Overtime Back Pay" adjustment line. The matching impacts are marked Processed below,
         // in this same transaction, so no later run (or rule 11b) can pay or flag them again. Refuse mode stages nothing.

@@ -6,6 +6,11 @@ import type { ReleaseADict } from './types';
  * allowance lines that cannot be used. Whole sentences with {placeholders} so Arabic orders its own words.
  */
 const pairs: Array<[string, string]> = [
+  // Payroll run findings (server codes CASH_ALLOWANCE_CHANGE_WAITING_FOR_FINANCE, LEGACY_BENEFIT_ENROLMENT_SKIPPED), translated with their details.
+  ['{name} ({code}): a change is waiting for Finance since {date}, so this run paid the last confirmed terms. Ask another Finance approver to confirm the change in Benefits by grade.',
+    '{name} ({code}): يوجد تغيير بانتظار المالية منذ {date}، لذلك صرف هذا المسير آخر شروط مؤكدة. اطلب من معتمد آخر في المالية تأكيد التغيير في المزايا حسب الدرجة.'],
+  ['{name} ({code}): the previous benefits system’s enrolment in {plan} was not paid (reference {enrolment}). Benefits are now set in Benefits by grade. Review it in the legacy enrolment reconcile report, and end it or move it to the employee’s grade package.',
+    '{name} ({code}): لم يُصرف اشتراك نظام المزايا السابق في {plan} (المرجع {enrolment}). تُحدَّد المزايا الآن في المزايا حسب الدرجة. راجعه في تقرير مطابقة الاشتراكات القديمة، ثم أنهِه أو انقله إلى باقة الموظف حسب الدرجة.'],
   // Benefits by grade: waiting for Finance, confirm, correct
   ['Waiting for Finance', 'بانتظار المالية'],
   ['Finance must confirm it before it can be used.', 'يجب أن تؤكده المالية قبل استخدامه.'],

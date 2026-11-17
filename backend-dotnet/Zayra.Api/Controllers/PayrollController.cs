@@ -1992,6 +1992,18 @@ public partial class PayrollController : ControllerBase
                 Code = Zayra.Api.Infrastructure.Benefits.BenefitPayroll.LegacyEnrollmentSkippedCode, Message = legacyMessage,
             });
 
+        // The allowances this run paid on held-back terms (a change waiting for Finance) are named again on a refresh, from the run's own lines.
+        var paidAllowanceCodes = (await _db.PayrollEarnings.AsNoTracking().Where(e => e.TenantId == tenantId && e.PayrollRunId == id)
+                .Select(e => e.ComponentCode).Distinct().ToListAsync(cancellationToken))
+            .Where(Zayra.Api.Infrastructure.Entitlements.EntitlementComponentRules.IsAllowance).ToList();
+        foreach (var (heldCode, heldName, heldSince) in await Zayra.Api.Infrastructure.Payroll.CashAllowanceDefinitions.HeldBackAsync(_db, tenantId,
+                     paidAllowanceCodes, company.Id, valPeriodStart, cancellationToken))
+            results.Add(new PayrollValidationResult
+            {
+                TenantId = tenantId, PayrollRunId = id, Severity = "Warning", Code = Zayra.Api.Infrastructure.Payroll.CashAllowanceDefinitions.HeldBackWarningCode,
+                Message = Zayra.Api.Infrastructure.Payroll.CashAllowanceDefinitions.HeldBackMessage(heldName, heldCode, heldSince),
+            });
+
         // Replace stored results with fresh engine output.
         await _db.PayrollValidationResults
             .Where(x => x.TenantId == tenantId && x.PayrollRunId == id)

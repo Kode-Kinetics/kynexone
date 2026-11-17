@@ -92,6 +92,36 @@ public static class CashAllowanceDefinitions
     public static List<PayComponent> Payable(IEnumerable<PayComponent> versions, Guid? companyId = null, bool anyCompany = false) =>
         versions.Select(v => KeptTerms(v) is { } t && (anyCompany || t.CompanyId is null || t.CompanyId == companyId) ? AsConfirmed(v, t) : v).ToList();
 
+    /// <summary>Run finding code: a run paid the last confirmed terms of an allowance whose change is waiting for Finance.</summary>
+    public const string HeldBackWarningCode = "CASH_ALLOWANCE_CHANGE_WAITING_FOR_FINANCE";
+
+    /// <summary>The run finding for one allowance paid on held-back terms. The screen translates it by its code (validationFindingText.ts), so the
+    /// sentence's shape is fixed: "{name} ({code}): a change is waiting for Finance since {date}; …".</summary>
+    public static string HeldBackMessage(string name, string code, DateTime pendingSinceUtc) =>
+        $"{name} ({code}): a change is waiting for Finance since {pendingSinceUtc:yyyy-MM-dd}; this run paid the last confirmed terms. "
+        + "Ask another Finance approver to confirm the change in Benefits by grade.";
+
+    /// <summary>
+    /// The allowances of <paramref name="codes"/> that a run of <paramref name="companyId"/> for the month starting <paramref name="periodStart"/> pays on the
+    /// terms Finance last confirmed, because a change to them is waiting for Finance: the code, its name, and since when it waits. Empty when none.
+    /// </summary>
+    public static async Task<List<(string Code, string NameEn, DateTime PendingSinceUtc)>> HeldBackAsync(ZayraDbContext db, Guid tenantId,
+        IReadOnlyCollection<string> codes, Guid companyId, DateOnly periodStart, CancellationToken ct)
+    {
+        var result = new List<(string, string, DateTime)>();
+        if (codes.Count == 0) return result;
+        var raw = await VersionsAsync(db, tenantId, codes, ct, companyId: companyId);
+        foreach (var code in codes.Distinct().OrderBy(c => c, StringComparer.Ordinal))
+        {
+            var paid = InEffect(Payable(raw[code], companyId), periodStart);
+            if (paid is null) continue;
+            var row = raw[code].First(v => v.Id == paid.Id);
+            if (KeptTerms(row) is null) continue;
+            result.Add((code, paid.NameEn, row.UpdatedAtUtc ?? row.CreatedAtUtc));
+        }
+        return result;
+    }
+
     private static PayComponent AsConfirmed(PayComponent pending, ConfirmedTerms t)
     {
         var copy = pending.DetachedCopy();
