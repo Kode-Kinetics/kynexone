@@ -9,8 +9,8 @@ namespace Zayra.Api.Tests.Government.AnbPayrollApi;
 
 /// <summary>
 /// Security re-check of cef5ac176: R-1 (lines with itemCount 0 skipped the batch binding), R-2 (createdAt
-/// is not a required spec field, so a payroll-level date must be accepted as the fallback) and R-4 (host
-/// allow-list edge cases and suffix depth).
+/// is not a required spec field, so a payroll-level date must be accepted as the fallback). R-4 (the client's own host-suffix
+/// allow-list) is gone with the list: hosts now come only from GovernmentHttp's per-environment allow-list (AnbTransportHardeningTests).
 /// </summary>
 public class AnbRecheckFixTests
 {
@@ -119,82 +119,5 @@ public class AnbRecheckFixTests
 
         snapshot.Rows.Should().HaveCount(2);
         snapshot.Complete.Should().BeTrue();
-    }
-
-    // ── R-4: host allow-list ────────────────────────────────────────────────────────────────────
-
-    private static AnbPayrollApiOptions WithHosts(string suffixes, string baseUrl, string tokenUrl = "https://auth.anb-sandbox.test/token")
-    {
-        var c = Config();
-        c.AllowedHostSuffixes = suffixes;
-        c.BaseUrl = baseUrl;
-        c.TokenUrl = tokenUrl;
-        return c;
-    }
-
-    private static Func<AnbPayrollApiClient> Build(AnbPayrollApiOptions config) =>
-        () => Client(new StubAnbHandler(_ => throw new InvalidOperationException("no call")), out _, config);
-
-    [Theory]
-    [InlineData("https://api.anb-sandbox.test./api")]          // trailing dot: refused (fail closed)
-    [InlineData("https://evil-anb-sandbox.test/api")]          // ends with the suffix text but not on a label boundary
-    [InlineData("https://anb-sandbox.test.evil.example/api")]  // suffix in the middle
-    [InlineData("https://api.anb-sandbоx.test/api")]       // Cyrillic o: a different host after IDN encoding
-    [InlineData("https://xn--anb-sandbox-xyz.test/api")]       // punycode label that is not the allowed one
-    public void HostsOutsideTheAllowList_AreRefused(string baseUrl)
-    {
-        var act = Build(WithHosts("anb-sandbox.test", baseUrl));
-        var ex = act.Should().Throw<BankChannelRefusedException>().Which;
-        ex.Code.Should().Be(BankChannelCodes.ConfigInvalid);
-        ex.Settings.Should().Equal(nameof(IAnbEndpointConfig.BaseUrl));
-    }
-
-    [Theory]
-    [InlineData("anb-sandbox.test", "https://API.ANB-Sandbox.TEST/api")]     // mixed-case host
-    [InlineData("ANB-Sandbox.Test", "https://api.anb-sandbox.test/api")]     // mixed-case suffix
-    [InlineData(".anb-sandbox.test", "https://api.anb-sandbox.test/api")]    // leading-dot suffix form
-    [InlineData("anb-sandbox.test.", "https://api.anb-sandbox.test/api")]    // trailing-dot suffix form
-    [InlineData("anb-sandbox.test", "https://anb-sandbox.test/api")]         // the configured domain itself
-    public void HostsInsideTheAllowList_AreAccepted(string suffixes, string baseUrl)
-    {
-        var act = Build(WithHosts(suffixes, baseUrl));
-        act.Should().NotThrow();
-    }
-
-    [Fact]
-    public void AnIdnHostUnderTheSuffix_IsComparedInItsPunycodeForm()
-    {
-        var act = Build(WithHosts("anb-sandbox.test", "https://بنك.anb-sandbox.test/api"));
-        act.Should().NotThrow("an IDN label under the allowed domain is still under it");
-    }
-
-    [Theory]
-    [InlineData("test")]       // bare TLD
-    [InlineData("sa")]         // bare ccTLD
-    [InlineData("com.sa")]     // public second-level suffix
-    [InlineData("gov.sa")]
-    [InlineData("net.sa")]
-    [InlineData("co.uk")]
-    [InlineData("com")]
-    public void ASuffixThatIsATldOrAPublicSuffix_IsRefused(string suffix)
-    {
-        var act = Build(WithHosts(suffix, "https://api.anb.com.sa/api", "https://auth.anb.com.sa/token"));
-        var ex = act.Should().Throw<BankChannelRefusedException>().Which;
-        ex.Code.Should().Be(BankChannelCodes.ConfigInvalid);
-        ex.Settings.Should().Contain(nameof(IAnbEndpointConfig.AllowedHostSuffixes));
-    }
-
-    [Fact]
-    public void ARegistrableDomainUnderAPublicSuffix_IsAccepted()
-    {
-        var act = Build(WithHosts("anb.com.sa", "https://api.anb.com.sa/api", "https://auth.anb.com.sa/token"));
-        act.Should().NotThrow();
-    }
-
-    [Fact]
-    public void ABadSuffixAnywhereInTheList_RefusesTheWholeList()
-    {
-        var act = Build(WithHosts("anb-sandbox.test,com.sa", "https://api.anb-sandbox.test/api"));
-        act.Should().Throw<BankChannelRefusedException>().Which.Settings.Should().Contain(nameof(IAnbEndpointConfig.AllowedHostSuffixes));
     }
 }

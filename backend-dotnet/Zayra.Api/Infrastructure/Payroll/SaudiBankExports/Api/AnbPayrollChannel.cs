@@ -7,11 +7,8 @@ namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 /// generator's own file names, passes the neutral options through as ANB's request headers, and maps the
 /// status read onto the batch with <see cref="AnbPayrollStatusMapper"/>. NOT LIVE and not registered. Built only by
 /// <see cref="AnbGatedChannelFactory"/>, which hands it out behind <see cref="GatedBankPayrollChannel"/>.
-/// <para>TODO(wiring wave, security R-3): the client only refuses a handler that follows redirects. Registration
-/// must use <see cref="AnbHttpHandlerFactory.CreateHandler"/> as the named client's primary handler with no extra
-/// delegating handlers (no retry or resilience handler), and add a DI test for that plus a test that the factory
-/// handler refuses a loopback/private target. Note: the factory sets UseProxy=false, so an environment with a
-/// mandatory egress proxy needs an explicit decision.</para>
+/// <para>Transport: the client sends only through GovernmentHttp (the guarded <c>gov-bank_anb</c> client, allow-listed URLs, the live
+/// gate, the credential store); there is no handler to configure here.</para>
 /// <para>ANB's fee headers (feescategorycode, feesandvataccount, feesfrequency) have no published meaning
 /// and are not sent through this channel.</para>
 /// </summary>
@@ -40,7 +37,8 @@ public sealed class AnbPayrollChannel : IBankPayrollChannel
             ProfileId: request.Options.ProfileId,
             AutoWpsFileUpload: request.Options.AutoWpsUpload,
             NationalUnifiedNo: request.Options.NationalUnifiedNo);
-        return _client.SubmitAsync(new AnbSubmitRequest(request.Scope, header[0], body[0], headers, request.PriorOutcomeUnknown), ct);
+        return _client.SubmitAsync(new AnbSubmitRequest(request.Scope, header[0], body[0], headers, request.PriorOutcomeUnknown,
+            request.Intent?.Receipt), ct);
     }
 
     public async Task<BankStatusSnapshot> GetStatusAsync(BankChannelScope scope, string bankPayrollId, BankBatchBinding binding,

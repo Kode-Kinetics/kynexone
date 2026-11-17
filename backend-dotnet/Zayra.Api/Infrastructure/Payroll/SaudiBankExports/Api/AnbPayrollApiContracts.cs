@@ -1,89 +1,18 @@
+using Zayra.Api.Infrastructure.Government;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
 
 namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 
 // ANB-only shapes for the ANB Payroll Services API client (published OpenAPI "Payroll Services APIs" v0.0.1).
 // Callers outside the Anb* files use IBankPayrollChannel and the neutral types in Channels/ instead.
-// Nothing here is wired into DI: the integration wave binds IAnbEndpointConfig and IAnbCredentialSource to
-// the government foundation. Until then an empty configuration refuses (fail closed).
-
-/// <summary>
-/// Where and how to reach ANB for ONE environment. The published spec has no servers and no security
-/// schemes, so every value is configuration and every value is required: an empty one refuses with
-/// <see cref="BankChannelCodes.ConfigMissing"/> before any socket is opened.
-/// </summary>
-public interface IAnbEndpointConfig
-{
-    /// <summary>Environment these settings are for (for example "sandbox").</summary>
-    string? Environment { get; }
-    /// <summary>Payroll API base, absolute https. Paths from the spec are appended.</summary>
-    string? BaseUrl { get; }
-    /// <summary>OAuth token endpoint, absolute https. Not published by ANB.</summary>
-    string? TokenUrl { get; }
-    /// <summary>Only <c>client_credentials</c> is supported.</summary>
-    string? GrantType { get; }
-    /// <summary>OAuth scope. Not published by ANB.</summary>
-    string? Scope { get; }
-    /// <summary><c>client_secret_basic</c> or <c>client_secret_post</c>. Not published by ANB.</summary>
-    string? ClientAuthMethod { get; }
-    /// <summary>Comma-separated host suffixes both URLs must sit under (for example "anb.com.sa"). IP
-    /// literals and single-label hosts are always refused.</summary>
-    string? AllowedHostSuffixes { get; }
-}
-
-/// <summary>Plain options object for <see cref="IAnbEndpointConfig"/>. Every value defaults to empty.</summary>
-public sealed class AnbPayrollApiOptions : IAnbEndpointConfig
-{
-    public const string SectionName = "Government:Anb:PayrollApi";
-
-    public string? Environment { get; set; }
-    public string? BaseUrl { get; set; }
-    public string? TokenUrl { get; set; }
-    public string? GrantType { get; set; }
-    public string? Scope { get; set; }
-    public string? ClientAuthMethod { get; set; }
-    public string? AllowedHostSuffixes { get; set; }
-}
+// The client has no endpoint or credential types of its own: base URL, token URL and token path come from GovernmentHttp's
+// allow-list under Government:Banks:Anb, the OAuth settings from the same tree, and the credential from the government
+// credential store (IBankCredentialSource). Nothing is wired into DI; an empty configuration refuses (fail closed).
 
 /// <summary>Time limits. Defaults suit production; tests shorten them.</summary>
 public sealed record AnbClientLimits(TimeSpan RequestTimeout, TimeSpan StatusReadDeadline)
 {
     public static readonly AnbClientLimits Default = new(TimeSpan.FromSeconds(60), TimeSpan.FromMinutes(2));
-}
-
-/// <summary>
-/// The customer's ANB app credential, bound to the environment and hosts it was issued for. A call whose
-/// configured environment, base-URL host or token-URL host differs is refused. <see cref="ToString"/>
-/// never prints the id or the secret.
-/// </summary>
-public sealed class AnbClientCredential
-{
-    public AnbClientCredential(string clientId, string clientSecret, string version,
-        string environment, string baseUrlHost, string tokenUrlHost)
-    {
-        ClientId = clientId;
-        ClientSecret = clientSecret;
-        Version = version;
-        Environment = environment;
-        BaseUrlHost = baseUrlHost;
-        TokenUrlHost = tokenUrlHost;
-    }
-
-    public string ClientId { get; }
-    public string ClientSecret { get; }
-    /// <summary>Changes on every rotation. Part of the token cache key (with a hash of the secret).</summary>
-    public string Version { get; }
-    public string Environment { get; }
-    public string BaseUrlHost { get; }
-    public string TokenUrlHost { get; }
-
-    public override string ToString() => $"AnbClientCredential(version={Version}, env={Environment})";
-}
-
-/// <summary>Seam for the government credential store. Returns null when no credential is held.</summary>
-public interface IAnbCredentialSource
-{
-    Task<AnbClientCredential?> GetAsync(BankChannelScope scope, CancellationToken ct);
 }
 
 /// <summary>A status string outside ANB's published vocabulary. Never guessed into a known one.</summary>
@@ -129,8 +58,14 @@ public sealed record AnbSubmitHeaders(
     public override string ToString() => $"AnbSubmitHeaders(autoWps={AutoWpsFileUpload})";
 }
 
+/// <param name="Intent">The recorder's receipt for the committed intent of exactly these files, for this tenant, company, bank and
+/// environment. The client refuses a submit without it, and the transport spends it on the one send.</param>
 public sealed record AnbSubmitRequest(
-    BankChannelScope Scope, BankArtifactFile Header, BankArtifactFile Body, AnbSubmitHeaders Headers, bool PriorOutcomeUnknown = false);
+    BankChannelScope Scope, BankArtifactFile Header, BankArtifactFile Body, AnbSubmitHeaders Headers, bool PriorOutcomeUnknown = false,
+    GovernmentExchangeIntentReceipt? Intent = null)
+{
+    public override string ToString() => $"AnbSubmitRequest({Header}, {Body}, {Headers}, priorUnknown={PriorOutcomeUnknown})";
+}
 
 /// <summary>One per-employee line from <c>GET /payroll/v2/{id}</c>. Carries personal data:
 /// <see cref="ToString"/> prints none of it.</summary>
@@ -147,7 +82,8 @@ public sealed record AnbStatusLine(
     DateTimeOffset? CreatedAt,
     DateTimeOffset? UpdatedAt)
 {
-    public override string ToString() => $"AnbStatusLine(status={PaymentStatus}, amount={SalaryAmount})";
+    // Security P3-3: no wage amount (nor any other value of the line) in a log or exception.
+    public override string ToString() => $"AnbStatusLine(status={AnbStatusWords.Printable(PaymentStatus)})";
 }
 
 /// <summary>All pages of one payroll, merged. <see cref="Complete"/> is true only when the distinct lines

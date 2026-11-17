@@ -111,7 +111,8 @@ public sealed record BankSubmittedLine(string EmployeeId, string AccountNumber, 
 public sealed record BankBatchBinding(
     IReadOnlyList<BankSubmittedLine> Lines, decimal ExpectedTotal, DateTimeOffset IntentAtUtc, string? ProfileId = null)
 {
-    public override string ToString() => $"BankBatchBinding({Lines.Count} lines, total={ExpectedTotal}, intent={IntentAtUtc:O})";
+    // Security P3-3: no money amount in a log or exception.
+    public override string ToString() => $"BankBatchBinding({Lines.Count} lines, intent={IntentAtUtc:O})";
 }
 
 public enum BankPayrollPhase { Accepted, Initiated, Validated, InProgress, Completed, Failed, Rejected }
@@ -170,7 +171,6 @@ public static class BankChannelCodes
 {
     public const string ConfigMissing = "bank_config_missing";
     public const string ConfigInvalid = "bank_config_invalid";
-    public const string HandlerFollowsRedirects = "bank_handler_follows_redirects";
     public const string EnvironmentMismatch = "bank_environment_mismatch";
     public const string CredentialMissing = "bank_credential_missing";
     public const string CredentialSourceFailed = "bank_credential_source_failed";
@@ -178,6 +178,11 @@ public static class BankChannelCodes
     public const string TokenUnavailable = "bank_token_unavailable";
     public const string TokenRejected = "bank_token_rejected";
     public const string CancelledBeforeSend = "bank_cancelled_before_send";
+    /// <summary>The environment's base URL, token URL or token path is not on GovernmentHttp's allow-list (missing, not a plain https
+    /// origin, or a sandbox URL on a production host). Names no value.</summary>
+    public const string HostNotAllowed = "bank_host_not_allowed";
+    /// <summary>The shared transport refused before opening a socket for a reason with no more specific code.</summary>
+    public const string TransportRefused = "bank_transport_refused";
     public const string ArtifactHashMismatch = "bank_artifact_hash_mismatch";
     public const string ArtifactInconsistent = "bank_artifact_inconsistent";
     public const string SubmitHeaderInvalid = "bank_submit_header_invalid";
@@ -210,9 +215,9 @@ public static class BankChannelCodes
     public const string GateRefused = "bank_gate_refused";
     /// <summary>A submit without the recorder's receipt for a committed intent.</summary>
     public const string IntentMissing = "bank_intent_missing";
-    /// <summary>The receipt is for another tenant, bank, environment or other files.</summary>
+    /// <summary>The receipt is for another tenant, company, bank, environment or other files.</summary>
     public const string IntentMismatch = "bank_intent_mismatch";
-    /// <summary>The receipt was already used for a send by this channel.</summary>
+    /// <summary>The receipt was already used: sent once, or burnt by an earlier attempt that ended without sending.</summary>
     public const string IntentAlreadyUsed = "bank_intent_already_used";
 }
 

@@ -8,30 +8,43 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Infrastructure.Government;
+using Zayra.Api.Infrastructure.Government.Credentials;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
+using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 
 /// <summary>
-/// Transport for ANB's published Payroll Services API (OpenAPI v0.0.1): <c>POST /payroll/v2</c>,
-/// <c>GET /payroll/v2/{id}</c>, <c>GET /payroll/{id}/WPS</c>. Used through <see cref="AnbPayrollChannel"/>.
-/// NOT LIVE: nothing registers it, and it refuses to be built without every endpoint setting (ANB publishes
-/// no servers, token URL or security scheme). Bank acceptance is not verified.
+/// Client for ANB's published Payroll Services API (OpenAPI v0.0.1): <c>POST /payroll/v2</c>,
+/// <c>GET /payroll/v2/{id}</c>, <c>GET /payroll/{id}/WPS</c>. Used through <see cref="AnbPayrollChannel"/>, which only the gated
+/// factory builds. NOT LIVE: nothing registers it. Bank acceptance is not verified.
+///
+/// <para>TRANSPORT (CTO directive 1, A1 and E4). It has NO HTTP client of its own. Every request, the token grant included, goes
+/// through <see cref="GovernmentHttp"/>: the <c>gov-bank_anb</c> named client (SsrfGuard primary handler, no redirects, no proxy,
+/// no retry), base and token URLs from the operator's allow-list under <c>Government:Banks:Anb</c> per environment (a sandbox URL
+/// may not be a production host), the token path from the same tree, and the credential from the government credential store,
+/// bound to its body, environment and hosts. Its own settings (<see cref="ScopeSetting"/>, <see cref="ClientAuthMethodSetting"/>)
+/// live in that tree too.</para>
+///
+/// <para>THE LIVE GATE (E4). Before every token request and every submit, the client asks the live gate itself for a live-WRITE
+/// decision for this tenant, bank and environment (four gates; in production also the recorded legal clearance; the sandbox needs
+/// none) and refuses with <see cref="BankChannelCodes.GateRefused"/> otherwise. A read asks for an open read decision.</para>
 ///
 /// <para>MONEY RULES</para>
 /// <list type="bullet">
-/// <item>Submit copies the frozen files once, checks the copies against the SHA-256 recorded when they were
-/// frozen and the header's count and total against the body, re-hashes the copies immediately before the
-/// send, and sends those copies. It never regenerates.</item>
-/// <item>Exactly one POST per <see cref="SubmitAsync"/>, never retried. The handler must not follow
-/// redirects (<see cref="AnbHttpHandlerFactory"/>; the constructor refuses one that does).</item>
-/// <item><see cref="SubmitAsync"/> never throws except <see cref="ArgumentNullException"/>. Anything that
-/// goes wrong before the POST is <see cref="BankSubmitOutcomeKind.Refused"/> (cancellation included). Once
+/// <item>Submit needs the recorder's receipt for the committed intent of this tenant, company, bank, environment and exactly these
+/// files. The transport spends it immediately before the socket: one send per receipt.</item>
+/// <item>Submit copies the frozen files once, checks the copies against the SHA-256 recorded when they were frozen and the header's
+/// count and total against the body, re-hashes the copies immediately before the send, and sends those copies. It never
+/// regenerates.</item>
+/// <item>Exactly one POST per <see cref="SubmitAsync"/>, never retried; a redirect is refused, never followed.</item>
+/// <item><see cref="SubmitAsync"/> never throws except <see cref="ArgumentNullException"/>. Anything that goes wrong before the
+/// POST is <see cref="BankSubmitOutcomeKind.Refused"/> (cancellation and every transport refusal before the socket included). Once
 /// the POST was attempted, ANY failure, of any exception type, is <see cref="BankSubmitOutcomeKind.Unknown"/>.</item>
-/// <item>Reads (status, WPS) may re-acquire the token once on a 401; nothing else is retried here.</item>
+/// <item>Reads (status, WPS) may re-acquire the token once on a 401; nothing else is retried.</item>
 /// </list>
-/// No response body, secret, token, IBAN or ID is logged or put into an exception, and every response is
-/// read through a byte cap.
+/// No response body, secret, token, IBAN or ID is logged or put into an exception, and every response is read through a byte cap.
 /// </summary>
 public sealed partial class AnbPayrollApiClient
 {
@@ -44,46 +57,54 @@ public sealed partial class AnbPayrollApiClient
     public const string AuthBasic = "client_secret_basic";
     public const string AuthPost = "client_secret_post";
 
+    /// <summary>The ledger, policy and transport body of ANB.</summary>
+    public const string Body = GovernmentBodies.BankAnb;
+    /// <summary>OAuth scope (not published by ANB): <c>Government:Banks:Anb:OAuth:Scope</c>.</summary>
+    public const string ScopeSetting = "OAuth:Scope";
+    /// <summary><c>client_secret_basic</c> or <c>client_secret_post</c> (not published by ANB): <c>Government:Banks:Anb:OAuth:ClientAuthMethod</c>.</summary>
+    public const string ClientAuthMethodSetting = "OAuth:ClientAuthMethod";
+    public static string ScopeKey => GovernmentHttp.SettingKey(Body, ScopeSetting);
+    public static string ClientAuthMethodKey => GovernmentHttp.SettingKey(Body, ClientAuthMethodSetting);
+
+    private const string SubmitPath = "/payroll/v2";
     private const int MaxSubmitResponseBytes = 16 * 1024;
     private const int MaxTokenResponseBytes = 16 * 1024;
     private const int MaxPageBytes = 256 * 1024;
-    private const int MaxErrorBytes = 16 * 1024;
     private static readonly TimeSpan TokenSkew = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan MaxTokenLifetime = TimeSpan.FromHours(1);
 
-    private readonly HttpClient _http;
-    private readonly IAnbEndpointConfig _config;
-    private readonly IAnbCredentialSource _credentials;
+    private readonly GovernmentHttp _http;
+    private readonly IBankCredentialSource _credentials;
+    private readonly IBankChannelGate _gate;
     private readonly ILogger<AnbPayrollApiClient> _log;
     private readonly TimeProvider _clock;
     private readonly AnbClientLimits _limits;
     private readonly ConcurrentDictionary<string, CachedToken> _tokens = new(StringComparer.Ordinal);
 
     // Internal: built only by AnbGatedChannelFactory, behind GatedBankPayrollChannel (ratchet I). Tests reach it through InternalsVisibleTo.
-    internal AnbPayrollApiClient(HttpMessageHandler handler, IAnbEndpointConfig config, IAnbCredentialSource credentials,
+    // The transport is GovernmentHttp and nothing else: there is no handler, client or factory parameter to inject.
+    internal AnbPayrollApiClient(GovernmentHttp http, IBankCredentialSource credentials, IBankChannelGate gate,
         ILogger<AnbPayrollApiClient> log, TimeProvider? clock = null, AnbClientLimits? limits = null)
     {
-        ArgumentNullException.ThrowIfNull(handler);
-        _config = config ?? throw new ArgumentNullException(nameof(config));
+        _http = http ?? throw new ArgumentNullException(nameof(http));
         _credentials = credentials ?? throw new ArgumentNullException(nameof(credentials));
+        _gate = gate ?? throw new ArgumentNullException(nameof(gate));
         _log = log ?? throw new ArgumentNullException(nameof(log));
         _clock = clock ?? TimeProvider.System;
         _limits = limits ?? AnbClientLimits.Default;
-        if (AnbHttpHandlerFactory.FollowsRedirects(handler))
-            throw new BankChannelRefusedException(BankChannelCodes.HandlerFollowsRedirects);
-        _ = Resolve(_config); // fail closed at construction
-        _http = new HttpClient(handler, disposeHandler: false)
-        {
-            Timeout = _limits.RequestTimeout,
-            MaxResponseContentBufferSize = 1024 * 1024,
-        };
+        _ = OAuthSettings(); // fail closed at construction
     }
 
     // ── Submit ──────────────────────────────────────────────────────────────────────────────────
 
     private sealed record Prepared(
-        BankChannelScope Scope, Endpoint Endpoint, AnbClientCredential Credential, string Token, byte[] Header, byte[] Body,
-        string HeaderSha, string BodySha, List<(string Name, string Value)> Headers, IReadOnlyList<string> Redact);
+        BankChannelScope Scope, Endpoint Endpoint, UnsealedGovernmentCredential Credential, string Token, GovernmentLiveDecision Decision,
+        GovernmentExchangeIntentReceipt Intent, byte[] Header, byte[] Body, string HeaderSha, string BodySha,
+        List<(string Name, string Value)> Headers, IReadOnlyList<string> Redact)
+    {
+        // Security P3-3: the generated ToString would print the token, the credential and the redaction list.
+        public override string ToString() => $"Prepared(header={HeaderSha}, body={BodySha})";
+    }
 
     public async Task<BankSubmitOutcome> SubmitAsync(AnbSubmitRequest request, CancellationToken ct)
     {
@@ -93,8 +114,8 @@ public sealed partial class AnbPayrollApiClient
         Prepared prepared;
         try
         {
-            var (ready, code) = await PrepareSubmitAsync(request, ct);
-            if (ready is null) return Refuse(code!);
+            var (ready, code, reason) = await PrepareSubmitAsync(request, ct);
+            if (ready is null) return Refuse(code!, reason);
             prepared = ready;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -120,18 +141,18 @@ public sealed partial class AnbPayrollApiClient
             using var form = new MultipartFormDataContent();
             form.Add(FilePart(prepared.Header, AnbConnectCsvGenerator.HeaderFileName, "header"));
             form.Add(FilePart(prepared.Body, AnbConnectCsvGenerator.BodyFileName, "body"));
-            using var post = new HttpRequestMessage(HttpMethod.Post, prepared.Endpoint.Url("/payroll/v2")) { Content = form };
-            post.Headers.Authorization = new AuthenticationHeaderValue("Bearer", prepared.Token);
-            post.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            foreach (var (name, value) in prepared.Headers) post.Headers.TryAddWithoutValidation(name, value);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            deadline.CancelAfter(_limits.RequestTimeout);
 
-            using var response = await _http.SendAsync(post, HttpCompletionOption.ResponseHeadersRead, ct);
+            using var response = await _http.ExchangeAsync(prepared.Decision, prepared.Credential, HttpMethod.Post, SubmitPath, form,
+                post => Authorize(post, prepared.Token, "application/json", prepared.Headers), deadline.Token, prepared.Intent,
+                HttpCompletionOption.ResponseHeadersRead);
             status = (int)response.StatusCode;
 
             string? text = null;
             try
             {
-                var bytes = await ReadBoundedAsync(response, MaxSubmitResponseBytes, ct);
+                var bytes = await ReadBoundedAsync(response, MaxSubmitResponseBytes, deadline.Token);
                 text = bytes is null ? null : Encoding.UTF8.GetString(bytes);
             }
             catch (Exception)
@@ -149,62 +170,92 @@ public sealed partial class AnbPayrollApiClient
                 outcome.Kind, outcome.Code, outcome.HttpStatus, outcome.BankPayrollId, prepared.HeaderSha, prepared.BodySha));
             return outcome;
         }
+        catch (GovernmentTransportRefusedException refused) when (!refused.RequestSent)
+        {
+            // The transport refused before opening the socket (gate, host, credential binding, intent): nothing left.
+            return Refuse(TransportCode(refused.Code));
+        }
         catch (Exception ex)
         {
             // The request may have left in full. Whether the bank holds the payroll is unknown.
             var kind = ex.GetType().Name;
-            var code = status is >= 200 and < 300 ? BankChannelCodes.AcceptedWithoutId : BankChannelCodes.OutcomeUnknown;
+            var sentStatus = (ex as GovernmentTransportRefusedException)?.HttpStatus ?? status;
+            var code = sentStatus is >= 200 and < 300 ? BankChannelCodes.AcceptedWithoutId : BankChannelCodes.OutcomeUnknown;
             Safe(() => _log.LogWarning(
                 "ANB payroll submit outcome unknown after {ExceptionType}; HTTP {Status}; files {HeaderSha} {LinesSha}",
-                kind, status, prepared.HeaderSha, prepared.BodySha));
-            return new BankSubmitOutcome(BankSubmitOutcomeKind.Unknown, code, RequestSent: true, HttpStatus: status,
+                kind, sentStatus, prepared.HeaderSha, prepared.BodySha));
+            return new BankSubmitOutcome(BankSubmitOutcomeKind.Unknown, code, RequestSent: true, HttpStatus: sentStatus,
                 SentHeaderSha256: prepared.HeaderSha, SentBodySha256: prepared.BodySha);
         }
     }
 
-    private async Task<(Prepared? Ready, string? Code)> PrepareSubmitAsync(AnbSubmitRequest request, CancellationToken ct)
+    private async Task<(Prepared? Ready, string? Code, string? Reason)> PrepareSubmitAsync(AnbSubmitRequest request, CancellationToken ct)
     {
-        Endpoint endpoint;
-        try { endpoint = Resolve(_config); }
-        catch (BankChannelRefusedException ex) { return (null, ex.Code); }
+        // The committed intent of exactly this call (the transport refuses a write without it, and spends it on the send).
+        if (!GovernmentEnvironments.IsKnown(request.Scope?.Environment)) return (null, BankChannelCodes.EnvironmentMismatch, null);
+        var intent = request.Intent;
+        if (intent is null) return (null, BankChannelCodes.IntentMissing, null);
+        if (!IntentFor(intent, request.Scope)) return (null, BankChannelCodes.IntentMismatch, null);
 
-        if (!SameEnvironment(endpoint, request.Scope)) return (null, BankChannelCodes.EnvironmentMismatch);
-        if (request.Header is null || request.Body is null) return (null, BankChannelCodes.ArtifactInconsistent);
+        // E4: the live gate, for the write grade, before anything else (and so before the token request).
+        var (decision, refusal) = await DecideAsync(request.Scope, write: true, ct);
+        if (decision is null) return (null, BankChannelCodes.GateRefused, refusal);
+
+        Endpoint endpoint;
+        try { endpoint = Resolve(request.Scope); }
+        catch (BankChannelRefusedException ex) { return (null, ex.Code, null); }
+
+        if (request.Header is null || request.Body is null) return (null, BankChannelCodes.ArtifactInconsistent, null);
         if (!string.Equals(request.Header.FileName, AnbConnectCsvGenerator.HeaderFileName, StringComparison.Ordinal)
             || !string.Equals(request.Body.FileName, AnbConnectCsvGenerator.BodyFileName, StringComparison.Ordinal))
-            return (null, BankChannelCodes.ArtifactInconsistent);
+            return (null, BankChannelCodes.ArtifactInconsistent, null);
 
         // One private copy of each file. Everything below checks, and the POST sends, these copies only.
         var header = request.Header.Content is null ? null : (byte[])request.Header.Content.Clone();
         var body = request.Body.Content is null ? null : (byte[])request.Body.Content.Clone();
         if (header is null || body is null
             || !HashEquals(header, request.Header.ExpectedSha256) || !HashEquals(body, request.Body.ExpectedSha256))
-            return (null, BankChannelCodes.ArtifactHashMismatch);
+            return (null, BankChannelCodes.ArtifactHashMismatch, null);
+        // The receipt was committed for exactly these two files.
+        if (!IntentBindsFiles(intent, request.Header.ExpectedSha256, request.Body.ExpectedSha256))
+            return (null, BankChannelCodes.IntentMismatch, null);
 
         var preflight = AnbArtifactPreflight.Check(header, body, request.Headers);
-        if (preflight.Code is not null) return (null, preflight.Code);
+        if (preflight.Code is not null) return (null, preflight.Code, null);
 
         var headers = OptionalHeaders(request.Headers);
-        if (headers is null) return (null, BankChannelCodes.SubmitHeaderInvalid);
+        if (headers is null) return (null, BankChannelCodes.SubmitHeaderInvalid, null);
 
         var (credential, credentialCode) = await LoadCredentialAsync(request.Scope, endpoint, ct);
-        if (credential is null) return (null, credentialCode);
+        if (credential is null) return (null, credentialCode, null);
 
-        var token = await GetTokenAsync(endpoint, request.Scope, credential, ct);
-        if (token.Value is null) return (null, token.Code);
+        var token = await GetTokenAsync(endpoint, request.Scope, credential, decision, ct);
+        if (token.Value is null) return (null, token.Code, token.Reason);
 
-        var redact = preflight.SentValues.Concat(new[] { credential.ClientId, credential.ClientSecret, token.Value }).ToList();
-        return (new Prepared(request.Scope, endpoint, credential, token.Value, header, body,
-            AnbConnectCsvGenerator.Sha256Hex(header), AnbConnectCsvGenerator.Sha256Hex(body), headers, redact), null);
+        var redact = preflight.SentValues.Concat(new[] { credential.ClientIdentifier!, credential.Secret, token.Value }).ToList();
+        return (new Prepared(request.Scope, endpoint, credential, token.Value, decision, intent, header, body,
+            AnbConnectCsvGenerator.Sha256Hex(header), AnbConnectCsvGenerator.Sha256Hex(body), headers, redact), null, null);
     }
 
-    private async Task<(AnbClientCredential? Credential, string Code)> LoadCredentialAsync(BankChannelScope scope, Endpoint endpoint,
+    /// <summary>The receipt is for this tenant, company, bank and environment.</summary>
+    private static bool IntentFor(GovernmentExchangeIntentReceipt intent, BankChannelScope scope) =>
+        intent.TenantId == scope.TenantId && intent.CompanyId == scope.CompanyId && intent.Body == Body
+        && string.Equals(intent.Environment, scope.Environment, StringComparison.Ordinal);
+
+    private static bool IntentBindsFiles(GovernmentExchangeIntentReceipt intent, string headerSha, string bodySha)
+    {
+        var bound = new[] { intent.ArtifactSha256, intent.ArtifactSecondarySha256 }.OfType<string>().ToList();
+        return bound.Count == 2 && !string.Equals(headerSha, bodySha, StringComparison.OrdinalIgnoreCase)
+            && bound.Contains(headerSha, StringComparer.OrdinalIgnoreCase) && bound.Contains(bodySha, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task<(UnsealedGovernmentCredential? Credential, string Code)> LoadCredentialAsync(BankChannelScope scope, Endpoint endpoint,
         CancellationToken ct)
     {
-        AnbClientCredential? credential;
+        UnsealedGovernmentCredential? credential;
         try
         {
-            credential = await _credentials.GetAsync(scope, ct);
+            credential = await _credentials.OpenAsync(Body, scope, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -217,13 +268,20 @@ public sealed partial class AnbPayrollApiClient
             return (null, BankChannelCodes.CredentialSourceFailed);
         }
         if (credential is null) return (null, BankChannelCodes.CredentialMissing);
-        if (!CredentialFits(credential, endpoint)) return (null, BankChannelCodes.CredentialEndpointMismatch);
+        if (!CredentialFits(credential, endpoint, scope)) return (null, BankChannelCodes.CredentialEndpointMismatch);
         return (credential, string.Empty);
     }
 
-    /// <summary>A credential is used only for the environment and hosts it was issued for.</summary>
-    private static bool CredentialFits(AnbClientCredential c, Endpoint endpoint) =>
-        string.Equals(c.Environment?.Trim(), endpoint.Environment, StringComparison.OrdinalIgnoreCase)
+    /// <summary>
+    /// A credential is used only for ANB, the environment and both hosts it was issued for, as an OAuth client with a client id, and
+    /// for the scope's company or tenant-wide. The transport checks the body, environment and hosts again before it sends.
+    /// </summary>
+    private static bool CredentialFits(UnsealedGovernmentCredential c, Endpoint endpoint, BankChannelScope scope) =>
+        c.Body == Body
+        && string.Equals(c.Environment, endpoint.Environment, StringComparison.Ordinal)
+        && c.Kind == GovernmentCredentialKinds.OAuthClient
+        && !string.IsNullOrWhiteSpace(c.ClientIdentifier) && !string.IsNullOrEmpty(c.Secret)
+        && (c.CompanyId is null || c.CompanyId == scope.CompanyId)
         && string.Equals(c.BaseUrlHost?.Trim(), endpoint.BaseUrl.IdnHost, StringComparison.OrdinalIgnoreCase)
         && string.Equals(c.TokenUrlHost?.Trim(), endpoint.TokenUrl.IdnHost, StringComparison.OrdinalIgnoreCase);
 
@@ -265,7 +323,8 @@ public sealed partial class AnbPayrollApiClient
                 : new BankSubmitOutcome(BankSubmitOutcomeKind.RejectedStructure, BankChannelCodes.RejectedStructure, true, status, Message: message);
         }
 
-        // 1xx, 3xx (never followed), 408, 409, 425, 429, other 4xx, 5xx: the bank may hold the payroll.
+        // 1xx, 408, 409, 425, 429, other 4xx, 5xx: the bank may hold the payroll. (A 3xx never gets here: the transport refuses
+        // it after the send, which is Unknown as well.)
         return new BankSubmitOutcome(BankSubmitOutcomeKind.Unknown, BankChannelCodes.OutcomeUnknown, true, status);
     }
 
@@ -291,10 +350,11 @@ public sealed partial class AnbPayrollApiClient
         }
     }
 
-    private BankSubmitOutcome Refuse(string code)
+    /// <param name="reason">The live gate's reason code when <paramref name="code"/> is <see cref="BankChannelCodes.GateRefused"/>.</param>
+    private BankSubmitOutcome Refuse(string code, string? reason = null)
     {
-        Safe(() => _log.LogWarning("ANB payroll submit refused before sending ({Code})", code));
-        return new BankSubmitOutcome(BankSubmitOutcomeKind.Refused, code, RequestSent: false);
+        Safe(() => _log.LogWarning("ANB payroll submit refused before sending ({Code}, {Reason})", code, reason));
+        return new BankSubmitOutcome(BankSubmitOutcomeKind.Refused, code, RequestSent: false, Message: reason);
     }
 
     private static ByteArrayContent FilePart(byte[] content, string fileName, string part)
@@ -337,19 +397,33 @@ public sealed partial class AnbPayrollApiClient
         return ok ? list : null;
     }
 
+    /// <summary>Sets the bearer token, Accept and the given extra headers on a request the transport is about to send.</summary>
+    private static void Authorize(HttpRequestMessage request, string token, string accept, IEnumerable<(string Name, string Value)> extra)
+    {
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(accept));
+        foreach (var (name, value) in extra) request.Headers.TryAddWithoutValidation(name, value);
+    }
+
     // ── Status ──────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>What every read of one call shares: the scope, the resolved endpoint, the credential and the open read decision.</summary>
+    private sealed record ReadContext(BankChannelScope Scope, Endpoint Endpoint, UnsealedGovernmentCredential Credential, GovernmentLiveDecision Decision)
+    {
+        public override string ToString() => $"ReadContext({Endpoint.Environment})";
+    }
 
     public async Task<AnbPayrollStatusSnapshot> GetStatusAsync(BankChannelScope scope, string bankPayrollId,
         string? profileId, CancellationToken ct)
     {
-        var (endpoint, credential) = await PrepareReadAsync(scope, bankPayrollId, profileId, ct);
+        var read = await PrepareReadAsync(scope, bankPayrollId, profileId, ct);
         var id = bankPayrollId;
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(_limits.StatusReadDeadline);
         try
         {
-            return await ReadAllPagesAsync(endpoint, scope, credential, id, profileId, deadline.Token);
+            return await ReadAllPagesAsync(read, id, profileId, deadline.Token);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -360,6 +434,10 @@ public sealed partial class AnbPayrollApiClient
             throw new BankChannelException(BankChannelCodes.PollDeadline);
         }
         catch (BankChannelException)
+        {
+            throw;
+        }
+        catch (BankChannelRefusedException)
         {
             throw;
         }
@@ -375,8 +453,7 @@ public sealed partial class AnbPayrollApiClient
         }
     }
 
-    private async Task<AnbPayrollStatusSnapshot> ReadAllPagesAsync(Endpoint endpoint, BankChannelScope scope,
-        AnbClientCredential credential, string id, string? profileId, CancellationToken ct)
+    private async Task<AnbPayrollStatusSnapshot> ReadAllPagesAsync(ReadContext read, string id, string? profileId, CancellationToken ct)
     {
         var merger = new LineMerger();
         BankPayrollPhase? phase = null;
@@ -389,9 +466,9 @@ public sealed partial class AnbPayrollApiClient
 
         while (true)
         {
-            var url = endpoint.Url($"/payroll/v2/{Uri.EscapeDataString(id)}") +
+            var path = $"/payroll/v2/{Uri.EscapeDataString(id)}" +
                       $"?page={page.ToString(CultureInfo.InvariantCulture)}&take={MaxTake.ToString(CultureInfo.InvariantCulture)}&order=ASC";
-            var text = await ReadJsonAsync(endpoint, scope, credential, url, profileId, ct);
+            var text = await ReadJsonAsync(read, path, profileId, ct);
             pages++;
             var parsed = StatusPage.Parse(text);
 
@@ -582,11 +659,11 @@ public sealed partial class AnbPayrollApiClient
     public async Task<BankWpsFile> DownloadWpsAsync(BankChannelScope scope, string bankPayrollId, string? profileId,
         CancellationToken ct)
     {
-        var (endpoint, credential) = await PrepareReadAsync(scope, bankPayrollId, profileId, ct);
+        var read = await PrepareReadAsync(scope, bankPayrollId, profileId, ct);
         var id = bankPayrollId;
-        var url = endpoint.Url($"/payroll/{Uri.EscapeDataString(id)}/WPS");
+        var path = $"/payroll/{Uri.EscapeDataString(id)}/WPS";
 
-        using var response = await SendReadAsync(endpoint, scope, credential, url, profileId, "*/*", ct);
+        using var response = await SendReadAsync(read, path, profileId, "*/*", ct);
         var status = (int)response.StatusCode;
         if (status == 404) throw new BankChannelException(BankChannelCodes.WpsNotReady, status);
         ThrowIfReadFailed(status);
@@ -620,24 +697,27 @@ public sealed partial class AnbPayrollApiClient
 
     // ── Shared read plumbing ────────────────────────────────────────────────────────────────────
 
-    private async Task<(Endpoint, AnbClientCredential)> PrepareReadAsync(BankChannelScope scope, string bankPayrollId,
-        string? profileId, CancellationToken ct)
+    /// <summary>The open READ decision of the live gate first, then the settings, the id and the credential. Any refusal throws
+    /// <see cref="BankChannelRefusedException"/> before a socket is opened.</summary>
+    private async Task<ReadContext> PrepareReadAsync(BankChannelScope scope, string bankPayrollId, string? profileId, CancellationToken ct)
     {
-        var endpoint = Resolve(_config);
-        if (!SameEnvironment(endpoint, scope)) throw new BankChannelRefusedException(BankChannelCodes.EnvironmentMismatch);
+        ArgumentNullException.ThrowIfNull(scope);
+        if (!GovernmentEnvironments.IsKnown(scope.Environment)) throw new BankChannelRefusedException(BankChannelCodes.EnvironmentMismatch);
+        var (decision, refusal) = await DecideAsync(scope, write: false, ct);
+        if (decision is null) throw new BankChannelRefusedException(BankChannelCodes.GateRefused, new[] { refusal! });
+        var endpoint = Resolve(scope);
         if (bankPayrollId is null || !PayrollIdShape().IsMatch(bankPayrollId))
             throw new BankChannelRefusedException(BankChannelCodes.PayrollIdInvalid);
         if (OptionalHeaders(new AnbSubmitHeaders(ProfileId: profileId)) is null)
             throw new BankChannelRefusedException(BankChannelCodes.SubmitHeaderInvalid);
         var (credential, code) = await LoadCredentialAsync(scope, endpoint, ct);
         if (credential is null) throw new BankChannelRefusedException(code);
-        return (endpoint, credential);
+        return new ReadContext(scope, endpoint, credential, decision);
     }
 
-    private async Task<string> ReadJsonAsync(Endpoint endpoint, BankChannelScope scope, AnbClientCredential credential,
-        string url, string? profileId, CancellationToken ct)
+    private async Task<string> ReadJsonAsync(ReadContext read, string path, string? profileId, CancellationToken ct)
     {
-        using var response = await SendReadAsync(endpoint, scope, credential, url, profileId, "application/json", ct);
+        using var response = await SendReadAsync(read, path, profileId, "application/json", ct);
         var status = (int)response.StatusCode;
         ThrowIfReadFailed(status);
         byte[]? bytes;
@@ -654,28 +734,34 @@ public sealed partial class AnbPayrollApiClient
         if (status is < 200 or >= 300) throw new BankChannelException(BankChannelCodes.HttpError, status);
     }
 
-    /// <summary>GET with the bearer token. A 401 drops the cached token and tries once more with a fresh one.</summary>
-    private async Task<HttpResponseMessage> SendReadAsync(Endpoint endpoint, BankChannelScope scope, AnbClientCredential credential,
-        string url, string? profileId, string accept, CancellationToken ct)
+    /// <summary>GET with the bearer token, through the transport. A 401 drops the cached token and tries once more with a fresh one
+    /// (reads only: a submit is never repeated). Minting a token asks the live gate for the write grade first.</summary>
+    private async Task<HttpResponseMessage> SendReadAsync(ReadContext read, string path, string? profileId, string accept, CancellationToken ct)
     {
+        var extra = string.IsNullOrEmpty(profileId) ? new List<(string, string)>() : new List<(string, string)> { ("profileid", profileId) };
         for (var attempt = 0; ; attempt++)
         {
-            var token = await GetTokenAsync(endpoint, scope, credential, ct);
-            if (token.Value is null) throw new BankChannelException(token.Code);
-
-            using var get = new HttpRequestMessage(HttpMethod.Get, url);
-            get.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
-            get.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(accept));
-            if (!string.IsNullOrEmpty(profileId)) get.Headers.TryAddWithoutValidation("profileid", profileId);
+            var token = await GetTokenAsync(read.Endpoint, read.Scope, read.Credential, write: null, ct);
+            if (token.Value is null)
+                throw token.Code == BankChannelCodes.GateRefused
+                    ? new BankChannelRefusedException(token.Code, new[] { token.Reason ?? GatedBankPayrollChannel.GateUnavailable })
+                    : (Exception)new BankChannelException(token.Code);
 
             HttpResponseMessage response;
             try
             {
-                response = await _http.SendAsync(get, HttpCompletionOption.ResponseHeadersRead, ct);
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                deadline.CancelAfter(_limits.RequestTimeout);
+                response = await _http.ExchangeAsync(read.Decision, read.Credential, HttpMethod.Get, path, null,
+                    get => Authorize(get, token.Value, accept, extra), deadline.Token, intent: null, HttpCompletionOption.ResponseHeadersRead);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (GovernmentTransportRefusedException refused) when (!refused.RequestSent)
+            {
+                throw new BankChannelRefusedException(TransportCode(refused.Code));
             }
             catch (Exception ex)
             {
@@ -686,7 +772,7 @@ public sealed partial class AnbPayrollApiClient
 
             if (response.StatusCode != HttpStatusCode.Unauthorized || attempt > 0) return response;
             response.Dispose();
-            _tokens.TryRemove(TokenKey(endpoint, scope, credential), out _);
+            _tokens.TryRemove(TokenKey(read.Endpoint, read.Scope, read.Credential), out _);
             Safe(() => _log.LogInformation("ANB payroll read got 401; re-acquiring the token once"));
         }
     }
@@ -707,23 +793,82 @@ public sealed partial class AnbPayrollApiClient
         return buffer.ToArray();
     }
 
+    // ── The live gate ───────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Asks the live gate (E4). Returns the decision only when it is open, made for ANB and for exactly this scope's environment, and,
+    /// for <paramref name="write"/>, carries the write grade (four gates, plus the legal clearance in production). Otherwise the reason,
+    /// and no decision: the caller refuses before any socket. A gate that throws fails closed.
+    /// </summary>
+    private async Task<(GovernmentLiveDecision? Decision, string? Refusal)> DecideAsync(BankChannelScope scope, bool write, CancellationToken ct)
+    {
+        GovernmentLiveDecision? decision;
+        try
+        {
+            decision = await _gate.DecideAsync(Body, scope, write, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            var kind = ex.GetType().Name;
+            Safe(() => _log.LogWarning("ANB live gate unavailable ({ExceptionType}); refused", kind));
+            return (null, GatedBankPayrollChannel.GateUnavailable);
+        }
+        var refusal = decision is null ? GatedBankPayrollChannel.GateUnavailable
+            : !decision.IsOpen ? decision.ReasonCode ?? GatedBankPayrollChannel.GateUnavailable
+            : decision.Body != Body || decision.Environment is null || decision.Environment != scope.Environment
+                ? GatedBankPayrollChannel.DecisionNotForThisCall
+            : write && !decision.AllowsWrites ? GatedBankPayrollChannel.WriteNotGranted
+            : null;
+        return refusal is null ? (decision, null) : (null, refusal);
+    }
+
+    /// <summary>A transport refusal before the socket, as a bank channel code.</summary>
+    private static string TransportCode(string code) => code switch
+    {
+        GovernmentHttp.HostRefusedCode => BankChannelCodes.HostNotAllowed,
+        GovernmentHttp.CredentialBindingCode => BankChannelCodes.CredentialEndpointMismatch,
+        GovernmentHttp.EnvironmentMismatchCode => BankChannelCodes.EnvironmentMismatch,
+        GovernmentHttp.WriteRefusedCode or GovernmentLivePolicy.RefusedCode => BankChannelCodes.GateRefused,
+        GovernmentHttp.WriteWithoutIntentCode => BankChannelCodes.IntentMissing,
+        GovernmentHttp.IntentAlreadyUsedCode => BankChannelCodes.IntentAlreadyUsed,
+        GovernmentHttp.IntentCompanyMismatchCode => BankChannelCodes.IntentMismatch,
+        _ => BankChannelCodes.TransportRefused,
+    };
+
     // ── Token ───────────────────────────────────────────────────────────────────────────────────
 
-    private sealed record CachedToken(string Value, DateTimeOffset UseUntil);
+    private sealed record CachedToken(string Value, DateTimeOffset UseUntil)
+    {
+        public override string ToString() => $"CachedToken(until={UseUntil:O})";
+    }
 
-    private async Task<(string? Value, string Code)> GetTokenAsync(Endpoint endpoint, BankChannelScope scope,
-        AnbClientCredential credential, CancellationToken ct)
+    /// <param name="write">The live-write decision the caller already holds (a submit), or null to ask the gate now (a read). A token is
+    /// minted only under an open write decision for this tenant, bank and environment: the token grant is a POST.</param>
+    private async Task<(string? Value, string Code, string? Reason)> GetTokenAsync(Endpoint endpoint, BankChannelScope scope,
+        UnsealedGovernmentCredential credential, GovernmentLiveDecision? write, CancellationToken ct)
     {
         var key = TokenKey(endpoint, scope, credential);
         var now = _clock.GetUtcNow();
         if (_tokens.TryGetValue(key, out var cached))
         {
-            if (cached.UseUntil > now) return (cached.Value, string.Empty);
+            if (cached.UseUntil > now) return (cached.Value, string.Empty, null);
             _tokens.TryRemove(key, out _);
         }
         if (_tokens.Count > 1_000)
             foreach (var stale in _tokens.Where(t => t.Value.UseUntil <= now).Select(t => t.Key).ToList())
                 _tokens.TryRemove(stale, out _);
+
+        // E4: no token request unless the live gate grants the write grade for this call.
+        if (write is null)
+        {
+            var (decision, refusal) = await DecideAsync(scope, write: true, ct);
+            if (decision is null) return (null, BankChannelCodes.GateRefused, refusal);
+            write = decision;
+        }
 
         try
         {
@@ -732,26 +877,29 @@ public sealed partial class AnbPayrollApiClient
                 new("grant_type", GrantClientCredentials),
                 new("scope", endpoint.Scope),
             };
-            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint.TokenUrl);
-            if (endpoint.BasicAuth)
+            if (!endpoint.BasicAuth)
             {
-                var pair = Uri.EscapeDataString(credential.ClientId) + ":" + Uri.EscapeDataString(credential.ClientSecret);
-                request.Headers.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes(pair)));
+                form.Add(new("client_id", credential.ClientIdentifier!));
+                form.Add(new("client_secret", credential.Secret));
             }
-            else
-            {
-                form.Add(new("client_id", credential.ClientId));
-                form.Add(new("client_secret", credential.ClientSecret));
-            }
-            request.Content = new FormUrlEncodedContent(form);
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            using var content = new FormUrlEncodedContent(form);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            deadline.CancelAfter(_limits.RequestTimeout);
 
-            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            using var response = await _http.GrantTokenAsync(write, credential, content, request =>
+            {
+                if (endpoint.BasicAuth)
+                {
+                    var pair = Uri.EscapeDataString(credential.ClientIdentifier!) + ":" + Uri.EscapeDataString(credential.Secret);
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes(pair)));
+                }
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            }, deadline.Token);
             var status = (int)response.StatusCode;
             string? text;
             try
             {
-                var bytes = await ReadBoundedAsync(response, MaxTokenResponseBytes, ct);
+                var bytes = await ReadBoundedAsync(response, MaxTokenResponseBytes, deadline.Token);
                 text = bytes is null ? null : Encoding.UTF8.GetString(bytes);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
@@ -759,24 +907,23 @@ public sealed partial class AnbPayrollApiClient
 
             if (status is < 200 or >= 300)
             {
-                // Never the raw body: an identity provider may echo the client id or the request back. A 3xx is
-                // never followed (the secret must not be re-sent) and is a refusal like any other non-2xx.
+                // Never the raw body: an identity provider may echo the client id or the request back.
                 var oauthError = OAuthErrorCode(text);
                 Safe(() => _log.LogWarning("ANB token request refused: HTTP {Status} {OAuthError}", status, oauthError));
-                return (null, status is 400 or 401 or 403 ? BankChannelCodes.TokenRejected : BankChannelCodes.TokenUnavailable);
+                return (null, status is 400 or 401 or 403 ? BankChannelCodes.TokenRejected : BankChannelCodes.TokenUnavailable, null);
             }
 
             var token = ParseToken(text);
             if (token is null)
             {
                 Safe(() => _log.LogWarning("ANB token response was not a usable bearer token (HTTP {Status})", status));
-                return (null, BankChannelCodes.TokenUnavailable);
+                return (null, BankChannelCodes.TokenUnavailable, null);
             }
 
             var (value, lifetime) = token.Value;
             if (lifetime is { } life && life > TokenSkew)
                 _tokens[key] = new CachedToken(value, now + life - TokenSkew);
-            return (value, string.Empty);
+            return (value, string.Empty, null);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -784,9 +931,10 @@ public sealed partial class AnbPayrollApiClient
         }
         catch (Exception ex)
         {
+            // Includes a refused redirect (never followed, so the secret is not re-sent) and every transport refusal: no token.
             var kind = ex.GetType().Name;
             Safe(() => _log.LogWarning("ANB token request failed ({ExceptionType})", kind));
-            return (null, BankChannelCodes.TokenUnavailable);
+            return (null, BankChannelCodes.TokenUnavailable, null);
         }
     }
 
@@ -834,101 +982,58 @@ public sealed partial class AnbPayrollApiClient
         return "unparsed";
     }
 
-    /// <summary>Tenant + company + environment + both URLs + scope + credential version + a hash of the client id
-    /// AND secret, so a secret changed under the same version never reuses a token.</summary>
-    private static string TokenKey(Endpoint endpoint, BankChannelScope scope, AnbClientCredential credential) =>
+    /// <summary>Tenant + company + environment + both URLs (the token URL with its path) + scope + credential version + a hash of the
+    /// client id AND secret, so a secret changed under the same version never reuses a token.</summary>
+    private static string TokenKey(Endpoint endpoint, BankChannelScope scope, UnsealedGovernmentCredential credential) =>
         string.Join("|",
             scope.TenantId.ToString("N"), scope.CompanyId?.ToString("N") ?? "-",
-            endpoint.Environment, endpoint.TokenUrl.AbsoluteUri, endpoint.BaseUrl.AbsoluteUri, endpoint.Scope, credential.Version,
-            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(credential.ClientId + "\n" + credential.ClientSecret)))[..32]);
+            endpoint.Environment, endpoint.TokenUrl.AbsoluteUri, endpoint.TokenPath, endpoint.BaseUrl.AbsoluteUri, endpoint.Scope,
+            credential.Version.ToString(CultureInfo.InvariantCulture),
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(credential.ClientIdentifier + "\n" + credential.Secret)))[..32]);
 
     // ── Settings ────────────────────────────────────────────────────────────────────────────────
 
-    private sealed record Endpoint(string Environment, Uri BaseUrl, Uri TokenUrl, string Scope, bool BasicAuth)
-    {
-        public string Url(string path) => BaseUrl.AbsoluteUri.TrimEnd('/') + path;
-    }
+    /// <summary>One environment's endpoint, every part from <see cref="GovernmentHttp"/>'s allow-list and the Government:Banks:Anb tree.</summary>
+    private sealed record Endpoint(string Environment, Uri BaseUrl, Uri TokenUrl, string TokenPath, string Scope, bool BasicAuth);
 
-    private static Endpoint Resolve(IAnbEndpointConfig c)
+    /// <summary>The OAuth settings ANB does not publish (scope and client authentication). Missing or unusable: a refusal naming the
+    /// setting, never its value.</summary>
+    private (string Scope, bool BasicAuth) OAuthSettings()
     {
-        var values = new (string Name, string? Value)[]
-        {
-            (nameof(IAnbEndpointConfig.Environment), c.Environment),
-            (nameof(IAnbEndpointConfig.BaseUrl), c.BaseUrl),
-            (nameof(IAnbEndpointConfig.TokenUrl), c.TokenUrl),
-            (nameof(IAnbEndpointConfig.GrantType), c.GrantType),
-            (nameof(IAnbEndpointConfig.Scope), c.Scope),
-            (nameof(IAnbEndpointConfig.ClientAuthMethod), c.ClientAuthMethod),
-            (nameof(IAnbEndpointConfig.AllowedHostSuffixes), c.AllowedHostSuffixes),
-        };
-        var missing = values.Where(v => string.IsNullOrWhiteSpace(v.Value)).Select(v => v.Name).ToList();
+        var scope = _http.Setting(Body, ScopeSetting);
+        var auth = _http.Setting(Body, ClientAuthMethodSetting);
+        var missing = new[] { (ScopeSetting, scope), (ClientAuthMethodSetting, auth) }
+            .Where(v => string.IsNullOrWhiteSpace(v.Item2)).Select(v => v.Item1).ToList();
         if (missing.Count > 0) throw new BankChannelRefusedException(BankChannelCodes.ConfigMissing, missing);
 
         var invalid = new List<string>();
-        var suffixes = HostSuffixes(c.AllowedHostSuffixes!);
-        if (suffixes.Count == 0) invalid.Add(nameof(IAnbEndpointConfig.AllowedHostSuffixes));
-        var baseUrl = HttpsUri(c.BaseUrl!, suffixes);
-        var tokenUrl = HttpsUri(c.TokenUrl!, suffixes);
-        if (baseUrl is null) invalid.Add(nameof(IAnbEndpointConfig.BaseUrl));
-        if (tokenUrl is null) invalid.Add(nameof(IAnbEndpointConfig.TokenUrl));
-        if (!string.Equals(c.GrantType!.Trim(), GrantClientCredentials, StringComparison.Ordinal))
-            invalid.Add(nameof(IAnbEndpointConfig.GrantType));
-        var auth = c.ClientAuthMethod!.Trim();
-        if (auth is not (AuthBasic or AuthPost)) invalid.Add(nameof(IAnbEndpointConfig.ClientAuthMethod));
-        if (c.Scope!.Any(ch => ch < 0x20 || ch > 0x7E)) invalid.Add(nameof(IAnbEndpointConfig.Scope));
+        if (scope!.Trim().Length > 256 || scope.Any(ch => ch < 0x20 || ch > 0x7E)) invalid.Add(ScopeSetting);
+        var method = auth!.Trim();
+        if (method is not (AuthBasic or AuthPost)) invalid.Add(ClientAuthMethodSetting);
         if (invalid.Count > 0) throw new BankChannelRefusedException(BankChannelCodes.ConfigInvalid, invalid);
-
-        return new Endpoint(c.Environment!.Trim(), baseUrl!, tokenUrl!, c.Scope!.Trim(), auth == AuthBasic);
+        return (scope.Trim(), method == AuthBasic);
     }
 
     /// <summary>
-    /// Lower-cased DNS suffixes, or an empty list when the setting is unusable. Every non-blank entry must be a
-    /// registrable domain: letters, digits and hyphens in at least two labels, not a bare TLD and not a known
-    /// public second-level suffix such as com.sa or co.uk (a short list, not the full public-suffix list: the
-    /// value is operator configuration). One bad entry refuses the whole list; a wildcard or dot-only entry is bad.
+    /// The endpoint for the scope's environment. The environment must be one GovernmentHttp knows (sandbox or production; a free-text
+    /// label is refused), and the base URL, token URL and token path come only from its allow-list, which refuses a sandbox URL on a
+    /// production host.
     /// </summary>
-    private static List<string> HostSuffixes(string raw)
+    private Endpoint Resolve(BankChannelScope scope)
     {
-        var result = new List<string>();
-        foreach (var entry in raw.Split(','))
+        var environment = scope.Environment;
+        if (!GovernmentEnvironments.IsKnown(environment)) throw new BankChannelRefusedException(BankChannelCodes.EnvironmentMismatch);
+        var (oauthScope, basic) = OAuthSettings();
+        try
         {
-            var s = entry.Trim().Trim('.').ToLowerInvariant();
-            if (s.Length == 0)
-            {
-                if (entry.Trim().Length > 0) return new List<string>(); // "." or ".." alone
-                continue;
-            }
-            var labels = s.Split('.');
-            if (labels.Any(l => l.Length == 0 || l.Length > 63 || l[0] == '-' || l[^1] == '-'
-                                || !l.All(ch => ch is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '-')))
-                return new List<string>();
-            if (labels.Length < 2) return new List<string>();
-            if (labels.Length == 2 && labels[1].Length == 2 && PublicSecondLevelLabels.Contains(labels[0])) return new List<string>();
-            if (!result.Contains(s)) result.Add(s);
+            return new Endpoint(environment, _http.ResolveBaseUrl(Body, environment), _http.ResolveTokenUrl(Body, environment),
+                _http.ResolveTokenPath(Body, environment), oauthScope, basic);
         }
-        return result;
+        catch (GovernmentTransportRefusedException)
+        {
+            throw new BankChannelRefusedException(BankChannelCodes.HostNotAllowed);
+        }
     }
-
-    private static readonly HashSet<string> PublicSecondLevelLabels = new(StringComparer.Ordinal)
-    {
-        "com", "net", "org", "gov", "edu", "med", "sch", "ac", "co", "mil", "ltd", "plc", "nic", "biz", "info",
-    };
-
-    /// <summary>Absolute https, no user info, query or fragment, a DNS name (never an IP literal) with at least
-    /// two labels, under one of the allowed suffixes.</summary>
-    private static Uri? HttpsUri(string value, IReadOnlyList<string> suffixes)
-    {
-        if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var u)) return null;
-        if (u.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(u.UserInfo) || !string.IsNullOrEmpty(u.Query)
-            || !string.IsNullOrEmpty(u.Fragment) || u.HostNameType != UriHostNameType.Dns)
-            return null;
-        var host = u.IdnHost.ToLowerInvariant();
-        if (!host.Contains('.') || host == "localhost" || host.EndsWith(".localhost", StringComparison.Ordinal)) return null;
-        return suffixes.Any(s => host == s || host.EndsWith("." + s, StringComparison.Ordinal)) ? u : null;
-    }
-
-    private static bool SameEnvironment(Endpoint endpoint, BankChannelScope scope) =>
-        string.Equals(endpoint.Environment, scope.Environment?.Trim(), StringComparison.OrdinalIgnoreCase);
 
     // ── Text hygiene ────────────────────────────────────────────────────────────────────────────
 

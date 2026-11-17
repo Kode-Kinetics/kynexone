@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using FluentAssertions;
+using Zayra.Api.Infrastructure.Government;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
 using static Zayra.Api.Tests.Government.AnbPayrollApi.AnbApiTestKit;
@@ -115,11 +116,45 @@ public class AnbPayrollApiMaskingTests
     }
 
     [Fact]
-    public void RefusalMessages_NameSettingsNotValues()
+    public async Task RefusalMessages_NameSettingsNotValues()
     {
         var config = Config();
-        config.BaseUrl = "http://" + ClientSecret + ".test/api";
-        var act = () => Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out _, config);
-        AssertClean(act.Should().Throw<BankChannelRefusedException>().Which.ToString(), "the refusal");
+        config[GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox")] = "http://" + ClientSecret + ".test/api";
+        var client = Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out var log, config);
+        var outcome = await client.SubmitAsync(Submit(Data), CancellationToken.None);
+        outcome.Code.Should().Be(BankChannelCodes.HostNotAllowed);
+        AssertClean(outcome.ToString(), "the refusal");
+        AssertClean(log.All, "the log");
+
+        config[AnbPayrollApiClient.ScopeKey] = "payroll " + ClientSecret + "\u0001";
+        var build = () => Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out _, config);
+        AssertClean(build.Should().Throw<BankChannelRefusedException>().Which.ToString(), "the refusal");
+    }
+
+    [Fact]
+    public void AStatusLine_ABatchBinding_AndTheSubmitPreparation_PrintNoWageTokenOrSecret()
+    {
+        // Security P3-3.
+        var line = new AnbStatusLine(Data.Rows[0].EmployeeNationalId!, Data.Rows[0].AccountNumber!, 12345.67m, "RJHISARI",
+            Data.Rows[0].EmployeeName, "P1", "PAID", "ok", "TRX1", null, null);
+        line.ToString().Should().NotContain("12345").And.Contain("PAID");
+        AssertClean(line.ToString(), "a status line");
+        Binding(Data).ToString().Should().NotContain(Data.Total.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            .And.NotContain("total");
+
+        // The client's private submit preparation holds the token and the credential: its ToString prints neither.
+        var prepared = typeof(AnbPayrollApiClient).GetNestedType("Prepared", System.Reflection.BindingFlags.NonPublic)!;
+        var instance = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(prepared);
+        void Set(string property, object value) =>
+            prepared.GetField($"<{property}>k__BackingField", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                .SetValue(instance, value);
+        Set("Token", AccessToken);
+        Set("Credential", Credential());
+        Set("Redact", new List<string> { ClientSecret, ClientId, AccessToken });
+        Set("HeaderSha", Data.Header.ExpectedSha256);
+        Set("BodySha", Data.Body.ExpectedSha256);
+        var text = instance.ToString()!;
+        AssertClean(text, "the submit preparation");
+        text.Should().Contain(Data.Body.ExpectedSha256);
     }
 }

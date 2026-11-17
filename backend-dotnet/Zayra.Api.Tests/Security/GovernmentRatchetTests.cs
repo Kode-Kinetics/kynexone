@@ -62,26 +62,18 @@ public sealed partial class GovernmentRatchetTests
             "The published specification page the ANB export format cites as its source; shown to users, never requested.",
     };
 
-    /// <summary>
-    /// The ONE file that may hold its own HttpClient (CTO decision, wave 2 plan section 11): the bank payroll client. It builds that
-    /// client only around the guarded handler (the bank handler factory starts from the foundation's guarded socket factory, as
-    /// GovernmentHttp.CreateHandler does) and refuses a handler that follows redirects. May only shrink; never add a second file.
-    /// </summary>
-    private const string OwnHttpClientAllowed = "Infrastructure/Payroll/SaudiBankExports/Api/AnbPayrollApiClient.cs";
-    private const string BankHandlerFactoryFile = "Infrastructure/Payroll/SaudiBankExports/Api/AnbHttpHandlerFactory.cs";
-
     [Fact]
     public void A_GovernmentHttp_IsTheOnlyWayToABody()
     {
+        // No file holds its own HttpClient any more: the bank payroll client sends through GovernmentHttp like every other body
+        // (CTO directive 1, A1 and E4). There is no allowance to shrink.
         var offenders = new List<string>();
         var allowedSeen = new HashSet<string>(StringComparer.Ordinal);
         var scanned = 0;
-        string? ownClientCode = null;
         foreach (var (relative, code) in Source())
         {
             if (relative == GovernmentHttpFile) continue;
-            if (relative == OwnHttpClientAllowed) ownClientCode = code;
-            else if (IsGovernmentFolder(relative))
+            if (IsGovernmentFolder(relative))
             {
                 scanned++;
                 foreach (Match m in RawHttpCall().Matches(code))
@@ -99,18 +91,7 @@ public sealed partial class GovernmentRatchetTests
         offenders.Should().BeEmpty("a request to a government or bank body goes through GovernmentHttp.ExchangeAsync: allow-listed "
             + "base URL per environment, the live gate first, one send, no retry.\n  " + string.Join("\n  ", offenders));
         allowedSeen.Should().BeEquivalentTo(HostMentionsAllowed.Keys, "an allowance for a file that no longer needs it must be removed");
-        // The one own-HttpClient file: still present (else remove the allowance), one client only, built around the injected handler
-        // after the redirect refusal, and that handler's factory starts from the guarded socket factory with redirects off.
-        ownClientCode.Should().NotBeNull("an allowance for a file that no longer exists must be removed");
-        Regex.Matches(ownClientCode!, @"\bnew\s+HttpClient\s*\(").Should().ContainSingle("the bank client builds exactly one HttpClient");
-        Regex.IsMatch(ownClientCode!, @"\bnew\s+HttpClient\s*\(\s*handler\s*,").Should().BeTrue("around the injected guarded handler only");
-        ownClientCode!.IndexOf("FollowsRedirects(handler)", StringComparison.Ordinal).Should()
-            .BeInRange(0, ownClientCode.IndexOf("new HttpClient(", StringComparison.Ordinal), "a redirect-following handler is refused first");
-        Regex.IsMatch(ownClientCode, @"\bCreateClient\s*\(").Should().BeFalse("no other client is made there");
-        var factory = Source().Single(f => f.Relative == BankHandlerFactoryFile).Code;
-        factory.Should().MatchRegex(@"(?:SsrfGuard\.CreateGuardedClientHandler|GovernmentHttp\.CreateHandler)\s*\(\s*\)", "the bank handler starts from the guarded factory");
-        factory.Should().Contain("AllowAutoRedirect = false");
-        // The bank client as it is written on its own branch would be caught here at integration.
+        // The bank client as it was written on its own branch would be caught here at integration.
         var sibling = "var client = new HttpClient(handler); using var resp = await client.SendAsync(req, ct);";
         (IsGovernmentFolder("Infrastructure/Payroll/SaudiBankExports/Api/AnbPayrollApiClient.cs") && RawHttpCall().IsMatch(sibling)).Should().BeTrue();
         // And the registration uses the guarded handler.
@@ -370,11 +351,11 @@ public sealed partial class GovernmentRatchetTests
     }
 
     /// <summary>
-    /// The one file that may send its own writes (the bank client's payroll and token POSTs), and the one file that may build that
-    /// client and its channel: the gated factory, which wraps them in <c>GatedBankPayrollChannel</c> (live-write decision plus a
-    /// committed intent before any call). The allowance holds only while nothing else in the app builds the client or the channel.
+    /// The one file that may build the bank client and its channel: the gated factory, which wraps them in
+    /// <c>GatedBankPayrollChannel</c> (live-write decision plus a committed intent before any call). The client's own writes (the
+    /// payroll and token POSTs) have no allowance: they go through GovernmentHttp like every other write.
     /// </summary>
-    private const string BankClientWritesAllowed = OwnHttpClientAllowed;
+    private const string BankClientFile = "Infrastructure/Payroll/SaudiBankExports/Api/AnbPayrollApiClient.cs";
     private const string GatedBankFactoryFile = "Infrastructure/Payroll/SaudiBankExports/Api/AnbGatedChannelFactory.cs";
     private const string GatedBankChannelFile = "Infrastructure/Payroll/SaudiBankExports/Channels/GatedBankPayrollChannel.cs";
 
@@ -383,6 +364,63 @@ public sealed partial class GovernmentRatchetTests
         + @"|typeof\s*\(\s*(?:[\w.]+\.)?(?:AnbPayrollApiClient|AnbPayrollChannel)\s*\)"
         + @"|\b(?:Add(?:Singleton|Scoped|Transient|HttpClient)|CreateInstance|GetService|GetRequiredService|GetServices)\s*<[^>;]*\b(?:AnbPayrollApiClient|AnbPayrollChannel)\b")]
     private static partial Regex BankClientConstruction();
+
+    /// <summary>An HttpClient, HttpClientHandler or SocketsHttpHandler being built: <c>new T(</c>, <c>new Ns.T(</c>, and target-typed
+    /// <c>T x = new(</c> (locals, fields and properties).</summary>
+    [GeneratedRegex(@"\bnew\s+(?:[\w.]+\.)?(?:HttpClient|HttpClientHandler|SocketsHttpHandler)\s*[({]"
+        + @"|\b(?:HttpClient|HttpClientHandler|SocketsHttpHandler|HttpMessageHandler)\s+\w+\s*(?:\{[^}]*\}\s*)?=\s*new\s*[({]")]
+    private static partial Regex HttpStackConstruction();
+
+    /// <summary>Any mention of an HTTP client or handler type (the bank folders take GovernmentHttp only).</summary>
+    [GeneratedRegex(@"\b(?:HttpClient|HttpClientHandler|SocketsHttpHandler|HttpMessageHandler|DelegatingHandler|IHttpClientFactory|IHttpMessageHandlerFactory)\b")]
+    private static partial Regex HttpStackType();
+
+    private static bool IsBankFolder(string relative) =>
+        relative.StartsWith("Infrastructure/Payroll/SaudiBankExports/Api/", StringComparison.Ordinal)
+        || relative.StartsWith("Infrastructure/Payroll/SaudiBankExports/Channels/", StringComparison.Ordinal);
+
+    /// <summary>The top-level argument lists of every <c>GrantTokenAsync(</c> call in <paramref name="code"/>.</summary>
+    private static List<List<string>> GrantCalls(string code)
+    {
+        var calls = new List<List<string>>();
+        foreach (Match m in Regex.Matches(code, @"\.GrantTokenAsync\s*\("))
+        {
+            var open = m.Index + m.Length - 1;
+            calls.Add(SourceScan.SplitTopLevel(code[(open + 1)..SourceScan.MatchingClose(code, open, '(', ')')]));
+        }
+        return calls;
+    }
+
+    // ── (j) no certificate check is switched off, and the government clients are configured in one place ─────────
+
+    [GeneratedRegex(@"\b(?:ServerCertificateCustomValidationCallback|RemoteCertificateValidationCallback|DangerousAcceptAnyServerCertificateValidator|CertificateRevocationCheckMode\s*\.\s*NoCheck)\b")]
+    private static partial Regex CertificateCheckOverride();
+
+    [GeneratedRegex(@"\bConfigureHttpClientDefaults\b|\bAddHttpClient\s*\(\s*(?:GovernmentHttp\.)?ClientName\b|""gov-(?:qiwa|gosi|muqeem|takamol|bank_)")]
+    private static partial Regex GovernmentClientConfiguration();
+
+    [Fact]
+    public void J_NoCertificateCheckIsSwitchedOff_AndTheGovernmentClientsAreConfiguredOnlyByGovernmentHttp()
+    {
+        var files = Source().ToList();
+        files.Count.Should().BeGreaterThan(500, "the scan must be reading the real API source");
+
+        // Anywhere in the app: a handler that accepts any server certificate could be handed to a government client at runtime.
+        var overrides = files.SelectMany(f => CertificateCheckOverride().Matches(f.Code).Select(m => $"{f.Relative}:{SourceScan.LineOf(f.Code, m.Index)}: {m.Value}")).ToList();
+        overrides.Should().BeEmpty("no production code turns certificate validation off (tests use their own fixtures).\n  " + string.Join("\n  ", overrides));
+        CertificateCheckOverride().IsMatch("handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;").Should().BeTrue();
+        CertificateCheckOverride().IsMatch("new HttpClientHandler { ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator }").Should().BeTrue();
+
+        // Only GovernmentHttp registers or reconfigures a gov-* named client; a global default would reach them too.
+        var configured = files.Where(f => f.Relative != GovernmentHttpFile)
+            .SelectMany(f => GovernmentClientConfiguration().Matches(f.Code).Select(m => $"{f.Relative}:{SourceScan.LineOf(f.Code, m.Index)}: {m.Value}")).ToList();
+        configured.Should().BeEmpty("the gov-* clients get exactly GovernmentHttp's guarded primary handler.\n  " + string.Join("\n  ", configured));
+        GovernmentClientConfiguration().IsMatch("builder.Services.ConfigureHttpClientDefaults(b => b.AddStandardResilienceHandler());").Should().BeTrue();
+        GovernmentClientConfiguration().IsMatch("services.AddHttpClient(GovernmentHttp.ClientName(GovernmentBodies.BankAnb)).ConfigurePrimaryHttpMessageHandler(h);").Should().BeTrue();
+        GovernmentClientConfiguration().IsMatch("services.AddHttpClient(\"gov-bank_anb\");").Should().BeTrue();
+        GovernmentClientConfiguration().IsMatch("services.AddHttpClient(\"anthropic\");").Should().BeFalse();
+        GovernmentClientConfiguration().IsMatch("var key = \"gov-cred-step-up:\" + hash;").Should().BeFalse();
+    }
 
     /// <summary>Places in <paramref name="code"/> that build, register or resolve the ANB client or channel.</summary>
     internal static List<string> BankClientConstructions(string code) =>
@@ -408,16 +446,52 @@ public sealed partial class GovernmentRatchetTests
             .SelectMany(f => DecisionConstruction().Matches(f.Code).Select(m => $"{f.Relative}:{SourceScan.LineOf(f.Code, m.Index)}")).ToList();
         made.Should().BeEmpty("a GovernmentLiveDecision is made only by GovernmentLivePolicy (its constructor is internal for that reason)");
 
-        var writes = Source().Where(f => IsGovernmentFolder(f.Relative) && f.Relative != GovernmentHttpFile && f.Relative != BankClientWritesAllowed)
+        var writes = Source().Where(f => IsGovernmentFolder(f.Relative) && f.Relative != GovernmentHttpFile)
             .SelectMany(f => WritesOutsideTheCheckedPath(f.Code).Select(o => $"{f.Relative}:{o}")).ToList();
         writes.Should().BeEmpty("every POST, PUT, PATCH or DELETE to a body goes through GovernmentHttp.ExchangeAsync, which refuses it without "
             + "a live-write decision (four gates plus the legal clearance).\n  " + string.Join("\n  ", writes));
 
-        // The bank client's own writes are allowed only behind the gated channel: the allowed file still sends them (else drop the
-        // allowance), and NOTHING but the gated factory builds, registers or resolves the client or its channel.
+        // The bank client's payroll POST is one of those writes, through the transport (not an allowance).
         var files = Source().ToList();
-        WritesOutsideTheCheckedPath(files.Single(f => f.Relative == BankClientWritesAllowed).Code).Should().NotBeEmpty(
-            "an allowance for a file that no longer writes must be removed");
+        var bankClient = files.Single(f => f.Relative == BankClientFile).Code;
+        WriteMethod().IsMatch(bankClient).Should().BeTrue("the bank client still submits, so this scan must see its POST");
+        WritesOutsideTheCheckedPath(bankClient).Should().BeEmpty();
+
+        // No HttpClient, handler or socket handler is built in a government or bank folder: GovernmentHttp owns the only guarded,
+        // non-redirecting, no-retry socket (target-typed new(...) included).
+        var built = Source().Where(f => IsGovernmentFolder(f.Relative) && f.Relative != GovernmentHttpFile)
+            .SelectMany(f => HttpStackConstruction().Matches(f.Code).Select(m => $"{f.Relative}:{SourceScan.LineOf(f.Code, m.Index)}: {m.Value.Trim()}")).ToList();
+        built.Should().BeEmpty("only GovernmentHttp builds the HTTP stack for a body.\n  " + string.Join("\n  ", built));
+        foreach (var sample in new[]
+                 {
+                     "_http = new HttpClient(handler, disposeHandler: false);", "HttpClient client = new(handler);", "private readonly HttpClient _c = new();",
+                     "var h = new HttpClientHandler { AllowAutoRedirect = false };", "HttpClientHandler h = new() { UseProxy = false };",
+                     "var s = new SocketsHttpHandler();", "SocketsHttpHandler s = new();", "var c = new System.Net.Http.HttpClient();",
+                     "HttpMessageHandler h = new SocketsHttpHandler();",
+                 })
+            HttpStackConstruction().IsMatch(sample).Should().BeTrue(sample);
+        HttpStackConstruction().IsMatch("using var response = await _http.ExchangeAsync(decision, credential, HttpMethod.Get, path, null, Configure, ct);").Should().BeFalse();
+
+        // The bank folders do not even name an HTTP client or handler type: their only transport is GovernmentHttp, so no caller can
+        // hand them a handler (one with certificate checks turned off, or one that follows redirects).
+        var named = Source().Where(f => IsBankFolder(f.Relative))
+            .SelectMany(f => HttpStackType().Matches(f.Code).Select(m => $"{f.Relative}:{SourceScan.LineOf(f.Code, m.Index)}: {m.Value}")).ToList();
+        Source().Count(f => IsBankFolder(f.Relative)).Should().BeGreaterThan(5, "the bank folders must be found, or this guard is inert");
+        named.Should().BeEmpty("a bank client takes GovernmentHttp, never an HttpClient or handler.\n  " + string.Join("\n  ", named));
+        HttpStackType().IsMatch("internal AnbPayrollApiClient(HttpMessageHandler handler, IAnbEndpointConfig config)").Should().BeTrue();
+        HttpStackType().IsMatch("Create(IHttpClientFactory clients)").Should().BeTrue();
+        HttpStackType().IsMatch("HttpCompletionOption.ResponseHeadersRead; HttpRequestMessage r; HttpResponseMessage s;").Should().BeFalse();
+
+        // The token grant: only the credential-bound form, which posts to the operator's fixed token path, may be called from a bank
+        // folder; the path-taking form is internal to the transport (and the legacy Qiwa adapter).
+        var grants = Source().Where(f => IsBankFolder(f.Relative)).SelectMany(f => GrantCalls(f.Code).Select(a => (f.Relative, Args: a))).ToList();
+        grants.Should().NotBeEmpty("the bank client mints its token through the transport, so this scan must see it");
+        grants.Where(g => g.Args.Count != 5 || g.Args.Any(a => a.TrimStart().StartsWith('"') || a.Contains("Path", StringComparison.Ordinal)))
+            .Select(g => $"{g.Relative}: GrantTokenAsync({string.Join(",", g.Args)})").Should().BeEmpty("no caller-chosen token path");
+        typeof(GovernmentHttp).GetMethods(BindingFlags.Public | BindingFlags.Instance).Where(m => m.Name == nameof(GovernmentHttp.GrantTokenAsync))
+            .Should().ContainSingle().Which.GetParameters().Should().NotContain(p => p.ParameterType == typeof(string));
+
+        // And NOTHING but the gated factory builds, registers or resolves the client or its channel.
         var stray = files.Where(f => f.Relative != GatedBankFactoryFile)
             .SelectMany(f => BankClientConstructions(f.Code).Select(o => $"{f.Relative}:{o}")).ToList();
         stray.Should().BeEmpty("the ANB client and channel are built only by the gated factory, so every call passes the live-write "

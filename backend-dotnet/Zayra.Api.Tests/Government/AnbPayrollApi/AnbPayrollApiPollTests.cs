@@ -26,7 +26,7 @@ public class AnbPayrollApiPollTests
         handler.ApiRequests.Should().HaveCount(60);
         handler.ApiRequests.Select(r => ParseQuery(r.Uri)["take"]).Should().OnlyContain(t => t == "50");
         handler.ApiRequests.Select(r => ParseQuery(r.Uri)["page"]).Should().Equal(Enumerable.Range(1, 60).Select(p => p.ToString()));
-        handler.ApiRequests.Should().OnlyContain(r => r.Uri.AbsolutePath == "/api/payroll/v2/" + PayrollId);
+        handler.ApiRequests.Should().OnlyContain(r => r.Uri.AbsolutePath == "/payroll/v2/" + PayrollId);
         handler.TokenRequests.Should().ContainSingle();
         snapshot.PagesFetched.Should().Be(60);
         snapshot.ItemCount.Should().Be(3000);
@@ -293,7 +293,7 @@ public class AnbPayrollApiPollTests
         file.Content.Should().Equal(bytes);
         file.Sha256.Should().Be(Zayra.Api.Infrastructure.Payroll.SaudiBankExports.AnbConnectCsvGenerator.Sha256Hex(bytes));
         file.FileName.Should().Be("wps.txt");
-        handler.ApiRequests.Single().Uri.AbsolutePath.Should().Be("/api/payroll/" + PayrollId + "/WPS");
+        handler.ApiRequests.Single().Uri.AbsolutePath.Should().Be("/payroll/" + PayrollId + "/WPS");
     }
 
     [Fact]
