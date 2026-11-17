@@ -107,12 +107,12 @@ public sealed class GovernmentCredentialStoreTests
         var (store, db) = Create(kit);
         var tenant = Guid.NewGuid();
         var rotator = Guid.NewGuid();
-        await store.SaveAsync(tenant, null, GovernmentBodies.BankAnb, "sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, null, Ctx(tenant), default);
+        await store.SaveAsync(tenant, null, GovernmentBodies.BankAnb, "sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, null, Ctx(tenant), default, new GovernmentCredentialBinding("synthetic-client-id", "api.bank-sandbox.example.test", "auth.bank-sandbox.example.test"));
         (await store.GetMetadataAsync(tenant, null, GovernmentBodies.BankAnb, "sandbox", default))!.LastUsedAtUtc.Should().BeNull();
         await store.OpenAsync(tenant, null, GovernmentBodies.BankAnb, "sandbox", default);
         (await store.GetMetadataAsync(tenant, null, GovernmentBodies.BankAnb, "sandbox", default))!.LastUsedAtUtc.Should().NotBeNull();
 
-        var rotated = await store.SaveAsync(tenant, null, GovernmentBodies.BankAnb, "sandbox", GovernmentCredentialKinds.OAuthClient, SecretB, null, Ctx(tenant, rotator), default);
+        var rotated = await store.SaveAsync(tenant, null, GovernmentBodies.BankAnb, "sandbox", GovernmentCredentialKinds.OAuthClient, SecretB, null, Ctx(tenant, rotator), default, new GovernmentCredentialBinding("synthetic-client-id", "api.bank-sandbox.example.test", "auth.bank-sandbox.example.test"));
 
         rotated.Version.Should().Be(2);
         rotated.RotatedBy.Should().Be(rotator);
@@ -198,7 +198,7 @@ public sealed class GovernmentCredentialStoreTests
         var kit = new FeKit();
         var (store, db) = Create(kit);
         var tenant = Guid.NewGuid();
-        await store.SaveAsync(tenant, null, GovernmentBodies.Gosi, "production", GovernmentCredentialKinds.PrivateKey, SecretA, null, Ctx(tenant), default);
+        await store.SaveAsync(tenant, null, GovernmentBodies.Gosi, "production", GovernmentCredentialKinds.PrivateKey, SecretA, null, Ctx(tenant), default, new GovernmentCredentialBinding(BaseUrlHost: "api.gosi.example.test"));
 
         (await store.DeleteAsync(tenant, null, GovernmentBodies.Gosi, "production", Ctx(tenant), default)).Should().BeTrue();
 
@@ -258,11 +258,11 @@ public sealed class GovernmentCredentialStoreTests
         (await save.Should().ThrowAsync<GovernmentCredentialRefusedException>()).Which.Code.Should().Be(GovernmentCredentialStore.LiveNotAcceptedCode);
         (await db.GovernmentCredentials.CountAsync()).Should().Be(0);
         // Sandbox is unaffected.
-        await closed.SaveAsync(tenant, null, GovernmentBodies.BankAnb, "sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, null, Ctx(tenant), default);
+        await closed.SaveAsync(tenant, null, GovernmentBodies.BankAnb, "sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, null, Ctx(tenant), default, new GovernmentCredentialBinding("synthetic-client-id", "api.bank-sandbox.example.test", "auth.bank-sandbox.example.test"));
 
         // A production credential stored while the flag was on cannot be used once it is off.
         var open = new GovernmentCredentialStore(db, kit.Keys, kit.Kek, kit.Options, new AuditService(db), AcceptLive);
-        await open.SaveAsync(tenant, null, GovernmentBodies.BankAnb, "production", GovernmentCredentialKinds.OAuthClient, SecretB, null, Ctx(tenant), default);
+        await open.SaveAsync(tenant, null, GovernmentBodies.BankAnb, "production", GovernmentCredentialKinds.OAuthClient, SecretB, null, Ctx(tenant), default, new GovernmentCredentialBinding("synthetic-client-id", "api.bank.example.test", "auth.bank.example.test"));
         (await closed.IsUsableAsync(tenant, null, GovernmentBodies.BankAnb, "production", default)).Should().BeFalse();
         var read = () => closed.OpenAsync(tenant, null, GovernmentBodies.BankAnb, "production", default);
         await read.Should().ThrowAsync<GovernmentCredentialRefusedException>();

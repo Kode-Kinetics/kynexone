@@ -94,6 +94,7 @@ public sealed class GovernmentCredentialStore(
     public const string CompanyRequiredCode = "company_scope_required";
     public const string CompanyUnknownCode = "government_credential_company_unknown";
     public const string InvalidCode = "government_credential_invalid";
+    public const string HostRequiredCode = "government_credential_host_required";
     /// <summary>Operator flag, default false: production credentials are refused until it is true (after the KEK escrow holder is named).</summary>
     public const string AcceptLiveCredentialsKey = "Government:Credentials:AcceptLiveCredentials";
     public const int MaxSecretLength = 16_384;
@@ -121,6 +122,19 @@ public sealed class GovernmentCredentialStore(
         var expires = NormaliseUtc(expiresAtUtc);
         if (expires is { } expiry && expiry <= DateTime.UtcNow) throw new ArgumentException("The expiry must be in the future.", nameof(expiresAtUtc));
         binding = Normalise(binding);
+        // A bank credential, and every production credential, names the hosts it was issued for (the API host; and the token
+        // host for an OAuth client), so the transport can refuse any other. Only a sandbox credential of a government body may omit it.
+        if (GovernmentBodies.IsBank(body) || environment == GovernmentEnvironments.Production)
+        {
+            if (binding.BaseUrlHost is null)
+                throw new GovernmentCredentialRefusedException(HostRequiredCode, 400,
+                    "Give the API host this credential was issued for (for example api.bank.example).",
+                    "أدخل اسم خادم الواجهة البرمجية الذي صدرت له بيانات الاعتماد هذه.");
+            if (kind == GovernmentCredentialKinds.OAuthClient && binding.TokenUrlHost is null)
+                throw new GovernmentCredentialRefusedException(HostRequiredCode, 400,
+                    "Give the token (sign-in) host this OAuth client was issued for.",
+                    "أدخل اسم خادم الرموز (تسجيل الدخول) الذي صدر له عميل OAuth هذا.");
+        }
 
         // The company is settled BEFORE anything is sealed, so the AAD names the company the row is stored under and the audit row
         // tells the truth: a caller narrowed to one company who names none saves (or rotates) that company's own credential.
