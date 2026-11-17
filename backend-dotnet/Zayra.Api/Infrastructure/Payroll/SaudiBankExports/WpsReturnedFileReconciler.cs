@@ -30,8 +30,10 @@ public static class WpsReconciliationClass
 }
 
 /// <summary>
-/// The status words THIS reader accepts for a line. Its Paid and Returned words are the same as the shared
-/// <c>BankOutcomeVocabulary</c>'s; its Pending list is narrower (ISO ACWC, "accepted with change", is in no list here, so it confirms
+/// The status words THIS reader accepts for a line. Its Paid words are the same as the shared <c>BankOutcomeVocabulary</c>'s.
+/// Its Returned list still holds the rejection words (RJCT, REJECT(ED), DECLINED, FAIL(ED/URE), CANCELLED_BY_BANK) that the shared
+/// vocabulary now reads as Rejected ("not paid", not "money came back"); moving this reader to Rejected is an open follow-up, not
+/// done here. Its Pending list is narrower (ISO ACWC, "accepted with change", is in no list here, so it confirms
 /// nothing and the line is held), and "COMPLETE" and "ACCEPTED" are read as accepted-only. No single letters, no "OK"/"YES", and ISO
 /// ACSP ("settlement in process") is pending, never paid. The per-line status tag itself is unverified (see the rule catalogue), so anything not listed
 /// here confirms nothing. Paid or Returned only on an unambiguous bank word; "success"/"completed"/"executed" words mean the bank
