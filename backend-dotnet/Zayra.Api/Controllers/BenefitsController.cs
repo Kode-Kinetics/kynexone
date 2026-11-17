@@ -602,9 +602,16 @@ public class BenefitsController : ControllerBase
         if (tenantId is null) return Unauthorized();
         if (!await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct))
             return Ok(new LegacyBenefitReconcileReport(false, []));
+        // The caller's company scope is part of the query: only the companies they reach are read. A row with no company is tenant-wide and only a
+        // group-level caller sees it (EntityScopeContext.CanAccessCompany).
         var scope = this.GetEntityScope();
-        var enrollments = (await _db.BenefitEnrollments.AsNoTracking().Where(x => x.TenantId == tenantId).ToListAsync(ct))
-            .Where(x => scope.CanAccessCompany(x.CompanyId)).ToList();
+        var query = _db.BenefitEnrollments.AsNoTracking().Where(x => x.TenantId == tenantId);
+        if (!scope.IsGroupLevel)
+        {
+            var companies = scope.AccessibleCompanyIds.ToList();
+            query = query.Where(x => x.CompanyId.HasValue && companies.Contains(x.CompanyId.Value));
+        }
+        var enrollments = await query.ToListAsync(ct);
         var employeeIds = enrollments.Select(x => x.EmployeeId).Distinct().ToList();
         var codes = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && employeeIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, x => (x.EmployeeCode, x.FullName), ct);
