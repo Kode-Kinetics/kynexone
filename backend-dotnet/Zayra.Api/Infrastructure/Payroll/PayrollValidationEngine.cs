@@ -32,6 +32,15 @@ public static class PayrollValidationEngine
     public const string NationalityUnrecognised = "NATIONALITY_UNRECOGNISED";
 
     /// <summary>
+    /// Warning, never a block: a recurring-run employee nets exactly zero because this month's unpaid leave took the whole wage,
+    /// and the loan or advance instalment they owe, with nothing left to fund it, was carried forward (not written off). Raised
+    /// only when gross − deductions is exactly the zero net (nothing hidden by the clamp at zero), the month's own unpaid-leave
+    /// deduction is the whole of the employee's deductions, and an instalment was deferred. Any other zero net keeps the
+    /// non-overridable ZERO_NET_WITH_GROSS Error.
+    /// </summary>
+    public const string ZeroNetUnpaidLeaveDebtDeferred = "ZERO_NET_UNPAID_LEAVE_DEBT_DEFERRED";
+
+    /// <summary>
     /// S1/A2(c) — the LAST-RESORT default only. The ceiling was a compiled constant checked against a
     /// tenant-overridable statutory rule: when GOSI moves the ceiling, the rule updates and a compiled
     /// constant keeps warning on the old number forever. Callers now pass the resolved
@@ -294,6 +303,21 @@ public static class PayrollValidationEngine
                     "is reported separately as WARN_RECEIVABLE_RESIDUAL and still ages on " +
                     "GET /api/payroll/receivables. A zero-net employee has no payable line: exclude them from the " +
                     "WPS file (WpsSifValidator blocks a non-positive net by design).",
+                    slip.EmployeeId);
+            // ── A full month of unpaid leave with an instalment carried forward: explained, so a Warning ─────────────
+            // Same shape as the recovery carve-out above, and just as narrow: the arithmetic is exact (nothing swallowed by
+            // the clamp), the month's own unpaid-leave deduction IS every employee deduction on the slip, and a loan or
+            // advance instalment was deferred because nothing was left to fund it. The leave was approved as unpaid, the debt
+            // is carried forward (never written off), and nothing is owed to the bank: the person is left out of the bank
+            // file at batch creation. Anything else that reads zero keeps the Error below.
+            else if (paysRecurring && slip.NetSalary == 0m && slip.GrossSalary > 0m
+                     && slip.GrossSalary - slip.Deductions == slip.NetSalary
+                     && ctx.DebtDeferredEmployeeIds.Contains(slip.EmployeeId)
+                     && UnpaidLeaveIsTheWholeDeduction(ctx, slip))
+                Warn(ZeroNetUnpaidLeaveDebtDeferred,
+                    $"Employee {slip.EmployeeCode} nets zero: unpaid leave took the whole wage ({slip.GrossSalary:N2}) this month, " +
+                    "and the loan or advance instalment due was carried forward to the next run, not written off. Nothing is " +
+                    "paid to them, so they are left out of the bank file. Check the leave, then approve.",
                     slip.EmployeeId);
             else if (slip.NetSalary == 0m && slip.GrossSalary > 0m)
                 Err("ZERO_NET_WITH_GROSS",
@@ -863,6 +887,16 @@ public static class PayrollValidationEngine
 
     private static bool IsGosiEeCode(string code) => IsGosiEmployeeCode(code);
 
+    /// <summary>The month's own unpaid-leave line (component LEAVE, source Leave) is every employee deduction on the slip and
+    /// equals the slip's deductions exactly. Employer contributions are not taken from the employee and are ignored.</summary>
+    private static bool UnpaidLeaveIsTheWholeDeduction(PayrollValidationContext ctx, PayrollSlip slip)
+    {
+        var employeeLines = ctx.Deductions.Where(d => d.EmployeeId == slip.EmployeeId && !d.IsEmployerContribution && d.Amount != 0m).ToList();
+        return employeeLines.Count > 0
+            && employeeLines.All(d => d.ComponentCode == "LEAVE" && d.Source == "Leave")
+            && employeeLines.Sum(d => d.Amount) == slip.Deductions;
+    }
+
     /// <summary>F02 — a Gregorian ISO date whatever the server culture (ar-SA defaults to Umm al-Qura).</summary>
     private static string IsoDate(DateOnly d) => d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
@@ -897,6 +931,12 @@ public sealed record PayrollValidationContext(
     /// populated identically by Process and by /validate (which replaces the stored results wholesale).
     /// </summary>
     public IReadOnlySet<int> UnverifiedImportedBankDetails { get; init; } = new HashSet<int>();
+
+    /// <summary>
+    /// Employees whose loan or advance instalment this run could not fund and carried forward (Process's
+    /// WARN_EMI_DEFERRED_PRORATED_PERIOD). Process and /validate must populate it identically. Empty (the default) raises nothing.
+    /// </summary>
+    public IReadOnlySet<int> DebtDeferredEmployeeIds { get; init; } = new HashSet<int>();
 
     /// <summary>
     /// Overtime requests still awaiting approval per employee, for work dates in this pay period. Process and

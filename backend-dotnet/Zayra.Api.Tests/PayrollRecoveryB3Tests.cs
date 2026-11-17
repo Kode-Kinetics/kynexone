@@ -1057,8 +1057,15 @@ public class PayrollRecoveryB3Tests
         (await Payroll(db, tid, Approver).Lock(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 
-        (await db.Payslips.AsNoTracking().CountAsync(p => p.PayrollRunId == run.Id))
-            .Should().Be(0, "the lock had nothing to publish — this is the exact hole being closed");
+        // Lock now generates and publishes the payslip itself (PayslipPublishAtLockTests).
+        (await db.Payslips.AsNoTracking().Where(p => p.PayrollRunId == run.Id).ToListAsync())
+            .Should().ContainSingle().Which.IsPublishedToEss.Should().BeTrue("Lock generates and publishes every slip's payslip");
+
+        // A locked run with no payslip row (one locked before Lock generated them) is the case Generate-after-lock still closes.
+        await db.PayslipComponents.Where(c => db.Payslips
+            .Where(p => p.PayrollRunId == run.Id).Select(p => p.Id).Contains(c.PayslipId)).ExecuteDeleteAsync();
+        await db.Payslips.Where(p => p.PayrollRunId == run.Id).ExecuteDeleteAsync();
+        db.ChangeTracker.Clear();
 
         // THE FIX: generating after the lock publishes.
         (await Payroll(db, tid, Preparer).GeneratePayslips(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();

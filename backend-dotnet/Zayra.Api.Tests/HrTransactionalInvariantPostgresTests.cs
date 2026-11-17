@@ -335,6 +335,71 @@ public sealed class HrTransactionalInvariantPostgresTests
         (await replayDb.PayrollAdjustments.CountAsync(x => x.SourceId == seeded.RequestId)).Should().Be(1);
     }
 
+    /// <summary>
+    /// The race the test above only starts at the same moment, FORCED: both approvers have read the HR-approved request and
+    /// passed every check before either writes (each SaveChanges waits at a barrier until both have arrived). Whatever order
+    /// the commits land in, the request is payroll-approved once: one adjustment for payroll, one "Encashed" ledger row, the
+    /// reserved days consumed once, and the loser told plainly (409) that it was already decided. Kept as a guard: the request's
+    /// DecisionVersion concurrency token and the unique payroll-artifact index already serialise the two writes.
+    /// </summary>
+    [Fact]
+    public async Task LeaveEncashmentPayrollApproval_BothApproversPastEveryCheck_StillAppliesOnce()
+    {
+        var seeded = await SeedHrApprovedEncashmentAsync();
+        var barrier = new BothArrivedBarrier(2);
+
+        async Task<IActionResult> Approve()
+        {
+            await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+                .UseNpgsql(_fixture.ConnectionString, PostgresFixture.ProductionProviderOptions)
+                .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance)
+                .AddInterceptors(Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance)
+                .AddInterceptors(barrier)
+                .Options);
+            return await EncashmentController(db, seeded.TenantId, Guid.NewGuid()).PayrollApprove(seeded.RequestId,
+                new EncashmentDecisionRequest("forced concurrent payroll approval", seeded.RunId), CancellationToken.None);
+        }
+
+        var results = await Task.WhenAll(Task.Run(Approve), Task.Run(Approve));
+
+        barrier.Arrived.Should().BeGreaterThanOrEqualTo(2, "both approvers reached the write having passed every check: this is the real race");
+        results.Count(x => x is OkObjectResult).Should().Be(1, "exactly one approval wins");
+        var loser = results.Single(x => x is not OkObjectResult);
+        loser.Should().BeOfType<ConflictObjectResult>();
+        // The loser is refused by the request's concurrency token or by the one-artifact-per-request unique index, whichever
+        // its commit meets first; either way it is a 409 that says the request was already decided.
+        System.Text.Json.JsonSerializer.Serialize(((ObjectResult)loser).Value).Should().MatchRegex("concurrently|already has a payroll artifact");
+
+        await using var verify = _fixture.CreateDb();
+        var request = await verify.LeaveEncashmentRequests.AsNoTracking().SingleAsync(x => x.Id == seeded.RequestId);
+        (request.Status, request.DecisionVersion).Should().Be((LeaveEncashmentStatuses.PayrollApproved, 1));
+        (await verify.PayrollAdjustments.CountAsync(x => x.TenantId == seeded.TenantId && x.SourceId == seeded.RequestId))
+            .Should().Be(1, "payroll is asked to pay the encashment once");
+        (await verify.LeaveBalanceTransactions.CountAsync(x => x.TenantId == seeded.TenantId
+            && x.Reference == seeded.RequestId.ToString() && x.TransactionType == "Encashed")).Should().Be(1);
+        var balance = await verify.EmployeeLeaveBalances.AsNoTracking().SingleAsync(x => x.TenantId == seeded.TenantId
+            && x.EmployeeId == seeded.EmployeeId && x.LeaveTypeId == seeded.LeaveTypeId);
+        (balance.Pending, balance.Encashed).Should().Be((0m, 2m), "the reserved days are consumed once");
+    }
+
+    /// <summary>Holds every SaveChanges until <c>parties</c> contexts have reached one (or 10 s pass, so a refusal before the
+    /// write can never hang the test; <see cref="Arrived"/> then says the race was not forced).</summary>
+    private sealed class BothArrivedBarrier(int parties) : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+    {
+        private readonly TaskCompletionSource _all = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _arrived;
+        public int Arrived => Volatile.Read(ref _arrived);
+
+        public override async ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+            Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _arrived) >= parties) _all.TrySetResult();
+            await Task.WhenAny(_all.Task, Task.Delay(TimeSpan.FromSeconds(10), cancellationToken));
+            return result;
+        }
+    }
+
     [Fact]
     public async Task LeaveEncashmentPayrollApproval_RejectsWrongCompanyAndLockedRun()
     {

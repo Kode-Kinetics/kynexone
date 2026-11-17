@@ -1584,6 +1584,10 @@ public partial class PayrollController : ControllerBase
         // The run's employees' attendance days in its month are now payroll-locked: no range run, correction or late punch
         // may rewrite them (AttendancePayrollLock). A void releases them.
         await AttendancePayrollLock.LockAsync(_db, tenantId, id, run.Year, run.Month, GetUserId(), cancellationToken);
+        // Every slip gets its payslip row here, in this transaction, and every row is published: the web self-service (which
+        // reads the Final slips) and the mobile app (which reads the published payslip rows) then show the same month with the
+        // same net. Rows generated earlier are rebuilt from the locked figures; none is ever created twice.
+        var lockPayslips = await UpsertRunPayslipsAsync(tenantId, id, publishToEss: true, cancellationToken);
         await _db.Payslips.Where(s => s.PayrollRunId == id && s.TenantId == tenantId).ExecuteUpdateAsync(s => s.SetProperty(p => p.IsPublishedToEss, true).SetProperty(p => p.PublishedAtUtc, DateTime.UtcNow), cancellationToken);
         // POD-B2 (M5b) — echo the hold-out count on the Lock audit and response so the last irreversible
         // step before payment restates who is NOT being paid.
@@ -1600,6 +1604,7 @@ public partial class PayrollController : ControllerBase
         await PayrollAudit("payroll.run.locked", "PayrollRun", id.ToString(), new
         {
             glPosted = !alreadyPosted, period,
+            payslipsGenerated = lockPayslips.Generated, payslipsRefreshed = lockPayslips.Refreshed,
             runType = run.RunType, includesRecurringPay = run.IncludesRecurringPay,
             payPeriod = $"{run.Year}-{run.Month:D2}", excludedCount = lockExcludedCount,
             parentRunId = run.ParentRunId,
@@ -1912,12 +1917,18 @@ public partial class PayrollController : ControllerBase
             }
         }
 
+        // The instalments Process carried forward are a fact of Process (the loans were left untouched for that part), not
+        // something re-derivable from today's data: carried across the rebuild below, and fed to the zero-net rule.
+        var processDeferrals = await _db.PayrollValidationResults.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.Code == DebtDeferredWarningCode && x.EmployeeId != null)
+            .ToListAsync(cancellationToken);
         var valYtdSources = await PayrollYtdBasis.LoadAsync(
             _db, tenantId, company.Id, run, slips.Select(s => s.EmployeeId).Distinct().ToList(), cancellationToken);
         var ctx     = new PayrollValidationContext(run, slips, employees, salaries, profiles, deductions, earnings, company)
         {
             UnverifiedImportedBankDetails  = await UnverifiedImportedBankDetailsAsync(
                 tenantId, slips.Select(s => s.EmployeeId).ToList(), cancellationToken),
+            DebtDeferredEmployeeIds        = processDeferrals.Select(x => x.EmployeeId!.Value).ToHashSet(),
             OvertimeHoursByEmployee        = valOtHoursByEmp,
             AttendanceProcessedEmployeeIds = valAttendanceEmpIds,
             // Same source as Process, so /validate (which replaces the findings wholesale) keeps the warning.
@@ -1980,6 +1991,10 @@ public partial class PayrollController : ControllerBase
             .ToListAsync(cancellationToken);
         var runSlipEmployeeIds = runSlips.Select(s => s.EmployeeId).ToHashSet();
         results.AddRange(PayPopulationFindings.ToResults(tenantId, id, validationPopulationReport, runSlipEmployeeIds));
+        results.AddRange(processDeferrals.Select(x => new PayrollValidationResult
+        {
+            TenantId = x.TenantId, PayrollRunId = x.PayrollRunId, EmployeeId = x.EmployeeId, Severity = x.Severity, Code = x.Code, Message = x.Message,
+        }));
         results.AddRange(await StandingChangedFindingsAsync(tenantId, run, runSlips.Select(s => (s.EmployeeId, s.EmployeeCode, s.IsFinalWageMonth, s.PaidToDate, s.ProrationBasis)).ToList(),
             employeeIdsForValidation, validationLastWorkingDays, valPeriodStart, valPeriodEnd, cancellationToken));
 
@@ -2966,6 +2981,9 @@ public partial class PayrollController : ControllerBase
         return null;
     }
 
+    /// <summary>Process's warning that a loan or advance instalment was carried forward (PayrollRunProcessor).</summary>
+    private const string DebtDeferredWarningCode = "WARN_EMI_DEFERRED_PRORATED_PERIOD";
+
     private static string OverrideRefusalMessage(string code) => code switch
     {
         "ALREADY_PAID_THIS_PERIOD" =>
@@ -3279,6 +3297,44 @@ public partial class PayrollController : ControllerBase
     public async Task<IActionResult> GeneratePayslips(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
+        // POD-B3 — a payslip generated AFTER the run is locked must still reach ESS.
+        //
+        // Lock publishes every payslip (and, since the payslip rows are generated by Lock itself, every slip has one), and
+        // the void is the only un-publisher. Regenerating afterwards (the recovery order is void → Replacement run →
+        // process → lock → payment batch) must therefore keep the rows published.
+        //
+        // Publishing is gated on the run being at or past Lock, so this can never publish a Draft or
+        // Processed run early, and never re-publishes a Voided run (the void sets Status="Voided", which
+        // is not in this set) — the un-publish stays sticky exactly as intended.
+        var publishRun = await _db.PayrollRuns.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
+        var publishToEss = publishRun is not null && publishRun.Status is "Locked" or "Paid";
+        var outcome = await UpsertRunPayslipsAsync(tenantId, id, publishToEss, cancellationToken);
+        await PayrollAudit("payroll.payslips.generated", "PayrollRun", id.ToString(),
+            new { generated = outcome.Generated, refreshed = outcome.Refreshed, publishedToEss = outcome.Published }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        // Same header-only projection as ListPayslips — carrying the employee name so the caller never has
+        // to fall back to a placeholder code.
+        var generated = await _db.Payslips.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id)
+            .OrderBy(x => x.EmployeeId).ToListAsync(cancellationToken);
+        var generatedNames = await ResolvePayslipEmployeeNamesAsync(tenantId, id, generated, cancellationToken);
+        return Ok(generated
+            .Select(x => PayslipListItemDto.Project(x, generatedNames[x.EmployeeId].Code, generatedNames[x.EmployeeId].Name))
+            .ToList());
+    }
+
+    /// <summary>What one payslip generation did: rows created, rows whose lines were rebuilt, rows newly published.</summary>
+    private sealed record PayslipUpsertOutcome(int Generated, int Refreshed, int Published);
+
+    /// <summary>
+    /// Creates the Payslip row (header and lines) for every slip of the run that has none, rebuilds the lines of every row that
+    /// exists from the run's current slips, earnings and deductions, and, when <paramref name="publishToEss"/>, publishes them.
+    /// One row per employee per run, whoever calls it and however often: the Generate button, and Lock inside its row-locked
+    /// transaction. Adds and edits are tracked; the caller saves.
+    /// </summary>
+    private async Task<PayslipUpsertOutcome> UpsertRunPayslipsAsync(Guid tenantId, Guid id, bool publishToEss, CancellationToken cancellationToken)
+    {
         var slips = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == id).ToListAsync(cancellationToken);
         // M2: load itemized earnings and deductions for proper payslip line items
         var earnings = await _db.PayrollEarnings.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken);
@@ -3300,24 +3356,6 @@ public partial class PayrollController : ControllerBase
         // rebuilt from the current lines.
         var existingPayslips = await _db.Payslips
             .Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken);
-
-        // POD-B3 — a payslip generated AFTER the run is locked must still reach ESS.
-        //
-        // Lock is the ONLY writer of IsPublishedToEss (it publishes every payslip that exists at that
-        // moment) and the void is the only un-publisher. Generating slips afterwards therefore produced
-        // rows the employee could never see — permanently, with nothing reporting it. That is a live trap
-        // in exactly the flow this pod exists to make safe: the recovery order is void → Replacement run →
-        // process → lock → payment batch (CreatePaymentBatch requires a Locked run, so "lock, then produce
-        // the documents" is the natural operator sequence), and the void has already un-published the bad
-        // month's payslips. Generate-after-lock would leave the employee with NO visible payslip for the
-        // month at all — the corrected one invisible, the original withdrawn.
-        //
-        // Publishing is gated on the run being at or past Lock, so this can never publish a Draft or
-        // Processed run early, and never re-publishes a Voided run (the void sets Status="Voided", which
-        // is not in this set) — the un-publish stays sticky exactly as intended.
-        var publishRun = await _db.PayrollRuns.AsNoTracking()
-            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
-        var publishToEss = publishRun is not null && publishRun.Status is "Locked" or "Paid";
 
         var refreshed = 0;
         var published = 0;
@@ -3358,18 +3396,7 @@ public partial class PayrollController : ControllerBase
                 published++;
             }
         }
-        await PayrollAudit("payroll.payslips.generated", "PayrollRun", id.ToString(),
-            new { generated = slips.Count - refreshed, refreshed, publishedToEss = published }, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-        // Same header-only projection as ListPayslips — carrying the employee name so the caller never has
-        // to fall back to a placeholder code.
-        var generated = await _db.Payslips.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id)
-            .OrderBy(x => x.EmployeeId).ToListAsync(cancellationToken);
-        var generatedNames = await ResolvePayslipEmployeeNamesAsync(tenantId, id, generated, cancellationToken);
-        return Ok(generated
-            .Select(x => PayslipListItemDto.Project(x, generatedNames[x.EmployeeId].Code, generatedNames[x.EmployeeId].Name))
-            .ToList());
+        return new PayslipUpsertOutcome(slips.Count - refreshed, refreshed, published);
     }
 
     /// <summary>
