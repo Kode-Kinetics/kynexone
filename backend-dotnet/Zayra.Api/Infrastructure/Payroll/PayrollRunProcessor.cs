@@ -2558,6 +2558,9 @@ public sealed class PayrollRunProcessor
         var validationCtx = new PayrollValidationContext(
             run, slips, employees, salaryAssignments, valProfiles, valDeductions, valEarnings, company)
         {
+            // Whose instalment this run carried forward (the WARN_EMI_DEFERRED_PRORATED_PERIOD set below): one input of the
+            // zero-net unpaid-leave warning. /validate re-reads the same set from those stored warnings.
+            DebtDeferredEmployeeIds        = deferredEmiEmployees.Select(x => x.Id).ToHashSet(),
             UnverifiedImportedBankDetails  = await UnverifiedImportedBankDetailsAsync(
                 tenantId, slips.Select(s => s.EmployeeId).ToList(), cancellationToken),
             OvertimeHoursByEmployee        = otHoursByEmpForValidation,
