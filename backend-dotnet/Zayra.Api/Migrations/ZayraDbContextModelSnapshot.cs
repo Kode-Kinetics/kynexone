@@ -17350,25 +17350,27 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "CompanyId");
 
-                    b.HasIndex("TenantId", "Body", "ExternalReference")
+                    b.HasIndex("TenantId", "Body", "Environment", "ExternalReference")
                         .IsUnique()
                         .HasDatabaseName("ux_government_exchanges__bank_reference")
                         .HasFilter("external_reference IS NOT NULL");
 
-                    b.HasIndex("TenantId", "Body", "AccountFingerprint", "BatchReference")
-                        .IsUnique()
-                        .HasDatabaseName("ux_government_exchanges__open_batch")
-                        .HasFilter("account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL AND state IN ('SubmitIntended','Unknown','Accepted','Initiated','Validated','InProgress','Completed','Rejected')");
-
                     b.HasIndex("TenantId", "Body", "Operation", "IdempotencyKey")
                         .IsUnique()
                         .HasDatabaseName("ux_government_exchanges__tenant_body_operation_key");
+
+                    b.HasIndex("TenantId", "Body", "Environment", "AccountFingerprint", "BatchReference")
+                        .IsUnique()
+                        .HasDatabaseName("ux_government_exchanges__open_batch")
+                        .HasFilter("account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL AND state IN ('SubmitIntended','Unknown','Accepted','Initiated','Validated','InProgress','Completed','Rejected')");
 
                     b.HasIndex("TenantId", "Body", "SubjectType", "SubjectId", "CreatedAtUtc")
                         .HasDatabaseName("ix_government_exchanges__tenant_subject");
 
                     b.ToTable("government_exchanges", null, t =>
                         {
+                            t.HasCheckConstraint("ck_government_exchanges__api_environment", "channel <> 'api' OR environment IS NOT NULL");
+
                             t.HasCheckConstraint("ck_government_exchanges__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb')");
 
                             t.HasCheckConstraint("ck_government_exchanges__channel", "channel IN ('file_out','file_in','manual','api')");

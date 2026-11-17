@@ -172,7 +172,8 @@ public static class GovernmentExchangeStates
     /// </summary>
     public static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> Next = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
     {
-        [Attempted] = new HashSet<string> { Recorded, Simulated, Refused, Failed },
+        // A live, non-batch call (an employee push): the body confirms it (Completed, live only) or it failed.
+        [Attempted] = new HashSet<string> { Recorded, Simulated, Refused, Failed, Completed },
         [SubmitIntended] = new HashSet<string> { Accepted, RejectedStructure, Unknown, Refused, Failed },
         [Accepted] = new HashSet<string> { Accepted, Initiated, Validated, InProgress, Completed, Rejected },
         [Initiated] = new HashSet<string> { Initiated, Validated, InProgress, Completed, Rejected },
@@ -181,6 +182,9 @@ public static class GovernmentExchangeStates
     };
 
     public static bool CanMove(string from, string to) => Next.TryGetValue(from, out var allowed) && allowed.Contains(to);
+
+    /// <summary>States that announce a call the transport is about to make. Recorded only when committed; they earn the intent receipt.</summary>
+    public static readonly IReadOnlyList<string> Intents = [SubmitIntended, Attempted];
 
     public static bool IsKnown(string? state) => state is not null && All.Contains(state, StringComparer.Ordinal);
 }

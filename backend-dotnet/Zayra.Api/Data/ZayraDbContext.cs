@@ -6126,6 +6126,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                 t.HasCheckConstraint("ck_government_exchanges__second_person", "resolved_by_user_id IS NULL OR resolved_by_user_id IS DISTINCT FROM actor_user_id");
                 t.HasCheckConstraint("ck_government_exchanges__counts", "state_version >= 1 AND poll_count >= 0 AND (item_count IS NULL OR item_count >= 0)");
                 t.HasCheckConstraint("ck_government_exchanges__live_channel", "NOT is_live OR channel = 'api'");
+                t.HasCheckConstraint("ck_government_exchanges__api_environment", "channel <> 'api' OR environment IS NOT NULL");
                 if (Database.IsNpgsql()) // the ~ operator is PostgreSQL's
                     t.HasCheckConstraint("ck_government_exchanges__hashes",
                     "(request_sha256 IS NULL OR request_sha256 ~ '^[0-9a-f]{64}$') AND (response_sha256 IS NULL OR response_sha256 ~ '^[0-9a-f]{64}$') "
@@ -6156,12 +6157,14 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.ResolutionReason).HasMaxLength(500);
             entity.Property(x => x.StateVersion).IsConcurrencyToken();
             // One open or landed submission per batch, whatever idempotency key the client sends (architecture 3.5).
-            entity.HasIndex(x => new { x.TenantId, x.Body, x.AccountFingerprint, x.BatchReference }).IsUnique()
+            // Per environment: a sandbox batch never holds the production batch number.
+            entity.HasIndex(x => new { x.TenantId, x.Body, x.Environment, x.AccountFingerprint, x.BatchReference }).IsUnique()
                 .HasFilter("account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL "
                     + "AND state IN ('SubmitIntended','Unknown','Accepted','Initiated','Validated','InProgress','Completed','Rejected')")
                 .HasDatabaseName("ux_government_exchanges__open_batch");
             // The body's own id for an exchange (ANB's payroll id) belongs to one attempt; polls update that row.
-            entity.HasIndex(x => new { x.TenantId, x.Body, x.ExternalReference }).IsUnique()
+            // Per environment: a sandbox bank id may repeat a production one.
+            entity.HasIndex(x => new { x.TenantId, x.Body, x.Environment, x.ExternalReference }).IsUnique()
                 .HasFilter("external_reference IS NOT NULL")
                 .HasDatabaseName("ux_government_exchanges__bank_reference");
             // One attempt per (tenant, body, operation, idempotency key): two people pressing Submit get one row.

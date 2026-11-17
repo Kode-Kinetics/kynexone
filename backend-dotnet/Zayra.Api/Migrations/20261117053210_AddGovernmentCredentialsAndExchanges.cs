@@ -104,6 +104,7 @@ namespace Zayra.Api.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_government_exchanges", x => x.id);
+                    table.CheckConstraint("ck_government_exchanges__api_environment", "channel <> 'api' OR environment IS NOT NULL");
                     table.CheckConstraint("ck_government_exchanges__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb')");
                     table.CheckConstraint("ck_government_exchanges__channel", "channel IN ('file_out','file_in','manual','api')");
                     table.CheckConstraint("ck_government_exchanges__counts", "state_version >= 1 AND poll_count >= 0 AND (item_count IS NULL OR item_count >= 0)");
@@ -171,14 +172,14 @@ namespace Zayra.Api.Migrations
             migrationBuilder.CreateIndex(
                 name: "ux_government_exchanges__bank_reference",
                 table: "government_exchanges",
-                columns: new[] { "tenant_id", "body", "external_reference" },
+                columns: new[] { "tenant_id", "body", "environment", "external_reference" },
                 unique: true,
                 filter: "external_reference IS NOT NULL");
 
             migrationBuilder.CreateIndex(
                 name: "ux_government_exchanges__open_batch",
                 table: "government_exchanges",
-                columns: new[] { "tenant_id", "body", "account_fingerprint", "batch_reference" },
+                columns: new[] { "tenant_id", "body", "environment", "account_fingerprint", "batch_reference" },
                 unique: true,
                 filter: "account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL AND state IN ('SubmitIntended','Unknown','Accepted','Initiated','Validated','InProgress','Completed','Rejected')");
 
