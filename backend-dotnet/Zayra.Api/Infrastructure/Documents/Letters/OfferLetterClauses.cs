@@ -17,8 +17,8 @@ public static class OfferLetterClauses
 
     public static bool IsSaudi(string? nationality)
     {
-        var n = (nationality ?? string.Empty).Trim().ToUpperInvariant();
-        return n.Length > 0 && (n.Contains("SAUDI") || n.Contains("سعود") || n is "SA" or "SAU" or "KSA");
+        // The one rule (exact spelling, never a substring: "Saudi-born Egyptian" is not Saudi).
+        return Zayra.Api.Infrastructure.Compliance.SaudiNationality.IsSaudi(nationality);
     }
 
     /// <param name="noticeDays">The company's own notice period in days, or null when none is set (the letter then refers to the Labor Law instead of inventing a duration).</param>
