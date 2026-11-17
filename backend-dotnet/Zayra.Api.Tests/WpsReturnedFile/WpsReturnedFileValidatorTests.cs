@@ -7,7 +7,8 @@ namespace Zayra.Api.Tests.WpsReturnedFile;
 /// <summary>
 /// The reader of a BANK-PRODUCED, bank-signed WPS file. It only reads and compares: it never writes, repairs or strips
 /// anything. Every rule carries a basis: VerifiedFromRepoFact (encoded in WpsConformance / KsaWageFileRules /
-/// WpsSifValidator) or Unverified (not proven by the repo; reported as a warning, never as a block).
+/// WpsSifValidator) or Unverified (not proven by the repo). An Unverified rule never applies or confirms anything; it warns,
+/// except the fail-closed ones listed in WpsReturnedFileValidator.FailClosedUnverified (pinned below).
 /// All data here is synthetic.
 /// </summary>
 public class WpsReturnedFileValidatorTests
@@ -23,10 +24,10 @@ public class WpsReturnedFileValidatorTests
     private static IEnumerable<string> WarningCodes(WpsReturnedFileReadResult r) =>
         r.Findings.Where(f => f.Severity == WpsFindingSeverity.Warning).Select(f => f.Code);
 
-    // ── Golden ────────────────────────────────────────────────────────────────
+    // ── Self-consistent (built by the test oracle, which shares the reader's layout assumption) ─────────
 
     [Fact]
-    public void Golden_file_built_from_the_field_rules_has_no_errors_and_reads_every_field()
+    public void Self_consistent_synthetic_file_has_no_errors_and_reads_every_field()
     {
         var rows = WpsReturnedFileOracle.Rows(3);
         var r = Read(WpsReturnedFileOracle.Build(rows));
@@ -44,8 +45,35 @@ public class WpsReturnedFileValidatorTests
         r.Rows[0].Deductions.Should().Be(rows[0].Deductions);
     }
 
+    /// <summary>
+    /// NOT built by the oracle: typed out by hand, so it does not share the oracle's idea of the layout. It still follows the same
+    /// UNVERIFIED layout assumption (that is the most any synthetic file can do); what it proves is that the reader returns the values
+    /// a human wrote, not the values a writer encoded.
+    /// </summary>
     [Fact]
-    public void Golden_file_with_the_header_on_one_line_reads_the_same()
+    public void A_hand_typed_literal_file_is_read_to_exactly_the_values_written_in_it()
+    {
+        const string file =
+            "[DEST-ID]\tXXXX\n[ESTB-ID]\t9000001\n[BANK-ACC]\tSYNTHETIC-ACCOUNT\n[32A-CCY]\tSAR\n[32A-VAL]\t20260930\n[32A-AMT]\t15400,00\n"
+          + "[FILE-REF]\tFILE0001\n[MOL-ESTBID]\t7-1234567\n"
+          + "[32B-AMT]\t6500,00\t[59-ACC]\tSA0380000000608010167519\t[59-NAME]\tTest Person One\t[MOL-ID]\t1098765432\t[MOL-BAS]\t5000,00\t[MOL-HAL]\t1250,00\t[MOL-OEA]\t500,00\t[MOL-DED]\t250,00\n"
+          + "[32B-AMT]\t4900,00\t[59-ACC]\tSA4420000001234567891234\t[59-NAME]\tTest Person Two\t[MOL-ID]\t2123456789\t[MOL-BAS]\t4000,00\t[MOL-HAL]\t1000,00\t[MOL-OEA]\t0,00\t[MOL-DED]\t100,00\n"
+          + "[32B-AMT]\t4000,00\t[59-ACC]\tSA2760000009876543210001\t[59-NAME]\tأحمد علي الاختبار\t[MOL-ID]\t1234567890\t[MOL-BAS]\t3000,00\t[MOL-HAL]\t750,00\t[MOL-OEA]\t250,00\t[MOL-DED]\t0,00\n";
+
+        var r = Read(file);
+
+        ErrorCodes(r).Should().BeEmpty();
+        r.Header!.DeclaredTotal.Should().Be(15400.00m);
+        r.Header.FileRef.Should().Be("FILE0001");
+        r.Header.ValueDate.Should().Be(new DateOnly(2026, 9, 30));
+        r.Rows.Select(x => (x.MolId, x.Net)).Should().Equal(("1098765432", 6500.00m), ("2123456789", 4900.00m), ("1234567890", 4000.00m));
+        r.Rows[2].Name.Should().Be("أحمد علي الاختبار");
+        r.Rows[0].Deductions.Should().Be(250.00m);
+        r.Rows[1].Iban.Should().Be("SA4420000001234567891234");
+    }
+
+    [Fact]
+    public void Self_consistent_synthetic_file_with_the_header_on_one_line_reads_the_same()
     {
         var rows = WpsReturnedFileOracle.Rows(2);
         var r = Read(WpsReturnedFileOracle.Build(rows, headerOnOneLine: true));
@@ -100,6 +128,7 @@ public class WpsReturnedFileValidatorTests
         var r = Read(WpsReturnedFileOracle.Build(new[] { good[0], bad, good[2] }));
 
         ErrorCodes(r).Should().Contain("stray_value");
+        r.HasFileLevelError.Should().BeFalse("a single faulty line only blocks that line");
         r.Rows.Should().HaveCount(3);
         r.Rows[1].Blocked.Should().BeTrue();
         r.Rows[0].Blocked.Should().BeFalse();
@@ -150,8 +179,9 @@ public class WpsReturnedFileValidatorTests
         var f = r.Findings.Single(x => x.Code == "header_total_mismatch");
         f.Severity.Should().Be(WpsFindingSeverity.Error);
         f.Line.Should().BeNull("a total mismatch is a property of the file, not of one line");
-        f.Basis.Should().Be(WpsRuleBasis.VerifiedFromRepoFact);
+        f.Basis.Should().Be(WpsRuleBasis.Unverified, "WpsSifValidator reconciles OUR run total, not a bank file's header total");
         r.HasFileLevelError.Should().BeTrue();
+        f.Message.Should().NotMatchRegex("[0-9]+[,.][0-9]{2}", "no wage figure appears in message text");
     }
 
     [Fact]
@@ -171,6 +201,7 @@ public class WpsReturnedFileValidatorTests
         var r = Read(WpsReturnedFileOracle.Build(rows));
 
         ErrorCodes(r).Should().Contain("duplicate_mol_id");
+        r.HasFileLevelError.Should().BeTrue("a duplicated employee is a sign the file was altered");
         r.Rows.Where(x => x.MolId == rows[0].MolId).Should().OnlyContain(x => x.Blocked).And.HaveCount(2);
     }
 
@@ -182,6 +213,7 @@ public class WpsReturnedFileValidatorTests
         var r = Read(WpsReturnedFileOracle.Build(rows));
 
         ErrorCodes(r).Should().Contain("duplicate_iban");
+        r.HasFileLevelError.Should().BeTrue();
         r.Rows.Count(x => x.Blocked).Should().Be(2);
     }
 
@@ -205,6 +237,20 @@ public class WpsReturnedFileValidatorTests
         var r = Read(WpsReturnedFileOracle.Build(WpsReturnedFileOracle.Rows(2),
             new WpsReturnedFileOracle.Header(MolEstablishmentId: "71234567")));
         ErrorCodes(r).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("71-234567", "7-1234567", false)]   // two hyphenated ids with different parts are different establishments
+    [InlineData("7-1234567", "7-1234567", true)]
+    [InlineData("71234567", "7-1234567", true)]     // one side without a hyphen: digits compared
+    [InlineData("7-1234567", "71234567", true)]
+    [InlineData("7-1234568", "7-1234567", false)]
+    public void Establishments_are_compared_by_their_hyphen_aware_parts(string inFile, string company, bool same)
+    {
+        WpsReturnedFileValidator.SameEstablishmentStrict(inFile, company).Should().Be(same);
+        var r = Read(WpsReturnedFileOracle.Build(WpsReturnedFileOracle.Rows(2), new WpsReturnedFileOracle.Header(MolEstablishmentId: inFile)),
+            new WpsReturnedFileExpectation(company));
+        ErrorCodes(r).Contains("establishment_mismatch").Should().Be(!same);
     }
 
     [Fact]
@@ -307,6 +353,7 @@ public class WpsReturnedFileValidatorTests
         var r = Read(WpsReturnedFileOracle.Build(rows, rowOverride: x =>
             $"[32B-AMT]\t{WpsReturnedFileOracle.Amount(x.Net + 1m)}\t[59-ACC]\t{x.Iban}\t[59-NAME]\t{x.Name}\t[MOL-ID]\t{x.MolId}\t[MOL-BAS]\t{WpsReturnedFileOracle.Amount(x.Basic)}\t[MOL-HAL]\t{WpsReturnedFileOracle.Amount(x.Housing)}\t[MOL-OEA]\t{WpsReturnedFileOracle.Amount(x.Other)}\t[MOL-DED]\t{WpsReturnedFileOracle.Amount(x.Deductions)}"));
         ErrorCodes(r).Should().Contain("net_identity_failed");
+        r.HasFileLevelError.Should().BeTrue("a net that does not follow from its breakdown is a sign of tampering");
     }
 
     [Fact]
@@ -428,7 +475,10 @@ public class WpsReturnedFileValidatorTests
         rules.Should().Contain(r => r.Basis == WpsRuleBasis.VerifiedFromRepoFact);
         rules.Should().Contain(r => r.Basis == WpsRuleBasis.Unverified);
 
-        RuleBasis("header_total_mismatch").Should().Be(WpsRuleBasis.VerifiedFromRepoFact);
+        RuleBasis("header_total_mismatch").Should().Be(WpsRuleBasis.Unverified);
+        foreach (var code in new[] { "header_total_unverifiable", "stray_value", "duplicate_tag", "mixed_line", "header_tag_duplicated",
+                                     "header_after_rows", "control_character", "establishment_not_checked", "row_status" })
+            RuleBasis(code).Should().Be(WpsRuleBasis.Unverified, $"{code} is not proven by the file it used to cite");
         RuleBasis("net_identity_failed").Should().Be(WpsRuleBasis.VerifiedFromRepoFact);
         RuleBasis("wage_breakdown_missing").Should().Be(WpsRuleBasis.VerifiedFromRepoFact);
         RuleBasis("currency_not_sar").Should().Be(WpsRuleBasis.VerifiedFromRepoFact);
@@ -437,6 +487,29 @@ public class WpsReturnedFileValidatorTests
         RuleBasis("file_rejected").Should().Be(WpsRuleBasis.Unverified);
         RuleBasis("name_contains_comma").Should().Be(WpsRuleBasis.Unverified);
         RuleBasis("line_layout").Should().Be(WpsRuleBasis.Unverified);
+    }
+
+    [Fact]
+    public void Exactly_these_unverified_rules_refuse_and_every_other_unverified_rule_only_warns()
+    {
+        WpsReturnedFileValidator.FailClosedUnverified.Should().Equal(
+            "control_character", "duplicate_tag", "file_date_before_batch", "file_date_missing", "file_ref_already_imported",
+            "file_refused_account_mismatch", "file_rejected", "file_too_large", "file_total_exceeds_batch", "header_after_rows",
+            "header_tag_duplicated", "header_total_mismatch", "header_total_unverifiable", "line_too_long", "mixed_line",
+            "no_line_matches_batch", "status_too_long", "stray_value", "too_many_findings", "too_many_rows", "trn_ref_too_long");
+        foreach (var rule in WpsReturnedFileValidator.Rules.Where(r => r.Basis == WpsRuleBasis.Unverified))
+            rule.Severity.Should().Be(WpsReturnedFileValidator.FailClosedUnverified.Contains(rule.Code) ? WpsFindingSeverity.Error : WpsFindingSeverity.Warning);
+    }
+
+    [Fact]
+    public void No_arabic_message_contains_a_bracketed_tag_or_the_non_glossary_terms()
+    {
+        foreach (var code in WpsReturnedFileValidator.MessageCodes)
+        {
+            var (_, ar) = WpsReturnedFileValidator.MessageFor(code, "MOL-ID", "MOL-ID");
+            ar.Should().NotContain("[", $"{code}: a Latin tag in an Arabic sentence is isolated, not bracketed");
+            ar.Should().NotContain("كشف الرواتب").And.NotContain("الإيرادات").And.NotContain("رمز موظف").And.NotContain("علامات الجدولة");
+        }
     }
 
     private static WpsRuleBasis RuleBasis(string code) => WpsReturnedFileValidator.Rules.Single(r => r.Code == code).Basis;

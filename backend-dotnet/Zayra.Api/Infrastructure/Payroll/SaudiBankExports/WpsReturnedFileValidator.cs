@@ -6,8 +6,8 @@ namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports;
 
 /// <summary>
 /// Whether a rule is encoded in this repository (WpsConformance.cs, KsaWageFileRules.cs, WpsSifValidator.cs) or is
-/// merely assumed. An Unverified rule never blocks anything: it is reported as a warning so a real bank file is not
-/// refused on a guess.
+/// merely assumed. An Unverified rule never APPLIES or CONFIRMS anything. It normally warns; the few that refuse
+/// (fail closed) are listed in <see cref="WpsReturnedFileValidator.FailClosedUnverified"/> and pinned by a test.
 /// </summary>
 public enum WpsRuleBasis { VerifiedFromRepoFact, Unverified }
 
@@ -18,10 +18,22 @@ public sealed record WpsReturnedFileFinding(
     string Code, WpsFindingSeverity Severity, WpsRuleBasis Basis, int? Line, string Message, string MessageAr);
 
 /// <summary>One entry of the rule catalogue: what is checked, whether the repo proves it, and where.</summary>
-public sealed record WpsReturnedFileRule(string Code, WpsRuleBasis Basis, string Source);
+public sealed record WpsReturnedFileRule(string Code, WpsRuleBasis Basis, string Source, WpsFindingSeverity Severity);
 
-/// <summary>What the company expects of the file. A null expectation means "do not check the establishment".</summary>
-public sealed record WpsReturnedFileExpectation(string? MolEstablishmentId);
+/// <summary>
+/// What the company expects of the file. A null expectation means "do not check the establishment".
+/// <para>With <see cref="BindToBatch"/> the file must also belong to THIS payment batch: its date must not precede the
+/// batch, its total cannot exceed the batch's, and its FILE-REF (scoped by <see cref="FileRefScope"/>, the company) must
+/// not be one already imported (<see cref="ImportedFileRefKeys"/>).</para>
+/// </summary>
+public sealed record WpsReturnedFileExpectation(
+    string? MolEstablishmentId,
+    bool BindToBatch = false,
+    DateOnly? BatchCreatedOn = null,
+    decimal? BatchTotal = null,
+    int? ExpectedLineCount = null,
+    string? FileRefScope = null,
+    IReadOnlySet<string>? ImportedFileRefKeys = null);
 
 public sealed record WpsReturnedFileHeader(
     string? DestId, string? EstbId, string? BankAccount, string? Currency, DateOnly? ValueDate, decimal? DeclaredTotal,
@@ -40,6 +52,8 @@ public sealed class WpsReturnedFileReadResult
     public IReadOnlyList<WpsReturnedFileFinding> Findings { get; init; } = Array.Empty<WpsReturnedFileFinding>();
     /// <summary>True when an error belongs to the file as a whole (header, totals, establishment): nothing in it may be applied.</summary>
     public bool HasFileLevelError { get; init; }
+    /// <summary>"scope|FILE-REF", remembered after an accepted import so the same reference is not accepted twice.</summary>
+    public string? FileRefKey { get; init; }
 }
 
 /// <summary>
@@ -52,7 +66,7 @@ public sealed class WpsReturnedFileReadResult
 /// <c>WpsSifValidator</c> (which cite the MHRSD specification's tags: TAB-delimited, bracketed tags, comma decimal,
 /// [32A-CCY] SAR, [FILE-REF] 16x, [MOL-ESTBID] 2d-15d, [59-ACC] 24-char SA IBAN, [59-NAME] 35 per line one language,
 /// [MOL-ID] 10d, [32B-AMT] = [MOL-BAS] + [MOL-HAL] + [MOL-OEA] − [MOL-DED]). Unverified = not proven by the repo; it is a
-/// warning, never a block. See <see cref="Rules"/>.</para>
+/// warning, except the fail-closed ones listed in <see cref="FailClosedUnverified"/>. See <see cref="Rules"/>.</para>
 ///
 /// <para>LAYOUT IS UNVERIFIED. The repo names the tags but holds no real bank file. This reader assumes: one record per
 /// line, each record a run of <c>[TAG]&lt;TAB&gt;value</c> pairs; header tags before the first employee line; an employee
@@ -72,7 +86,13 @@ public static class WpsReturnedFileValidator
 
     private static readonly string[] BreakdownTags = { "MOL-BAS", "MOL-HAL", "MOL-OEA", "MOL-DED" };
     private static readonly Regex TagPattern = new(@"^\[[A-Z0-9-]{1,24}\]$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
-    private static readonly Regex AmountPattern = new(@"^[0-9]{1,15}(,[0-9]+)?$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex AmountPattern = new(@"^[0-9]{1,13}(,[0-9]+)?$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    /// <summary>Own input bounds (a bank wage file is far smaller). Refused at file level before anything is parsed or listed.</summary>
+    public const int MaxContentChars = 2_000_000;
+    public const int MaxLineChars = 4096;
+    public const int MaxRows = 20_000;
+    public const int MaxFindings = 200;
 
     public const int MaxFileReferenceLength = KsaWageFileRules.MaxFileReferenceLength;
     public const int MaxNameLength = KsaWageFileRules.MaxNameLineLength;
@@ -91,81 +111,113 @@ public static class WpsReturnedFileValidator
         // ── the file as a whole ──
         ["line_layout"] = new(U, "Assumed: one record per line, [TAG]<TAB>value pairs; no real bank file is held in the repo",
             "The tab and tag layout of the file is assumed from the tag names the repository cites and has not been confirmed against a real bank file.",
-            "تنسيق الملف (علامات الجدولة والوسوم) مفترض من أسماء الوسوم الواردة في المستودع ولم يتم التأكد منه على ملف بنك حقيقي."),
+            "تنسيق الملف (علامات التبويب والوسوم) مفترض من أسماء الوسوم الواردة في المستودع ولم يتم التأكد منه على ملف بنك حقيقي."),
+        ["row_status"] = new(U, "TRN-STATUS is named only in " + Note + "; its words decide the payment state",
+            "The per-line status field [TRN-STATUS] is assumed, not confirmed against a real bank file. Only a few explicit words are read as paid, pending or returned; any other word confirms nothing.",
+            "حقل حالة السطر [TRN-STATUS] مفترض وغير مؤكد على ملف بنك حقيقي. تُقرأ كلمات صريحة محددة فقط على أنها مدفوع أو قيد المعالجة أو مرتجع، وأي كلمة أخرى لا تؤكد شيئاً."),
         ["file_empty"] = new(V, Rules_ + " NoRows", "The file is empty.", "الملف فارغ."),
+        ["file_too_large"] = new(U, "Our own input bound; not from the specification",
+            "The file is larger than this product reads (2 MB). Nothing was applied.", "حجم الملف أكبر مما يقرؤه هذا المنتج (2 ميغابايت). لم يُطبَّق أي شيء."),
+        ["line_too_long"] = new(U, "Our own input bound; not from the specification",
+            "A line is longer than 4,096 characters, so the file was not read. Nothing was applied.",
+            "أحد الأسطر أطول من 4096 حرفاً، لذلك لم تتم قراءة الملف. لم يُطبَّق أي شيء."),
+        ["too_many_rows"] = new(U, "Our own input bound; not from the specification",
+            "The file has far more employee lines than this payment batch has payment records, so it was not read. Nothing was applied.",
+            "عدد أسطر الموظفين في الملف أكبر بكثير من عدد سجلات الدفع في هذه الدفعة، لذلك لم تتم قراءته. لم يُطبَّق أي شيء."),
+        ["too_many_findings"] = new(U, "Our own input bound; not from the specification",
+            "The file has too many faults to list, so reading stopped. Nothing was applied.",
+            "في الملف أخطاء أكثر من أن تُعرض، لذلك توقفت القراءة. لم يُطبَّق أي شيء."),
         ["no_tagged_lines"] = new(V, Conformance + " (bracketed field tags)",
             "The file has no lines made of bracketed [TAG] fields, so it is not in the tab-delimited layout this reader understands.",
-            "لا يحتوي الملف على أي سطر بحقول موسومة بين أقواس مربعة [TAG]، لذلك فهو ليس بالتنسيق المفصول بعلامات الجدولة الذي يقرؤه هذا القارئ."),
+            "لا يحتوي الملف على أي سطر بحقول موسومة بين أقواس مربعة [TAG]، لذلك فهو ليس بالتنسيق المفصول بعلامات التبويب الذي يقرؤه هذا القارئ."),
         ["no_rows"] = new(V, Rules_ + " NoRows", "The file has a header but no employee lines.", "يحتوي الملف على ترويسة ولكن بلا أي سطر موظف."),
         ["unrecognised_line"] = new(U, "Bank signature or trailer lines are not described in the repo",
             "A line with no [TAG] fields was ignored (for example the bank's signature). It was not changed.",
             "تم تجاهل سطر لا يحتوي على أي حقل [TAG] (مثل توقيع البنك). لم يتم تغييره."),
         ["unknown_tag"] = new(U, "Only the tags cited by the repo are read",
             "The field [{0}] is not one this reader knows, so it was ignored.", "الحقل [{0}] غير معروف لهذا القارئ لذلك تم تجاهله."),
-        ["stray_value"] = new(V, Conformance + " (TAB-delimited fields; a tab inside a value shifts the fields)",
+        ["stray_value"] = new(U, "Follows from the assumed line_layout; WpsConformance says only TAB-delimited fields",
             "The line has text that does not belong to any [TAG] field (a tab inside a value shifts every field after it). The line was not used.",
-            "يحتوي السطر على نص لا يتبع أي حقل [TAG] (وجود علامة جدولة داخل قيمة يزيح كل الحقول بعدها). لم يتم استخدام هذا السطر."),
-        ["control_character"] = new(V, Rules_ + " NameControlCharacter",
-            "The line contains a control character. The line was not used.", "يحتوي السطر على رمز تحكم. لم يتم استخدام هذا السطر."),
+            "يحتوي السطر على نص لا يتبع أي حقل [TAG] (وجود علامة تبويب داخل قيمة يزيح كل الحقول بعدها). لم يتم استخدام هذا السطر."),
+        ["control_character"] = new(U, "Own safety rule for a bank file; " + Rules_ + " NameControlCharacter is about OUR outbound name",
+            "The line contains an invisible control character. The line was not used.", "يحتوي السطر على حرف تحكم غير مرئي. لم يتم استخدام هذا السطر."),
         // ── header ──
         ["header_tag_missing"] = new(V, Conformance + " (header carries DEST-ID, BANK-ACC, FILE-REF) and " + Rules_ + " (32A-CCY, MOL-ESTBID); 32A-AMT: header total",
-            "The header field [{0}] is missing or empty. Nothing was applied.", "حقل الترويسة [{0}] غير موجود أو فارغ. لم يتم تطبيق أي شيء."),
+            "The header field [{0}] is missing or empty. Nothing was applied.", "حقل الترويسة [{0}] غير موجود أو فارغ. لم يُطبَّق أي شيء."),
         ["header_tag_missing_unverified"] = new(U, "ESTB-ID and 32A-VAL are cited by the repo but not shown to be mandatory",
             "The header field [{0}] is not present. It is not required here because the repository does not prove it is mandatory.",
             "حقل الترويسة [{0}] غير موجود. لا يُشترط هنا لأن المستودع لا يثبت أنه إلزامي."),
-        ["header_tag_duplicated"] = new(V, Conformance + " (one header group)",
-            "The header field [{0}] appears more than once. Nothing was applied.", "حقل الترويسة [{0}] مكرر. لم يتم تطبيق أي شيء."),
-        ["header_after_rows"] = new(V, Conformance + " (header group, then one row per employee)",
+        ["header_tag_duplicated"] = new(U, "Follows from the assumed line_layout (one header group)",
+            "The header field [{0}] appears more than once. Nothing was applied.", "حقل الترويسة [{0}] مكرر. لم يُطبَّق أي شيء."),
+        ["header_after_rows"] = new(U, "Follows from the assumed line_layout (header first, then employee lines)",
             "The header field [{0}] appears after the first employee line. Nothing was applied.",
-            "حقل الترويسة [{0}] ظهر بعد أول سطر موظف. لم يتم تطبيق أي شيء."),
+            "حقل الترويسة [{0}] ظهر بعد أول سطر موظف. لم يُطبَّق أي شيء."),
         ["file_reference_missing"] = new(V, Rules_ + " FileReferenceInvalid ([FILE-REF] required)",
             "The file reference [FILE-REF] is missing or empty. The bank prints it on your statement. Nothing was applied.",
-            "مرجع الملف [FILE-REF] غير موجود أو فارغ. يطبعه البنك في كشف حسابك. لم يتم تطبيق أي شيء."),
+            "مرجع الملف [FILE-REF] غير موجود أو فارغ. يطبعه البنك في كشف حسابك. لم يُطبَّق أي شيء."),
         ["file_reference_too_long"] = new(V, Rules_ + " MaxFileReferenceLength ([FILE-REF] 16x)",
             "The file reference [FILE-REF] is longer than 16 characters. Nothing was applied.",
-            "مرجع الملف [FILE-REF] أطول من 16 حرفاً. لم يتم تطبيق أي شيء."),
+            "مرجع الملف [FILE-REF] أطول من 16 حرفاً. لم يُطبَّق أي شيء."),
         ["file_reference_charset"] = new(U, Rules_ + " restricts OUR outbound reference; the bank chose this one",
-            "The file reference [FILE-REF] has characters other than upper-case letters and digits. This is a warning only because the bank chose it.",
-            "مرجع الملف [FILE-REF] يحتوي على أحرف غير الحروف الكبيرة والأرقام. هذا تحذير فقط لأن البنك هو من اختاره."),
+            "The file reference [FILE-REF] differs from the format this product generates (upper-case letters and digits only). This is a warning only because the bank chose it.",
+            "مرجع الملف [FILE-REF] يختلف عن الصيغة التي ينتجها هذا المنتج (أحرف كبيرة وأرقام فقط). هذا تحذير فقط لأن البنك هو من اختاره."),
+        ["file_ref_already_imported"] = new(U, "Own replay guard: a bank file reference is used once per company",
+            "This file reference [FILE-REF] was already imported for this company. A bank file reference is used once. If the bank re-issued the file, ask for a new reference. Nothing was applied.",
+            "مرجع الملف [FILE-REF] سبق استيراده لهذه الشركة. يُستخدم مرجع ملف البنك مرة واحدة. إذا أعاد البنك إصدار الملف فاطلب مرجعاً جديداً. لم يُطبَّق أي شيء."),
+        ["file_date_missing"] = new(U, "Own batch-binding guard; the date format itself is unverified",
+            "The file has no readable date ([32A-VAL] or [D-DATE], YYYYMMDD), so it cannot be tied to this payment batch. Nothing was applied.",
+            "ليس في الملف تاريخ مقروء ([32A-VAL] أو [D-DATE] بصيغة YYYYMMDD)، لذلك لا يمكن ربطه بدفعة الرواتب هذه. لم يُطبَّق أي شيء."),
+        ["file_date_before_batch"] = new(U, "Own batch-binding guard",
+            "The file is dated before this payment batch was created, so it cannot belong to it (it may be an older file). Nothing was applied.",
+            "تاريخ الملف سابق لإنشاء دفعة الرواتب هذه، لذلك لا يمكن أن يخصها (قد يكون ملفاً أقدم). لم يُطبَّق أي شيء."),
+        ["file_total_exceeds_batch"] = new(U, "Own batch-binding guard",
+            "The file's header total is larger than the total of this payment batch, so it cannot belong to it. Nothing was applied.",
+            "إجمالي ترويسة الملف أكبر من إجمالي دفعة الرواتب هذه، لذلك لا يمكن أن يخصها. لم يُطبَّق أي شيء."),
+        ["no_line_matches_batch"] = new(U, "Own batch-binding guard",
+            "No employee line in the file matches any payment record of this batch, so the file does not belong to it. Nothing was applied.",
+            "لا يطابق أي سطر موظف في الملف أي سجل دفع في هذه الدفعة، لذلك لا يخصها الملف. لم يُطبَّق أي شيء."),
+        ["file_refused_account_mismatch"] = new(U, "Own tamper guard",
+            "At least one line names a different bank account than the one on its payment record. The whole file was refused. Nothing was applied.",
+            "يذكر سطر واحد على الأقل حساباً بنكياً مختلفاً عن الحساب في سجل الدفع الخاص به. تم رفض الملف بالكامل. لم يُطبَّق أي شيء."),
         ["currency_not_sar"] = new(V, Rules_ + " CurrencyNotSar ([32A-CCY] SAR only)",
             "The file currency [32A-CCY] is {0}; Saudi wage files pay in SAR only. Nothing was applied.",
-            "عملة الملف [32A-CCY] هي {0}؛ ملفات الأجور السعودية بالريال السعودي فقط. لم يتم تطبيق أي شيء."),
+            "عملة الملف [32A-CCY] هي {0}؛ ملفات الأجور السعودية بالريال السعودي فقط. لم يُطبَّق أي شيء."),
         ["mol_establishment_id_missing"] = new(V, Rules_ + " EstablishmentMissing",
-            "The file has no establishment ID [MOL-ESTBID]. Nothing was applied.", "لا يحتوي الملف على رقم المنشأة [MOL-ESTBID]. لم يتم تطبيق أي شيء."),
+            "The file has no establishment ID [MOL-ESTBID]. Nothing was applied.", "لا يحتوي الملف على رقم المنشأة [MOL-ESTBID]. لم يُطبَّق أي شيء."),
         ["mol_establishment_id_invalid"] = new(V, Rules_ + " EstablishmentInvalid ([MOL-ESTBID] 2d-15d; the hyphen form is [CONFIRM] in the repo)",
             "The establishment ID [MOL-ESTBID] is not 2 to 15 characters of digits with at most one hyphen. Nothing was applied.",
-            "رقم المنشأة [MOL-ESTBID] ليس من 2 إلى 15 خانة أرقام مع شرطة واحدة على الأكثر. لم يتم تطبيق أي شيء."),
+            "رقم المنشأة [MOL-ESTBID] ليس من 2 إلى 15 خانة أرقام مع شرطة واحدة على الأكثر. لم يُطبَّق أي شيء."),
         ["mol_establishment_id_placeholder"] = new(V, Rules_ + " EstablishmentPlaceholder",
             "The establishment ID [MOL-ESTBID] is all zeros, which is a placeholder. Nothing was applied.",
-            "رقم المنشأة [MOL-ESTBID] كله أصفار وهو قيمة مؤقتة. لم يتم تطبيق أي شيء."),
-        ["establishment_mismatch"] = new(V, "WpsEstablishmentAuthority.SameEstablishment (company establishment is the authority)",
+            "رقم المنشأة [MOL-ESTBID] كله أصفار وهو قيمة مؤقتة. لم يُطبَّق أي شيء."),
+        ["establishment_mismatch"] = new(V, "WpsEstablishmentAuthority (the company's establishment is the authority); compared here by hyphen-aware parts",
             "The file is for establishment {0}, but this company's establishment is {1}. Nothing was applied.",
-            "الملف خاص بالمنشأة {0} بينما منشأة هذه الشركة هي {1}. لم يتم تطبيق أي شيء."),
+            "الملف خاص بالمنشأة {0} بينما منشأة هذه الشركة هي {1}. لم يُطبَّق أي شيء."),
         ["establishment_not_configured"] = new(V, "WpsEstablishmentAuthority.Resolve",
             "This company has no single MOL establishment ID on record, so the file's establishment cannot be checked. Set it in the company's bank-file settings and import again. Nothing was applied.",
-            "ليس لدى هذه الشركة رقم منشأة واحد مسجل، لذلك لا يمكن التحقق من منشأة الملف. أدخله في إعدادات ملف البنك للشركة ثم أعد الاستيراد. لم يتم تطبيق أي شيء."),
-        ["establishment_not_checked"] = new(V, "WpsEstablishmentAuthority.Resolve",
+            "ليس لدى هذه الشركة رقم منشأة واحد مسجل، لذلك لا يمكن التحقق من منشأة الملف. أدخله في إعدادات ملف البنك للشركة ثم أعد الاستيراد. لم يُطبَّق أي شيء."),
+        ["establishment_not_checked"] = new(U, "The caller supplied no expectation",
             "The establishment in the file was not compared with the company's establishment.",
             "لم تتم مقارنة المنشأة الواردة في الملف بمنشأة الشركة."),
         ["header_total_invalid"] = new(V, Conformance + " ('1234567890123,12': digits, a comma, two decimals)",
             "The header total [32A-AMT] is not a valid amount (digits, a comma and two decimals). Nothing was applied.",
-            "إجمالي الترويسة [32A-AMT] ليس مبلغاً صالحاً (أرقام وفاصلة ومنزلتان عشريتان). لم يتم تطبيق أي شيء."),
-        ["header_total_mismatch"] = new(V, "WpsSifValidator run-total reconciliation; the header total equals the sum of the lines",
-            "The header total [32A-AMT] is {0} but the employee lines add up to {1}. The file may be incomplete or altered. Nothing was applied.",
-            "إجمالي الترويسة [32A-AMT] هو {0} بينما مجموع أسطر الموظفين {1}. قد يكون الملف ناقصاً أو معدلاً. لم يتم تطبيق أي شيء."),
-        ["header_total_unverifiable"] = new(V, "WpsSifValidator run-total reconciliation",
+            "إجمالي الترويسة [32A-AMT] ليس مبلغاً صالحاً (أرقام وفاصلة ومنزلتان عشريتان). لم يُطبَّق أي شيء."),
+        ["header_total_mismatch"] = new(U, "That the header total equals the sum of the lines is assumed from the task and architecture A8; WpsSifValidator only reconciles OUR run total with our payslips",
+            "The header total [32A-AMT] differs from the sum of the employee lines in the file. The file may be incomplete or altered. Nothing was applied.",
+            "إجمالي الترويسة [32A-AMT] يختلف عن مجموع أسطر الموظفين في الملف. قد يكون الملف ناقصاً أو معدلاً. لم يُطبَّق أي شيء."),
+        ["header_total_unverifiable"] = new(U, "Follows from header_total_mismatch",
             "The header total cannot be checked because at least one employee line has no readable [32B-AMT]. Nothing was applied.",
-            "لا يمكن التحقق من إجمالي الترويسة لأن سطر موظف واحد على الأقل بلا [32B-AMT] مقروء. لم يتم تطبيق أي شيء."),
+            "لا يمكن التحقق من إجمالي الترويسة لأن سطر موظف واحد على الأقل بلا [32B-AMT] مقروء. لم يُطبَّق أي شيء."),
         ["file_rejected"] = new(U, "FILE-REJCDE is named only in " + Note,
-            "The file carries a file-level reject code [FILE-REJCDE] {0}: the whole file was rejected. Nothing was applied. Ask the bank what this code means.",
-            "يحمل الملف رمز رفض على مستوى الملف [FILE-REJCDE] {0}: تم رفض الملف بالكامل. لم يتم تطبيق أي شيء. اسأل البنك عن معنى هذا الرمز."),
+            "The bank put a file-level code [FILE-REJCDE] {0} in this file. This may mean the bank did not accept the file. Nothing was applied. Please ask the bank what this code means.",
+            "وضع البنك رمزاً على مستوى الملف [FILE-REJCDE] هو {0}. قد يعني ذلك أن البنك لم يقبل الملف. لم يُطبَّق أي شيء. يرجى مراجعة البنك لمعرفة معنى هذا الرمز."),
         ["date_format_invalid"] = new(U, "YYYYMMDD comes from " + Note,
             "The date in [{0}] is not a valid YYYYMMDD date. This is a warning only because the date format is not proven by the repository.",
             "التاريخ في [{0}] ليس تاريخاً صالحاً بصيغة YYYYMMDD. هذا تحذير فقط لأن صيغة التاريخ غير مثبتة في المستودع."),
         // ── a row ──
-        ["duplicate_tag"] = new(V, Conformance + " (one value per field)",
+        ["duplicate_tag"] = new(U, "Follows from the assumed line_layout (one value per field)",
             "The employee line repeats the field [{0}]. The line was not used.", "يكرر سطر الموظف الحقل [{0}]. لم يتم استخدام هذا السطر."),
-        ["mixed_line"] = new(V, Conformance + " (header group, then employee rows)",
+        ["mixed_line"] = new(U, "Follows from the assumed line_layout",
             "An employee line also carries a header field [{0}]. The line was not used.", "سطر الموظف يحمل أيضاً حقل ترويسة [{0}]. لم يتم استخدام هذا السطر."),
         ["row_field_missing"] = new(V, Rules_ + " (59-ACC, 59-NAME, MOL-ID, 32B-AMT required)",
             "The employee line has no value for [{0}]. The line was not used.", "سطر الموظف بلا قيمة للحقل [{0}]. لم يتم استخدام هذا السطر."),
@@ -182,17 +234,18 @@ public static class WpsReturnedFileValidator
             "The amount in [{0}] has more than two decimals. The line was not used.",
             "المبلغ في [{0}] فيه أكثر من منزلتين عشريتين. لم يتم استخدام هذا السطر."),
         ["amount_no_decimals"] = new(U, "Whether the bank always writes ',00' is not proven by the repo",
-            "The amount in [{0}] has no decimal part; it was read as a whole number.", "المبلغ في [{0}] بلا جزء عشري؛ تمت قراءته كعدد صحيح."),
+            "The amount in [{0}] has no decimal part, or only one; it was read as written.", "المبلغ في [{0}] بلا جزء عشري أو بمنزلة عشرية واحدة؛ تمت قراءته كما هو."),
         ["net_identity_failed"] = new(V, Rules_ + " ([32B-AMT] = [MOL-BAS] + [MOL-HAL] + [MOL-OEA] − [MOL-DED])",
-            "The net amount [32B-AMT] does not equal basic + housing + other earnings − deductions. The line was not used.",
-            "صافي المبلغ [32B-AMT] لا يساوي الأساسي + السكن + الإيرادات الأخرى − الخصومات. لم يتم استخدام هذا السطر."),
+            "The net amount [32B-AMT] does not equal basic + housing + other earnings − deductions. The whole file was refused as it may have been altered. Nothing was applied.",
+            "صافي الراتب [32B-AMT] لا يساوي الراتب الأساسي + بدل السكن + البدلات والمستحقات الأخرى − الخصومات. تم رفض الملف بالكامل لاحتمال تعديله. لم يُطبَّق أي شيء."),
         ["net_not_positive"] = new(V, Rules_ + " NetNotPositive", "The net amount [32B-AMT] must be more than zero. The line was not used.",
-            "صافي المبلغ [32B-AMT] يجب أن يكون أكبر من صفر. لم يتم استخدام هذا السطر."),
+            "صافي الراتب [32B-AMT] يجب أن يكون أكبر من صفر. لم يتم استخدام هذا السطر."),
         ["mol_id_invalid"] = new(V, Rules_ + " MolIdInvalid ([MOL-ID] 10d)",
             "The government ID [MOL-ID] is not exactly 10 digits. The line was not used.",
             "رقم الهوية [MOL-ID] ليس 10 أرقام بالضبط. لم يتم استخدام هذا السطر."),
         ["mol_id_prefix_unexpected"] = new(U, "A Border Number may be written as the ID (WageFileGovernmentId), and its prefix is not in the repo",
-            "The government ID [MOL-ID] does not start with 1 or 2.", "رقم الهوية [MOL-ID] لا يبدأ بـ 1 أو 2."),
+            "This ID does not look like a Saudi national ID (starts with 1) or an iqama (starts with 2); please check it.",
+            "هذا الرقم لا يبدو رقم هوية وطنية (يبدأ بـ 1) أو رقم إقامة (يبدأ بـ 2)؛ يرجى التحقق منه."),
         ["iban_invalid"] = new(V, Rules_ + " IbanLength / IbanLowerCase / IbanChecksum ([59-ACC] 24-char upper-case SA IBAN, mod-97)",
             "The account [59-ACC] is not a valid 24-character upper-case Saudi IBAN. The line was not used.",
             "الحساب [59-ACC] ليس آيبان سعودياً صالحاً من 24 خانة بأحرف كبيرة. لم يتم استخدام هذا السطر."),
@@ -210,11 +263,11 @@ public static class WpsReturnedFileValidator
             "The name [59-NAME] contains a comma. It was kept as written and did not affect any other field.",
             "الاسم [59-NAME] يحتوي على فاصلة. تم الإبقاء عليه كما هو ولم يؤثر على أي حقل آخر."),
         ["duplicate_mol_id"] = new(V, Rules_ + " DuplicateMolId",
-            "Another line in the file has the same government ID. Both lines were not used.",
-            "يوجد سطر آخر في الملف بنفس رقم الهوية. لم يتم استخدام السطرين."),
+            "Another line in the file has the same government ID. The whole file was refused as it may have been altered. Nothing was applied.",
+            "يوجد سطر آخر في الملف بنفس رقم الهوية. تم رفض الملف بالكامل لاحتمال تعديله. لم يُطبَّق أي شيء."),
         ["duplicate_iban"] = new(V, Rules_ + " DuplicateIban",
-            "Another line in the file credits the same account. Both lines were not used.",
-            "يوجد سطر آخر في الملف يحوّل إلى الحساب نفسه. لم يتم استخدام السطرين."),
+            "Another line in the file credits the same account. The whole file was refused as it may have been altered. Nothing was applied.",
+            "يوجد سطر آخر في الملف يحوّل إلى الحساب نفسه. تم رفض الملف بالكامل لاحتمال تعديله. لم يُطبَّق أي شيء."),
         ["trn_ref_too_long"] = new(U, "TRN-REF is named only in " + Note + "; our column holds 140",
             "The transaction reference [TRN-REF] is longer than 140 characters. The line was not used.",
             "مرجع العملية [TRN-REF] أطول من 140 حرفاً. لم يتم استخدام هذا السطر."),
@@ -223,9 +276,31 @@ public static class WpsReturnedFileValidator
             "الحالة [TRN-STATUS] أطول من 64 حرفاً. لم يتم استخدام هذا السطر."),
     };
 
-    /// <summary>Every rule, with whether the repository proves it and where. Both bases are present on purpose.</summary>
+    /// <summary>
+    /// Codes that are only ever warnings. Every other code in the catalogue is an error. An Unverified rule that is an error
+    /// (a fail-closed refusal) must be listed in <see cref="FailClosedUnverified"/>; a test pins the exact set.
+    /// </summary>
+    private static readonly HashSet<string> WarningOnly = new(StringComparer.Ordinal)
+    {
+        "line_layout", "row_status", "unrecognised_line", "unknown_tag", "header_tag_missing_unverified", "file_reference_charset",
+        "establishment_not_checked", "date_format_invalid", "amount_no_decimals", "mol_id_prefix_unexpected", "name_formula_prefix",
+        "name_contains_comma",
+    };
+
+    /// <summary>Row-level codes that are signs the file may have been altered: they refuse the WHOLE file, not just the line.</summary>
+    private static readonly HashSet<string> TamperCodes = new(StringComparer.Ordinal)
+    {
+        "duplicate_mol_id", "duplicate_iban", "net_identity_failed",
+    };
+
+    /// <summary>Unverified rules that nevertheless REFUSE (fail closed). Pinned by a test; add here deliberately.</summary>
+    public static IReadOnlyCollection<string> FailClosedUnverified { get; } = Catalogue
+        .Where(kv => kv.Value.Basis == WpsRuleBasis.Unverified && !WarningOnly.Contains(kv.Key)).Select(kv => kv.Key).OrderBy(k => k, StringComparer.Ordinal).ToList();
+
+    /// <summary>Every rule, with whether the repository proves it, where, and whether it warns or refuses.</summary>
     public static IReadOnlyList<WpsReturnedFileRule> Rules { get; } =
-        Catalogue.Select(kv => new WpsReturnedFileRule(kv.Key, kv.Value.Basis, kv.Value.Source)).ToList();
+        Catalogue.Select(kv => new WpsReturnedFileRule(kv.Key, kv.Value.Basis, kv.Value.Source,
+            WarningOnly.Contains(kv.Key) ? WpsFindingSeverity.Warning : WpsFindingSeverity.Error)).ToList();
 
     /// <summary>Every code the reader can emit, each with an English and an Arabic message.</summary>
     public static IReadOnlyCollection<string> MessageCodes => Catalogue.Keys.ToList();
@@ -233,8 +308,16 @@ public static class WpsReturnedFileValidator
     public static (string En, string Ar) MessageFor(string code, params object[] args)
     {
         var e = Catalogue[code];
-        return (Format(e.En, args), Format(e.Ar, args));
+        return (Format(e.En, args), IsolateTags(Format(e.Ar, args)));
     }
+
+    private static readonly Regex BracketedTag = new(@"\[([A-Z0-9-]{1,24})\]", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    /// <summary>
+    /// A Latin field name inside an Arabic sentence is shown without brackets and inside a left-to-right isolate, so it keeps its
+    /// order in right-to-left text.
+    /// </summary>
+    internal static string IsolateTags(string arabic) => BracketedTag.Replace(arabic, "\u2066$1\u2069");
 
     public static WpsRuleBasis BasisFor(string code) => Catalogue[code].Basis;
 
@@ -258,19 +341,35 @@ public static class WpsReturnedFileValidator
     {
         var findings = new List<WpsReturnedFileFinding>();
         var fileBlocked = false;
+        var stopped = false;
 
-        void Add(string code, WpsFindingSeverity sev, int? line, bool fileLevel, params object[] args)
+        void Add(string code, WpsFindingSeverity requested, int? line, bool fileLevel, params object[] args)
         {
+            // The catalogue decides warn or refuse, so a caller cannot soften a rule.
+            var sev = WarningOnly.Contains(code) ? WpsFindingSeverity.Warning : WpsFindingSeverity.Error;
+            if (stopped) return;
+            if (findings.Count >= MaxFindings)
+            {
+                // Too many to list: one summary, then stop reading. Nothing is applied.
+                var (sen, sar) = MessageFor("too_many_findings");
+                findings.Add(new WpsReturnedFileFinding("too_many_findings", WpsFindingSeverity.Error, Catalogue["too_many_findings"].Basis, null, sen, sar));
+                fileBlocked = true;
+                stopped = true;
+                return;
+            }
             var (en, ar) = MessageFor(code, args);
             findings.Add(new WpsReturnedFileFinding(code, sev, Catalogue[code].Basis, line, en, ar));
             if (sev == WpsFindingSeverity.Error && fileLevel) fileBlocked = true;
         }
 
-        if (string.IsNullOrEmpty(content))
+        WpsReturnedFileReadResult Refused(string code)
         {
-            Add("file_empty", WpsFindingSeverity.Error, null, true);
+            Add(code, WpsFindingSeverity.Error, null, true);
             return new WpsReturnedFileReadResult { Findings = findings, HasFileLevelError = true };
         }
+
+        if (string.IsNullOrEmpty(content)) return Refused("file_empty");
+        if (content.Length > MaxContentChars) return Refused("file_too_large");
 
         var text = content[0] == '\uFEFF' ? content[1..] : content;
         var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
@@ -280,11 +379,14 @@ public static class WpsReturnedFileValidator
         var rows = new List<RowBuilder>();
         var unknownSeen = new HashSet<string>(StringComparer.Ordinal);
         var taggedLines = 0;
+        var rowCap = expected?.ExpectedLineCount is int n ? Math.Min(MaxRows, Math.Max(n * 2, 100)) : MaxRows;
 
         for (var idx = 0; idx < lines.Length; idx++)
         {
+            if (stopped) break;
             var lineNo = idx + 1;
             var line = lines[idx];
+            if (line.Length > MaxLineChars) return Refused("line_too_long");
             if (string.IsNullOrWhiteSpace(line)) continue;
 
             var hasControl = line.Any(c => char.IsControl(c) && c != '\t');
@@ -317,6 +419,7 @@ public static class WpsReturnedFileValidator
             var isRow = pairs.Any(p => RowTags.Contains(p.Tag));
             if (isRow)
             {
+                if (rows.Count >= rowCap) return Refused("too_many_rows");
                 var rb = ReadRow(lineNo, pairs, strays, hasControl, Add);
                 rows.Add(rb);
                 var headerTagInRow = pairs.FirstOrDefault(p => HeaderTags.Contains(p.Tag));
@@ -337,11 +440,8 @@ public static class WpsReturnedFileValidator
             }
         }
 
-        if (taggedLines == 0)
-        {
-            Add("no_tagged_lines", WpsFindingSeverity.Error, null, true);
-            return new WpsReturnedFileReadResult { Findings = findings, HasFileLevelError = true };
-        }
+        if (stopped) return new WpsReturnedFileReadResult { Findings = findings, HasFileLevelError = true };
+        if (taggedLines == 0) return Refused("no_tagged_lines");
 
         var header = ReadHeader(headerValues, headerLine, expected, Add);
         if (rows.Count == 0) Add("no_rows", WpsFindingSeverity.Error, null, true);
@@ -362,12 +462,34 @@ public static class WpsReturnedFileValidator
             {
                 var sum = rows.Sum(r => r.Net!.Value);
                 if (sum != declared)
-                    Add("header_total_mismatch", WpsFindingSeverity.Error, null, true, Money(declared), Money(sum));
+                    Add("header_total_mismatch", WpsFindingSeverity.Error, null, true);
             }
         }
 
+        // Tie the file to THIS batch (replay guard). The date format is unverified, so these refuse rather than confirm.
+        if (expected is { BindToBatch: true })
+        {
+            var fileDate = header.ValueDate ?? header.FileDate;
+            if (fileDate is null) Add("file_date_missing", WpsFindingSeverity.Error, null, true);
+            else if (expected.BatchCreatedOn is { } created && fileDate.Value < created.AddDays(-1))
+                Add("file_date_before_batch", WpsFindingSeverity.Error, null, true);
+            if (expected.BatchTotal is { } batchTotal && header.DeclaredTotal is { } fileTotal && fileTotal > batchTotal)
+                Add("file_total_exceeds_batch", WpsFindingSeverity.Error, null, true);
+        }
+        string? fileRefKey = null;
+        if (!string.IsNullOrEmpty(header.FileRef) && expected?.FileRefScope is { Length: > 0 } scope)
+        {
+            fileRefKey = scope + "|" + header.FileRef;
+            if (expected.ImportedFileRefKeys?.Contains(fileRefKey) == true)
+                Add("file_ref_already_imported", WpsFindingSeverity.Error, null, true);
+        }
+        if (rows.Any(r => r.TrnStatus is not null)) Add("row_status", WpsFindingSeverity.Warning, null, false);
+
+        if (stopped) return new WpsReturnedFileReadResult { Findings = findings, HasFileLevelError = true };
+
         return new WpsReturnedFileReadResult
         {
+            FileRefKey = fileRefKey,
             Header = header,
             Findings = findings,
             HasFileLevelError = fileBlocked,
@@ -377,12 +499,54 @@ public static class WpsReturnedFileValidator
         };
     }
 
+    /// <summary>
+    /// The form of a file used to recognise the SAME file again: BOM, line endings, blank lines, trailing whitespace, line order,
+    /// tag order and unrecognised (signature) lines do not change it; any change to a tag's value, or to the set of lines, does.
+    /// Pure. A file over the size bound is returned as it is (it will be refused before it is read).
+    /// </summary>
+    public static string CanonicalForm(string? content)
+    {
+        if (string.IsNullOrEmpty(content) || content.Length > MaxContentChars) return content ?? string.Empty;
+        var text = content[0] == '\uFEFF' ? content[1..] : content;
+        var header = new List<string>();
+        var rows = new List<string>();
+        foreach (var raw in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+        {
+            if (raw.Length > MaxLineChars) { rows.Add("!" + raw); continue; }
+            if (string.IsNullOrWhiteSpace(raw)) continue;
+            var parts = new List<string>();
+            var tokens = raw.Split('\t');
+            var hasTag = false;
+            var isRow = false;
+            for (var i = 0; i < tokens.Length; i++)
+            {
+                var t = tokens[i];
+                if (TagPattern.IsMatch(t))
+                {
+                    hasTag = true;
+                    var tag = t[1..^1];
+                    isRow |= RowTags.Contains(tag);
+                    var value = string.Empty;
+                    if (i + 1 < tokens.Length && !TagPattern.IsMatch(tokens[i + 1])) { value = tokens[i + 1].Trim(); i++; }
+                    parts.Add(tag + "=" + value);
+                }
+                else if (t.Trim().Length > 0) parts.Add("?" + t.Trim());
+            }
+            if (!hasTag) continue;
+            parts.Sort(StringComparer.Ordinal);
+            if (isRow) rows.Add(string.Join('\t', parts)); else header.AddRange(parts);
+        }
+        header.Sort(StringComparer.Ordinal);
+        rows.Sort(StringComparer.Ordinal);
+        return "H\n" + string.Join('\n', header) + "\nR\n" + string.Join('\n', rows);
+    }
+
     private delegate void AddFinding(string code, WpsFindingSeverity sev, int? line, bool fileLevel, params object[] args);
 
     private static void Block(RowBuilder rb, string code, int line, AddFinding add, params object[] args)
     {
         rb.Blocking.Add(code);
-        add(code, WpsFindingSeverity.Error, line, false, args);
+        add(code, WpsFindingSeverity.Error, line, TamperCodes.Contains(code), args);
     }
 
     private static string Money(decimal d) => d.ToString("0.00", CultureInfo.InvariantCulture);
@@ -432,7 +596,7 @@ public static class WpsReturnedFileValidator
 
         if (expected is null) add("establishment_not_checked", WpsFindingSeverity.Warning, null, false);
         else if (string.IsNullOrWhiteSpace(expected.MolEstablishmentId)) add("establishment_not_configured", WpsFindingSeverity.Error, null, true);
-        else if (estbWellFormed && !WpsEstablishmentAuthority.SameEstablishment(estb!, expected.MolEstablishmentId!))
+        else if (estbWellFormed && !SameEstablishmentStrict(estb!, expected.MolEstablishmentId!))
             add("establishment_mismatch", WpsFindingSeverity.Error, L("MOL-ESTBID"), true,
                 SensitiveValueMask.MaskId(estb), SensitiveValueMask.MaskId(expected.MolEstablishmentId));
 
@@ -457,6 +621,28 @@ public static class WpsReturnedFileValidator
             string.IsNullOrWhiteSpace(rej) ? null : Safe(rej), fileDate);
     }
 
+    /// <summary>
+    /// Same establishment, compared by parts. Two hyphenated ids are equal only if both parts are equal (7-1234567 is NOT 71-234567).
+    /// If either has no hyphen the parts cannot be told apart, so the digits are compared (7-1234567 equals 71234567). Spaces are ignored.
+    /// </summary>
+    public static bool SameEstablishmentStrict(string a, string b)
+    {
+        var x = a.Replace(" ", string.Empty);
+        var y = b.Replace(" ", string.Empty);
+        if (x.Contains('-') && y.Contains('-')) return string.Equals(x, y, StringComparison.Ordinal);
+        return string.Equals(x.Replace("-", string.Empty), y.Replace("-", string.Empty), StringComparison.Ordinal);
+    }
+
+    /// <summary>Removes format, line/paragraph-separator and control characters (bidi, zero-width) and leading formula characters from text we STORE.</summary>
+    internal static string? CleanStored(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return null;
+        var kept = value.Where(c => char.GetUnicodeCategory(c) is not (UnicodeCategory.Format or UnicodeCategory.LineSeparator
+            or UnicodeCategory.ParagraphSeparator or UnicodeCategory.Control)).ToArray();
+        var cleaned = new string(kept).TrimStart('=', '+', '-', '@').Trim();
+        return cleaned.Length == 0 ? null : cleaned;
+    }
+
     private static DateOnly? ParseDate(string? value, string tag, int? line, AddFinding add)
     {
         if (string.IsNullOrEmpty(value)) return null;
@@ -473,7 +659,7 @@ public static class WpsReturnedFileValidator
         if (!AmountPattern.IsMatch(value)) { code = "amount_invalid"; return false; }
         var comma = value.IndexOf(',');
         if (comma >= 0 && value.Length - comma - 1 > 2) { code = "amount_precision"; return false; }
-        wholeNumber = comma < 0;
+        wholeNumber = comma < 0 || value.Length - comma - 1 < 2;
         amount = decimal.Parse(value.Replace(',', '.'), NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture);
         return true;
     }
@@ -556,10 +742,12 @@ public static class WpsReturnedFileValidator
         }
 
         // Per-line status fields: named only in the research note, so unverified.
-        rb.TrnRef = NullIfEmpty(Get("TRN-REF"));
-        if (rb.TrnRef is { Length: > 140 }) Block(rb, "trn_ref_too_long", lineNo, add);
-        rb.TrnStatus = NullIfEmpty(Get("TRN-STATUS"));
-        if (rb.TrnStatus is { Length: > 64 }) Block(rb, "status_too_long", lineNo, add);
+        var rawRef = Get("TRN-REF");
+        if (rawRef is { Length: > 140 }) Block(rb, "trn_ref_too_long", lineNo, add);
+        rb.TrnRef = CleanStored(rawRef);
+        var rawStatus = Get("TRN-STATUS");
+        if (rawStatus is { Length: > 64 }) Block(rb, "status_too_long", lineNo, add);
+        rb.TrnStatus = CleanStored(rawStatus);
         var trnDate = Get("TRN-DATE");
         if (!string.IsNullOrEmpty(trnDate))
         {
@@ -569,9 +757,7 @@ public static class WpsReturnedFileValidator
         return rb;
     }
 
-    private static string? NullIfEmpty(string? s) => string.IsNullOrEmpty(s) ? null : s;
-
-    private static bool IsArabic(char c) =>
+        private static bool IsArabic(char c) =>
         c is (>= '\u0600' and <= '\u06FF') or (>= '\u0750' and <= '\u077F') or (>= '\u08A0' and <= '\u08FF')
             or (>= '\uFB50' and <= '\uFDFF') or (>= '\uFE70' and <= '\uFEFF');
 }

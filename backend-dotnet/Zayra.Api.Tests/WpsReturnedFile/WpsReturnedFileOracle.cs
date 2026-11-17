@@ -19,7 +19,7 @@ internal sealed record SynthRow(
 internal static class WpsReturnedFileOracle
 {
     public sealed record Header(
-        string DestId = "RJHI", string EstbId = "9000001", string BankAcc = "SA0380000000608010167519",
+        string DestId = "XXXX", string EstbId = "9000001", string BankAcc = "SA0380000000608010167519",
         string Currency = "SAR", string ValueDate = "20260930", string FileRef = "WPS2026090001",
         string MolEstablishmentId = "7-1234567", string? FileRejectCode = null, string? DDate = null);
 
