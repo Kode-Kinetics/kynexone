@@ -2310,8 +2310,16 @@ public partial class PayrollController : ControllerBase
                 return Conflict(new
                 {
                     error = "payroll_run_stale_definition",
-                    message = $"The monthly allowance {stale.Code} was corrected from {stale.EffectiveFrom:yyyy-MM} after this run was processed, so its payslips use the old definition. "
-                              + "Nothing was approved. Reopen the run and process it again, then approve it.",
+                    message = stale.NoLongerInEffect
+                        ? $"The monthly allowance {stale.Code} was switched off or ended for {stale.EffectiveFrom:yyyy-MM} after this run was processed, so its payslips pay an allowance "
+                          + "that no longer applies. Nothing was approved. Reopen the run and process it again, then approve it."
+                        : $"The monthly allowance {stale.Code} was corrected from {stale.EffectiveFrom:yyyy-MM} after this run was processed, so its payslips use the old definition. "
+                          + "Nothing was approved. Reopen the run and process it again, then approve it.",
+                    messageAr = stale.NoLongerInEffect
+                        ? $"أُوقف البدل الشهري {stale.Code} أو انتهى لشهر {stale.EffectiveFrom:yyyy-MM} بعد معالجة هذا المسير، لذلك تصرف قسائمه بدلًا لم يعد ساريًا. "
+                          + "لم يُعتمد شيء. أعد فتح المسير وعالجه من جديد، ثم اعتمده."
+                        : $"صُحِّح البدل الشهري {stale.Code} اعتبارًا من {stale.EffectiveFrom:yyyy-MM} بعد معالجة هذا المسير، لذلك تستخدم قسائمه التعريف القديم. "
+                          + "لم يُعتمد شيء. أعد فتح المسير وعالجه من جديد، ثم اعتمده.",
                     componentCode = stale.Code,
                     effectiveFrom = stale.EffectiveFrom.ToString("yyyy-MM-dd"),
                 });

@@ -16,7 +16,8 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// </summary>
 public static class PayrollRunDefinitionStaleness
 {
-    public sealed record Stale(string Code, DateOnly EffectiveFrom);
+    /// <param name="NoLongerInEffect">The run's month has no version of the allowance any more (switched off or ended since), rather than other terms.</param>
+    public sealed record Stale(string Code, DateOnly EffectiveFrom, bool NoLongerInEffect = false);
 
     /// <summary>The first (by code) allowance whose applicable definition no longer matches what <paramref name="run"/> consumed, or null when none does.</summary>
     public static async Task<Stale?> FindAsync(ZayraDbContext db, Guid tenantId, PayrollRun run, CancellationToken ct)
@@ -40,7 +41,7 @@ public static class PayrollRunDefinitionStaleness
             // payroll run's own fallback (ForPeriod): the expense of a definition removed since still posts on its driver.
             var inEffect = CashAllowanceDefinitions.InEffect(versions[code], runMonth);
             if (consumed.Any(c => c.Code == code && !c.BackPay) && inEffect is null)
-                return new Stale(code, runMonth);
+                return new Stale(code, runMonth, NoLongerInEffect: true);
             var applicable = CashAllowanceDefinitions.ForPeriod(versions[code], runMonth);
             var applicableTerms = applicable is null ? null : CashAllowanceDefinitions.Terms(applicable);
             if (consumed.Any(c => c.Code == code && (c.Terms is null || c.Terms != applicableTerms)))
