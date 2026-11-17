@@ -15,7 +15,7 @@ namespace Zayra.Api.Migrations
     /// Done here, not in the boot backfill, so a tenant that later removes a key is not overruled on the next deploy.
     /// </summary>
     [Microsoft.EntityFrameworkCore.Infrastructure.DbContextAttribute(typeof(ZayraDbContext))]
-    [Migration("20261117040000_GrantManagerHrOfficerRecruitment")]
+    [Migration("20261117070000_GrantManagerHrOfficerRecruitment")]
     public partial class GrantManagerHrOfficerRecruitment : Migration
     {
         public const string GrantSql = """
