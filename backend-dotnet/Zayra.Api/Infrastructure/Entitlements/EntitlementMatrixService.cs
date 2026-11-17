@@ -1370,7 +1370,9 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
         var nextMonth = committed.AddMonths(1);
         var keptCoversCommitted = kept.EffectiveFrom is null || kept.EffectiveFrom <= committedEnd;
         var changeFrom = row.EffectiveFrom is DateOnly f && f > nextMonth ? f : nextMonth;
-        var changeCoversLater = row.EffectiveTo is null || row.EffectiveTo >= changeFrom;
+        // A switch-off adds no version: the confirmed one ends with the committed month, and nothing is in effect after it. An inactive version would lock the
+        // allowance's dates and switch for good (dates_locked_by_versions), so it could never be switched back on.
+        var changeCoversLater = row.IsActive && (row.EffectiveTo is null || row.EffectiveTo >= changeFrom);
         MatrixResult Committed() => new(StatusCodes.Status409Conflict, new
         {
             error = "period_committed",
