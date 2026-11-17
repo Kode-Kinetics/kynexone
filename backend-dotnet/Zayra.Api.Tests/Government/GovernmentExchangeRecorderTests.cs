@@ -16,7 +16,12 @@ namespace Zayra.Api.Tests.Government;
 /// </summary>
 public sealed class GovernmentExchangeRecorderTests
 {
-    private static ZayraDbContext Db() => new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+    /// <summary>A recorder writing in its own contexts, and a separate context to read what it wrote, over one in-memory database.</summary>
+    internal static (GovernmentExchangeRecorder Recorder, ZayraDbContext Db) Create()
+    {
+        var options = new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+        return (new GovernmentExchangeRecorder(() => new ZayraDbContext(options)), new ZayraDbContext(options));
+    }
     private static RequestContext Ctx(Guid tenant) => new("127.0.0.1", "test", Guid.NewGuid(), tenant);
 
     private sealed class LiveDouble : IGovernmentAdapter
@@ -32,15 +37,15 @@ public sealed class GovernmentExchangeRecorderTests
 
     private static GovernmentExchangeAttempt Attempt(Guid tenant, string key = "batch-1", string state = GovernmentExchangeStates.SubmitIntended,
         IGovernmentAdapter? adapter = null, string channel = GovernmentExchangeChannels.Api, byte[]? body = null, string? preview = null) =>
-        new(tenant, Guid.NewGuid(), GovernmentBodies.BankAnb, "payroll.submit", channel, key, state, Ctx(tenant), adapter,
+        new(tenant, tenant, GovernmentBodies.BankAnb, "payroll.submit", channel, key, state, Ctx(tenant), adapter,
             Environment: "sandbox", SubjectType: "PaymentBatch", SubjectId: "42", RequestBody: body,
-            ArtifactSha256: new string('a', 64), PreviewText: preview);
+            ArtifactSha256: new string('a', 64), PreviewText: preview, AccountFingerprint: "acct-fp-synthetic", BatchReference: $"B-{key}");
 
     [Fact]
     public async Task Begin_WritesOneRow_WithHashesAndAMaskedPreview_NeverTheBody_AndStagesItsAudit()
     {
-        await using var db = Db();
-        var recorder = new GovernmentExchangeRecorder(db, new AuditService(db));
+        var (recorder, db) = Create();
+        await using var _db = db;
         var tenant = Guid.NewGuid();
         var body = System.Text.Encoding.UTF8.GetBytes($"name,iban,id\nمحمد عبدالله الشمري,{SyntheticIban},{SyntheticId}");
 
@@ -62,8 +67,8 @@ public sealed class GovernmentExchangeRecorderTests
     [Fact]
     public async Task TheSameIdempotencyKey_ReturnsTheFirstRow_AndWritesNothing()
     {
-        await using var db = Db();
-        var recorder = new GovernmentExchangeRecorder(db, new AuditService(db));
+        var (recorder, db) = Create();
+        await using var _db = db;
         var tenant = Guid.NewGuid();
 
         var first = await recorder.BeginAsync(Attempt(tenant), default);
@@ -82,10 +87,12 @@ public sealed class GovernmentExchangeRecorderTests
     [InlineData(GovernmentExchangeStates.Validated)]
     [InlineData(GovernmentExchangeStates.InProgress)]
     [InlineData(GovernmentExchangeStates.Completed)]
+    [InlineData(GovernmentExchangeStates.Initiated)]
+    [InlineData(GovernmentExchangeStates.Rejected)]
     public async Task AStateThatClaimsTheBodyHasIt_IsRefused_WithoutALiveAdapter(string state)
     {
-        await using var db = Db();
-        var recorder = new GovernmentExchangeRecorder(db, new AuditService(db));
+        var (recorder, db) = Create();
+        await using var _db = db;
         var tenant = Guid.NewGuid();
 
         // Not live: the simulator, a manual record, no adapter at all.
@@ -103,18 +110,19 @@ public sealed class GovernmentExchangeRecorderTests
         var promote = () => recorder.UpdateAsync(tenant, started.Exchange.Id, new GovernmentExchangeOutcome(state, Ctx(tenant)), default);
         await promote.Should().ThrowAsync<InvalidOperationException>();
 
-        // A live adapter on the api channel may.
+        // A live adapter on the api channel may, along the transition table (the bank accepts first).
         var live = await recorder.BeginAsync(Attempt(tenant, key: "k-live", adapter: new LiveDouble()), default);
         live.Exchange.IsLive.Should().BeTrue();
-        (await recorder.UpdateAsync(tenant, live.Exchange.Id, new GovernmentExchangeOutcome(state, Ctx(tenant), HttpStatus: 202,
-            ResponseBody: "{\"id\":\"B-1\"}"u8.ToArray(), ExternalReference: "B-1"), default)).State.Should().Be(state);
+        await recorder.UpdateAsync(tenant, live.Exchange.Id, new GovernmentExchangeOutcome(GovernmentExchangeStates.Accepted, Ctx(tenant), HttpStatus: 202,
+            ResponseBody: "{\"id\":\"B-1\"}"u8.ToArray(), ExternalReference: "B-1"), default);
+        (await recorder.UpdateAsync(tenant, live.Exchange.Id, new GovernmentExchangeOutcome(state, Ctx(tenant), IsPoll: true), default)).State.Should().Be(state);
     }
 
     [Fact]
     public async Task Update_RecordsTheOutcome_AndStagesAnotherAuditRow_AndAnotherTenantCannotTouchIt()
     {
-        await using var db = Db();
-        var recorder = new GovernmentExchangeRecorder(db, new AuditService(db));
+        var (recorder, db) = Create();
+        await using var _db = db;
         var tenant = Guid.NewGuid();
         var started = await recorder.BeginAsync(Attempt(tenant), default);
 
@@ -150,8 +158,8 @@ public sealed class GovernmentExchangeRecorderTests
     [Fact]
     public async Task TheLedgerRow_NeverHoldsTheRequestOrResponseBody()
     {
-        await using var db = Db();
-        var recorder = new GovernmentExchangeRecorder(db, new AuditService(db));
+        var (recorder, db) = Create();
+        await using var _db = db;
         var tenant = Guid.NewGuid();
         const string name = "عبدالرحمن بن سليمان آل الشيخ العتيبي"; // 35+ characters, the real size of an Arabic name column
         var request = System.Text.Encoding.UTF8.GetBytes($"Authorization: Bearer synthetic-token-0001\n{name},{SyntheticIban},{SyntheticId},98765.43");

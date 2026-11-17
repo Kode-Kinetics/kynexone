@@ -813,6 +813,13 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     /// not an edit of the configuration, so a company-scoped user may trigger it on a shared row.</summary>
     private static readonly HashSet<string> ConfigBookkeepingProperties = ["UpdatedAtUtc", "UpdatedBy", "NextSequence"];
 
+    /// <summary>Per-type bookkeeping: recording that a company-scoped caller used the tenant-wide government credential is not an
+    /// edit of it (GovernmentCredentialStore.OpenAsync; on PostgreSQL it is a single-row update that never reaches this guard).</summary>
+    private static readonly Dictionary<Type, HashSet<string>> TypeBookkeepingProperties = new()
+    {
+        [typeof(GovernmentCredential)] = ["LastUsedAtUtc"],
+    };
+
     /// <summary>
     /// Write-side company guard for CONFIGURATION entities (<see cref="ICompanyScoped"/> that are not operational).
     /// The read filter shows a company-scoped user their own company's rows plus the tenant-wide ones
@@ -873,7 +880,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             if (entry.State == EntityState.Modified)
             {
                 var changed = entry.Properties.Where(p => p.IsModified).Select(p => p.Metadata.Name).ToList();
-                if (changed.Count > 0 && changed.All(ConfigBookkeepingProperties.Contains)) continue;
+                if (changed.Count > 0 && changed.All(p => ConfigBookkeepingProperties.Contains(p)
+                        || (TypeBookkeepingProperties.TryGetValue(entry.Metadata.ClrType, out var extra) && extra.Contains(p)))) continue;
                 if (scoped.CompanyId != original)
                     throw new InvalidOperationException($"company_reassignment_blocked: {name} rows cannot change company outside an explicit transfer workflow.");
             }
@@ -6074,6 +6082,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                     t.HasCheckConstraint("ck_government_credentials__ciphertext", "octet_length(ciphertext) >= 30 AND get_byte(ciphertext, 0) IN (1, 2)");
                 t.HasCheckConstraint("ck_government_credentials__rotation", "(rotated_at_utc IS NULL) = (credential_version = 1)");
             });
+            entity.Property(x => x.CredentialVersion).IsConcurrencyToken();
+            entity.Property(x => x.ClientIdentifier).HasMaxLength(200);
+            entity.Property(x => x.BaseUrlHost).HasMaxLength(255);
+            entity.Property(x => x.TokenUrlHost).HasMaxLength(255);
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Body).HasMaxLength(32).IsRequired();
             entity.Property(x => x.Environment).HasMaxLength(16).IsRequired();
@@ -6097,15 +6109,28 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                 t.HasCheckConstraint("ck_government_exchanges__channel", "channel IN ('file_out','file_in','manual','api')");
                 t.HasCheckConstraint("ck_government_exchanges__environment", "environment IS NULL OR environment IN ('sandbox','production')");
                 t.HasCheckConstraint("ck_government_exchanges__state",
-                    "state IN ('Attempted','Recorded','Simulated','Refused','Failed','SubmitIntended','Accepted','RejectedStructure','Unknown','Validated','InProgress','Completed')");
+                    "state IN ('Attempted','Recorded','Simulated','Refused','Failed','SubmitIntended','Accepted','RejectedStructure','Unknown',"
+                    + "'ReleasedAfterUnknown','Initiated','Validated','InProgress','Completed','Rejected')");
                 // The honesty rule in the database: only a live attempt on the api channel may claim the body has it.
                 t.HasCheckConstraint("ck_government_exchanges__live_states",
-                    "state NOT IN ('Accepted','Validated','InProgress','Completed') OR (is_live AND channel = 'api')");
+                    "state NOT IN ('Accepted','Initiated','Validated','InProgress','Completed','Rejected') OR (is_live AND channel = 'api')");
+                // A submission intent names the frozen artifact, the subject, the company, the account and the batch (architecture 3.5).
+                t.HasCheckConstraint("ck_government_exchanges__intent",
+                    "state <> 'SubmitIntended' OR (artifact_sha256 IS NOT NULL AND subject_id IS NOT NULL AND company_id IS NOT NULL "
+                    + "AND account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL)");
+                // Unknown is resolved by a second person, with a reason, one of two ways.
+                t.HasCheckConstraint("ck_government_exchanges__resolution",
+                    "(resolution IS NULL AND resolved_by_user_id IS NULL AND resolved_at_utc IS NULL) "
+                    + "OR (resolution IN ('bank_has_it','bank_does_not') AND resolved_by_user_id IS NOT NULL AND resolved_at_utc IS NOT NULL "
+                    + "AND resolution_reason IS NOT NULL)");
+                t.HasCheckConstraint("ck_government_exchanges__second_person", "resolved_by_user_id IS NULL OR resolved_by_user_id IS DISTINCT FROM actor_user_id");
+                t.HasCheckConstraint("ck_government_exchanges__counts", "state_version >= 1 AND poll_count >= 0 AND (item_count IS NULL OR item_count >= 0)");
                 t.HasCheckConstraint("ck_government_exchanges__live_channel", "NOT is_live OR channel = 'api'");
                 if (Database.IsNpgsql()) // the ~ operator is PostgreSQL's
                     t.HasCheckConstraint("ck_government_exchanges__hashes",
                     "(request_sha256 IS NULL OR request_sha256 ~ '^[0-9a-f]{64}$') AND (response_sha256 IS NULL OR response_sha256 ~ '^[0-9a-f]{64}$') "
-                    + "AND (artifact_sha256 IS NULL OR artifact_sha256 ~ '^[0-9a-f]{64}$')");
+                    + "AND (artifact_sha256 IS NULL OR artifact_sha256 ~ '^[0-9a-f]{64}$') "
+                    + "AND (artifact_secondary_sha256 IS NULL OR artifact_secondary_sha256 ~ '^[0-9a-f]{64}$')");
             });
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Body).HasMaxLength(32).IsRequired();
@@ -6123,6 +6148,22 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.ErrorCode).HasMaxLength(64);
             entity.Property(x => x.ExternalReference).HasMaxLength(128);
             entity.Property(x => x.Adapter).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.ArtifactSecondarySha256).HasMaxLength(64);
+            entity.Property(x => x.AccountFingerprint).HasMaxLength(64);
+            entity.Property(x => x.BatchReference).HasMaxLength(64);
+            entity.Property(x => x.TotalAmount).HasPrecision(18, 2);
+            entity.Property(x => x.Resolution).HasMaxLength(24);
+            entity.Property(x => x.ResolutionReason).HasMaxLength(500);
+            entity.Property(x => x.StateVersion).IsConcurrencyToken();
+            // One open or landed submission per batch, whatever idempotency key the client sends (architecture 3.5).
+            entity.HasIndex(x => new { x.TenantId, x.Body, x.AccountFingerprint, x.BatchReference }).IsUnique()
+                .HasFilter("account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL "
+                    + "AND state IN ('SubmitIntended','Unknown','Accepted','Initiated','Validated','InProgress','Completed','Rejected')")
+                .HasDatabaseName("ux_government_exchanges__open_batch");
+            // The body's own id for an exchange (ANB's payroll id) belongs to one attempt; polls update that row.
+            entity.HasIndex(x => new { x.TenantId, x.Body, x.ExternalReference }).IsUnique()
+                .HasFilter("external_reference IS NOT NULL")
+                .HasDatabaseName("ux_government_exchanges__bank_reference");
             // One attempt per (tenant, body, operation, idempotency key): two people pressing Submit get one row.
             entity.HasIndex(x => new { x.TenantId, x.Body, x.Operation, x.IdempotencyKey }).IsUnique()
                 .HasDatabaseName("ux_government_exchanges__tenant_body_operation_key");
@@ -6130,7 +6171,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.Body, x.SubjectType, x.SubjectId, x.CreatedAtUtc })
                 .HasDatabaseName("ix_government_exchanges__tenant_subject");
             entity.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
-            entity.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+            // Restrict: attempt history is evidence (84 months); deleting a company must not erase it.
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Restrict);
         });
 
         ApplyTenantQueryFilters(modelBuilder);

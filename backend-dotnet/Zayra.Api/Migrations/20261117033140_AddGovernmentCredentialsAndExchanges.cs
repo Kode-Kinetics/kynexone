@@ -24,6 +24,9 @@ namespace Zayra.Api.Migrations
                     ciphertext = table.Column<byte[]>(type: "bytea", nullable: false),
                     dek_version = table.Column<int>(type: "integer", nullable: false),
                     credential_version = table.Column<int>(type: "integer", nullable: false),
+                    client_identifier = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: true),
+                    base_url_host = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
+                    token_url_host = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
                     fingerprint = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
                     expires_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
                     last_used_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
@@ -77,6 +80,18 @@ namespace Zayra.Api.Migrations
                     http_status = table.Column<int>(type: "integer", nullable: true),
                     error_code = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
                     external_reference = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: true),
+                    artifact_secondary_sha256 = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
+                    account_fingerprint = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
+                    batch_reference = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
+                    total_amount = table.Column<decimal>(type: "numeric(18,2)", precision: 18, scale: 2, nullable: true),
+                    item_count = table.Column<int>(type: "integer", nullable: true),
+                    state_version = table.Column<int>(type: "integer", nullable: false),
+                    resolved_by_user_id = table.Column<Guid>(type: "uuid", nullable: true),
+                    resolved_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
+                    resolution = table.Column<string>(type: "character varying(24)", maxLength: 24, nullable: true),
+                    resolution_reason = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
+                    last_polled_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
+                    poll_count = table.Column<int>(type: "integer", nullable: false),
                     adapter = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
                     is_live = table.Column<bool>(type: "boolean", nullable: false),
                     actor_user_id = table.Column<Guid>(type: "uuid", nullable: true),
@@ -91,17 +106,21 @@ namespace Zayra.Api.Migrations
                     table.PrimaryKey("PK_government_exchanges", x => x.id);
                     table.CheckConstraint("ck_government_exchanges__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb')");
                     table.CheckConstraint("ck_government_exchanges__channel", "channel IN ('file_out','file_in','manual','api')");
+                    table.CheckConstraint("ck_government_exchanges__counts", "state_version >= 1 AND poll_count >= 0 AND (item_count IS NULL OR item_count >= 0)");
                     table.CheckConstraint("ck_government_exchanges__environment", "environment IS NULL OR environment IN ('sandbox','production')");
-                    table.CheckConstraint("ck_government_exchanges__hashes", "(request_sha256 IS NULL OR request_sha256 ~ '^[0-9a-f]{64}$') AND (response_sha256 IS NULL OR response_sha256 ~ '^[0-9a-f]{64}$') AND (artifact_sha256 IS NULL OR artifact_sha256 ~ '^[0-9a-f]{64}$')");
+                    table.CheckConstraint("ck_government_exchanges__hashes", "(request_sha256 IS NULL OR request_sha256 ~ '^[0-9a-f]{64}$') AND (response_sha256 IS NULL OR response_sha256 ~ '^[0-9a-f]{64}$') AND (artifact_sha256 IS NULL OR artifact_sha256 ~ '^[0-9a-f]{64}$') AND (artifact_secondary_sha256 IS NULL OR artifact_secondary_sha256 ~ '^[0-9a-f]{64}$')");
+                    table.CheckConstraint("ck_government_exchanges__intent", "state <> 'SubmitIntended' OR (artifact_sha256 IS NOT NULL AND subject_id IS NOT NULL AND company_id IS NOT NULL AND account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL)");
                     table.CheckConstraint("ck_government_exchanges__live_channel", "NOT is_live OR channel = 'api'");
-                    table.CheckConstraint("ck_government_exchanges__live_states", "state NOT IN ('Accepted','Validated','InProgress','Completed') OR (is_live AND channel = 'api')");
-                    table.CheckConstraint("ck_government_exchanges__state", "state IN ('Attempted','Recorded','Simulated','Refused','Failed','SubmitIntended','Accepted','RejectedStructure','Unknown','Validated','InProgress','Completed')");
+                    table.CheckConstraint("ck_government_exchanges__live_states", "state NOT IN ('Accepted','Initiated','Validated','InProgress','Completed','Rejected') OR (is_live AND channel = 'api')");
+                    table.CheckConstraint("ck_government_exchanges__resolution", "(resolution IS NULL AND resolved_by_user_id IS NULL AND resolved_at_utc IS NULL) OR (resolution IN ('bank_has_it','bank_does_not') AND resolved_by_user_id IS NOT NULL AND resolved_at_utc IS NOT NULL AND resolution_reason IS NOT NULL)");
+                    table.CheckConstraint("ck_government_exchanges__second_person", "resolved_by_user_id IS NULL OR resolved_by_user_id IS DISTINCT FROM actor_user_id");
+                    table.CheckConstraint("ck_government_exchanges__state", "state IN ('Attempted','Recorded','Simulated','Refused','Failed','SubmitIntended','Accepted','RejectedStructure','Unknown','ReleasedAfterUnknown','Initiated','Validated','InProgress','Completed','Rejected')");
                     table.ForeignKey(
                         name: "FK_government_exchanges_companies_company_id",
                         column: x => x.company_id,
                         principalTable: "companies",
                         principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
                         name: "FK_government_exchanges_tenants_tenant_id",
                         column: x => x.tenant_id,
@@ -148,6 +167,20 @@ namespace Zayra.Api.Migrations
                 name: "IX_government_exchanges_tenant_id_company_id",
                 table: "government_exchanges",
                 columns: new[] { "tenant_id", "company_id" });
+
+            migrationBuilder.CreateIndex(
+                name: "ux_government_exchanges__bank_reference",
+                table: "government_exchanges",
+                columns: new[] { "tenant_id", "body", "external_reference" },
+                unique: true,
+                filter: "external_reference IS NOT NULL");
+
+            migrationBuilder.CreateIndex(
+                name: "ux_government_exchanges__open_batch",
+                table: "government_exchanges",
+                columns: new[] { "tenant_id", "body", "account_fingerprint", "batch_reference" },
+                unique: true,
+                filter: "account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL AND state IN ('SubmitIntended','Unknown','Accepted','Initiated','Validated','InProgress','Completed','Rejected')");
 
             migrationBuilder.CreateIndex(
                 name: "ux_government_exchanges__tenant_body_operation_key",

@@ -22,8 +22,15 @@ public class GovernmentCredential : ITenantOwned, ICompanyScoped
     public byte[] Ciphertext { get; set; } = [];
     /// <summary>The tenant DEK version that sealed <see cref="Ciphertext"/> (the key id).</summary>
     public int DekVersion { get; set; }
-    /// <summary>Starts at 1 and goes up on every rotation; part of the AAD and of every token-cache key.</summary>
+    /// <summary>Starts at 1 and goes up on every rotation; part of the AAD and of every token-cache key. A concurrency token,
+    /// so two rotations racing cannot both win.</summary>
     public int CredentialVersion { get; set; } = 1;
+    /// <summary>The non-secret identifier issued with the secret (an OAuth client id). Bound into the AAD.</summary>
+    public string? ClientIdentifier { get; set; }
+    /// <summary>The API host the credential was issued for. Bound into the AAD; a call to another host is refused.</summary>
+    public string? BaseUrlHost { get; set; }
+    /// <summary>The token (authorisation) host the credential was issued for, when it differs from the API host. Bound into the AAD.</summary>
+    public string? TokenUrlHost { get; set; }
     /// <summary>A keyed (blind-index) fingerprint so a person can tell two credentials apart without seeing either.</summary>
     public string Fingerprint { get; set; } = string.Empty;
     public DateTime? ExpiresAtUtc { get; set; }
@@ -76,6 +83,23 @@ public class GovernmentExchange : ITenantOwned, ICompanyScopedOperational
     public string? ErrorCode { get; set; }
     /// <summary>The body's own reference for the exchange (a bank payroll id), once it gives one.</summary>
     public string? ExternalReference { get; set; }
+    /// <summary>Second artifact hash for a two-file submission (a bank header and body); <see cref="ArtifactSha256"/> is the first.</summary>
+    public string? ArtifactSecondarySha256 { get; set; }
+    /// <summary>Keyed fingerprint of the debit account. With <see cref="BatchReference"/> it makes one open submission per batch.</summary>
+    public string? AccountFingerprint { get; set; }
+    /// <summary>The batch number the body sees (ANB's batchNumber). One open or landed submission per (tenant, body, account, batch).</summary>
+    public string? BatchReference { get; set; }
+    public decimal? TotalAmount { get; set; }
+    public int? ItemCount { get; set; }
+    /// <summary>Concurrency token: every state change increments it, so two writers cannot both move one attempt.</summary>
+    public int StateVersion { get; set; } = 1;
+    /// <summary>Who resolved an Unknown outcome (never the person who started the attempt), how and why.</summary>
+    public Guid? ResolvedByUserId { get; set; }
+    public DateTime? ResolvedAtUtc { get; set; }
+    public string? Resolution { get; set; }
+    public string? ResolutionReason { get; set; }
+    public DateTime? LastPolledAtUtc { get; set; }
+    public int PollCount { get; set; }
     public string Adapter { get; set; } = string.Empty;
     /// <summary>True only when the attempt went through an adapter that declared itself live, on the api channel.</summary>
     public bool IsLive { get; set; }
@@ -85,6 +109,12 @@ public class GovernmentExchange : ITenantOwned, ICompanyScopedOperational
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
     public DateTime? CompletedAtUtc { get; set; }
+}
+
+public static class GovernmentExchangeResolutions
+{
+    public const string BankHasIt = "bank_has_it";
+    public const string BankDoesNot = "bank_does_not";
 }
 
 public static class GovernmentExchangeChannels
@@ -112,15 +142,45 @@ public static class GovernmentExchangeStates
     public const string Accepted = "Accepted";
     public const string RejectedStructure = "RejectedStructure";
     public const string Unknown = "Unknown";
+    /// <summary>Unknown, resolved "the bank does not have it": the intent is released and the batch may be submitted again.</summary>
+    public const string ReleasedAfterUnknown = "ReleasedAfterUnknown";
+    public const string Initiated = "Initiated";
     public const string Validated = "Validated";
     public const string InProgress = "InProgress";
     public const string Completed = "Completed";
+    /// <summary>The body refused the exchange after accepting it (distinct from <see cref="RejectedStructure"/> at submit).</summary>
+    public const string Rejected = "Rejected";
 
     public static readonly IReadOnlyList<string> All =
-        [Attempted, Recorded, Simulated, Refused, Failed, SubmitIntended, Accepted, RejectedStructure, Unknown, Validated, InProgress, Completed];
+    [
+        Attempted, Recorded, Simulated, Refused, Failed, SubmitIntended, Accepted, RejectedStructure, Unknown, ReleasedAfterUnknown,
+        Initiated, Validated, InProgress, Completed, Rejected,
+    ];
 
     /// <summary>States that claim the body has the exchange. Only a live adapter on the api channel may write them.</summary>
-    public static readonly IReadOnlyList<string> LiveOnly = [Accepted, Validated, InProgress, Completed];
+    public static readonly IReadOnlyList<string> LiveOnly = [Accepted, Initiated, Validated, InProgress, Completed, Rejected];
+
+    /// <summary>A submission in these states holds its batch: no second open submission for the same (tenant, body, account, batch).</summary>
+    public static readonly IReadOnlyList<string> HoldsTheBatch = [SubmitIntended, Unknown, Accepted, Initiated, Validated, InProgress, Completed, Rejected];
+
+    /// <summary>States an attempt may be recorded in at first.</summary>
+    public static readonly IReadOnlyList<string> Initial = [Attempted, Recorded, Simulated, Refused, Failed, SubmitIntended];
+
+    /// <summary>
+    /// The monotonic transition table (architecture 3.5). Anything not listed is refused. A live state may repeat (a poll that
+    /// saw nothing new). Leaving <see cref="Unknown"/> is NOT here: only the second-person resolution can do it.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> Next = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+    {
+        [Attempted] = new HashSet<string> { Recorded, Simulated, Refused, Failed },
+        [SubmitIntended] = new HashSet<string> { Accepted, RejectedStructure, Unknown, Refused, Failed },
+        [Accepted] = new HashSet<string> { Accepted, Initiated, Validated, InProgress, Completed, Rejected },
+        [Initiated] = new HashSet<string> { Initiated, Validated, InProgress, Completed, Rejected },
+        [Validated] = new HashSet<string> { Validated, InProgress, Completed, Rejected },
+        [InProgress] = new HashSet<string> { InProgress, Completed, Rejected },
+    };
+
+    public static bool CanMove(string from, string to) => Next.TryGetValue(from, out var allowed) && allowed.Contains(to);
 
     public static bool IsKnown(string? state) => state is not null && All.Contains(state, StringComparer.Ordinal);
 }

@@ -19,7 +19,8 @@ public static class GovernmentCapabilityModes
 
 /// <summary>GET /api/government/capabilities, one entry per body. The UI hides every control whose mode does not allow it.</summary>
 public sealed record GovernmentCapabilityDto(
-    string Body, string Mode, string ReasonCode, string ReasonText, string ReasonTextAr, IReadOnlyList<string> ChannelsAvailable);
+    string Body, string Mode, string ReasonCode, string ReasonText, string ReasonTextAr, IReadOnlyList<string> ChannelsAvailable,
+    bool WritesAllowed = false, string? WritesReasonCode = null);
 
 /// <summary>
 /// Works out <see cref="GovernmentCapabilityDto"/> per body for one tenant. Honest by construction: <c>live</c> needs all four
@@ -64,49 +65,64 @@ public sealed class GovernmentCapabilitiesService(
     private async Task<GovernmentCapabilityDto> ForBodyAsync(Guid tenantId, string body, CancellationToken ct)
     {
         var adapter = AdapterFor(body);
-        var decision = body == GovernmentBodies.Qiwa ? await QiwaDecisionAsync(tenantId, ct) : await DecideAsync(tenantId, body, ct);
+        // The screen's answer: open in ANY environment (credentials are checked per environment, never across them).
+        GovernmentLiveDecision? read = null, write = null;
+        foreach (var environment in GovernmentEnvironments.All)
+        {
+            var (r, w) = body == GovernmentBodies.Qiwa
+                ? await QiwaDecisionsAsync(tenantId, environment, ct)
+                : (await DecideAsync(tenantId, null, body, environment, ct), await DecideLiveWriteAsync(tenantId, null, body, environment, ct));
+            if (read is null || (!read.IsOpen && r.IsOpen)) read = r;
+            if (write is null || (!write.IsOpen && w.IsOpen)) write = w;
+        }
 
-        if (decision.IsOpen && adapter?.IsLiveIntegration == true)
-            return Dto(body, GovernmentCapabilityModes.Live, ReasonConnected, [Models.GovernmentExchangeChannels.Api]);
+        var writes = (Allowed: write!.AllowsWrites && adapter?.IsLiveIntegration == true, Reason: write.ReasonCode);
+        if (read!.IsOpen && adapter?.IsLiveIntegration == true)
+            return Dto(body, GovernmentCapabilityModes.Live, ReasonConnected, [Models.GovernmentExchangeChannels.Api], writes);
         if (body == GovernmentBodies.Qiwa && adapter is SandboxQiwaApiAdapter)
-            return Dto(body, GovernmentCapabilityModes.Simulated, ReasonSimulator, []);
+            return Dto(body, GovernmentCapabilityModes.Simulated, ReasonSimulator, [], writes);
         if (body == GovernmentBodies.BankAnb
             && (await SaudiBankExportActivation.EnabledCompanyIdsAsync(db, configuration, tenantId, ct)).Count > 0)
             return Dto(body, GovernmentCapabilityModes.FileOnly, ReasonFileOnly,
-                [Models.GovernmentExchangeChannels.FileOut, Models.GovernmentExchangeChannels.FileIn]);
-        return Dto(body, GovernmentCapabilityModes.Disabled, decision.ReasonCode ?? ReasonNoLiveAdapter, []);
-    }
-
-    /// <summary>The full four-gate decision for a body other than Qiwa (credential checked for the tenant-wide sandbox or production one).</summary>
-    public async Task<GovernmentLiveDecision> DecideAsync(Guid tenantId, string body, CancellationToken ct)
-    {
-        var consent = await GovernmentOptIn.HasConsentAsync(db, tenantId, body, ct);
-        var credential = false;
-        foreach (var environment in GovernmentEnvironments.All)
-            credential |= await credentials.IsUsableAsync(tenantId, null, body, environment, ct);
-        return GovernmentLivePolicy.Decide(configuration, body, consent, credential);
+                [Models.GovernmentExchangeChannels.FileOut, Models.GovernmentExchangeChannels.FileIn], writes);
+        return Dto(body, GovernmentCapabilityModes.Disabled, read.ReasonCode ?? ReasonNoLiveAdapter, [], writes);
     }
 
     /// <summary>
-    /// Qiwa keeps its own switches (QIWA_USE_LIVE_ADAPTER, Qiwa:PartnerAgreementReference, the qiwa_integration module and its
-    /// own credential table), mapped onto the four gates so the answer reads the same as every other body.
+    /// The READ decision for one body (not Qiwa), one company (null = tenant-wide) and one environment. G3 is checked for exactly
+    /// that environment: a sandbox credential never opens a production call.
     /// </summary>
-    private async Task<GovernmentLiveDecision> QiwaDecisionAsync(Guid tenantId, CancellationToken ct)
+    public async Task<GovernmentLiveDecision> DecideAsync(Guid tenantId, Guid? companyId, string body, string environment, CancellationToken ct) =>
+        GovernmentLivePolicy.Decide(configuration, body, await GovernmentOptIn.HasConsentAsync(db, tenantId, body, ct),
+            await credentials.IsUsableAsync(tenantId, companyId, body, environment, ct), environment);
+
+    /// <summary>The WRITE decision for one body, company and environment: the four gates and the body's legal clearance.</summary>
+    public async Task<GovernmentLiveDecision> DecideLiveWriteAsync(Guid tenantId, Guid? companyId, string body, string environment, CancellationToken ct) =>
+        GovernmentLivePolicy.DecideLiveWrite(configuration, body, await GovernmentOptIn.HasConsentAsync(db, tenantId, body, ct),
+            await credentials.IsUsableAsync(tenantId, companyId, body, environment, ct), environment);
+
+    /// <summary>
+    /// Qiwa keeps its own switches (QIWA_USE_LIVE_ADAPTER, Qiwa:PartnerAgreementReference, its own credential table) and now needs
+    /// the same consent record as every other body for its LIVE path (QiwaLiveAdapterPolicy). The data check is unaffected.
+    /// </summary>
+    private async Task<(GovernmentLiveDecision Read, GovernmentLiveDecision Write)> QiwaDecisionsAsync(Guid tenantId, string environment, CancellationToken ct)
     {
-        var moduleOn = !await db.TenantFeatureFlags.AsNoTracking()
-            .AnyAsync(f => f.TenantId == tenantId && f.FeatureKey == FeatureKeys.QiwaIntegration && !f.IsEnabled, ct);
+        var consent = await QiwaLiveAdapterPolicy.HasTenantConsentAsync(db, tenantId, ct);
         var credential = await db.QiwaApiCredentials.AsNoTracking()
-            .AnyAsync(c => c.TenantId == tenantId && c.ClientId != "" && c.EncryptedClientSecret != "", ct);
-        return GovernmentLivePolicy.Decide(GovernmentBodies.Qiwa, new GovernmentLiveGates(
-            QiwaLiveAdapterPolicy.HasPartnerAgreement(configuration), moduleOn, credential, QiwaLiveAdapterPolicy.LiveRequested(configuration)));
+            .AnyAsync(c => c.TenantId == tenantId && c.Environment == environment && c.ClientId != "" && c.EncryptedClientSecret != "", ct);
+        var write = QiwaLiveAdapterPolicy.DecideLiveWrite(configuration, consent, credential, environment);
+        var read = GovernmentLivePolicy.Decide(GovernmentBodies.Qiwa, new GovernmentLiveGates(
+            QiwaLiveAdapterPolicy.HasPartnerAgreement(configuration), consent, credential,
+            QiwaLiveAdapterPolicy.LiveRequested(configuration) && GovernmentLivePolicy.OperatorEnabled(configuration, GovernmentBodies.Qiwa)), environment);
+        return (read, write);
     }
 
     private IGovernmentAdapter? AdapterFor(string body) =>
         body == GovernmentBodies.Qiwa ? qiwa : providers.FirstOrDefault(p => p.Body == body);
 
-    private static GovernmentCapabilityDto Dto(string body, string mode, string reason, IReadOnlyList<string> channels)
+    private static GovernmentCapabilityDto Dto(string body, string mode, string reason, IReadOnlyList<string> channels, (bool Allowed, string? Reason) writes)
     {
         var text = ReasonTexts[reason];
-        return new GovernmentCapabilityDto(body, mode, reason, text.En, text.Ar, channels);
+        return new GovernmentCapabilityDto(body, mode, reason, text.En, text.Ar, channels, writes.Allowed, writes.Allowed ? null : writes.Reason ?? ReasonNoLiveAdapter);
     }
 }

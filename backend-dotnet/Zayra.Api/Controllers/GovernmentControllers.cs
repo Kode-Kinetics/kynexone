@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Memory;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
@@ -32,8 +33,16 @@ public sealed class GovernmentCapabilitiesController(GovernmentCapabilitiesServi
     }
 }
 
-/// <summary>PUT body for a government or bank credential. The secret travels in this request only and is never returned.</summary>
-public sealed record GovernmentCredentialSaveRequest(string? Environment, string? Kind, string? Secret, Guid? CompanyId, DateTime? ExpiresAtUtc);
+/// <summary>
+/// PUT body for a government or bank credential. The secret travels in this request only and is never returned; the record's
+/// <see cref="ToString"/> never prints it (a logged action argument cannot leak it).
+/// </summary>
+public sealed record GovernmentCredentialSaveRequest(string? Environment, string? Kind, string? Secret, Guid? CompanyId, DateTime? ExpiresAtUtc,
+    string? ClientIdentifier = null, string? BaseUrlHost = null, string? AuthorizationHost = null)
+{
+    public override string ToString() =>
+        $"GovernmentCredentialSaveRequest {{ Environment = {Environment}, Kind = {Kind}, CompanyId = {CompanyId}, Secret = (withheld) }}";
+}
 
 /// <summary>
 /// PUT / GET / DELETE /api/government/credentials/{body}: a customer's credential for a government or bank body. Metadata only
@@ -50,9 +59,14 @@ public sealed record GovernmentCredentialSaveRequest(string? Environment, string
 [Authorize]
 [NoStore]
 [Route("api/government/credentials")]
-public sealed class GovernmentCredentialsController(GovernmentCredentialStore store, StepUpService? stepUp = null) : ControllerBase
+public sealed class GovernmentCredentialsController(GovernmentCredentialStore store, StepUpService? stepUp = null,
+    Microsoft.Extensions.Caching.Memory.IMemoryCache? usedProofs = null) : ControllerBase
 {
     public const string Permission = "gov.credentials.manage";
+    public const string StepUpReusedCode = "step_up_already_used";
+
+    /// <summary>Fallback when no cache is registered, so a proof is still single-use within this process.</summary>
+    private static readonly Microsoft.Extensions.Caching.Memory.MemoryCache FallbackProofs = new(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions());
 
     [HttpGet("{body}")]
     [HasPermission(Permission)]
@@ -82,7 +96,8 @@ public sealed class GovernmentCredentialsController(GovernmentCredentialStore st
             return BadRequest(new { code = "government_credential_invalid", field = "expiresAtUtc" });
         if (await StepUpRefusalAsync(scope, ct) is { } refusal) return refusal;
         return await Guarded(async () => Ok(await store.SaveAsync(scope.TenantId, request.CompanyId, body, environment, request.Kind!,
-            request.Secret!, request.ExpiresAtUtc, Context(scope), ct)));
+            request.Secret!, request.ExpiresAtUtc, Context(scope), ct,
+            new GovernmentCredentialBinding(request.ClientIdentifier, request.BaseUrlHost, request.AuthorizationHost))));
     }
 
     [HttpDelete("{body}")]
@@ -117,12 +132,36 @@ public sealed class GovernmentCredentialsController(GovernmentCredentialStore st
         return null;
     }
 
-    /// <summary>Fails closed: no step-up service, or no valid X-Step-Up token for this user in this tenant, is a refusal.</summary>
+    /// <summary>
+    /// Fails closed: no step-up service, or no valid X-Step-Up token for this user in this tenant, is a refusal. A proof opens ONE
+    /// credential change: it is spent here (keyed by its hash, for its lifetime), so a token minted for another action, or replayed,
+    /// cannot open a second save, rotation or removal.
+    /// </summary>
     private async Task<IActionResult?> StepUpRefusalAsync(CallerScope scope, CancellationToken ct)
     {
-        if (stepUp is not null
-            && await stepUp.IsConfirmedAsync(scope.UserId, scope.TenantId, Request.Headers[StepUpService.HeaderName].ToString(), ct))
-            return null;
+        var proof = Request.Headers[StepUpService.HeaderName].ToString();
+        if (stepUp is not null && await stepUp.IsConfirmedAsync(scope.UserId, scope.TenantId, proof, ct))
+        {
+            var spent = usedProofs ?? FallbackProofs;
+            var key = "gov-cred-step-up:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes($"{scope.TenantId:N}|{scope.UserId:N}|{proof}")));
+            lock (spent)
+            {
+                if (!spent.TryGetValue(key, out _))
+                {
+                    spent.Set(key, true, StepUpService.Lifetime + TimeSpan.FromMinutes(1));
+                    return null;
+                }
+            }
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                code = StepUpService.RequiredCode,
+                reason = StepUpReusedCode,
+                error = StepUpService.RequiredCode,
+                message = "Confirm it's you again: each credential change needs its own confirmation.",
+                messageAr = "أكّد هويتك مرة أخرى: يحتاج كل تغيير في بيانات الاعتماد إلى تأكيد خاص به.",
+            });
+        }
         return StatusCode(StatusCodes.Status403Forbidden, new
         {
             code = StepUpService.RequiredCode,
@@ -135,6 +174,14 @@ public sealed class GovernmentCredentialsController(GovernmentCredentialStore st
     private async Task<IActionResult> Guarded(Func<Task<IActionResult>> action)
     {
         try { return await action(); }
+        catch (GovernmentCredentialRefusedException ex)
+        {
+            return StatusCode(ex.StatusCode, new { code = ex.Code, message = ex.Message, messageAr = ex.MessageAr });
+        }
+        catch (ArgumentException ex) when (ex.ParamName is "baseUrlHost" or "tokenUrlHost" or "binding")
+        {
+            return BadRequest(new { code = GovernmentCredentialStore.InvalidCode, field = ex.ParamName });
+        }
         catch (FieldEncryptionUnavailableException ex)
         {
             return StatusCode(ex.StatusCode, new { code = ex.Code, message = ex.SafeMessage, messageAr = ArabicSafeMessage(ex) });

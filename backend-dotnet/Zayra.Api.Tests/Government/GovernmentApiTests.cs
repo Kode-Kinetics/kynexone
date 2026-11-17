@@ -38,6 +38,15 @@ public sealed class GovernmentApiTests
         return controller;
     }
 
+    /// <summary>A fresh step-up proof header: each credential change spends its own.</summary>
+    private static void NewProof(ControllerBase controller) =>
+        controller.ControllerContext.HttpContext.Request.Headers[Zayra.Api.Infrastructure.Auth.StepUpService.HeaderName] = $"synthetic-proof-{Guid.NewGuid():N}";
+
+    /// <summary>A consent record as the platform endpoint stores it (server-stamped).</summary>
+    internal static string StampedConsent(string category = "contributions") =>
+        GovernmentOptIn.Stamp($"{{\"consent\":{{\"agreementReference\":\"AGR-2026-001\",\"dataCategories\":[\"{category}\"]}}}}",
+            Guid.NewGuid(), "owner@platform.test", DateTime.UtcNow);
+
     private static string Json(IActionResult result) => JsonSerializer.Serialize(((ObjectResult)result).Value);
 
     [Fact]
@@ -67,6 +76,7 @@ public sealed class GovernmentApiTests
         var controller = WithUser(new GovernmentCredentialsController(new GovernmentCredentialStore(db, kit.Keys, kit.Kek, kit.Options, new AuditService(db)),
             StepUpTestKit.AlwaysConfirmed(db)), tenant, Guid.NewGuid());
 
+        NewProof(controller);
         var put = await controller.Put(GovernmentBodies.BankAnb, new GovernmentCredentialSaveRequest("sandbox", GovernmentCredentialKinds.OAuthClient, Secret, null, null), default);
         var get = await controller.Get(GovernmentBodies.BankAnb, "sandbox", null, default);
 
@@ -77,6 +87,7 @@ public sealed class GovernmentApiTests
             json.Should().NotContain(Secret).And.NotContain("synthetic-client");
             json.Should().Contain("\"Fingerprint\"").And.Contain("\"Version\":1");
         }
+        NewProof(controller);
         (await controller.Delete(GovernmentBodies.BankAnb, "sandbox", null, default)).Should().BeOfType<NoContentResult>();
         (await controller.Get(GovernmentBodies.BankAnb, "sandbox", null, default)).Should().BeOfType<NotFoundObjectResult>();
     }
@@ -130,7 +141,7 @@ public sealed class GovernmentApiTests
     private static GovernmentCapabilitiesService Capabilities(FeKit kit, ZayraDbContext db, Microsoft.Extensions.Configuration.IConfiguration config, IQiwaApiAdapter? qiwa = null) =>
         new(db, config, qiwa ?? new SandboxQiwaApiAdapter(NullLogger<SandboxQiwaApiAdapter>.Instance),
             [new DisabledGosiProvider(), new DisabledMuqeemProvider(), new DisabledTakamolProvider()],
-            new GovernmentCredentialStore(db, kit.Keys, kit.Kek, kit.Options, new AuditService(db)));
+            new GovernmentCredentialStore(db, kit.Keys, kit.Kek, kit.Options, new AuditService(db), config));
 
     [Fact]
     public async Task Capabilities_OutOfTheBox_AreHonest_AndNeverLive()
@@ -165,34 +176,73 @@ public sealed class GovernmentApiTests
         db.TenantFeatureFlags.Add(new TenantFeatureFlag
         {
             TenantId = tenant, FeatureKey = FeatureKeys.GovGosiApi, IsEnabled = true,
-            ConfigJson = "{\"consent\":{\"authorisedBy\":\"Synthetic Signatory\",\"authorisedOn\":\"2026-11-01\",\"agreementReference\":\"AGR-2026-001\",\"dataCategories\":[\"contributions\"]}}",
+            ConfigJson = StampedConsent(),
         });
         await db.SaveChangesAsync();
         await new GovernmentCredentialStore(db, kit.Keys, kit.Kek, kit.Options, new AuditService(db)).SaveAsync(tenant, null, GovernmentBodies.Gosi, "sandbox",
             GovernmentCredentialKinds.OAuthClient, Secret, null, new Zayra.Api.Application.Auth.RequestContext("ip", "ua", Guid.NewGuid(), tenant), default);
-        var config = Config((GovernmentLivePolicy.PartnerAgreementKey(GovernmentBodies.Gosi), "AGR-SYNTHETIC"));
+        var config = Config((GovernmentLivePolicy.PartnerAgreementKey(GovernmentBodies.Gosi), "AGR-SYNTHETIC"),
+            (GovernmentCredentialStore.AcceptLiveCredentialsKey, "true"));
         var service = Capabilities(kit, db, config);
 
-        (await service.DecideAsync(tenant, GovernmentBodies.Gosi, default)).IsOpen.Should().BeTrue();
+        (await service.DecideAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default)).IsOpen.Should().BeTrue();
+        (await service.DecideAsync(tenant, null, GovernmentBodies.Gosi, "production", default)).ReasonCode.Should().Be(GovernmentLivePolicy.NoCredential,
+            "a sandbox credential never opens a production call");
         var gosi = (await service.GetAsync(tenant, default)).Single(c => c.Body == GovernmentBodies.Gosi);
 
         gosi.Mode.Should().Be(GovernmentCapabilityModes.Disabled, "the GOSI provider is the disabled placeholder; only a live adapter makes it live");
         gosi.ReasonCode.Should().Be(GovernmentCapabilitiesService.ReasonNoLiveAdapter);
         // A tenant without the consent record is not open even with the deployment agreement.
-        (await service.DecideAsync(Guid.NewGuid(), GovernmentBodies.Gosi, default)).ReasonCode.Should().Be(GovernmentLivePolicy.TenantNotOptedIn);
+        (await service.DecideAsync(Guid.NewGuid(), null, GovernmentBodies.Gosi, "sandbox", default)).ReasonCode.Should().Be(GovernmentLivePolicy.TenantNotOptedIn);
     }
 
     [Fact]
-    public async Task Capabilities_Endpoint_ReturnsTheList_ForTheCallersTenant()
+    public async Task Capabilities_Endpoint_AnswersForTheCallersTenant_NotAnother()
     {
         var kit = new FeKit();
         await using var db = kit.Db(interceptors: false);
-        var controller = WithUser(new GovernmentCapabilitiesController(Capabilities(kit, db, Config())), Guid.NewGuid(), Guid.NewGuid());
+        var saudiTenant = Guid.NewGuid();
+        db.Companies.Add(new Company { Id = Guid.NewGuid(), TenantId = saudiTenant, LegalNameEn = "Synthetic KSA", CountryCode = "SA", IsActive = true });
+        await db.SaveChangesAsync();
 
-        var result = await controller.Get(default);
+        async Task<GovernmentCapabilityDto> BankFor(Guid tenant)
+        {
+            var controller = WithUser(new GovernmentCapabilitiesController(Capabilities(kit, db, Config())), tenant, Guid.NewGuid());
+            var list = ((OkObjectResult)(await controller.Get(default)).Result!).Value.Should().BeAssignableTo<IReadOnlyList<GovernmentCapabilityDto>>().Subject;
+            list.Should().HaveCount(GovernmentBodies.All.Count);
+            return list.Single(c => c.Body == GovernmentBodies.BankAnb);
+        }
 
-        ((OkObjectResult)result.Result!).Value.Should().BeAssignableTo<IReadOnlyList<GovernmentCapabilityDto>>()
-            .Which.Should().HaveCount(GovernmentBodies.All.Count);
+        (await BankFor(saudiTenant)).Mode.Should().Be(GovernmentCapabilityModes.FileOnly, "this tenant has a Saudi company, so the bank file is open");
+        (await BankFor(Guid.NewGuid())).Mode.Should().Be(GovernmentCapabilityModes.Disabled, "another tenant's company opens nothing here");
+    }
+
+    [Fact]
+    public async Task Capabilities_OneTestPerMissingGate_ReportsThatGate()
+    {
+        var kit = new FeKit();
+        await using var db = kit.Db(interceptors: false);
+        var tenant = Guid.NewGuid();
+        var agreed = Config((GovernmentLivePolicy.PartnerAgreementKey(GovernmentBodies.Gosi), "AGR-SYNTHETIC"));
+        var service = Capabilities(kit, db, agreed);
+
+        // No consent yet.
+        (await service.DecideAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default)).ReasonCode.Should().Be(GovernmentLivePolicy.TenantNotOptedIn);
+        db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = tenant, FeatureKey = FeatureKeys.GovGosiApi, IsEnabled = true, ConfigJson = StampedConsent() });
+        await db.SaveChangesAsync();
+        // Consent, no credential.
+        (await service.DecideAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default)).ReasonCode.Should().Be(GovernmentLivePolicy.NoCredential);
+        await new GovernmentCredentialStore(db, kit.Keys, kit.Kek, kit.Options, new AuditService(db)).SaveAsync(tenant, null, GovernmentBodies.Gosi, "sandbox",
+            GovernmentCredentialKinds.OAuthClient, Secret, null, new Zayra.Api.Application.Auth.RequestContext("ip", "ua", Guid.NewGuid(), tenant), default);
+        (await service.DecideAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default)).IsOpen.Should().BeTrue();
+        // No agreement.
+        (await Capabilities(kit, db, Config()).DecideAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default)).ReasonCode.Should().Be(GovernmentLivePolicy.NoPartnerAgreement);
+        // Operator switch off.
+        var killed = Config((GovernmentLivePolicy.PartnerAgreementKey(GovernmentBodies.Gosi), "AGR-SYNTHETIC"), (GovernmentLivePolicy.EnabledKey(GovernmentBodies.Gosi), "false"));
+        (await Capabilities(kit, db, killed).DecideAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default)).ReasonCode.Should().Be(GovernmentLivePolicy.OperatorDisabled);
+        // Writes need the legal clearance on top, and the screen says so.
+        (await service.DecideLiveWriteAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default)).ReasonCode.Should().Be(GovernmentLivePolicy.LiveWritesNeedLegalClearance);
+        (await service.GetAsync(tenant, default)).Single(c => c.Body == GovernmentBodies.Gosi).WritesAllowed.Should().BeFalse();
     }
 
     // ── Readiness evidence ─────────────────────────────────────────────────────────────────────────────

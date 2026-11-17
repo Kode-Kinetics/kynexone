@@ -26,7 +26,19 @@ public sealed class GovernmentCredentialStoreTests
     private static (GovernmentCredentialStore Store, ZayraDbContext Db) Create(FeKit kit, ZayraDbContext? db = null)
     {
         db ??= kit.Db(interceptors: false);
-        return (new GovernmentCredentialStore(db, kit.Keys, kit.Kek, kit.Options, new AuditService(db)), db);
+        return (new GovernmentCredentialStore(db, kit.Keys, kit.Kek, kit.Options, new AuditService(db), AcceptLive), db);
+    }
+
+    /// <summary>These tests exercise both environments, so the operator flag for production credentials is on here.</summary>
+    private static readonly Microsoft.Extensions.Configuration.IConfiguration AcceptLive =
+        GovernmentLiveGateTests.Config((GovernmentCredentialStore.AcceptLiveCredentialsKey, "true"));
+
+    private static async Task<Guid> CompanyAsync(ZayraDbContext db, Guid tenant)
+    {
+        var company = new Company { Id = Guid.NewGuid(), TenantId = tenant, LegalNameEn = "Synthetic", IsActive = true };
+        db.Companies.Add(company);
+        await db.SaveChangesAsync();
+        return company.Id;
     }
 
     private static RequestContext Ctx(Guid tenant, Guid? user = null) => new("127.0.0.1", "test", user ?? Guid.NewGuid(), tenant);
@@ -160,12 +172,12 @@ public sealed class GovernmentCredentialStoreTests
     }
 
     [Fact]
-    public async Task ACompanyCredential_WinsOverTheTenantWideOne_AndExpiredIsNeverOpened()
+    public async Task ACompanyCredential_WinsOverTheTenantWideOne_AndAnExpiredOneIsRefused_NotReplaced()
     {
         var kit = new FeKit();
         var (store, db) = Create(kit);
         var tenant = Guid.NewGuid();
-        var company = Guid.NewGuid();
+        var company = await CompanyAsync(db, tenant);
         await store.SaveAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, null, Ctx(tenant), default);
         await store.SaveAsync(tenant, company, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.OAuthClient, SecretB, null, Ctx(tenant), default);
 
@@ -175,8 +187,9 @@ public sealed class GovernmentCredentialStoreTests
         var companyRow = await db.GovernmentCredentials.SingleAsync(x => x.CompanyId == company);
         companyRow.ExpiresAtUtc = DateTime.UtcNow.AddMinutes(-1);
         await db.SaveChangesAsync();
-        (await store.OpenAsync(tenant, company, GovernmentBodies.Gosi, "sandbox", default))!.Secret.Should().Be(SecretA,
-            "an expired company credential falls back to the tenant-wide one");
+        (await store.OpenAsync(tenant, company, GovernmentBodies.Gosi, "sandbox", default)).Should().BeNull(
+            "an expired company credential is refused; it never falls back to the tenant-wide one");
+        (await store.IsUsableAsync(tenant, company, GovernmentBodies.Gosi, "sandbox", default)).Should().BeFalse();
     }
 
     [Fact]
@@ -212,5 +225,125 @@ public sealed class GovernmentCredentialStoreTests
     {
         new UnsealedGovernmentCredential(GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, null, 1, SecretA)
             .ToString().Should().NotContain("synthetic-secret");
+    }
+
+    // ── Review round: the guards each test below must catch when removed ──────────────────────────────────
+
+    [Fact]
+    public async Task WithEncryptionSwitchedOn_ButNoKek_SaveIsRefused()
+    {
+        var kit = new FeKit();
+        await using var db = kit.Db(interceptors: false);
+        var onWithoutKek = new FieldEncryptionOptions { Mode = FieldEncryptionMode.DualWrite };
+        var noKek = new ConfigKeyEncryptionKeyProvider(onWithoutKek);
+        var store = new GovernmentCredentialStore(db, new FieldKeyService(kit.Store, noKek), noKek, onWithoutKek, new AuditService(db), AcceptLive);
+        var tenant = Guid.NewGuid();
+
+        store.IsAvailable.Should().BeFalse();
+        var save = () => store.SaveAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, null, Ctx(tenant), default);
+        await save.Should().ThrowAsync<GovernmentCredentialsUnavailableException>();
+        (await db.GovernmentCredentials.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ProductionCredentials_AreRefused_UntilTheOperatorAcceptsThem()
+    {
+        var kit = new FeKit();
+        await using var db = kit.Db(interceptors: false);
+        var tenant = Guid.NewGuid();
+        var closed = new GovernmentCredentialStore(db, kit.Keys, kit.Kek, kit.Options, new AuditService(db));
+
+        closed.AcceptsLiveCredentials.Should().BeFalse("the flag defaults to false");
+        var save = () => closed.SaveAsync(tenant, null, GovernmentBodies.BankAnb, "production", GovernmentCredentialKinds.OAuthClient, SecretA, null, Ctx(tenant), default);
+        (await save.Should().ThrowAsync<GovernmentCredentialRefusedException>()).Which.Code.Should().Be(GovernmentCredentialStore.LiveNotAcceptedCode);
+        (await db.GovernmentCredentials.CountAsync()).Should().Be(0);
+        // Sandbox is unaffected.
+        await closed.SaveAsync(tenant, null, GovernmentBodies.BankAnb, "sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, null, Ctx(tenant), default);
+
+        // A production credential stored while the flag was on cannot be used once it is off.
+        var open = new GovernmentCredentialStore(db, kit.Keys, kit.Kek, kit.Options, new AuditService(db), AcceptLive);
+        await open.SaveAsync(tenant, null, GovernmentBodies.BankAnb, "production", GovernmentCredentialKinds.OAuthClient, SecretB, null, Ctx(tenant), default);
+        (await closed.IsUsableAsync(tenant, null, GovernmentBodies.BankAnb, "production", default)).Should().BeFalse();
+        var read = () => closed.OpenAsync(tenant, null, GovernmentBodies.BankAnb, "production", default);
+        await read.Should().ThrowAsync<GovernmentCredentialRefusedException>();
+    }
+
+    [Fact]
+    public async Task ACiphertextSealedForAnotherTenant_UnderThisTenantsOwnKey_DoesNotOpen()
+    {
+        var kit = new FeKit();
+        var (store, db) = Create(kit);
+        var tenantA = Guid.NewGuid();
+        await store.SaveAsync(tenantA, null, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, SecretA, null, Ctx(tenantA), default);
+        var ring = await kit.Keys.GetRingAsync(tenantA, createIfMissing: false, default);
+        var row = await db.GovernmentCredentials.SingleAsync();
+
+        // Same DEK, AAD naming another tenant: only the tenant part of the AAD can refuse this.
+        row.Ciphertext = FieldEnvelope.Seal(ring.ActiveDek, checked((byte)ring.ActiveVersion), SecretB,
+            GovernmentCredentialStore.Aad(Guid.NewGuid(), null, GovernmentBodies.Gosi, "sandbox", row.CredentialVersion));
+        await db.SaveChangesAsync();
+
+        (await store.OpenAsync(tenantA, null, GovernmentBodies.Gosi, "sandbox", default)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task TheHostBinding_IsInTheAad_AndReturnedToTheTransport()
+    {
+        var kit = new FeKit();
+        var (store, db) = Create(kit);
+        var tenant = Guid.NewGuid();
+        var meta = await store.SaveAsync(tenant, null, GovernmentBodies.BankAnb, "sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, null, Ctx(tenant), default,
+            new GovernmentCredentialBinding("synthetic-client-id", "API.Bank-Sandbox.Example.Test.", "auth.bank-sandbox.example.test"));
+
+        meta.BaseUrlHost.Should().Be("api.bank-sandbox.example.test");
+        var opened = await store.OpenAsync(tenant, null, GovernmentBodies.BankAnb, "sandbox", default);
+        (opened!.ClientIdentifier, opened.BaseUrlHost, opened.TokenUrlHost).Should().Be(("synthetic-client-id", "api.bank-sandbox.example.test", "auth.bank-sandbox.example.test"));
+        opened.ToString().Should().NotContain("synthetic-client-id");
+
+        var row = await db.GovernmentCredentials.SingleAsync();
+        row.BaseUrlHost = "evil.example.test";
+        await db.SaveChangesAsync();
+        (await store.OpenAsync(tenant, null, GovernmentBodies.BankAnb, "sandbox", default)).Should().BeNull("a credential re-pointed at another host does not open");
+
+        var badHost = () => store.SaveAsync(tenant, null, GovernmentBodies.BankAnb, "sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, null, Ctx(tenant), default,
+            new GovernmentCredentialBinding(BaseUrlHost: "https://10.0.0.1:443/x"));
+        await badHost.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task TwoRotationsRacing_OneWins_TheOtherIsAConflict()
+    {
+        var kit = new FeKit();
+        var (store, db) = Create(kit);
+        var tenant = Guid.NewGuid();
+        await store.SaveAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, SecretA, null, Ctx(tenant), default);
+
+        // Writer 1 has read version 1 and is about to rotate; writer 2 rotates first.
+        await using var stale = kit.Db(interceptors: false);
+        (await stale.GovernmentCredentials.SingleAsync()).CredentialVersion.Should().Be(1);
+        await using (var other = kit.Db(interceptors: false))
+            await Create(kit, other).Store.SaveAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, SecretB, null, Ctx(tenant), default);
+
+        var late = () => Create(kit, stale).Store.SaveAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, "synthetic-loser", null, Ctx(tenant), default);
+
+        (await late.Should().ThrowAsync<GovernmentCredentialRefusedException>()).Which.StatusCode.Should().Be(409);
+        await using var verify = kit.Db(interceptors: false);
+        var row = await verify.GovernmentCredentials.SingleAsync();
+        row.CredentialVersion.Should().Be(2);
+        (await Create(kit, verify).Store.OpenAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default))!.Secret.Should().Be(SecretB);
+    }
+
+    [Fact]
+    public async Task ACompanyOfAnotherTenant_IsRefused()
+    {
+        var kit = new FeKit();
+        var (store, db) = Create(kit);
+        var tenant = Guid.NewGuid();
+        var foreignCompany = await CompanyAsync(db, Guid.NewGuid());
+
+        var save = () => store.SaveAsync(tenant, foreignCompany, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, SecretA, null, Ctx(tenant), default);
+
+        (await save.Should().ThrowAsync<GovernmentCredentialRefusedException>()).Which.Code.Should().Be(GovernmentCredentialStore.CompanyUnknownCode);
+        (await db.GovernmentCredentials.CountAsync()).Should().Be(0);
     }
 }

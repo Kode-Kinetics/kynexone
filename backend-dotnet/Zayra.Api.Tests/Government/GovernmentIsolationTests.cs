@@ -58,11 +58,15 @@ public sealed class GovernmentIsolationTests
         return (db, http);
     }
 
-    private static GovernmentCredentialsController Controller(World w, ZayraDbContext db, DefaultHttpContext http) =>
-        new(new GovernmentCredentialStore(db, w.Kit.Keys, w.Kit.Kek, w.Kit.Options, new AuditService(db)), StepUpTestKit.AlwaysConfirmed(db))
+    /// <summary>A controller whose every call carries a fresh step-up proof (each credential change spends its own).</summary>
+    private static GovernmentCredentialsController Controller(World w, ZayraDbContext db, DefaultHttpContext http)
+    {
+        http.Request.Headers[Zayra.Api.Infrastructure.Auth.StepUpService.HeaderName] = $"synthetic-proof-{Guid.NewGuid():N}";
+        return new(new GovernmentCredentialStore(db, w.Kit.Keys, w.Kit.Kek, w.Kit.Options, new AuditService(db)), StepUpTestKit.AlwaysConfirmed(db))
         {
             ControllerContext = new ControllerContext { HttpContext = http },
         };
+    }
 
     private static async Task SeedCredentialAsync(World w, Guid tenant, Guid? company, string secret)
     {
@@ -80,15 +84,13 @@ public sealed class GovernmentIsolationTests
         await SeedCredentialAsync(w, w.TenantId, w.CompanyB, SecretB);
         var (db, http) = ContextFor(w, User(w.TenantId, w.CompanyA, GovernmentCredentialsController.Permission));
         await using var _ = db;
-        var controller = Controller(w, db, http);
-
-        (await controller.Get(GovernmentBodies.Gosi, "sandbox", w.CompanyB, default)).Should().BeOfType<NotFoundObjectResult>();
-        var put = await controller.Put(GovernmentBodies.Gosi, new GovernmentCredentialSaveRequest("sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, w.CompanyB, null), default);
+        (await Controller(w, db, http).Get(GovernmentBodies.Gosi, "sandbox", w.CompanyB, default)).Should().BeOfType<NotFoundObjectResult>();
+        var put = await Controller(w, db, http).Put(GovernmentBodies.Gosi, new GovernmentCredentialSaveRequest("sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, w.CompanyB, null), default);
         ((ObjectResult)put).StatusCode.Should().Be(StatusCodes.Status403Forbidden);
-        (await controller.Delete(GovernmentBodies.Gosi, "sandbox", w.CompanyB, default)).Should().BeOfType<NotFoundObjectResult>();
+        (await Controller(w, db, http).Delete(GovernmentBodies.Gosi, "sandbox", w.CompanyB, default)).Should().BeOfType<NotFoundObjectResult>();
 
         // Its own company works, and company B's credential is untouched.
-        (await controller.Put(GovernmentBodies.Gosi, new GovernmentCredentialSaveRequest("sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, w.CompanyA, null), default))
+        (await Controller(w, db, http).Put(GovernmentBodies.Gosi, new GovernmentCredentialSaveRequest("sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, w.CompanyA, null), default))
             .Should().BeOfType<OkObjectResult>();
         await using var verify = w.Kit.Db(interceptors: false);
         var store = new GovernmentCredentialStore(verify, w.Kit.Keys, w.Kit.Kek, w.Kit.Options, new AuditService(verify));
@@ -114,7 +116,7 @@ public sealed class GovernmentIsolationTests
     }
 
     [Fact]
-    public async Task ACompanyScopedUser_CannotOverwriteTheTenantWideCredential()
+    public async Task ACompanyScopedUser_CannotOverwriteTheTenantWideCredential_TheirSaveIsTheirCompanysOwn()
     {
         var w = await SeedAsync();
         await SeedCredentialAsync(w, w.TenantId, null, SecretA);
@@ -124,7 +126,7 @@ public sealed class GovernmentIsolationTests
         var put = await Controller(w, db, http).Put(GovernmentBodies.Gosi,
             new GovernmentCredentialSaveRequest("sandbox", GovernmentCredentialKinds.OAuthClient, SecretB, null, null), default);
 
-        ((ObjectResult)put).StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+        put.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<GovernmentCredentialMetadata>().Which.CompanyId.Should().Be(w.CompanyA);
         await using var verify = w.Kit.Db(interceptors: false);
         (await new GovernmentCredentialStore(verify, w.Kit.Keys, w.Kit.Kek, w.Kit.Options, new AuditService(verify))
             .OpenAsync(w.TenantId, null, GovernmentBodies.Gosi, "sandbox", default))!.Secret.Should().Be(SecretA);
@@ -141,14 +143,14 @@ public sealed class GovernmentIsolationTests
     {
         var w = await SeedAsync();
         Guid rowB;
-        await using (var system = w.Kit.Db(interceptors: false))
-            rowB = (await new GovernmentExchangeRecorder(system, new AuditService(system)).BeginAsync(Attempt(w.TenantId, w.CompanyB, "k-b"), default)).Exchange.Id;
+        rowB = (await new GovernmentExchangeRecorder(() => w.Kit.Db(interceptors: false)).BeginAsync(Attempt(w.TenantId, w.CompanyB, "k-b"), default)).Exchange.Id;
 
         // A company-A user: company B's attempt is invisible, cannot be moved on, and A cannot write into B.
-        var (dbA, _) = ContextFor(w, User(w.TenantId, w.CompanyA));
+        var userA = User(w.TenantId, w.CompanyA);
+        var (dbA, _) = ContextFor(w, userA);
         await using (dbA)
         {
-            var recorderA = new GovernmentExchangeRecorder(dbA, new AuditService(dbA));
+            var recorderA = new GovernmentExchangeRecorder(() => ContextFor(w, userA).Db);
             (await dbA.GovernmentExchanges.CountAsync()).Should().Be(0);
             var move = () => recorderA.UpdateAsync(w.TenantId, rowB, new GovernmentExchangeOutcome(GovernmentExchangeStates.Failed, new RequestContext("ip", "ua", null, w.TenantId)), default);
             await move.Should().ThrowAsync<KeyNotFoundException>();
@@ -158,11 +160,12 @@ public sealed class GovernmentIsolationTests
         }
 
         // Another tenant: nothing visible, and its own key "k-b" is its own attempt.
-        var (dbOther, _) = ContextFor(w, User(w.OtherTenantId, null));
+        var otherUser = User(w.OtherTenantId, null);
+        var (dbOther, _) = ContextFor(w, otherUser);
         await using (dbOther)
         {
             (await dbOther.GovernmentExchanges.CountAsync()).Should().Be(0);
-            var recorder = new GovernmentExchangeRecorder(dbOther, new AuditService(dbOther));
+            var recorder = new GovernmentExchangeRecorder(() => ContextFor(w, otherUser).Db);
             var other = () => recorder.UpdateAsync(w.TenantId, rowB, new GovernmentExchangeOutcome(GovernmentExchangeStates.Failed, new RequestContext("ip", "ua", null, w.OtherTenantId)), default);
             await other.Should().ThrowAsync<KeyNotFoundException>();
         }
