@@ -70,7 +70,7 @@ public sealed record BatchPaymentCoverage(
     int CancelledCount, decimal CancelledTotal,
     int UnconfirmedCount, decimal UnconfirmedTotal)
 {
-    /// <summary>Money that came back or never left. This is what must never read as "Paid".</summary>
+    /// <summary>Money that came back or that the bank refused to send. This is what must never read as "Paid".</summary>
     public decimal FailedTotal => ReturnedTotal + RejectedTotal;
     public int FailedCount => ReturnedCount + RejectedCount;
     /// <summary>Share of the batch the bank has actually spoken about.</summary>
@@ -109,7 +109,7 @@ public sealed class BankConfirmationImportResult
     public int AcceptedCreditNotConfirmed { get; set; }
     public int Unchanged { get; set; }
     public int CollapsedDuplicateRows { get; set; }
-    /// <summary>Records moved to Rejected: the bank refused the instruction, so the money never left.</summary>
+    /// <summary>Records moved to Rejected: the bank refused the instruction (the bank statement shows whether any money moved).</summary>
     public int RejectedApplied { get; set; }
     /// <summary>Of the applied Paid lines: those the bank gave as ISO ACSC/ACCC ("Settled by bank").</summary>
     public int SettledByBank { get; set; }
@@ -498,8 +498,12 @@ public sealed class BankConfirmationService
                     from = previous, to = row.Outcome, reason = hold,
                     message = BankOutcomeLabels.HeldDuplicateRejection.English,
                     messageAr = BankOutcomeLabels.HeldDuplicateRejection.Arabic,
-                    nextStep = "Send the line again with an exit naming this record: confirm_original_payment_received or "
-                             + "confirm_duplicate_not_paid, a reason and the bank's reference.",
+                    nextStep = "Check the bank statement for the original payment. If it reached the employee, record 'original payment "
+                             + "received'. If it did not, record 'not paid' and pay again. Both need a reason and the bank's reference.",
+                    nextStepAr = "راجع كشف حساب البنك بحثًا عن الدفعة الأصلية. إن كانت قد وصلت إلى الموظف فسجّل «استلام الدفعة الأصلية». "
+                               + "وإن لم تصل فسجّل «لم يُدفع» وأعد الدفع. وكلاهما يحتاج إلى سبب ومرجع البنك.",
+                    // The exit names the screen sends back with the line (machine keys, not part of the sentence).
+                    nextStepCodes = new[] { BankLineExitKinds.ConfirmOriginalPaymentReceived, BankLineExitKinds.ConfirmDuplicateNotPaid },
                 });
             }
             else if (row.Outcome == BankConfirmationOutcomes.Pending)
@@ -535,7 +539,8 @@ public sealed class BankConfirmationService
                 {
                     paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
                     from = previous, to = row.Outcome, reason = "return_reversal_not_permitted",
-                    message = "Re-marking a returned or rejected payment as paid requires allowReturnReversal=true and a reason.",
+                    message = "This salary was returned or rejected by the bank. To mark it paid again you must record a reason and the bank's reference.",
+                    messageAr = "رُدّ هذا الراتب أو رفضه البنك. لتسجيله مدفوعًا من جديد يجب تسجيل السبب ومرجع البنك.",
                 });
             }
             else if (string.Equals(previous, PaymentRecordStatuses.Paid, StringComparison.OrdinalIgnoreCase)
@@ -575,11 +580,14 @@ public sealed class BankConfirmationService
                 {
                     paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
                     from = previous, to = row.Outcome, reason = hold,
-                    message = "The bank confirmed this payment as paid and now reports it rejected. Nothing was changed: check "
-                            + "with the bank whether the money left. Then send the line again with an exit naming this record: "
-                            + "allow_paid_to_rejected (it did not) or confirm_paid_despite_rejection (it did), a reason and the "
-                            + "bank's reference.",
-                    messageAr = BankOutcomeLabels.HeldRejectionAfterPaid.Arabic,
+                    message = "The bank confirmed this salary as paid and now reports it rejected. Nothing was changed. Check the bank "
+                            + "statement. If the money reached the employee, record 'paid confirmed' with the statement reference. If it "
+                            + "did not, record 'not paid' with a reason and the reference: the salary is then still owed and must be paid again.",
+                    messageAr = "أكّد البنك دفع هذا الراتب ثم أفاد برفضه. لم يتغير شيء. راجع كشف حساب البنك. إذا وصل المبلغ إلى الموظف "
+                              + "فسجّل «تأكيد الدفع» مع مرجع الكشف. وإذا لم يصل فسجّل «لم يُدفع» مع السبب والمرجع، وسيبقى الراتب مستحقًا "
+                              + "للموظف ويجب دفعه من جديد.",
+                    // The exit names the screen sends back with the line (machine keys, not part of the sentence).
+                    nextStepCodes = new[] { BankLineExitKinds.AllowPaidToRejected, BankLineExitKinds.ConfirmPaidDespiteRejection },
                 });
             }
             else if (PaymentRecordStatuses.IsFailed(previous) && row.Outcome is BankConfirmationOutcomes.Returned or BankConfirmationOutcomes.Rejected
@@ -596,7 +604,7 @@ public sealed class BankConfirmationService
             else if (PaymentRecordStatuses.IsFailed(previous) && row.Outcome is BankConfirmationOutcomes.Returned or BankConfirmationOutcomes.Rejected
                      && !string.Equals(previous, row.Outcome, StringComparison.OrdinalIgnoreCase))
             {
-                // Returned (money came back) and Rejected (money never left) differ in what the GL must correct. A file
+                // Returned (money came back) and Rejected (the bank refused the instruction) differ in what the GL must correct. A file
                 // that swaps one for the other is held for a person, never applied silently.
                 apply = false;
                 hold = BankOutcomeHolds.FailedOutcomeChanged;
@@ -604,10 +612,14 @@ public sealed class BankConfirmationService
                 {
                     paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
                     from = previous, to = row.Outcome, reason = hold,
-                    message = "The bank earlier reported this payment as " + previous + " and now as " + row.Outcome
-                            + ". Nothing was changed: check with the bank which is right, then send the line again with an "
-                            + "allow_failed_outcome_change exit naming this record and a reason.",
-                    messageAr = BankOutcomeLabels.HeldFailedOutcomeChanged.Arabic,
+                    message = $"The bank first reported this salary as {FailedWord(previous, false)} and now as {FailedWord(row.Outcome, false)}. "
+                            + "('Returned' means the money came back; 'rejected' means the bank refused the instruction.) Nothing was "
+                            + "changed. Ask the bank which is correct, then record your decision with a reason.",
+                    messageAr = $"أفاد البنك أولًا بأن حالة هذا الراتب {FailedWord(previous, true)} ثم أفاد بأنها {FailedWord(row.Outcome, true)}. "
+                              + "(«مُرتجع» تعني أن المبلغ عاد، و«مرفوض» تعني أن البنك رفض التعليمات). لم يتغير شيء. اسأل البنك أي الحالتين "
+                              + "صحيحة ثم سجّل قرارك مع السبب.",
+                    // The exit name the screen sends back with the line (machine key, not part of the sentence).
+                    nextStepCodes = new[] { BankLineExitKinds.AllowFailedOutcomeChange },
                 });
             }
 
@@ -764,6 +776,14 @@ public sealed class BankConfirmationService
             result.HeldForPerson.Add(BankOutcomeLedger.View(h));
     }
 
+    /// <summary>A returned or rejected status as a word in a sentence: the officer never reads the stored enum value.</summary>
+    private static string FailedWord(string? status, bool arabic) => status switch
+    {
+        var s when string.Equals(s, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase) => arabic ? "مُرتجع" : "returned",
+        var s when string.Equals(s, PaymentRecordStatuses.Rejected, StringComparison.OrdinalIgnoreCase) => arabic ? "مرفوض" : "rejected",
+        _ => status ?? string.Empty,
+    };
+
     /// <summary>An exit asked for without what it needs refuses the whole import.</summary>
     /// <summary>Each exit's shape: a known kind, exactly one record named, a reason, and a bank reference where required.</summary>
     private static JournalExportRefusal? ExitShapeRefusal(BankConfirmationImportOptions options)
@@ -785,8 +805,11 @@ public sealed class BankConfirmationService
                 {
                     error = "override_reason_required",
                     message = BankLineExitKinds.NeedsBankReference(e.Kind)
-                        ? "This exit needs a reason and the bank's reference (for example a statement line or the bank's letter)."
-                        : "This exit needs a reason: it changes what the GL must correct.",
+                        ? "This decision needs a reason and the bank's reference (for example a statement line or the bank's letter)."
+                        : "Record a reason: this decision changes what Finance must correct in the ledger.",
+                    messageAr = BankLineExitKinds.NeedsBankReference(e.Kind)
+                        ? "يحتاج هذا القرار إلى السبب ومرجع البنك (مثل سطر من كشف الحساب أو خطاب البنك)."
+                        : "سجّل السبب: يغيّر هذا القرار ما يجب على الإدارة المالية تصحيحه في الدفاتر.",
                     kind = e.Kind, paymentRecordId = e.PaymentRecordId, employeeReference = e.EmployeeReference,
                 });
         }

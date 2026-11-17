@@ -219,4 +219,54 @@ public class PaymentBatchRejectedFieldsTests
         handoff.GetProperty("payments").GetProperty("batches").EnumerateArray().Single()
             .GetProperty("presentsCleanButIsNot").GetBoolean().Should().BeTrue();
     }
+
+    // ── Package F5: the two refusals read as instructions, in both languages (wording only) ──────
+
+    [Fact]
+    public async Task TheHeldBatchRefusal_TellsTheOfficerToCheckTheStatementAndRecordADecision_InBothLanguages()
+    {
+        using var db = NewDb();
+        var (tenantId, batch, _) = SeedHeldPaid(db, WpsStatuses.Paid, settled: true);
+
+        var refused = Web(Assert.IsType<UnprocessableEntityObjectResult>(
+            await KsaWpsReviewFixesTests.Payroll(db, tenantId, Guid.NewGuid())
+                .UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Reconciled, null), default)).Value);
+
+        refused.GetProperty("error").GetString().Should().Be("bank_lines_held_for_person", "the machine key does not change");
+        refused.GetProperty("action").GetString().Should().Be("reconcile");
+        var en = refused.GetProperty("message").GetString()!;
+        var ar = refused.GetProperty("messageAr").GetString()!;
+        en.Should().Contain("This batch cannot be reconciled yet. 1 salary line(s)").And.Contain("check the bank statement")
+            .And.Contain("record your decision with a reason and the bank's reference").And.NotContainEquivalentOf("exit");
+        ar.Should().Contain("لا يمكن مطابقة هذه الدفعة بعد").And.Contain("كشف حساب البنك").And.Contain("سجّل قرارك مع السبب ومرجع البنك");
+    }
+
+    [Fact]
+    public async Task TheHeldBatchRefusal_OnSettle_SaysPostedToTheLedger_NotSettled()
+    {
+        using var db = NewDb();
+        var (tenantId, batch, _) = SeedHeldPaid(db, WpsStatuses.Accepted, settled: false);
+
+        var refused = Web(Assert.IsType<UnprocessableEntityObjectResult>(
+            await KsaWpsReviewFixesTests.Payroll(db, tenantId, Guid.NewGuid())
+                .SettlePaymentBatch(batch.Id, new SettlePaymentBatchRequest("settle", null), default)).Value);
+
+        refused.GetProperty("action").GetString().Should().Be("ledger_settle");
+        refused.GetProperty("message").GetString().Should().Contain("This batch cannot be posted to the ledger yet").And.NotContain("settled");
+        refused.GetProperty("messageAr").GetString().Should().Contain("لا يمكن ترحيل هذه الدفعة إلى الدفاتر بعد");
+    }
+
+    [Fact]
+    public async Task TheNotReconciledRefusal_CarriesAnArabicMessage_AndNeverClaimsTheMoneyNeverLeft()
+    {
+        using var db = NewDb();
+        var w = Seed(db);
+
+        var refused = Web(Assert.IsType<UnprocessableEntityObjectResult>(
+            await Ctrl(db, w).UpdateWpsStatus(w.Batch.Id, new WpsStatusRequest(WpsStatuses.Reconciled, null), default)).Value);
+
+        refused.GetProperty("error").GetString().Should().Be("payments_not_reconciled");
+        refused.GetProperty("message").GetString().Should().Contain("check the bank statement before paying again").And.NotContainEquivalentOf("never left");
+        refused.GetProperty("messageAr").GetString().Should().Contain("راجع كشف حساب البنك قبل إعادة الدفع");
+    }
 }

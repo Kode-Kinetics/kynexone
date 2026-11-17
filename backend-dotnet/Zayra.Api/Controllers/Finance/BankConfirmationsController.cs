@@ -46,7 +46,7 @@ public class BankConfirmationsController : ControllerBase
     public IActionResult Formats()
     {
         if (!HasPermission("payroll.export")) return Forbid();
-        return Ok(_service.Parsers.Select(p => new { p.Key, p.DisplayName, p.Disclaimer }).ToList());
+        return Ok(_service.Parsers.Select(p => new { p.Key, p.DisplayName, p.Disclaimer, disclaimerAr = p.DisclaimerAr }).ToList());
     }
 
     /// <summary>
@@ -140,7 +140,7 @@ public class BankConfirmationsController : ControllerBase
             coverage,
             // A batch whose WPS status reads Paid/Reconciled while money came back or is unaccounted for.
             presentsCleanButIsNot = BankOutcomeLedger.PresentsCleanButIsNot(batch.WpsStatus, coverage, heldForPerson.Count),
-            // Only money that left and came back. A rejection never left, so it is reported on its own.
+            // Only money that left and came back. A rejection (the bank refused the instruction) is reported on its own.
             returnedAmountAwaitingGlCorrection = coverage.ReturnedTotal,
             rejectedAmountNotPaid = coverage.RejectedTotal,
             // Of those: rejections that arrived after the settlement journal credited Cash/Bank for them (C1).
@@ -268,9 +268,11 @@ public class BankConfirmationsController : ControllerBase
         {
             amount = r.ReturnedAmountAwaitingGlCorrection,
             correction = "DR Cash-Bank / CR 2100 Salaries Payable (per returned employee)",
-            note = "REPORTED, NOT POSTED. This pod never writes a GL entry: the B1 net settlement credited "
+            note = "Reported, not posted. This import never writes a ledger entry: the net settlement credited "
                  + "Cash/Bank for the whole batch, so the ledger overstates cash outflow by this amount until "
-                 + "the correction is posted into the return's period.",
+                 + "Finance posts the correction in the period the return arrived.",
+            noteAr = "للإبلاغ فقط ولم يُرحَّل. لا يسجّل هذا الاستيراد أي قيد في الدفاتر: فقد قيّدت تسوية الصافي النقدية/البنك للدفعة كلها، "
+                   + "لذلك تبالغ الدفاتر في تقدير النقد الخارج بهذا المبلغ إلى أن تُرحِّل الإدارة المالية قيد التصحيح في الفترة التي ورد فيها المرتجع.",
         },
         rejectedAmountNotPaid = new
         {
@@ -284,7 +286,8 @@ public class BankConfirmationsController : ControllerBase
             amount = r.RejectedAfterSettlementAwaitingGlCorrection,
             label = new { en = BankOutcomeLabels.NotPaidRejectedByBank.English, ar = BankOutcomeLabels.NotPaidRejectedByBank.Arabic },
             correction = "DR Cash-Bank / CR 2100 Salaries Payable (per rejected employee whose batch was settled first)",
-            note = "REPORTED, NOT POSTED. The settlement journal credited Cash/Bank before the bank rejected these lines.",
+            note = "Reported, not posted. The settlement journal credited Cash/Bank before the bank rejected these lines. Finance must post the correction.",
+            noteAr = "للإبلاغ فقط ولم يُرحَّل. قيّد قيد التسوية النقدية/البنك قبل أن يرفض البنك هذه السطور. على الإدارة المالية ترحيل قيد التصحيح.",
         },
         // The exits used in this import, and the lines still held for a person.
         overrides = r.Overrides,

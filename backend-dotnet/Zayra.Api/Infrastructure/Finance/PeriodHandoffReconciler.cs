@@ -225,7 +225,7 @@ public sealed class PeriodHandoffReconciler
                 .Where(c => c.TenantId == tenantId && batchIds.Contains(c.PaymentBatchId)).ToListAsync(ct);
 
         var overall = BankConfirmationService.Coverage(records);
-        // Returned (the money came back) and Rejected (it never left) block separately: both mean an employee is unpaid, but
+        // Returned (the money came back) and Rejected (the bank refused the instruction) block separately: both mean an employee is unpaid, but
         // only returned money, and a rejection that arrived after the settlement journal, need the GL correction (C1).
         if (overall.ReturnedCount > 0) blockers.Add("unresolved_returned_payments");
         if (overall.RejectedCount > 0) blockers.Add("unpaid_rejected_payments");
@@ -315,7 +315,7 @@ public sealed class PeriodHandoffReconciler
             settledToGlMinusPaidConfirmed = JournalAmount.Round(settledToGl - overall.PaidTotal, scale),
             unconfirmed = new { overall.UnconfirmedCount, total = JournalAmount.Round(overall.UnconfirmedTotal) },
             // THE GL SEAM, REPORTED NOT POSTED. The B1 net settlement credited Cash/Bank for the whole batch;
-            // a returned payment means that much cash never left. The correction is
+            // a returned payment means that much cash did not reach the employee. The correction is
             // DR Cash-Bank / CR 2100 Salaries Payable for the returned amount, per employee, dated into the
             // return's period and gated by PeriodCloseGuard. This pod does not post it.
             returnedAmountAwaitingGlCorrection = new
@@ -326,10 +326,13 @@ public sealed class PeriodHandoffReconciler
                 correction = "DR Cash-Bank / CR 2100 Salaries Payable (per returned employee)",
                 note = returnPeriodClosed
                     ? $"GL period {returnPeriod} is CLOSED — the correction cannot be posted until it is reopened."
-                    : "Not posted by this pod: the correction is a defined seam, awaiting a GlEventTypes.NetSettlementReturn driver.",
+                    : "Not yet posted. Finance must post the correction (debit Cash/Bank, credit Salaries Payable) for this amount in the period the bank's answer arrived.",
+                noteAr = returnPeriodClosed
+                    ? $"الفترة المحاسبية {returnPeriod} مقفلة — لا يمكن ترحيل قيد التصحيح إلا بعد إعادة فتحها."
+                    : "لم يُرحَّل بعد. على الإدارة المالية ترحيل قيد التصحيح (مدين النقدية/البنك، دائن الرواتب المستحقة) بهذا المبلغ في الفترة التي ورد فيها رد البنك.",
             },
             // C1: the batch's settlement journal was posted BEFORE these rejections arrived, so Cash/Bank was credited for
-            // salaries that never left. Same correction as returned money; the label stays "Not paid: rejected by bank".
+            // salaries the bank refused to send. Same correction as returned money; the label stays "Not paid: rejected by bank".
             rejectedAfterSettlementAwaitingGlCorrection = new
             {
                 amount = JournalAmount.Round(rejectedAfterSettlementTotal),
@@ -337,8 +340,12 @@ public sealed class PeriodHandoffReconciler
                 targetPeriod = returnPeriod,
                 targetPeriodClosed = returnPeriodClosed,
                 correction = "DR Cash-Bank / CR 2100 Salaries Payable (per rejected employee whose batch was settled first)",
-                note = "Not posted by this pod. A rejection before settlement needs no correction: settlement is refused while "
-                     + "any payment is rejected, so no cash was credited for it.",
+                note = "Not yet posted. Finance must post the correction (debit Cash/Bank, credit Salaries Payable) for this amount in the period "
+                     + "the bank's answer arrived. A rejection that arrives before the ledger settlement needs no correction: settlement is "
+                     + "refused while any payment is rejected, so no cash was credited for it.",
+                noteAr = "لم يُرحَّل بعد. على الإدارة المالية ترحيل قيد التصحيح (مدين النقدية/البنك، دائن الرواتب المستحقة) بهذا المبلغ في الفترة "
+                       + "التي ورد فيها رد البنك. والرفض الذي يرد قبل تسوية القيد في الدفاتر لا يحتاج إلى تصحيح: فالتسوية تُرفض ما دامت أي دفعة "
+                       + "مرفوضة، لذلك لم تُسجَّل أي نقدية مقابلها.",
             },
             // Every rejected salary, settled or not: owed to the employee and not paid by this batch.
             rejectedAmountNotPaid = new { amount = JournalAmount.Round(overall.RejectedTotal) },

@@ -10,7 +10,7 @@ public static class BankOutcomeHolds
     /// <summary>The bank said Paid, then said it refused the instruction. Exits: allow_paid_to_rejected or
     /// confirm_paid_despite_rejection, naming the record, with a reason and the bank's reference.</summary>
     public const string PaidThenRejected = "paid_then_rejected_held";
-    /// <summary>Returned (money came back) and Rejected (money never left) swapped. Exit: allow_failed_outcome_change, naming
+    /// <summary>Returned (money came back) and Rejected (the bank refused the instruction) swapped. Exit: allow_failed_outcome_change, naming
     /// the record, with a reason.</summary>
     public const string FailedOutcomeChanged = "failed_outcome_changed_held";
     /// <summary>Reason code DUPL, whatever the outcome word: the original payment may well have reached the employee. Exits:
@@ -59,8 +59,8 @@ public sealed record UnresolvedBankHold(
 ///
 /// <para>GL corrections are REPORTED, never posted here. Two figures need the same DR Cash-Bank / CR 2100 correction:
 /// returned money (it left and came back), and a rejection imported AFTER the batch's net settlement journal (that journal
-/// credited Cash/Bank for a salary that never left). A rejection before settlement needs none: settlement is refused while
-/// any record is failed, so its cash was never credited.</para>
+/// credited Cash/Bank for a salary the bank refused to send). A rejection before settlement needs none: settlement is refused
+/// while any record is failed, so its cash was never credited.</para>
 /// </summary>
 public static class BankOutcomeLedger
 {
@@ -222,7 +222,11 @@ public static class BankOutcomeLedger
             paymentRecordId = r.Id, employeeId = r.EmployeeId, amount = r.Amount, status = r.Status,
             label = new { en = label.English, ar = label.Arabic },
             reasonCode = latest?.ReasonCode, reasonText = latest?.ReasonText,
-            reasonDescription = reason is null ? null : new { en = reason.English, ar = reason.Arabic, known = reason.IsKnown },
+            reasonDescription = reason is null ? null : new
+            {
+                en = reason.English, ar = reason.Arabic, known = reason.IsKnown,
+                nextStepEn = reason.NextStepEnglish, nextStepAr = reason.NextStepArabic,
+            },
             bankReference = latest?.BankReference, valueDate = latest?.ValueDate,
         };
     }
@@ -239,10 +243,43 @@ public static class BankOutcomeMessages
     {
         var open = new List<string>();
         if (returned > 0) open.Add($"{returned} returned by the bank (the money came back)");
-        if (rejected > 0) open.Add($"{rejected} not paid: rejected by bank (the money never left)");
+        if (rejected > 0)
+            open.Add($"{rejected} not paid: rejected by bank (the bank refused the instruction; check the bank statement before paying again)");
         if (unconfirmed > 0) open.Add($"{unconfirmed} not yet confirmed by the bank");
         return "This batch cannot reach Reconciled while payments are open: " + string.Join("; ", open) + ". Import the "
              + "bank/WPS response (POST payment-batches/{id}/bank-confirmations) and resolve each first: reconciling now "
              + "would close the month over salaries the employees have not received.";
+    }
+
+    /// <summary>The Arabic of <see cref="NotReconciled"/>: the same open items, in the same order.</summary>
+    public static string NotReconciledAr(int returned, int rejected, int unconfirmed)
+    {
+        var open = new List<string>();
+        if (returned > 0) open.Add($"{returned} أعادها البنك (عاد المبلغ)");
+        if (rejected > 0) open.Add($"{rejected} لم يُدفع: رفضه البنك (رفض البنك التعليمات؛ راجع كشف حساب البنك قبل إعادة الدفع)");
+        if (unconfirmed > 0) open.Add($"{unconfirmed} لم يؤكدها البنك بعد");
+        return "لا يمكن وضع هذه الدفعة في حالة «تمت المطابقة» ما دامت هناك مدفوعات مفتوحة: " + string.Join("؛ ", open)
+             + ". استورد ملف رد البنك وعالج كل سطر أولًا: فالمطابقة الآن تُغلق الشهر على رواتب لم يستلمها الموظفون.";
+    }
+
+    /// <summary>The refusal action codes a held bank line gives (machine keys, never shown as text).</summary>
+    public const string LedgerSettleAction = "ledger_settle";
+    public const string ReconcileAction = "reconcile";
+
+    /// <summary>
+    /// Why a batch cannot move while a bank line waits for a person: what to check and what to record, in both languages.
+    /// <paramref name="action"/> is <see cref="LedgerSettleAction"/> (posting the net settlement to the ledger) or
+    /// <see cref="ReconcileAction"/>. The exit names stay in the machine fields of the held lines, never in this text.
+    /// </summary>
+    public static (string En, string Ar) HeldForPerson(string action, int count)
+    {
+        var settle = action == LedgerSettleAction;
+        var en = $"This batch cannot be {(settle ? "posted to the ledger" : "reconciled")} yet. {count} salary line(s) have a bank answer that a person "
+               + "must decide (for example the bank refused a salary already shown as Paid, or reported a duplicate). Open each line, "
+               + "check the bank statement, and record your decision with a reason and the bank's reference.";
+        var ar = $"لا يمكن {(settle ? "ترحيل هذه الدفعة إلى الدفاتر" : "مطابقة هذه الدفعة")} بعد. يوجد {count} من سطور الرواتب ردّ البنك عليها "
+               + "يحتاج إلى قرار من موظف مختص (مثل رفض البنك راتبًا ظاهرًا كمدفوع، أو إفادته بوجود دفعة مكررة). افتح كل سطر وراجع كشف حساب البنك، "
+               + "ثم سجّل قرارك مع السبب ومرجع البنك.";
+        return (en, ar);
     }
 }

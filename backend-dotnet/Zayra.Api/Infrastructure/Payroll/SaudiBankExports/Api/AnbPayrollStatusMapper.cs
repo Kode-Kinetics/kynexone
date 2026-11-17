@@ -22,7 +22,7 @@ public enum AnbTransactionPhase { Initiated, Pending, InProgress, Paid, Returned
 /// lines we sent, the amounts sum to the frozen total, and every line was created after the submit intent.
 /// Otherwise it is another payroll (last month's, a voided batch's) and is refused.</item>
 /// <item>PAID is Paid. RETURNED is Returned (the money left and came back). FAILED is Rejected, "Not paid: rejected
-/// by bank" (CTO gate 8.4.2): the bank refused the instruction, the money never left, so it is never counted as
+/// by bank" (CTO gate 8.4.2): the bank refused the instruction (the bank statement shows whether any money moved), so it is never counted as
 /// returned money awaiting a GL correction. The rendered outcome word is read the same way by the shared vocabulary
 /// (<c>BankOutcomeVocabulary</c>). INITIATED, PENDING and IN PROGRESS are Pending, which the import records and
 /// applies to no record.</item>

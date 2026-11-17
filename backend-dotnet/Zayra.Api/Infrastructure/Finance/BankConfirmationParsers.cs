@@ -41,6 +41,8 @@ public interface IBankConfirmationParser
     string Key { get; }
     string DisplayName { get; }
     string Disclaimer { get; }
+    /// <summary>The disclaimer in Arabic, or null for a parser that has none yet.</summary>
+    string? DisclaimerAr => null;
     BankConfirmationParseResult Parse(string content);
 }
 
@@ -76,7 +78,7 @@ public static class BankOutcomeVocabulary
         "RETURN", "RETURNED", "RTRN", "BOUNCE", "BOUNCED",
     };
 
-    // The bank REFUSED the instruction: the money never left. "Not paid: rejected by bank", never "Returned"
+    // The bank REFUSED the instruction (the bank statement shows whether money moved). "Not paid: rejected by bank", never "Returned"
     // (CTO gate 8.4.2). It sets the payment status Rejected and is kept out of the returned-money GL correction.
     private static readonly HashSet<string> RejectedTokens = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -150,12 +152,16 @@ public static class BankOutcomeVocabulary
         };
 
     /// <summary>The parse error for a status word that confirms nothing: a held word says why, any other is unknown.</summary>
-    internal static BankConfirmationParseError UnknownOutcomeError(int rowNumber, string raw, BankOutcomeReading reading, string unknownDetail) =>
+    internal static BankConfirmationParseError UnknownOutcomeError(int rowNumber, string raw, BankOutcomeReading reading) =>
         reading.Reason == BankOutcomeReasons.AcceptedWithChangeHeld
             ? new BankConfirmationParseError(rowNumber, "unknown_outcome",
                 $"Status '{raw}': {BankOutcomeLabels.HeldAcceptedWithChange.English}. Nothing was recorded for this line.",
                 $"الحالة '{raw}': {BankOutcomeLabels.HeldAcceptedWithChange.Arabic}. لم يُسجَّل شيء لهذا السطر.")
-            : new BankConfirmationParseError(rowNumber, "unknown_outcome", unknownDetail);
+            : new BankConfirmationParseError(rowNumber, "unknown_outcome",
+                $"The bank's status '{raw}' is not one we recognise, so nothing was recorded for this line and the salary stays unconfirmed. "
+              + $"Check the bank statement for this employee, or ask the bank what {raw} means.",
+                $"حالة البنك «{raw}» غير معروفة لدينا، لذلك لم يُسجَّل شيء لهذا السطر ويبقى الراتب غير مؤكد. "
+              + "راجع كشف حساب البنك لهذا الموظف أو اسأل البنك عن معنى هذه الحالة.");
 }
 
 /// <summary>What a bank status word means: a canonical outcome (null when unrecognised or held) and, where it adds something, why.</summary>
@@ -217,7 +223,8 @@ public sealed class GenericCsvBankConfirmationParser : IBankConfirmationParser
         var parsed = Csv.Parse(content ?? string.Empty);
         if (parsed.Count == 0)
         {
-            errors.Add(new BankConfirmationParseError(0, "empty_file", "The file contained no data rows."));
+            errors.Add(new BankConfirmationParseError(0, "empty_file", "The file contained no data rows.",
+                "لا يحتوي الملف على أي صف بيانات."));
             return new BankConfirmationParseResult(rows, errors);
         }
 
@@ -232,7 +239,8 @@ public sealed class GenericCsvBankConfirmationParser : IBankConfirmationParser
             if (string.IsNullOrWhiteSpace(wpsRef) && string.IsNullOrWhiteSpace(code) && string.IsNullOrWhiteSpace(iban))
             {
                 errors.Add(new BankConfirmationParseError(rowNo, "no_identifier",
-                    "Row carries no WpsReference, EmployeeCode or IBAN, so it cannot be matched to a payment record."));
+                    "Row carries no WpsReference, EmployeeCode or IBAN, so it cannot be matched to a payment record.",
+                    "لا يحمل هذا الصف مرجع WPS ولا رقم الموظف ولا الآيبان، لذلك لا يمكن ربطه بسجل دفع."));
                 continue;
             }
 
@@ -240,9 +248,7 @@ public sealed class GenericCsvBankConfirmationParser : IBankConfirmationParser
             var reading = BankOutcomeVocabulary.Read(raw);
             var outcome = reading.Outcome;
             if (outcome is null)
-                errors.Add(BankOutcomeVocabulary.UnknownOutcomeError(rowNo, raw, reading,
-                    $"Status '{raw}' is not a recognised bank outcome. Guessing would risk reading a returned "
-                  + "salary as delivered — map it explicitly and re-import."));
+                errors.Add(BankOutcomeVocabulary.UnknownOutcomeError(rowNo, raw, reading));
 
             rows.Add(new BankConfirmationRow(
                 RowNumber: rowNo,
@@ -348,19 +354,22 @@ public sealed class WpsAckBankConfirmationParser : IBankConfirmationParser
                 case "EOF":
                     if (parts.Length >= 2 && int.TryParse(parts[1].Trim(), out var eofCount) && eofCount != rows.Count)
                         errors.Add(new BankConfirmationParseError(rowNo, "trailer_count_mismatch",
-                            $"EOF declares {eofCount} record(s) but {rows.Count} were parsed."));
+                            $"EOF declares {eofCount} record(s) but {rows.Count} were parsed.",
+                            $"يعلن سطر EOF عن {eofCount} سجلًا بينما قُرئ {rows.Count} سجلًا."));
                     continue;
                 case "REC":
                     break;
                 default:
-                    errors.Add(new BankConfirmationParseError(rowNo, "unknown_record_tag", $"Unrecognised record tag '{tag}'."));
+                    errors.Add(new BankConfirmationParseError(rowNo, "unknown_record_tag", $"Unrecognised record tag '{tag}'.",
+                        $"وسم السجل '{tag}' غير معروف."));
                     continue;
             }
 
             if (parts.Length < 5)
             {
                 errors.Add(new BankConfirmationParseError(rowNo, "malformed_record",
-                    "REC needs at least wpsReference|iban|amount|status."));
+                    "REC needs at least wpsReference|iban|amount|status.",
+                    "يحتاج سجل REC إلى المرجع والآيبان والمبلغ والحالة على الأقل."));
                 continue;
             }
 
@@ -368,8 +377,7 @@ public sealed class WpsAckBankConfirmationParser : IBankConfirmationParser
             var reading = BankOutcomeVocabulary.Read(raw);
             var outcome = reading.Outcome;
             if (outcome is null)
-                errors.Add(BankOutcomeVocabulary.UnknownOutcomeError(rowNo, raw, reading,
-                    $"Status '{raw}' is not a recognised bank outcome."));
+                errors.Add(BankOutcomeVocabulary.UnknownOutcomeError(rowNo, raw, reading));
 
             rows.Add(new BankConfirmationRow(
                 RowNumber: rowNo,
@@ -388,7 +396,8 @@ public sealed class WpsAckBankConfirmationParser : IBankConfirmationParser
 
         if (declared >= 0 && declared != rows.Count)
             errors.Add(new BankConfirmationParseError(1, "header_count_mismatch",
-                $"ACK declares {declared} record(s) but {rows.Count} were parsed."));
+                $"ACK declares {declared} record(s) but {rows.Count} were parsed.",
+                $"يعلن سطر ACK عن {declared} سجلًا بينما قُرئ {rows.Count} سجلًا."));
 
         return new BankConfirmationParseResult(rows, errors);
     }

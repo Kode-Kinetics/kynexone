@@ -287,8 +287,8 @@ public static class BankConfirmationOutcomes
     public const string Paid = "Paid";
     /// <summary>The money left and came back (returned, bounced). Counts toward the GL correction of returned money.</summary>
     public const string Returned = "Returned";
-    /// <summary>The bank refused the instruction: NOT PAID, the money never left. Sets the payment status Rejected; never
-    /// counted as returned money.</summary>
+    /// <summary>The bank refused the instruction: NOT PAID. The bank statement shows whether any money moved. Sets the payment
+    /// status Rejected; never counted as returned money.</summary>
     public const string Rejected = "Rejected";
     /// <summary>Accepted for processing, not yet settled. Informational: changes no record status.</summary>
     public const string Pending = "Pending";
@@ -320,7 +320,7 @@ public static class PaymentRecordStatuses
     public const string Paid = "Paid";
     /// <summary>Bank returned the credit (bad IBAN, closed account, recall). Money came back.</summary>
     public const string Returned = "Returned";
-    /// <summary>Bank refused the instruction outright. Money never left for this employee.</summary>
+    /// <summary>Bank refused the instruction outright. The bank statement shows whether any money moved.</summary>
     public const string Rejected = "Rejected";
     /// <summary>Withdrawn by a run void. Terminal and owned exclusively by PayrollVoidService.</summary>
     public const string Cancelled = "Cancelled";

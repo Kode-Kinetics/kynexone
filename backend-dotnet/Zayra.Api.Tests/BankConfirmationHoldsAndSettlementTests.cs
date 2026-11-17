@@ -1068,6 +1068,156 @@ public class BankConfirmationHoldsAndSettlementTests
         result.AmountMismatchesHeld.Should().BeEmpty();
         result.RejectedAmountNotPaid.Should().Be(100m);
     }
+
+    // ── Package F5: what the officer reads in a refusal and in a Finance note (wording only) ─────────────
+
+    private static readonly System.Text.RegularExpressions.Regex SnakeCaseExit = new("[a-z]+_[a-z_]+");
+    private static readonly System.Text.RegularExpressions.Regex Developer = new(@"\b(pod|seam|driver)\b|NetSettlementReturn",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static JsonElement OnlyRefused(BankConfirmationImportResult result) => Element(result.Refused).EnumerateArray().Single();
+
+    private static void ShouldBeAnInstruction(JsonElement refused, params string[] exitCodes)
+    {
+        var en = refused.GetProperty("message").GetString()!;
+        var ar = refused.GetProperty("messageAr").GetString()!;
+        foreach (var text in new[] { en, ar })
+        {
+            SnakeCaseExit.IsMatch(text).Should().BeFalse($"no raw exit or code word in: {text}");
+            text.Should().NotContain("allowReturnReversal");
+        }
+        ar.Any(ch => ch is >= '\u0600' and <= '\u06FF').Should().BeTrue();
+        if (exitCodes.Length > 0)
+            refused.GetProperty("nextStepCodes").EnumerateArray().Select(x => x.GetString()).Should().BeEquivalentTo(exitCodes);
+    }
+
+    [Fact]
+    public async Task PaidThenRejected_SaysWhatToCheckAndDecide_InBothLanguages_WithTheExitsInAMachineField()
+    {
+        using var db = NewDb();
+        var w = Seed(db, PaymentRecordStatuses.Paid);
+
+        var refused = OnlyRefused(await Import(db, w, "RJCT", "AC04"));
+
+        refused.GetProperty("reason").GetString().Should().Be("paid_then_rejected_held", "the machine key does not change");
+        ShouldBeAnInstruction(refused, BankLineExitKinds.AllowPaidToRejected, BankLineExitKinds.ConfirmPaidDespiteRejection);
+        refused.GetProperty("message").GetString().Should().Contain("Check the bank statement")
+            .And.Contain("record 'paid confirmed' with the statement reference")
+            .And.Contain("record 'not paid' with a reason and the reference");
+        refused.GetProperty("messageAr").GetString().Should().Contain("راجع كشف حساب البنك").And.Contain("«تأكيد الدفع»").And.Contain("«لم يُدفع»")
+            .And.NotBe(BankOutcomeLabels.HeldRejectionAfterPaid.Arabic);
+    }
+
+    [Fact]
+    public async Task ADuplicate_NextStepIsAPlainInstruction_InBothLanguages_NeverSayingOwedOrAnExitName()
+    {
+        using var db = NewDb();
+        var w = Seed(db);
+
+        var refused = OnlyRefused(await Import(db, w, "RJCT", "DUPL"));
+
+        ShouldBeAnInstruction(refused, BankLineExitKinds.ConfirmOriginalPaymentReceived, BankLineExitKinds.ConfirmDuplicateNotPaid);
+        var en = refused.GetProperty("nextStep").GetString()!;
+        var ar = refused.GetProperty("nextStepAr").GetString()!;
+        SnakeCaseExit.IsMatch(en).Should().BeFalse();
+        SnakeCaseExit.IsMatch(ar).Should().BeFalse();
+        en.Should().Contain("Check the bank statement for the original payment").And.Contain("record 'original payment received'")
+            .And.Contain("Both need a reason and the bank's reference").And.NotContainEquivalentOf("owed");
+        ar.Should().Contain("راجع كشف حساب البنك بحثًا عن الدفعة الأصلية").And.NotContain("مستحق");
+    }
+
+    [Fact]
+    public async Task AReturnedRejectedSwap_NamesTheTwoAnswersInWords_NotAsEnumValues()
+    {
+        using var db = NewDb();
+        var w = Seed(db, PaymentRecordStatuses.Returned);
+
+        var refused = OnlyRefused(await Import(db, w, "RJCT", "AC01"));
+
+        refused.GetProperty("reason").GetString().Should().Be("failed_outcome_changed_held");
+        ShouldBeAnInstruction(refused, BankLineExitKinds.AllowFailedOutcomeChange);
+        refused.GetProperty("message").GetString().Should().Contain("The bank first reported this salary as returned and now as rejected")
+            .And.Contain("Ask the bank which is correct");
+        refused.GetProperty("messageAr").GetString().Should().Contain("مُرتجع").And.Contain("مرفوض").And.Contain("اسأل البنك أي الحالتين صحيحة");
+    }
+
+    [Fact]
+    public async Task ReMarkingAFailedPaymentAsPaid_IsRefusedWithAnInstructionInBothLanguages()
+    {
+        using var db = NewDb();
+        var w = Seed(db, PaymentRecordStatuses.Rejected);
+
+        var refused = OnlyRefused(await Import(db, w, "PAID"));
+
+        refused.GetProperty("reason").GetString().Should().Be("return_reversal_not_permitted");
+        ShouldBeAnInstruction(refused);
+        refused.GetProperty("message").GetString().Should().Be(
+            "This salary was returned or rejected by the bank. To mark it paid again you must record a reason and the bank's reference.");
+        refused.GetProperty("messageAr").GetString().Should().Be("رُدّ هذا الراتب أو رفضه البنك. لتسجيله مدفوعًا من جديد يجب تسجيل السبب ومرجع البنك.");
+    }
+
+    [Fact]
+    public async Task AnExitWithoutItsReason_SaysSoInBothLanguages()
+    {
+        using var db = NewDb();
+        var w = Seed(db, PaymentRecordStatuses.Returned);
+
+        var (_, refusal) = await TryImport(db, w, ExitFor(BankLineExitKinds.AllowFailedOutcomeChange, w.R(1), reason: null), Csv(("W1", 100m, "RJCT", "AC01")));
+
+        var body = Element(refusal!.Payload);
+        body.GetProperty("error").GetString().Should().Be("override_reason_required");
+        body.GetProperty("message").GetString().Should().Be("Record a reason: this decision changes what Finance must correct in the ledger.");
+        body.GetProperty("messageAr").GetString().Should().Be("سجّل السبب: يغيّر هذا القرار ما يجب على الإدارة المالية تصحيحه في الدفاتر.");
+
+        (_, refusal) = await TryImport(db, w, ExitFor(BankLineExitKinds.ConfirmPaidDespiteRejection, w.R(1), reference: null), Csv(("W1", 100m, "RJCT", "AC01")));
+        body = Element(refusal!.Payload);
+        body.GetProperty("message").GetString().Should().Contain("reason and the bank's reference");
+        body.GetProperty("messageAr").GetString().Should().Contain("السبب ومرجع البنك");
+    }
+
+    [Fact]
+    public async Task TheFinanceNotes_OnTheHandoffAndTheImportResult_UseNoDeveloperWords_AndCarryArabic()
+    {
+        using var db = NewDb();
+        var w = Seed(db, (100m, PaymentRecordStatuses.Paid), (100m, PaymentRecordStatuses.Paid));
+        Settle(db, w, DateTime.UtcNow.AddDays(-1));
+        var ctrl = Controller(db, w);
+        ctrl.ControllerContext.HttpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+        {
+            fileName = "answer.json",
+            rows = new[]
+            {
+                new { wpsReference = "W1", amount = 100m, status = "RETURNED", reasonCode = "AC04", valueDate = "2026-07-30" },
+                new { wpsReference = "W2", amount = 100m, status = "RJCT", reasonCode = "AM04", valueDate = "2026-07-30" },
+            },
+        })));
+        ctrl.ControllerContext.HttpContext.Request.ContentType = "application/json";
+        var import = Element(Assert.IsAssignableFrom<ObjectResult>(await ctrl.Import(w.Batch.Id, ct: default)).Value!);
+        var handoff = await Handoff(db, w);
+        var notes = new List<(string Name, string Text)>();
+        void Collect(JsonElement e, string name)
+        {
+            switch (e.ValueKind)
+            {
+                case JsonValueKind.Object: foreach (var p in e.EnumerateObject()) Collect(p.Value, p.Name); break;
+                case JsonValueKind.Array: foreach (var x in e.EnumerateArray()) Collect(x, name); break;
+                case JsonValueKind.String when name.StartsWith("note", StringComparison.Ordinal): notes.Add((name, e.GetString()!)); break;
+            }
+        }
+        Collect(handoff, "");
+        Collect(import, "");
+        notes.Should().NotBeEmpty();
+        foreach (var (name, text) in notes) Developer.IsMatch(text).Should().BeFalse($"{name}: {text}");
+
+        var deltas = handoff.GetProperty("deltas");
+        foreach (var figure in new[] { "returnedAmountAwaitingGlCorrection", "rejectedAfterSettlementAwaitingGlCorrection" })
+        {
+            deltas.GetProperty(figure).GetProperty("noteAr").GetString()!.Any(ch => ch is >= '\u0600' and <= '\u06FF').Should().BeTrue(figure);
+            deltas.GetProperty(figure).GetProperty("note").GetString().Should().Contain("Finance");
+        }
+        deltas.GetProperty("returnedAmountAwaitingGlCorrection").GetProperty("note").GetString().Should()
+            .Contain("Not yet posted. Finance must post the correction (debit Cash/Bank, credit Salaries Payable)");
+    }
 }
 
 file sealed class ExitsUnrestrictedScope : IDataScopeService

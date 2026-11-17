@@ -7,8 +7,16 @@ public sealed record BankText(string English, string Arabic);
 /// What a bank's reason code means, in plain words. <see cref="Code"/> is the code as read (upper case), or null when
 /// the bank gave none or sent something that is not a code. <see cref="IsKnown"/> is false for anything not in the
 /// catalogue: its text then says which code it was and to ask the bank, never a guess.
+/// <para><see cref="English"/> and <see cref="Arabic"/> are the cause. <see cref="NextStepEnglish"/> and
+/// <see cref="NextStepArabic"/> say what the officer does about a returned or rejected line with that reason; they are
+/// separate so a screen can place them, and empty for a code the catalogue does not know (its cause already says to
+/// contact the bank).</para>
 /// </summary>
-public sealed record BankReasonDescription(string? Code, string English, string Arabic, bool IsKnown);
+public sealed record BankReasonDescription(
+    string? Code, string English, string Arabic, bool IsKnown, string NextStepEnglish = "", string NextStepArabic = "");
+
+/// <summary>The cause and the next step of one catalogued reason code, in both languages.</summary>
+internal sealed record BankReasonText(string English, string Arabic, string NextStepEnglish, string NextStepArabic);
 
 /// <summary>
 /// The shared ISO 20022 StatusReason catalogue (ExternalStatusReason1Code), CTO gate 8.4.7. Every reader that receives
@@ -23,23 +31,36 @@ public static class BankStatusReasonCatalogue
     // ISO 20022 and proprietary bank codes are at most 35 characters, letters, digits, '_' and '-'.
     private const int MaxCodeLength = 35;
 
-    private static readonly IReadOnlyDictionary<string, BankText> Codes = new Dictionary<string, BankText>(StringComparer.Ordinal)
+    private static readonly IReadOnlyDictionary<string, BankReasonText> Codes = new Dictionary<string, BankReasonText>(StringComparer.Ordinal)
     {
         // IncorrectAccountNumber
-        ["AC01"] = new("The account number (IBAN) is wrong.", "رقم الحساب (الآيبان) غير صحيح."),
+        ["AC01"] = new("The account number (IBAN) is wrong.", "رقم الحساب (الآيبان) غير صحيح.",
+            "Ask HR to correct the employee's IBAN, then pay this salary again.",
+            "اطلب من الموارد البشرية تصحيح آيبان الموظف ثم أعد دفع هذا الراتب."),
         // ClosedAccountNumber
-        ["AC04"] = new("The account is closed.", "الحساب مغلق."),
+        ["AC04"] = new("The account is closed.", "الحساب مغلق.",
+            "Check whether it is the employee's account or your paying account. If it is the employee's, ask HR for a new IBAN, then pay again.",
+            "تحقق هل هو حساب الموظف أم حساب الدفع لديكم. فإن كان حساب الموظف فاطلب من الموارد البشرية آيبانًا جديدًا ثم أعد الدفع."),
         // BlockedAccount
-        ["AC06"] = new("The account is blocked.", "الحساب موقوف."),
+        ["AC06"] = new("The account is blocked.", "الحساب موقوف.",
+            "Check whether it is the employee's account or your paying account, and ask the bank what is needed to release it. Pay again once it is resolved.",
+            "تحقق هل هو حساب الموظف أم حساب الدفع لديكم، واسأل البنك عمّا يلزم لرفع الإيقاف، ثم أعد الدفع بعد المعالجة."),
         // InsufficientFunds
-        ["AM04"] = new("There was not enough money in the paying account.", "الرصيد في حساب الدفع غير كافٍ."),
+        ["AM04"] = new("There was not enough money in the paying account.", "الرصيد في حساب الدفع غير كافٍ.",
+            "Check the bank statement, add funds, and ask your bank or payroll team how to send the salaries again. Do not resend without checking.",
+            "راجع كشف حساب البنك وأودع المبلغ المطلوب، واسأل البنك أو فريق الرواتب عن طريقة إعادة إرسال الرواتب. لا تعد الإرسال قبل التحقق."),
         // InconsistentWithEndCustomer
-        ["BE01"] = new("The name or ID does not match the account holder.", "الاسم أو رقم الهوية لا يطابق صاحب الحساب."),
+        ["BE01"] = new("The name or ID does not match the account holder.", "الاسم أو رقم الهوية لا يطابق صاحب الحساب.",
+            "Ask HR to check the employee's name, ID and IBAN against the bank's record.",
+            "اطلب من الموارد البشرية مطابقة اسم الموظف ورقم هويته وآيبانه مع سجل البنك."),
         // DuplicatePayment. A duplicate refusal usually means the ORIGINAL payment went through, so it never reads "not paid":
-        // the line is held for a person (CTO ruling 4).
-        ["DUPL"] = new(DuplicateEnglish, DuplicateArabic),
+        // the line is held for a person (CTO ruling 4). Its text never says the salary is owed.
+        ["DUPL"] = new(DuplicateEnglish, DuplicateArabic,
+            "Do not pay again until you have checked.", "لا تعد الدفع قبل التحقق من ذلك."),
         // InvalidFileFormat
-        ["FF01"] = new("The bank could not read the file format.", "تعذّر على البنك قراءة صيغة الملف."),
+        ["FF01"] = new("The bank could not read the file format.", "تعذّر على البنك قراءة صيغة الملف.",
+            "Salaries in this file may not have been processed: check the bank statement and ask the bank which format it expects.",
+            "قد لا تكون رواتب هذا الملف قد عولجت: راجع كشف حساب البنك واسأل البنك عن الصيغة التي يطلبها."),
     };
 
     internal const string DuplicateEnglish =
@@ -58,17 +79,17 @@ public static class BankStatusReasonCatalogue
     public static BankReasonDescription Describe(string? code)
     {
         if (string.IsNullOrWhiteSpace(code))
-            return new(null, "The bank gave no reason code: ask your bank", "لم يذكر البنك رمز السبب: استفسر من البنك", false);
+            return new(null, "The bank gave no reason code: ask your bank", "لم يذكر البنك رمز السبب: يرجى مراجعة البنك", false);
 
         var normalised = Normalise(code);
         if (normalised is null)
             // Whatever sat in the code column is not a code (a formula, hidden characters, prose): never echo it back.
             return new(null, "The bank sent a reason code we cannot read: ask your bank",
-                "أرسل البنك رمز سبب لا يمكن قراءته: استفسر من البنك", false);
+                "أرسل البنك رمز سبب لا يمكن قراءته: يرجى مراجعة البنك", false);
 
         return Codes.TryGetValue(normalised, out var text)
-            ? new(normalised, text.English, text.Arabic, true)
-            : new(normalised, $"Bank reason code {normalised}: ask your bank", $"رمز السبب من البنك {normalised}: استفسر من البنك", false);
+            ? new(normalised, text.English, text.Arabic, true, text.NextStepEnglish, text.NextStepArabic)
+            : new(normalised, $"Bank reason code {normalised}: ask your bank", $"رمز السبب من البنك {normalised}: يرجى مراجعة البنك", false);
     }
 
     /// <summary>Upper-cased code, or null when it is not one: ASCII letters, digits, '_' and '-' only, at most 35, and
@@ -87,7 +108,7 @@ public static class BankStatusReasonCatalogue
 /// <summary>Plain EN and AR labels for what a bank line means (CTO gate 8.4.2 and 8.4.4).</summary>
 public static class BankOutcomeLabels
 {
-    /// <summary>The bank refused the instruction: the money never left. Never "Returned".</summary>
+    /// <summary>The bank refused the instruction; the bank statement shows whether any money moved. Never "Returned".</summary>
     public static readonly BankText NotPaidRejectedByBank = new("Not paid: rejected by bank", "لم يُدفع: رفضه البنك");
 
     /// <summary>ISO ACSC/ACCC: the bank settled it. Not proof the employee received it.</summary>
@@ -98,8 +119,12 @@ public static class BankOutcomeLabels
 
     /// <summary>ISO ACWC: the bank accepted the instruction with a change. Nothing is recorded until a person checks.</summary>
     public static readonly BankText HeldAcceptedWithChange = new(
-        "Held: the bank accepted it with a change; a person must check what changed",
-        "معلّق: قبل البنك التعليمات مع تعديل، ويجب أن يراجع أحد الموظفين ما الذي تغيّر");
+        "Held: the bank accepted it with a change; a payroll or finance user must check what changed",
+        "معلّق: قبل البنك التعليمات مع تعديل، ويجب أن يراجع مستخدم الرواتب أو المالية ما الذي تغيّر");
+
+    /// <summary>The bank accepted the file (a word such as SUCCESS) but nothing proves the employee's account was credited.</summary>
+    public static readonly BankText AcceptedCreditNotConfirmed = new(
+        "Bank accepted the file; credit not confirmed", "قبل البنك الملف؛ لم يُؤكَّد قيد المبلغ في حساب الموظف");
 
     /// <summary>Reason code DUPL: held, never "not paid" (CTO ruling 4).</summary>
     public static readonly BankText HeldDuplicateRejection =
@@ -107,17 +132,17 @@ public static class BankOutcomeLabels
 
     /// <summary>A rejection after the salary was marked Paid (CTO ruling B2).</summary>
     public static readonly BankText HeldRejectionAfterPaid = new(
-        "Held: the bank reported a rejection for a salary already marked Paid; a person must check whether the money left",
-        "معلّق: أبلغ البنك برفض راتب سبق تسجيله مدفوعًا، ويجب أن يتحقق أحد الموظفين مما إذا كان المبلغ قد خرج");
+        "Held: the bank reported a rejection for a salary already marked Paid; a payroll or finance user must check the bank statement. If the money did not reach the employee, the salary is still owed",
+        "معلّق: أبلغ البنك برفض راتب سبق تسجيله مدفوعًا، ويجب أن يراجع مستخدم الرواتب أو المالية كشف حساب البنك. فإن لم يصل المبلغ إلى الموظف فالراتب ما زال مستحقًا");
 
     /// <summary>The bank's answer moved between Returned and Rejected (CTO ruling B2).</summary>
     public static readonly BankText HeldFailedOutcomeChanged = new(
-        "Held: the bank changed its answer between returned and rejected; a person must check which is right",
-        "معلّق: غيّر البنك ردّه بين مرتجع ومرفوض، ويجب أن يتحقق أحد الموظفين من الرد الصحيح");
+        "Held: the bank changed its answer between returned and rejected; a payroll or finance user must check which is right",
+        "معلّق: غيّر البنك ردّه بين مرتجع ومرفوض، ويجب أن يراجع مستخدم الرواتب أو المالية الرد الصحيح");
 
     public static IReadOnlyList<BankText> All => new[]
     {
-        NotPaidRejectedByBank, SettledByBank, ReturnedMoneyCameBack, HeldAcceptedWithChange, HeldDuplicateRejection,
-        HeldRejectionAfterPaid, HeldFailedOutcomeChanged,
+        NotPaidRejectedByBank, SettledByBank, ReturnedMoneyCameBack, HeldAcceptedWithChange, AcceptedCreditNotConfirmed,
+        HeldDuplicateRejection, HeldRejectionAfterPaid, HeldFailedOutcomeChanged,
     };
 }

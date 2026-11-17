@@ -52,7 +52,7 @@ public class BankStatusReasonCatalogueTests
         text.IsKnown.Should().BeFalse();
         text.Code.Should().Be(code);
         text.English.Should().Be($"Bank reason code {code}: ask your bank");
-        text.Arabic.Should().Be($"رمز السبب من البنك {code}: استفسر من البنك");
+        text.Arabic.Should().Be($"رمز السبب من البنك {code}: يرجى مراجعة البنك");
     }
 
     [Theory]
@@ -66,7 +66,7 @@ public class BankStatusReasonCatalogueTests
         text.IsKnown.Should().BeFalse();
         text.Code.Should().BeNull();
         text.English.Should().Be("The bank gave no reason code: ask your bank");
-        text.Arabic.Should().Be("لم يذكر البنك رمز السبب: استفسر من البنك");
+        text.Arabic.Should().Be("لم يذكر البنك رمز السبب: يرجى مراجعة البنك");
     }
 
     [Theory]
@@ -83,7 +83,7 @@ public class BankStatusReasonCatalogueTests
         text.IsKnown.Should().BeFalse();
         text.Code.Should().BeNull("text the bank file put in the code column is not shown back as if it were a code");
         text.English.Should().Be("The bank sent a reason code we cannot read: ask your bank");
-        text.Arabic.Should().Be("أرسل البنك رمز سبب لا يمكن قراءته: استفسر من البنك");
+        text.Arabic.Should().Be("أرسل البنك رمز سبب لا يمكن قراءته: يرجى مراجعة البنك");
     }
 
     // ── Outcome labels ───────────────────────────────────────────────────────────────────────────
@@ -116,9 +116,9 @@ public class BankStatusReasonCatalogueTests
     public void AcceptedWithChangeLabel_SaysHeldForAPerson()
     {
         BankOutcomeLabels.HeldAcceptedWithChange.English.Should().Be(
-            "Held: the bank accepted it with a change; a person must check what changed");
+            "Held: the bank accepted it with a change; a payroll or finance user must check what changed");
         BankOutcomeLabels.HeldAcceptedWithChange.Arabic.Should().Be(
-            "معلّق: قبل البنك التعليمات مع تعديل، ويجب أن يراجع أحد الموظفين ما الذي تغيّر");
+            "معلّق: قبل البنك التعليمات مع تعديل، ويجب أن يراجع مستخدم الرواتب أو المالية ما الذي تغيّر");
     }
 
     [Fact]

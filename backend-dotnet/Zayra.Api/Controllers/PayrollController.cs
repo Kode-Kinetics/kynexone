@@ -4117,6 +4117,7 @@ public partial class PayrollController : ControllerBase
                 {
                     error   = "payments_not_reconciled",
                     message = Infrastructure.Finance.BankOutcomeMessages.NotReconciled(d4Returned.Count, d4Rejected.Count, d4Unconfirmed.Count),
+                    messageAr = Infrastructure.Finance.BankOutcomeMessages.NotReconciledAr(d4Returned.Count, d4Rejected.Count, d4Unconfirmed.Count),
                     // Returned (the money came back) and rejected ("Not paid: rejected by bank") are counted apart.
                     returnedCount = d4Returned.Count,
                     returnedTotal = d4Returned.Sum(x => x.Amount),
@@ -4128,7 +4129,7 @@ public partial class PayrollController : ControllerBase
 
             // CTO ruling N4: a line held for a person (a rejection after Paid, a duplicate refusal, a returned/rejected swap)
             // keeps the batch open, even when every record reads Paid.
-            if (await HeldBankLinesRefusalAsync(tenantId, batch.Id, "reconciled", cancellationToken) is { } heldRefusal)
+            if (await HeldBankLinesRefusalAsync(tenantId, batch.Id, Infrastructure.Finance.BankOutcomeMessages.ReconcileAction, cancellationToken) is { } heldRefusal)
                 return heldRefusal;
         }
 
@@ -4458,7 +4459,7 @@ public partial class PayrollController : ControllerBase
             return BadRequest(new { error = "batch_not_accepted", message = $"Only an Accepted payment batch can be settled (current: {batch.WpsStatus}). Mark the WPS/bank file Accepted first." });
 
         // CTO ruling N4: no cash journal while a line is held for a person: the bank may have refused a salary that reads Paid.
-        if (await HeldBankLinesRefusalAsync(tenantId, batch.Id, "settled", cancellationToken) is { } settleHeldRefusal)
+        if (await HeldBankLinesRefusalAsync(tenantId, batch.Id, Infrastructure.Finance.BankOutcomeMessages.LedgerSettleAction, cancellationToken) is { } settleHeldRefusal)
             return settleHeldRefusal;
 
         // Accrual must exist — cannot settle an un-accrued run.
@@ -5900,11 +5901,13 @@ public partial class PayrollController : ControllerBase
     {
         var held = await Infrastructure.Finance.BankOutcomeLedger.OpenHoldsAsync(_db, tenantId, batchId, ct);
         if (held.Count == 0) return null;
+        var (message, messageAr) = Infrastructure.Finance.BankOutcomeMessages.HeldForPerson(action, held.Count);
         return UnprocessableEntity(new
         {
             error = "bank_lines_held_for_person",
-            message = $"This batch cannot be {action} while {held.Count} bank line(s) wait for a person to decide. Resolve each with "
-                    + "its exit on the bank-confirmation import first.",
+            action,
+            message,
+            messageAr,
             heldForPerson = held.Select(Infrastructure.Finance.BankOutcomeLedger.View).ToList(),
         });
     }
