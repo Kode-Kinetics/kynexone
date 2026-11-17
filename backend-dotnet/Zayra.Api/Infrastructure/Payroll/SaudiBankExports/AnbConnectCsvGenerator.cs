@@ -65,6 +65,12 @@ public sealed record AnbValueDateRules(DateOnly TodayInRiyadh, ISaudiBankHoliday
 {
     public static AnbValueDateRules WithoutHolidayCalendar(DateOnly todayInRiyadh) =>
         new(todayInRiyadh, NoSaudiBankHolidayCalendar.Instance);
+
+    /// <summary>No value-date check: only for comparing a request with the export already frozen for the batch, never to make a new one.</summary>
+    public static AnbValueDateRules ForTheExistingExport { get; } = new(DateOnly.MinValue, NoSaudiBankHolidayCalendar.Instance) { Skip = true };
+
+    /// <summary>True only for <see cref="ForTheExistingExport"/>.</summary>
+    public bool Skip { get; private init; }
 }
 
 /// <summary>
@@ -221,6 +227,7 @@ public static class AnbConnectCsvGenerator
     private static void CheckValueDate(DateOnly date, AnbValueDateRules rules, List<SaudiBankExportIssueDto> errors,
         List<SaudiBankExportWarningDto> warnings)
     {
+        if (rules.Skip) return;
         string Text(string code) => string.Format(CultureInfo.InvariantCulture, ValueDateTexts[code].English,
             date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             rules.TodayInRiyadh.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));

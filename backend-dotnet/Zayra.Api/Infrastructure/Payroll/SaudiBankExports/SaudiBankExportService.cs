@@ -211,12 +211,15 @@ public sealed partial class SaudiBankExportService
             if (_db.Database.IsNpgsql())
                 await _db.PayrollRuns.AsNoTracking().TagWith(RowLockingInterceptor.ForUpdateTag)
                     .Where(r => r.TenantId == tenantId && r.Id == run0.Id).Select(r => r.Id).FirstOrDefaultAsync(ct);
-            var prepared = await PrepareAsync(tenantId, batchId, request, ct);
+            // The value-date checks (a past date, Friday or Saturday) apply only when a NEW export is generated (final gate P2-20).
+            // Asking again for an export that already exists is compared byte for byte with the frozen one; its date passing since
+            // then does not make it a different export.
+            var existing = await FindEnvelopeAsync(tenantId, batchId, ct);
+            var prepared = await PrepareAsync(tenantId, batchId, request, ct, checkValueDate: existing is null);
             if (prepared is null) return new SaudiBankExportResult<SaudiBankExportGeneratedDto>(SaudiBankExportOutcome.NotFound, null);
             if (prepared.CompanyId != companyId)
                 return new(SaudiBankExportOutcome.Conflict, null, "batch_company_changed", "The batch's legal entity changed during the request.");
 
-            var existing = await FindEnvelopeAsync(tenantId, batchId, ct);
             var existingCustom = await FindCustomExportAsync(tenantId, batchId, ct);
             if (prepared.Custom is not null)
                 return await GenerateCustomAsync(tenantId, actorId, batchId, companyId, request, prepared, existing is not null, existingCustom, ct);
@@ -363,8 +366,9 @@ public sealed partial class SaudiBankExportService
         string MolEstablishmentId, IReadOnlyList<PaymentBatchExclusion> Exclusions,
         CustomSelection? Custom = null, IReadOnlyList<string>? PreviewLines = null, string? PreviewEncoding = null, string? PreviewLineEnding = null);
 
+    /// <param name="checkValueDate">False only to compare a request with the export that already exists for the batch.</param>
     private async Task<Prepared?> PrepareAsync(Guid tenantId, Guid batchId, SaudiBankExportBatchRequest request, CancellationToken ct,
-        CustomSelection? preview = null)
+        CustomSelection? preview = null, bool checkValueDate = true)
     {
         var (batch, run) = await LoadBatchAndRunAsync(tenantId, batchId, ct);
         if (batch is null || run is null) return null;
@@ -639,7 +643,7 @@ public sealed partial class SaudiBankExportService
         if (custom is null && !isCustom)
         {
             generated = AnbConnectCsvGenerator.Generate(header, rows, batch.TotalAmount,
-                AnbValueDateRules.WithoutHolidayCalendar(TodayInRiyadh()));
+                checkValueDate ? AnbValueDateRules.WithoutHolidayCalendar(TodayInRiyadh()) : AnbValueDateRules.ForTheExistingExport);
             warnings.AddRange(generated.Warnings);
         }
         else if (custom is null) generated = new AnbGenerationResult(Array.Empty<SaudiBankExportIssueDto>(), null, 0, 0m);   // the template problem is already an error
