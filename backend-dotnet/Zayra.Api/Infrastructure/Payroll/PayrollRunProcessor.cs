@@ -863,7 +863,8 @@ public sealed class PayrollRunProcessor
         // The definition VERSION in effect for the period start (a Finance correction of the GL driver applies from a month on): every employee's line in
         // this run posts to the driver the definition has for this period.
         // The group's definitions and this run's company's own: a sister company's own allowance is no definition here, so the run refuses the line.
-        var cashAllowanceVersions = await CashAllowanceDefinitions.VersionsAsync(_db, tenantId, cashAllowanceCodes, cancellationToken, companyId: company.Id);
+        // payable: a change waiting for Finance is read as the terms Finance last confirmed, so it never stops the run (CashAllowanceDefinitions.Payable).
+        var cashAllowanceVersions = await CashAllowanceDefinitions.VersionsAsync(_db, tenantId, cashAllowanceCodes, cancellationToken, companyId: company.Id, payable: true);
         var cashAllowanceDefinitions = cashAllowanceCodes
             .Select(code => CashAllowanceDefinitions.InEffect(cashAllowanceVersions[code], periodStart))
             .Where(d => d is not null).ToDictionary(d => d!.Code, d => d!, StringComparer.Ordinal);
@@ -1017,7 +1018,7 @@ public sealed class PayrollRunProcessor
         // Which version of the definition: the one in effect for THIS run's period — back pay posts in the current period's journal, so it goes to the
         // GL driver the definition has now. (The covered period's end-of-service flag is irrelevant: arrears never feed the end-of-service wage.) A live
         // definition wins over a removed one, and a version in effect over one that is not.
-        var arrearsAllowanceVersions = await CashAllowanceDefinitions.VersionsAsync(_db, tenantId, arrearsAllowanceCodes, cancellationToken, includeRemoved: true, companyId: company.Id);
+        var arrearsAllowanceVersions = await CashAllowanceDefinitions.VersionsAsync(_db, tenantId, arrearsAllowanceCodes, cancellationToken, includeRemoved: true, companyId: company.Id, payable: true);
         var arrearsAllowanceDefinitions = arrearsAllowanceCodes
             .Select(code => CashAllowanceDefinitions.ForPeriod(arrearsAllowanceVersions[code], periodStart))
             .Where(d => d is not null).ToDictionary(d => d!.Code, d => d!, StringComparer.Ordinal);
@@ -1147,7 +1148,7 @@ public sealed class PayrollRunProcessor
                     .Where(c => !heldAllowanceDefinitions.ContainsKey(c)).ToList();
                 if (missingCodes.Count > 0)
                 {
-                    var versions = await CashAllowanceDefinitions.VersionsAsync(_db, tenantId, missingCodes, cancellationToken, companyId: company.Id);
+                    var versions = await CashAllowanceDefinitions.VersionsAsync(_db, tenantId, missingCodes, cancellationToken, companyId: company.Id, payable: true);
                     foreach (var code in missingCodes)
                         if (CashAllowanceDefinitions.InEffect(versions[code], periodStart) is { } d) heldAllowanceDefinitions[d.Code] = d;
                 }

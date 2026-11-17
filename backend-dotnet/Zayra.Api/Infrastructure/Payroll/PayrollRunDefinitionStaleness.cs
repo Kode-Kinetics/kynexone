@@ -30,7 +30,8 @@ public static class PayrollRunDefinitionStaleness
             .ToList();
         if (consumed.Count == 0) return null;
         var codes = consumed.Select(c => c.Code).Distinct(StringComparer.Ordinal).OrderBy(c => c, StringComparer.Ordinal).ToList();
-        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, includeRemoved: true, companyId: run.CompanyId);
+        // Payroll's view (a change waiting for Finance reads as the confirmed terms), the same one Process read: confirming the change makes the run stale.
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, includeRemoved: true, companyId: run.CompanyId, payable: true);
         foreach (var code in codes)
         {
             var applicable = CashAllowanceDefinitions.ForPeriod(versions[code], runMonth);

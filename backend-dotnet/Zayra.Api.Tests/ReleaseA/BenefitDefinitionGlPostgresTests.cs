@@ -113,6 +113,13 @@ public sealed class BenefitDefinitionGlPostgresTests(PostgresFixture fixture)
 
         var off = await PutAsync(w, finance: true, Edit(created, "Car allowance", b => b.IsActive = false));
         Outcome(off).Status.Should().Be(200, JsonSerializer.Serialize(((ObjectResult)off).Value, Web));
+        // Switching it off is a money change another Finance user confirms; until then the last confirmed terms keep paying
+        // (CashAllowanceRependKeepsPayingTests). Once confirmed, it is off.
+        await using (var confirmDb = fixture.CreateDb())
+        {
+            var confirmed = await As(w, finance: true, user: SecondFinanceUser).ConfirmBenefit(new EntitlementMatrixService(confirmDb, new FixedClock(Today)), Code, null, default);
+            Outcome(confirmed).Status.Should().Be(200, JsonSerializer.Serialize(((ObjectResult)confirmed).Value, Web));
+        }
 
         var december = await NewRunAsync(w, 12);
         var refused = await ProcessAsync(w, december);
@@ -244,12 +251,13 @@ public sealed class BenefitDefinitionGlPostgresTests(PostgresFixture fixture)
 
     private static readonly Guid HrUser = Guid.NewGuid();
     private static readonly Guid FinanceUser = Guid.NewGuid();
+    private static readonly Guid SecondFinanceUser = Guid.NewGuid();
 
-    private static EntitlementMatrixController As(World w, bool finance)
+    private static EntitlementMatrixController As(World w, bool finance, Guid? user = null)
     {
         var claims = new List<Claim>
         {
-            new("tenant_id", w.TenantId.ToString()), new(ClaimTypes.NameIdentifier, (finance ? FinanceUser : HrUser).ToString()), new(ClaimTypes.Role, "HR Director"),
+            new("tenant_id", w.TenantId.ToString()), new(ClaimTypes.NameIdentifier, (user ?? (finance ? FinanceUser : HrUser)).ToString()), new(ClaimTypes.Role, "HR Director"),
             new(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })),
         };
         if (finance) claims.Add(new Claim("permission", "payroll.approve"));

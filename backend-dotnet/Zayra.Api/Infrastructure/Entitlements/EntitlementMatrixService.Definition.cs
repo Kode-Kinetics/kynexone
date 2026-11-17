@@ -618,6 +618,8 @@ public sealed partial class EntitlementMatrixService
             db.ChangeTracker.Clear();
             return lateLock;
         }
+        // The terms Finance confirmed, kept before anything below changes them: payroll keeps paying them until the change is confirmed.
+        var keptTerms = repended ? CashAllowanceDefinitions.ConfirmedSnapshot(head) : null;
         var now = DateTime.UtcNow;
         foreach (var version in versions)
         {
@@ -633,7 +635,7 @@ public sealed partial class EntitlementMatrixService
             head.GlDriverKey = newTerms.Driver; head.EosbIncluded = newTerms.EosbIncluded;
             head.EosbExclusionCategory = newTerms.Category; head.EosbExclusionReason = newTerms.Note;
         }
-        if (repended) { head.FinanceConfirmedAtUtc = null; head.FinanceConfirmedByUserId = null; }
+        if (repended) { head.FinanceConfirmedAtUtc = null; head.FinanceConfirmedByUserId = null; head.LastConfirmedTermsJson = keptTerms; }
         if (moneyChanged && head.FinanceConfirmedAtUtc is null) head.CreatedBy = actor.UserId;
         foreach (var row in renamedRows) { row.Code = newCode; row.UpdatedAtUtc = now; row.UpdatedBy = actor.UserId; }
         if (widen)

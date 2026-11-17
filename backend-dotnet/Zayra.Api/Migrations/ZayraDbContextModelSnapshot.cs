@@ -26360,6 +26360,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_taxable");
 
+                    b.Property<string>("LastConfirmedTermsJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("last_confirmed_terms");
+
                     b.Property<string>("NameAr")
                         .IsRequired()
                         .HasMaxLength(200)

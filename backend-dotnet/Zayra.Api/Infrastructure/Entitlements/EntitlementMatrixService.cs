@@ -1081,6 +1081,7 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             // It is "pending Finance" until another Finance user confirms it.
             row.EosbExclusionCategory = eosbCategory;
             row.FinanceConfirmedAtUtc = null; row.FinanceConfirmedByUserId = null;
+            row.LastConfirmedTermsJson = null;   // a new proposal (or a removed one coming back) has no confirmed terms to keep paying
             if (cash) row.CreatedBy = actor.UserId;   // the maker of THIS definition (a removed one coming back is a new proposal)
             if (d is not null)
             {
@@ -1300,6 +1301,7 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             row.GlDriverKey = terms.Driver; row.EosbIncluded = terms.EosbIncluded;
             row.EosbExclusionCategory = terms.Category; row.EosbExclusionReason = terms.Note;
             row.FinanceConfirmedAtUtc = DateTime.UtcNow; row.FinanceConfirmedByUserId = actor.UserId;
+            row.LastConfirmedTermsJson = null;   // confirmed: the new terms are the ones payroll reads from now on
             row.UpdatedAtUtc = DateTime.UtcNow; row.UpdatedBy = actor.UserId;
             var warnings = CashAllowanceDefinitions.Warnings(row.NameEn, row.NameAr, row.EosbIncluded, row.EosbExclusionCategory, atCreation: false);
             db.AuditLogs.Add(Audit(actor, row.CompanyId, AuditBenefitConfirmed, row.Id, new
@@ -1377,6 +1379,8 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             if (BeforeCorrectionSaveHook is { } beforeSave) await beforeSave();
             if (await CommittedPeriodRefusalAsync() is { } lateRefusal) return lateRefusal;
 
+            // The terms Finance confirmed for the months from the correction on, kept until another Finance user confirms it (payroll keeps paying them).
+            var keptTerms = CashAllowanceDefinitions.ConfirmedSnapshot(head, (from, head.EffectiveTo));
             PayComponent result;
             var inPlace = head.EffectiveFrom == from;
             if (inPlace)
@@ -1409,6 +1413,7 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             // Nobody confirms what they changed (owner rule, Finance included): the corrected version is pending until ANOTHER Finance user confirms it, and
             // the corrector is its maker. The months before it keep their confirmed version.
             result.FinanceConfirmedAtUtc = null; result.FinanceConfirmedByUserId = null; result.CreatedBy = actor.UserId;
+            result.LastConfirmedTermsJson = keptTerms;
             var warnings = CashAllowanceDefinitions.Warnings(result.NameEn, result.NameAr, result.EosbIncluded, result.EosbExclusionCategory, atCreation: false);
             db.AuditLogs.Add(Audit(actor, owner, AuditBenefitCorrected, result.Id, new
             {
