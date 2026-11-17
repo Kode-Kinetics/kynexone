@@ -81,6 +81,7 @@ import { LoadError, serverMessage } from '../components/gl/glUi';
 import { financeGlApi } from '../api/financeGl';
 import { CostCentreLockPreview, CostingOffNote, periodLabel } from '../components/payroll/CostCentreLockPreview';
 import { VoidRunForm } from '../components/payroll/VoidRunForm';
+import { validationPanelState } from '../lib/payrollValidationState';
 import { HeldPayPanel } from '../components/payroll/HeldPayPanel';
 import { PostedJournalsView, PostedWithoutCostCentresNote } from '../components/payroll/PostedJournals';
 import { costingNote } from '../lib/glJournalView';
@@ -1917,6 +1918,7 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
   };
 
 
+  const panelState = validationPanelState({ runId, status: runs.find(r => r.id === runId)?.status, loading, failed: error !== '' });
   const warnings = results.filter(r => r.severity === 'Warning');
   const errors = results.filter(r => r.severity === 'Error');
   // F02 — the GOSI entrant cohort is judged per employee; group it so it reads as one decision, not N rows.
@@ -1936,7 +1938,8 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
           <option value="">{t('Select a payroll run…')}</option>
           <RunSelectOptions runs={runs} />
         </select>
-        <button type="button" className={btn.primary} onClick={validate} disabled={!runId || loading}>
+        <button type="button" className={btn.primary} onClick={validate} disabled={!runId || loading || panelState === 'not_run'}
+          title={panelState === 'not_run' ? t('Process the run before validating it.') : undefined}>
           {loading ? t('Validating…') : t('Run Validation')}
         </button>
       </div>
@@ -1985,12 +1988,15 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
       )}
 
       {results.length === 0 && !loading ? (
-        <div className="surface flex flex-col items-center py-16 text-center">
+        panelState === 'unavailable' ? null : (
+        <div className="surface flex flex-col items-center py-16 text-center" data-testid="validation-empty" data-state={panelState}>
           <CheckCircle2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
-            {runId ? t('No saved validation issues. Run validation to refresh the current checks.') : t('Select a run and click validate')}
+            {panelState === 'not_run' ? t('Validation has not been run yet. Process the run first, then run validation.')
+              : runId ? t('No saved validation issues. Run validation to refresh the current checks.') : t('Select a run and click validate')}
           </p>
         </div>
+        )
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
           {shown.map(r => (
@@ -2757,7 +2763,7 @@ function PayslipsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; o
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No payslips yet — click Generate to create payslips for this run')}</p>
         </div>
       ) : (
-        <div className="surface overflow-hidden">
+        <div className="surface overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
