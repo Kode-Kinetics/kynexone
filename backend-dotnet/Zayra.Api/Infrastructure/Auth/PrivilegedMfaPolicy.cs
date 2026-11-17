@@ -101,6 +101,8 @@ public static class PrivilegedMfaPolicy
         "succession.read", "succession.self", "succession.nominate", "succession.devplans.read", "succession.devplans.manage",
         // A line manager's decisions on their own reporting line (data-scoped, approval-routed).
         "manager.approve", "approvals.write", "approvals.decide", "leave.approve", "overtime.approve",
+ // A line manager files overtime for own team only (reporting-line scoped, company can switch it off).
+ "overtime.file_for_team",
         "performance.write",
         // CMP: a line manager plans merit for their own direct reports only (reporting-line scoped, approval-routed).
         "compensation.plan",
