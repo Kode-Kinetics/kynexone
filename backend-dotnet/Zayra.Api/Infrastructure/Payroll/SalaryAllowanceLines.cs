@@ -157,7 +157,8 @@ public static class SalaryAllowanceLines
     {
         var result = new Dictionary<string, AllowanceDefinitionFault>(StringComparer.Ordinal);
         if (codes.Count == 0) return result;
-        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, companyId: companyId);
+        // Payroll's view: an allowance whose change waits for Finance is still paid on its last confirmed terms, so a salary may carry it meanwhile.
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, companyId: companyId, payable: true);
         var today = Today();
         foreach (var code in codes)
             if (CashAllowanceDefinitions.SalaryLineFault(versions[code], today) is { } fault) result[code] = fault;
