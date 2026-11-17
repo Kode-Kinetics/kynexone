@@ -124,6 +124,7 @@ public class ApplicationsController : ControllerBase
         var candidate = await _db.Candidates
             .FirstOrDefaultAsync(c => c.Id == req.CandidateId && c.TenantId == tenantId, ct);
         if (candidate is null) return BadRequest(new { message = "Candidate not found." });
+        if (candidate.Status == CandidateStanding.Blacklisted) return Conflict(new { error = CandidateStanding.ErrorCode, message = CandidateStanding.Message, messageAr = CandidateStanding.MessageAr });
 
         var exists = await _db.JobApplications
             .AnyAsync(a => a.TenantId == tenantId && a.JobOpeningId == req.JobOpeningId && a.CandidateId == req.CandidateId, ct);
@@ -215,6 +216,8 @@ public class ApplicationsController : ControllerBase
         var userId = this.GetUserId();
         var app = await _db.JobApplications.FirstOrDefaultAsync(a => a.Id == id && a.TenantId == tenantId, ct);
         if (app is null) return NotFound();
+        if (await CandidateStanding.IsBlacklistedAsync(_db, tenantId, app.CandidateId, ct))
+            return Conflict(new { error = CandidateStanding.ErrorCode, message = CandidateStanding.Message, messageAr = CandidateStanding.MessageAr });
 
         var interview = new InterviewSchedule
         {

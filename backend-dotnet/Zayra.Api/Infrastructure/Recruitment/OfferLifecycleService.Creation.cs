@@ -18,6 +18,8 @@ public sealed partial class OfferLifecycleService
             if (input.ExpectedApplicationVersion is { } expected && app.Version != expected)
                 throw new OfferLifecycleException("application_version_conflict", "The application changed. Reload before creating another offer.");
             OfferApplicationBoundary.RequireUnreserved(app); OfferApplicationBoundary.RequireActive(app);
+            if (await CandidateStanding.IsBlacklistedAsync(db, actor.TenantId, app.CandidateId, ct))
+                throw new OfferLifecycleException(CandidateStanding.ErrorCode, CandidateStanding.Message) { MessageAr = CandidateStanding.MessageAr };
             if (app.Stage != "Offer") throw new OfferLifecycleException("application_offer_stage_required", "Move the application to Offer before generating its offer.");
             if (Enabled && actor.CompanyId is null) throw new OfferLifecycleException("offer_company_required", "Managed offers require a legal company.", 422);
             var deadline = input.ResponseDeadline ?? DateTime.UtcNow.AddDays(7);

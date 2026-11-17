@@ -84,6 +84,8 @@ public sealed partial class OfferLifecycleService
             if (expectedVersion is null) throw new OfferLifecycleException("application_version_required", "Reload the application and submit its expectedVersion.");
             if (app.Version != expectedVersion) throw new OfferLifecycleException("application_version_conflict", "The application changed. Reload before continuing.");
             OfferApplicationBoundary.RequireUnreserved(app); OfferApplicationBoundary.RequireActive(app);
+            if (action == "Advance" && await CandidateStanding.IsBlacklistedAsync(db, actor.TenantId, app.CandidateId, ct))
+                throw new OfferLifecycleException(CandidateStanding.ErrorCode, CandidateStanding.Message) { MessageAr = CandidateStanding.MessageAr };
             string? fromStage = null, toStage = null, gateNote = null;
             if (action == "Reject") { RequireReason(reason); app.Status = "Rejected"; app.RejectionReason = reason; }
             else if (action == "Advance")

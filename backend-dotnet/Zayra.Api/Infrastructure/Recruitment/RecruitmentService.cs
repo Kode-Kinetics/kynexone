@@ -194,6 +194,8 @@ public class RecruitmentService : IRecruitmentService
         if (candidate is null)
             return Result(OfferAcceptanceOutcome.IncompleteRecruitmentData, offerId, app.Id, null,
                 "The application candidate was not found in this tenant.");
+        if (candidate.Status == CandidateStanding.Blacklisted)
+            return Result(OfferAcceptanceOutcome.InvalidApplicationState, offerId, app.Id, app.OnboardingDraftId, CandidateStanding.Message);
 
         var opening = await _db.JobOpenings.AsNoTracking()
             .FirstOrDefaultAsync(j => j.Id == app.JobOpeningId && j.TenantId == tenantId, ct);

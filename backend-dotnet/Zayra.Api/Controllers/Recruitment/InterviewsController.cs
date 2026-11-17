@@ -2,6 +2,8 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Recruitment;
@@ -83,6 +85,8 @@ public class InterviewsController : ControllerBase
 
         var app = await _db.JobApplications.FirstOrDefaultAsync(x => x.Id == req.ApplicationId && x.TenantId == tid, ct);
         if (app == null) return BadRequest("Application not found.");
+        if (await CandidateStanding.IsBlacklistedAsync(_db, tid, app.CandidateId, ct))
+            return Conflict(new { error = CandidateStanding.ErrorCode, message = CandidateStanding.Message, messageAr = CandidateStanding.MessageAr });
 
         var interview = new InterviewSchedule
         {
