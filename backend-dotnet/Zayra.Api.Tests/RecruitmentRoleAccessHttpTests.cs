@@ -185,6 +185,26 @@ public sealed class RecruitmentRoleAccessHttpTests(RoleAccessFixture f) : IClass
     }
 
     [Fact]
+    public async Task AnHrOfficer_CannotChangeOfferLetterTemplatesOrCreateWorkforcePlans_ButHrManagerAndDirectorCan()
+    {
+        var plan = new { planName = "P", planYear = 2028, departmentId = f.DepartmentOwn, currentHeadcount = 1, plannedHeadcount = 2, budgetAllocated = 10, currencyCode = "SAR" };
+        var template = new { name = "Letter", design = new { } };
+        (await f.Status(HttpMethod.Post, "/api/recruitment/workforce-planning", f.HrOfficerA, plan)).Should().Be(HttpStatusCode.Forbidden, "planning stays HR Manager and HR Director");
+        (await f.Status(HttpMethod.Post, "/api/recruitment/offer-templates", f.HrOfficerA, template)).Should().Be(HttpStatusCode.Forbidden, "it changes the legal text of letters");
+        (await f.Status(HttpMethod.Put, $"/api/recruitment/offer-templates/{Guid.NewGuid()}", f.HrOfficerA, template)).Should().Be(HttpStatusCode.Forbidden);
+        (await f.Status(HttpMethod.Post, $"/api/recruitment/offer-templates/{Guid.NewGuid()}/archive", f.HrOfficerA, new { expectedVersion = 1, reason = "x" })).Should().Be(HttpStatusCode.Forbidden);
+
+        (await f.Status(HttpMethod.Post, "/api/recruitment/workforce-planning", f.HrA, plan)).Should().Be(HttpStatusCode.Created);
+        (await f.Status(HttpMethod.Post, "/api/recruitment/workforce-planning", f.HrDirectorA, plan)).Should().Be(HttpStatusCode.Created);
+        foreach (var user in new[] { f.HrA, f.HrDirectorA })
+        {
+            // Past the gate: an unknown template is a 404/409/422, never a 403. (Create is not asserted: with no company selected the handler itself forbids.)
+            (await f.Status(HttpMethod.Put, $"/api/recruitment/offer-templates/{Guid.NewGuid()}", user, template)).Should().NotBe(HttpStatusCode.Forbidden);
+            (await f.Status(HttpMethod.Post, $"/api/recruitment/offer-templates/{Guid.NewGuid()}/archive", user, new { expectedVersion = 1, reason = "x" })).Should().NotBe(HttpStatusCode.Forbidden);
+        }
+    }
+
+    [Fact]
     public async Task AnHrOfficer_StaysInsideTheirCompany()
     {
         (await f.Status(HttpMethod.Get, $"/api/recruitment/interviews/{f.InterviewOtherCompany}", f.HrOfficerA)).Should().Be(HttpStatusCode.NotFound);
@@ -227,6 +247,7 @@ public sealed class RoleAccessFixture : IAsyncLifetime
     public string ManagerA => _tokens[nameof(ManagerA)];
     public string HrOfficerA => _tokens[nameof(HrOfficerA)];
     public string HrA => _tokens[nameof(HrA)];
+    public string HrDirectorA => _tokens[nameof(HrDirectorA)];
 
     public async Task InitializeAsync()
     {
@@ -264,6 +285,7 @@ public sealed class RoleAccessFixture : IAsyncLifetime
         var officerUser = await AddUser(db, scope, nameof(HrOfficerA), "Olive Officer", "HR Officer", groupScope: false, CompanyA);
         var hrUser = await AddUser(db, scope, nameof(HrA), "Hana HR", "HR Manager", groupScope: false, CompanyA);
         await AddUser(db, scope, "HrB", "Hamid HR", "HR Manager", groupScope: false, CompanyB);
+        await AddUser(db, scope, nameof(HrDirectorA), "Dina Director", "HR Director", groupScope: false, CompanyA);
 
         var candidate = new Candidate { Id = CandidateId, TenantId = TenantId, CompanyId = CompanyA, FirstName = "Ann", LastName = "A", Email = "ann@example.test" };
         var otherCandidate = new Candidate { TenantId = TenantId, CompanyId = CompanyB, FirstName = "Bob", LastName = "B", Email = "bob@example.test" };

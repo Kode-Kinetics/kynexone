@@ -31,6 +31,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         TenantDirectoryRead,
         HrOfficerFilesOnBehalf,
         OfferAudienceRechecksRole,
+        HrOfficerRefusedInCode,
     }
 
     internal static readonly IReadOnlyDictionary<Reason, string> Reasons = new Dictionary<Reason, string>
@@ -53,6 +54,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         [DeviceOpsRead] = "NOT data-scoped: every device's sync status and logs in the tenant (device name, vendor, timestamps, event counts, error text). No employee pay, contact or identity data; the endpoint URL's credentials and query are redacted for callers without attendance.bulk_import.",
         [TenantDirectoryRead] = "NOT data-scoped: the whole org chart within the caller's company scope (employee code, name, designation, reporting line). No pay, contact or identity data. A Supervisor sees the tenant's structure, not just their team.",
         [HrOfficerFilesOnBehalf] = "HR Officer files leave and overtime on employees' behalf (leave.write, overtime.write, an owner decision). Raising overtime requests from processed attendance is the same filing, limited by DataScope to the employees the officer can reach, and capped by the overtime policy.",
+        [HrOfficerRefusedInCode] = "The HR Officer holds recruitment.write, which would open this route through the permission bridge, but the action carries RefuseHrOfficer (owner ruling 2026-11-17: offer letter templates change the legal text of letters; workforce planning stays HR Manager and HR Director). HR Officer reaches only a Forbid.",
         [OfferAudienceRechecksRole] = "Offer lifecycle actions run through OfferLifecycleController.ForOffer, which re-checks the real role with OfferAccess (IsInRole, not the permission-to-role bridge): read is Admin, HR Manager, HR Officer or Recruiter; authoring adds no HR Officer; email, dispatch cancel/reconcile, withdraw, responses and external sends are Admin or HR Manager only. HR Director and Recruiter reach only a Forbid where they are not in that audience.",
     };
 
@@ -788,9 +790,9 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("PATCH Interviews.Complete", "HR Officer", HrOfficerHrOperations),
         ("POST Interviews.Schedule", "HR Officer", HrOfficerHrOperations),
         ("GET OfferPolicy.Get", "HR Officer", HrOfficerHrOperations),
-        ("POST OfferTemplates.Archive", "HR Officer", HrOfficerHrOperations),
-        ("POST OfferTemplates.Create", "HR Officer", HrOfficerHrOperations),
-        ("PUT OfferTemplates.Update", "HR Officer", HrOfficerHrOperations),
+        ("POST OfferTemplates.Archive", "HR Officer", HrOfficerRefusedInCode),
+        ("POST OfferTemplates.Create", "HR Officer", HrOfficerRefusedInCode),
+        ("PUT OfferTemplates.Update", "HR Officer", HrOfficerRefusedInCode),
         ("GET Offers.ApproverOptions", "HR Officer", OfferAudienceRechecksRole),
         ("GET Offers.Download", "HR Officer", HrOfficerHrOperations),
         ("POST Onboarding.CreateBulkFromChecklist", "HR Officer", HrOfficerHrOperations),
@@ -800,7 +802,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("POST Onboarding.UpsertTemplateTask", "HR Officer", HrOfficerHrOperations),
         ("POST Openings.Close", "HR Officer", HrOfficerHrOperations),
         ("GET RecruitmentReports.AIInsights", "HR Officer", HrOfficerHrOperations),
-        ("POST WorkforcePlanning.Create", "HR Officer", HrOfficerHrOperations),
+        ("POST WorkforcePlanning.Create", "HR Officer", HrOfficerRefusedInCode),
         ("PATCH WorkforcePlanning.UpdateStatus", "HR Officer", HrOfficerHrOperations),
     };
 

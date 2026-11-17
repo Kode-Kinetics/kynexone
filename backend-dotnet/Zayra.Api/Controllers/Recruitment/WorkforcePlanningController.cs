@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Recruitment;
@@ -63,6 +64,7 @@ public class WorkforcePlanningController : ControllerBase
     // POST /api/recruitment/workforce-planning
     [HttpPost]
     [Authorize(Roles = "Admin,HR Manager")]
+    [RefuseHrOfficer]
     public async Task<IActionResult> Create([FromBody] CreateWorkforcePlanRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
