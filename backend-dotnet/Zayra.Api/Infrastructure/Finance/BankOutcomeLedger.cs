@@ -16,6 +16,18 @@ public static class BankOutcomeHolds
 
     public static readonly IReadOnlyList<string> ForAPerson = new[] { PaidThenRejected, FailedOutcomeChanged, DuplicateRejection };
 
+    // A person's reasoned exit that set a status the bank's word did not say. Stored as the row's HoldReason ("why the
+    // bank's word was not applied"), with Applied = false; the record status, the audit row and Overrides carry the change.
+    /// <summary>A rejection held after Paid; the person showed the money left (the record stays Paid).</summary>
+    public const string PaidConfirmedDespiteRejection = "paid_confirmed_despite_rejection";
+    /// <summary>A DUPL hold; the person confirmed the original payment reached the employee (the record is Paid).</summary>
+    public const string DuplicateOriginalReceivedConfirmed = "duplicate_original_received_confirmed";
+    /// <summary>A DUPL hold; the person confirmed nothing reached the employee (the record is Rejected).</summary>
+    public const string DuplicateNotPaidConfirmed = "duplicate_not_paid_confirmed";
+
+    public static readonly IReadOnlyList<string> Resolutions =
+        new[] { PaidConfirmedDespiteRejection, DuplicateOriginalReceivedConfirmed, DuplicateNotPaidConfirmed };
+
     /// <summary>The period-handoff blocker each open hold raises.</summary>
     public static string BlockerFor(string hold) => hold switch
     {
@@ -27,6 +39,9 @@ public static class BankOutcomeHolds
     /// <summary>The import-option exits. Their names go into the audit metadata.</summary>
     public const string PaidToRejectedOverride = "paid_to_rejected";
     public const string FailedOutcomeOverride = "failed_outcome_override";
+    public const string ConfirmPaidDespiteRejectionOverride = "confirm_paid_despite_rejection";
+    public const string ConfirmOriginalPaymentReceivedOverride = "confirm_original_payment_received";
+    public const string ConfirmDuplicateNotPaidOverride = "confirm_duplicate_not_paid";
 }
 
 /// <summary>An open hold on one payment record, as the history and the period handoff show it.</summary>
@@ -100,7 +115,8 @@ public static class BankOutcomeLedger
         IEnumerable<PayrollPaymentRecord> records, IEnumerable<BankPaymentConfirmation> confirmations)
     {
         var relevant = confirmations
-            .Where(c => c.Applied || (c.HoldReason is not null && BankOutcomeHolds.ForAPerson.Contains(c.HoldReason)))
+            .Where(c => c.Applied || (c.HoldReason is not null
+                        && (BankOutcomeHolds.ForAPerson.Contains(c.HoldReason) || BankOutcomeHolds.Resolutions.Contains(c.HoldReason))))
             .GroupBy(c => c.PaymentRecordId)
             .ToDictionary(g => g.Key, g => g.OrderBy(c => c.ImportedAtUtc).ThenBy(c => c.CreatedAtUtc).ToList());
         var open = new List<UnresolvedBankHold>();
@@ -111,9 +127,14 @@ public static class BankOutcomeLedger
             var paidThenRejected = rows.LastOrDefault(c => c.HoldReason == BankOutcomeHolds.PaidThenRejected);
             if (paidThenRejected is not null
                 && string.Equals(r.Status, PaymentRecordStatuses.Paid, StringComparison.OrdinalIgnoreCase)
-                && !rows.Any(c => c.Applied && c.Outcome == BankConfirmationOutcomes.Rejected && c.ImportedAtUtc >= paidThenRejected.ImportedAtUtc))
+                // Cleared only by a reasoned exit: an applied rejection (allowPaidToRejected) or confirmPaidDespiteRejection.
+                // A later file that only says PAID does not clear it.
+                && !rows.Any(c => c.ImportedAtUtc >= paidThenRejected.ImportedAtUtc && c != paidThenRejected
+                                  && ((c.Applied && c.Outcome == BankConfirmationOutcomes.Rejected)
+                                      || c.HoldReason == BankOutcomeHolds.PaidConfirmedDespiteRejection)))
                 hold = paidThenRejected;
-            else if (rows[^1] is { Applied: false } latest && latest.HoldReason != BankOutcomeHolds.PaidThenRejected)
+            else if (rows[^1] is { Applied: false } latest && latest.HoldReason != BankOutcomeHolds.PaidThenRejected
+                     && BankOutcomeHolds.ForAPerson.Contains(latest.HoldReason!))
                 hold = latest;
             if (hold is not null)
                 open.Add(new UnresolvedBankHold(r.Id, r.EmployeeId, r.Amount, r.Status ?? string.Empty, hold.HoldReason!,
@@ -162,4 +183,20 @@ public static class BankOutcomeLedger
 
     private static bool IsRejected(PayrollPaymentRecord r) =>
         string.Equals(r.Status, PaymentRecordStatuses.Rejected, StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>Plain wording shared by the payment-batch endpoints.</summary>
+public static class BankOutcomeMessages
+{
+    /// <summary>Why a batch cannot reach Reconciled: returned, rejected and unconfirmed are named apart, never as one "returned".</summary>
+    public static string NotReconciled(int returned, int rejected, int unconfirmed)
+    {
+        var open = new List<string>();
+        if (returned > 0) open.Add($"{returned} returned by the bank (the money came back)");
+        if (rejected > 0) open.Add($"{rejected} not paid: rejected by bank (the money never left)");
+        if (unconfirmed > 0) open.Add($"{unconfirmed} not yet confirmed by the bank");
+        return "This batch cannot reach Reconciled while payments are open: " + string.Join("; ", open) + ". Import the "
+             + "bank/WPS response (POST payment-batches/{id}/bank-confirmations) and resolve each first: reconciling now "
+             + "would close the month over salaries the employees have not received.";
+    }
 }

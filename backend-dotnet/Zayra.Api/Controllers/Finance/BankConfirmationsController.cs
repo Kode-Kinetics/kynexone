@@ -74,6 +74,10 @@ public class BankConfirmationsController : ControllerBase
         [FromQuery] bool allowFailedOutcomeChange = false,
         [FromQuery] string? overrideReason = null,
         [FromQuery] string? overrideBankReference = null,
+        // The opposite exits (CTO follow-up 2): each needs overrideReason AND overrideBankReference.
+        [FromQuery] bool confirmPaidDespiteRejection = false,
+        [FromQuery] bool confirmOriginalPaymentReceived = false,
+        [FromQuery] bool confirmDuplicateNotPaid = false,
         CancellationToken ct = default)
     {
         if (!HasPermission("payroll.export")) return Forbid();
@@ -90,12 +94,14 @@ public class BankConfirmationsController : ControllerBase
             });
 
         if ((allowPaidToRejected && (string.IsNullOrWhiteSpace(overrideReason) || string.IsNullOrWhiteSpace(overrideBankReference)))
-            || (allowFailedOutcomeChange && string.IsNullOrWhiteSpace(overrideReason)))
+            || (allowFailedOutcomeChange && string.IsNullOrWhiteSpace(overrideReason))
+            || ((confirmPaidDespiteRejection || confirmOriginalPaymentReceived || confirmDuplicateNotPaid)
+                && (string.IsNullOrWhiteSpace(overrideReason) || string.IsNullOrWhiteSpace(overrideBankReference))))
             return BadRequest(new
             {
                 error = "override_reason_required",
-                message = "Recording a rejection after Paid needs a reason and the bank's reference; changing a payment between "
-                        + "returned and rejected needs a reason.",
+                message = "Recording a rejection after Paid, or confirming what the bank really did with a held line, needs a "
+                        + "reason and the bank's reference; changing a payment between returned and rejected needs a reason.",
             });
 
         var (fileName, content, readError) = await ReadPayloadAsync(ct);
@@ -103,7 +109,8 @@ public class BankConfirmationsController : ControllerBase
 
         var options = new BankConfirmationImportOptions(
             acknowledgeAmountMismatch, allowReturnReversal, returnReversalReason?.Trim(), allowCrossBatchReimport, dryRun,
-            allowPaidToRejected, allowFailedOutcomeChange, overrideReason?.Trim(), overrideBankReference?.Trim());
+            allowPaidToRejected, allowFailedOutcomeChange, overrideReason?.Trim(), overrideBankReference?.Trim(),
+            confirmPaidDespiteRejection, confirmOriginalPaymentReceived, confirmDuplicateNotPaid);
 
         var (result, refusal) = await _service.ImportAsync(
             tid.Value, batchId, fileName!, content!, format, options, this.GetUserId(), UserName(), ct);

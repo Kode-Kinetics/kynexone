@@ -19,7 +19,19 @@ public sealed record BankConfirmationImportOptions(
     bool AllowPaidToRejected = false,
     bool AllowFailedOutcomeChange = false,
     string? OverrideReason = null,
-    string? OverrideBankReference = null);
+    string? OverrideBankReference = null,
+    // No one-way traps (CTO follow-up 2): the opposite exits. Each needs OverrideReason AND OverrideBankReference.
+    //  - ConfirmPaidDespiteRejection: a rejection held after Paid; the record stays Paid and the hold clears.
+    //  - ConfirmOriginalPaymentReceived: a DUPL hold; the record stays or becomes Paid.
+    //  - ConfirmDuplicateNotPaid: a DUPL hold; the record becomes Rejected ("Not paid: rejected by bank").
+    bool ConfirmPaidDespiteRejection = false,
+    bool ConfirmOriginalPaymentReceived = false,
+    bool ConfirmDuplicateNotPaid = false)
+{
+    /// <summary>True when any reasoned exit was asked for.</summary>
+    public bool AnyExit => AllowPaidToRejected || AllowFailedOutcomeChange || ConfirmPaidDespiteRejection
+                          || ConfirmOriginalPaymentReceived || ConfirmDuplicateNotPaid;
+}
 
 /// <summary>Per-employee outcome tallies for a batch, as the ledger of record sees them.</summary>
 public sealed record BatchPaymentCoverage(
@@ -198,6 +210,15 @@ public sealed class BankConfirmationService
         if (prior.Count > 0)
         {
             var priorBatches = prior.Select(p => p.PaymentBatchId).Distinct().ToList();
+            if (priorBatches.Contains(paymentBatchId) && options.AnyExit)
+                return (null, new JournalExportRefusal(409, new
+                {
+                    error = "exit_needs_the_line_again",
+                    message = "This exact file was already imported for this batch, so it would apply nothing. Send the line "
+                            + "the exit is about again (for example as a one-row payload) with the exit, the reason and the "
+                            + "bank's reference.",
+                    sourceFileHash = hash,
+                }));
             if (priorBatches.Contains(paymentBatchId))
             {
                 var rows = await LoadRecordsAsync(tenantId, paymentBatchId, ct);
@@ -339,8 +360,46 @@ public sealed class BankConfirmationService
 
             string? hold = null;
             var apply = true;
+            // The status a person's reasoned exit sets when it differs from the bank's word (null: none).
+            string? personStatus = null;
 
-            if (BankStatusReasonCatalogue.IsDuplicate(row.ReasonCode))
+            if (BankStatusReasonCatalogue.IsDuplicate(row.ReasonCode)
+                && (options.ConfirmOriginalPaymentReceived || options.ConfirmDuplicateNotPaid))
+            {
+                // The DUPL exits (CTO follow-up 2). The person checked the original payment with the bank.
+                var to = options.ConfirmOriginalPaymentReceived ? PaymentRecordStatuses.Paid : PaymentRecordStatuses.Rejected;
+                if (mismatch && !options.AcknowledgeAmountMismatch)
+                {
+                    // An exit never overrides the amount check: a different figure is still held.
+                    apply = false;
+                    hold = "amount_mismatch_held";
+                    result.AmountMismatchesHeld.Add(new
+                    {
+                        paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
+                        recordAmount = record.Amount, confirmedAmount, delta = confirmedAmount - record.Amount,
+                        outcome = row.Outcome,
+                    });
+                }
+                else if (!string.Equals(StatusFor(row.Outcome), to, StringComparison.Ordinal))
+                {
+                    // The bank's word is not what the person confirmed: the word is kept as evidence, not applied.
+                    apply = false;
+                    hold = options.ConfirmOriginalPaymentReceived
+                        ? BankOutcomeHolds.DuplicateOriginalReceivedConfirmed
+                        : BankOutcomeHolds.DuplicateNotPaidConfirmed;
+                    personStatus = to;
+                }
+                if (hold != "amount_mismatch_held")
+                    result.Overrides.Add(new
+                {
+                    paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
+                    kind = options.ConfirmOriginalPaymentReceived
+                        ? BankOutcomeHolds.ConfirmOriginalPaymentReceivedOverride
+                        : BankOutcomeHolds.ConfirmDuplicateNotPaidOverride,
+                    from = previous, to,
+                });
+            }
+            else if (BankStatusReasonCatalogue.IsDuplicate(row.ReasonCode))
             {
                 // CTO ruling 4: a duplicate refusal usually means the ORIGINAL payment went through. Whatever the word, it
                 // is never "not paid, still owed" and never "paid": held for a person to check the original payment.
@@ -352,6 +411,8 @@ public sealed class BankConfirmationService
                     from = previous, to = row.Outcome, reason = hold,
                     message = BankOutcomeLabels.HeldDuplicateRejection.English,
                     messageAr = BankOutcomeLabels.HeldDuplicateRejection.Arabic,
+                    nextStep = "Send the line again with confirmOriginalPaymentReceived or confirmDuplicateNotPaid, a reason "
+                             + "and the bank's reference.",
                 });
             }
             else if (row.Outcome == BankConfirmationOutcomes.Pending)
@@ -401,6 +462,19 @@ public sealed class BankConfirmationService
                 });
             }
             else if (string.Equals(previous, PaymentRecordStatuses.Paid, StringComparison.OrdinalIgnoreCase)
+                     && row.Outcome == BankConfirmationOutcomes.Rejected && options.ConfirmPaidDespiteRejection)
+            {
+                // The opposite exit (CTO follow-up 2): the person showed the money did leave (a statement line). The record
+                // stays Paid; the rejection is kept as evidence, not applied, and its row says why.
+                apply = false;
+                hold = BankOutcomeHolds.PaidConfirmedDespiteRejection;
+                result.Overrides.Add(new
+                {
+                    paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
+                    kind = BankOutcomeHolds.ConfirmPaidDespiteRejectionOverride, from = previous, to = PaymentRecordStatuses.Paid,
+                });
+            }
+            else if (string.Equals(previous, PaymentRecordStatuses.Paid, StringComparison.OrdinalIgnoreCase)
                      && row.Outcome == BankConfirmationOutcomes.Rejected)
             {
                 // The bank already said Paid and now says it refused the instruction. Applying it would hide money the
@@ -413,8 +487,8 @@ public sealed class BankConfirmationService
                     paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
                     from = previous, to = row.Outcome, reason = hold,
                     message = "The bank confirmed this payment as paid and now reports it rejected. Nothing was changed: check "
-                            + "with the bank whether the money left. If it did not, re-import with allowPaidToRejected, a reason "
-                            + "and the bank's reference.",
+                            + "with the bank whether the money left. Then send the line again with allowPaidToRejected (it did "
+                            + "not) or confirmPaidDespiteRejection (it did), a reason and the bank's reference.",
                     messageAr = BankOutcomeLabels.HeldRejectionAfterPaid.Arabic,
                 });
             }
@@ -459,13 +533,7 @@ public sealed class BankConfirmationService
             }
 
             // Each terminal outcome sets its own payment status; a rejection is never written as Returned.
-            var target = row.Outcome switch
-            {
-                BankConfirmationOutcomes.Paid => PaymentRecordStatuses.Paid,
-                BankConfirmationOutcomes.Returned => PaymentRecordStatuses.Returned,
-                BankConfirmationOutcomes.Rejected => PaymentRecordStatuses.Rejected,
-                _ => null,
-            };
+            var target = StatusFor(row.Outcome);
 
             if (apply && target is not null)
             {
@@ -477,6 +545,15 @@ public sealed class BankConfirmationService
                     result.SettledByBank++;
 
                 if (!options.DryRun) record.Status = target;
+            }
+            else if (personStatus is not null)
+            {
+                // A reasoned exit set a status the bank's word did not say. Counted like any other change.
+                if (string.Equals(previous, personStatus, StringComparison.OrdinalIgnoreCase)) result.Unchanged++;
+                else if (personStatus == PaymentRecordStatuses.Paid) result.PaidApplied++;
+                else result.RejectedApplied++;
+
+                if (!options.DryRun) record.Status = personStatus;
             }
 
             if (!options.DryRun)
@@ -564,6 +641,9 @@ public sealed class BankConfirmationService
                         failedOutcomeChangeAllowed = options.AllowFailedOutcomeChange,
                         overrideReason = options.OverrideReason,
                         overrideBankReference = options.OverrideBankReference,
+                        confirmPaidDespiteRejection = options.ConfirmPaidDespiteRejection,
+                        confirmOriginalPaymentReceived = options.ConfirmOriginalPaymentReceived,
+                        confirmDuplicateNotPaid = options.ConfirmDuplicateNotPaid,
                         // Each exit used, with the status before and after.
                         overrides = result.Overrides,
                     },
@@ -597,7 +677,23 @@ public sealed class BankConfirmationService
     /// <summary>An exit asked for without what it needs refuses the whole import.</summary>
     private static JournalExportRefusal? OverrideRefusal(BankConfirmationImportOptions options)
     {
+        if ((options.AllowPaidToRejected && options.ConfirmPaidDespiteRejection)
+            || (options.ConfirmOriginalPaymentReceived && options.ConfirmDuplicateNotPaid))
+            return new JournalExportRefusal(400, new
+            {
+                error = "opposing_exits",
+                message = "Two exits that say opposite things were asked for together. Choose the one the bank confirmed.",
+            });
         var noReason = string.IsNullOrWhiteSpace(options.OverrideReason);
+        var noReference = string.IsNullOrWhiteSpace(options.OverrideBankReference);
+        if ((options.ConfirmPaidDespiteRejection || options.ConfirmOriginalPaymentReceived || options.ConfirmDuplicateNotPaid)
+            && (noReason || noReference))
+            return new JournalExportRefusal(400, new
+            {
+                error = "override_reason_required",
+                message = "Confirming what the bank really did needs a reason and the bank's reference (for example a "
+                        + "statement line).",
+            });
         if (options.AllowPaidToRejected && (noReason || string.IsNullOrWhiteSpace(options.OverrideBankReference)))
             return new JournalExportRefusal(400, new
             {
@@ -613,6 +709,15 @@ public sealed class BankConfirmationService
             });
         return null;
     }
+
+    /// <summary>The payment status a canonical bank outcome sets; null for Pending or an unknown outcome.</summary>
+    private static string? StatusFor(string? outcome) => outcome switch
+    {
+        BankConfirmationOutcomes.Paid => PaymentRecordStatuses.Paid,
+        BankConfirmationOutcomes.Returned => PaymentRecordStatuses.Returned,
+        BankConfirmationOutcomes.Rejected => PaymentRecordStatuses.Rejected,
+        _ => null,
+    };
 
     private async Task<IReadOnlyList<BankPaymentConfirmation>> LoadConfirmationsAsync(Guid tenantId, Guid batchId, CancellationToken ct) =>
         await _db.BankPaymentConfirmations.AsNoTracking()
