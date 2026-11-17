@@ -8,7 +8,8 @@ namespace Zayra.Api.Infrastructure.Finance;
 /// <summary>
 /// What the import knows about the payment batch, loaded by the service (tenant- and company-scoped) and handed to a
 /// parser that asks for it. It is read-only data: a parser cannot change a record through it.
-/// <see cref="ImportedFileRefKeys"/> are the "company|FILE-REF" keys of files already imported for this tenant.
+/// <see cref="ImportedFileRefKeys"/> are the "company|FILE-REF" keys of files already imported for OTHER payment batches of this
+/// tenant: the bank's later status file for THIS batch may carry the same reference.
 /// </summary>
 public sealed record BankConfirmationBatchContext(
     string? MolEstablishmentId,
@@ -71,8 +72,8 @@ public static class BankConfirmationParserRegistration
 /// strips or re-signs the file, and it checks consistency, not authenticity (it does not verify the bank's signature).
 ///
 /// <para>What is actually checked before any line is passed on: the establishment equals the company's; the file is dated
-/// on or after this batch was created and its total does not exceed the batch's; its FILE-REF was not imported before for
-/// this company; the header total equals the sum of the lines; and the lines are not altered (no duplicate employee or
+/// on or after this batch was created and no later than the window after it, and its total does not exceed the batch's; its FILE-REF
+/// was not imported before for another batch of this company; the header total equals the sum of the lines; and the lines are not altered (no duplicate employee or
 /// account, net equals the breakdown, every account equals the one on our record). Any of these failing refuses the WHOLE
 /// file. A single faulty line yields no row for that line. A status word outside <see cref="WpsReturnedFileStatus"/>
 /// confirms nothing. The per-line status tag is itself unverified.</para>
