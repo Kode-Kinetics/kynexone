@@ -1,8 +1,7 @@
-using System.Globalization;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Infrastructure.Finance;
-using Zayra.Api.Models;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
+using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 
@@ -10,68 +9,86 @@ namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 public enum AnbTransactionPhase { Initiated, Pending, InProgress, Paid, Returned, Failed }
 
 /// <summary>
-/// Maps ANB's published V2 statuses into the shape the EXISTING bank-confirmation import accepts, without
-/// changing it: <see cref="BankConfirmationRow"/>s, rendered by <see cref="BankChannelConfirmationFile.Render"/> for the
-/// existing <c>generic-csv</c> parser and <see cref="BankConfirmationService.ImportAsync"/> (which keeps
-/// its own per-record reconciliation, voided-run guard, amount-mismatch hold, return-reversal refusal,
-/// conflicting-row refusal and file-hash dedupe).
+/// Maps ANB's published V2 statuses onto ONE batch, in the shape the EXISTING bank-confirmation import
+/// accepts, without changing it: <see cref="BankConfirmationRow"/>s rendered by
+/// <see cref="BankChannelConfirmationFile.Render"/> for the <c>generic-csv</c> parser and
+/// <see cref="BankConfirmationService.ImportAsync"/> (which keeps its own per-record reconciliation,
+/// voided-run guard, amount-mismatch hold, return-reversal refusal, conflicting-row refusal and dedupe).
 ///
 /// <list type="bullet">
-/// <item>PAID is Paid. RETURNED and FAILED are Returned (money did not reach the employee; the shared
-/// vocabulary already reads FAILED that way). INITIATED, PENDING and IN PROGRESS are Pending, which the
-/// import records as evidence and applies to no record.</item>
-/// <item>Any other word fails loudly (<see cref="AnbUnknownStatusException"/>): guessing is how a returned
-/// salary reads as delivered.</item>
-/// <item>A line is matched to what we sent by national ID AND account, and carried by OUR WPS reference.
-/// ANB's employeeId is a national ID, so it is never passed as an employee code, and no IBAN or ID goes
-/// into the confirmation file.</item>
-/// <item>paymentId is null until paid; a PAID line without one is still Paid but flagged.</item>
+/// <item>The snapshot must fit the batch (<see cref="BankBatchBinding"/>): the bank's item count equals the
+/// lines we sent, the amounts sum to the frozen total, and every line was created after the submit intent.
+/// Otherwise it is another payroll (last month's, a voided batch's) and is refused.</item>
+/// <item>PAID is Paid. RETURNED and FAILED are Returned: the shared vocabulary already reads FAILED that
+/// way (<c>BankOutcomeVocabulary.ReturnedTokens</c>, BankConfirmationParsers.cs:57). INITIATED, PENDING and
+/// IN PROGRESS are Pending, which the import records and applies to no record.</item>
+/// <item>A payroll the bank REJECTED or FAILED fails every line it had not settled (Returned, reason
+/// <c>PAYROLL_REJECTED</c>/<c>PAYROLL_FAILED</c>). A COMPLETED payroll pays nobody by itself: only a per-line
+/// PAID does.</item>
+/// <item>An unpublished line word is held (<see cref="BankUnresolvedLine"/>, reason <c>unknown_status</c>)
+/// and the other lines still map; an unpublished PAYROLL word throws.</item>
+/// <item>Lines are matched to what we sent by national ID AND account and carried by OUR WPS reference; no
+/// IBAN, ID or name goes into the confirmation file. Lines we sent that the bank did not list are
+/// <see cref="BankStatusSnapshot.MissingFromBank"/>.</item>
 /// </list>
-/// The raw ANB word is kept verbatim in <see cref="BankConfirmationRow.RawOutcome"/> and, in the file, in
-/// the ReasonCode column (the status column carries the canonical outcome the parser expects).
 /// </summary>
 public static class AnbPayrollStatusMapper
 {
-    /// <summary>The existing parser the rendered confirmation file is written for.</summary>
-    public const string ConfirmationParserKey = "generic-csv";
-
     public static readonly IReadOnlyList<string> PayrollStatuses =
         new[] { "ACCEPTED", "INITIATED", "VALIDATED", "IN_PROGRESS", "COMPLETED", "FAILED", "REJECTED" };
 
     public static readonly IReadOnlyList<string> TransactionStatuses =
         new[] { "INITIATED", "PENDING", "IN PROGRESS", "PAID", "RETURNED", "FAILED" };
 
-    private static readonly string[] CsvColumns =
-        { "WpsReference", "Amount", "Status", "ReasonCode", "ReasonDescription", "BankReference" };
+    /// <summary>How far before the submit intent a bank line may say it was created (clock skew between us
+    /// and the bank). Anything older belongs to another payroll.</summary>
+    public static readonly TimeSpan CreatedAtTolerance = TimeSpan.FromMinutes(5);
 
     private const int MaxReasonLength = 300;
 
-    /// <summary>Trim, upper-case invariant, and treat a space like an underscore ("IN PROGRESS" and
-    /// "IN_PROGRESS" are both published spellings).</summary>
-    private static string Normalise(string? raw) => (raw ?? string.Empty).Trim().ToUpperInvariant().Replace(' ', '_');
-
-    public static BankPayrollPhase MapPayrollStatus(string? raw) => Normalise(raw) switch
+    /// <summary>ASCII words only (a look-alike letter such as a dotless i never upper-cases into a known
+    /// word); trimmed, upper-cased, and a space treated like an underscore ("IN PROGRESS" and "IN_PROGRESS"
+    /// are both published spellings). Null when the token is not a word.</summary>
+    private static string? Normalise(string? raw)
     {
-        "ACCEPTED" => BankPayrollPhase.Accepted,
-        "INITIATED" => BankPayrollPhase.Initiated,
-        "VALIDATED" => BankPayrollPhase.Validated,
-        "IN_PROGRESS" => BankPayrollPhase.InProgress,
-        "COMPLETED" => BankPayrollPhase.Completed,
-        "FAILED" => BankPayrollPhase.Failed,
-        "REJECTED" => BankPayrollPhase.Rejected,
-        _ => throw new AnbUnknownStatusException("payroll", raw),
-    };
+        var trimmed = (raw ?? string.Empty).Trim();
+        return trimmed.Length > 0 && AnbStatusWords.IsWord(trimmed) ? trimmed.ToUpperInvariant().Replace(' ', '_') : null;
+    }
 
-    public static AnbTransactionPhase MapTransactionStatus(string? raw) => Normalise(raw) switch
+    public static bool TryMapPayrollStatus(string? raw, out BankPayrollPhase phase)
     {
-        "INITIATED" => AnbTransactionPhase.Initiated,
-        "PENDING" => AnbTransactionPhase.Pending,
-        "IN_PROGRESS" => AnbTransactionPhase.InProgress,
-        "PAID" => AnbTransactionPhase.Paid,
-        "RETURNED" => AnbTransactionPhase.Returned,
-        "FAILED" => AnbTransactionPhase.Failed,
-        _ => throw new AnbUnknownStatusException("transaction", raw),
-    };
+        switch (Normalise(raw))
+        {
+            case "ACCEPTED": phase = BankPayrollPhase.Accepted; return true;
+            case "INITIATED": phase = BankPayrollPhase.Initiated; return true;
+            case "VALIDATED": phase = BankPayrollPhase.Validated; return true;
+            case "IN_PROGRESS": phase = BankPayrollPhase.InProgress; return true;
+            case "COMPLETED": phase = BankPayrollPhase.Completed; return true;
+            case "FAILED": phase = BankPayrollPhase.Failed; return true;
+            case "REJECTED": phase = BankPayrollPhase.Rejected; return true;
+            default: phase = default; return false;
+        }
+    }
+
+    public static bool TryMapTransactionStatus(string? raw, out AnbTransactionPhase phase)
+    {
+        switch (Normalise(raw))
+        {
+            case "INITIATED": phase = AnbTransactionPhase.Initiated; return true;
+            case "PENDING": phase = AnbTransactionPhase.Pending; return true;
+            case "IN_PROGRESS": phase = AnbTransactionPhase.InProgress; return true;
+            case "PAID": phase = AnbTransactionPhase.Paid; return true;
+            case "RETURNED": phase = AnbTransactionPhase.Returned; return true;
+            case "FAILED": phase = AnbTransactionPhase.Failed; return true;
+            default: phase = default; return false;
+        }
+    }
+
+    public static BankPayrollPhase MapPayrollStatus(string? raw) =>
+        TryMapPayrollStatus(raw, out var phase) ? phase : throw new AnbUnknownStatusException("payroll", raw);
+
+    public static AnbTransactionPhase MapTransactionStatus(string? raw) =>
+        TryMapTransactionStatus(raw, out var phase) ? phase : throw new AnbUnknownStatusException("transaction", raw);
 
     public static string ToConfirmationOutcome(AnbTransactionPhase phase) => phase switch
     {
@@ -96,11 +113,8 @@ public static class AnbPayrollStatusMapper
         _ => 4,
     };
 
-    /// <summary>
-    /// Monotonic payroll phase. A non-terminal phase never moves backwards, and a terminal phase never
-    /// changes. <paramref name="held"/> is true when the bank reported something we did not apply, so the
-    /// caller can show it instead of silently dropping it.
-    /// </summary>
+    /// <summary>Monotonic payroll phase: a non-terminal phase never moves backwards, a terminal one never
+    /// changes. <paramref name="held"/> is true when the bank reported something that was not applied.</summary>
     public static BankPayrollPhase AdvancePayroll(BankPayrollPhase? previous, BankPayrollPhase next, out bool held)
     {
         held = false;
@@ -115,23 +129,34 @@ public static class AnbPayrollStatusMapper
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(binding);
-        var submitted = binding.Lines;
         var payroll = MapPayrollStatus(snapshot.PayrollStatus);
 
         var sent = new Dictionary<(string, string), string>();
-        foreach (var s in submitted)
-            if (!sent.TryAdd((s.EmployeeId.Trim(), s.AccountNumber.Trim()), s.WpsReference))
-                throw new ArgumentException("The submitted lines repeat an employee/account pair; the frozen body never does.", nameof(submitted));
+        foreach (var s in binding.Lines)
+            if (!sent.TryAdd(Key(s.EmployeeId, s.AccountNumber), s.WpsReference))
+                throw new ArgumentException("The submitted lines repeat an employee/account pair; the frozen body never does.", nameof(binding));
+
+        CheckBinding(snapshot, binding);
 
         var rows = new List<BankConfirmationRow>(snapshot.Lines.Count);
         var unresolved = new List<BankUnresolvedLine>();
         var anomalies = new List<BankLineAnomaly>();
+        var seen = new HashSet<(string, string)>();
+        var payrollFailed = payroll is BankPayrollPhase.Failed or BankPayrollPhase.Rejected;
 
         for (var i = 0; i < snapshot.Lines.Count; i++)
         {
             var line = snapshot.Lines[i];
-            var phase = MapTransactionStatus(line.PaymentStatus); // unknown word: throws, the whole mapping fails
-            if (!sent.TryGetValue((line.EmployeeId.Trim(), line.EmployeeAccountNumber.Trim()), out var wpsReference))
+            var key = Key(line.EmployeeId, line.EmployeeAccountNumber);
+            seen.Add(key);
+
+            if (!TryMapTransactionStatus(line.PaymentStatus, out var phase))
+            {
+                unresolved.Add(new BankUnresolvedLine(i + 1, SensitiveValueMask.MaskId(line.EmployeeId), "unknown_status",
+                    AnbStatusWords.Printable(line.PaymentStatus?.Trim())));
+                continue;
+            }
+            if (!sent.TryGetValue(key, out var wpsReference))
             {
                 unresolved.Add(new BankUnresolvedLine(i + 1, SensitiveValueMask.MaskId(line.EmployeeId), "not_in_submitted_batch"));
                 continue;
@@ -142,6 +167,24 @@ public static class AnbPayrollStatusMapper
                 anomalies.Add(new BankLineAnomaly(wpsReference, "paid_without_payment_id"));
 
             var raw = line.PaymentStatus.Trim();
+            var outcome = ToConfirmationOutcome(phase);
+            var reasonCode = raw;
+            var reasonText = Reason(line.PaymentStatusDescription, line.EmployeeName);
+            if (payrollFailed)
+            {
+                if (!IsTerminal(phase))
+                {
+                    // The whole payroll was refused (for example insufficient balance): this line will not be paid.
+                    outcome = BankConfirmationOutcomes.Returned;
+                    reasonCode = "PAYROLL_" + payroll.ToString().ToUpperInvariant();
+                    reasonText = Reason(snapshot.Reason, line.EmployeeName) ?? reasonText;
+                }
+                else if (phase == AnbTransactionPhase.Paid)
+                {
+                    anomalies.Add(new BankLineAnomaly(wpsReference, "paid_in_rejected_payroll"));
+                }
+            }
+
             rows.Add(new BankConfirmationRow(
                 RowNumber: 0,
                 WpsReference: wpsReference,
@@ -149,12 +192,15 @@ public static class AnbPayrollStatusMapper
                 Iban: null,
                 Amount: line.SalaryAmount,
                 RawOutcome: raw,
-                Outcome: ToConfirmationOutcome(phase),
-                ReasonCode: raw,
-                ReasonText: Reason(line.PaymentStatusDescription),
+                Outcome: outcome,
+                ReasonCode: reasonCode,
+                ReasonText: reasonText,
                 BankReference: Blank(line.PaymentTransactionReferenceNumber) ?? paymentId,
                 ValueDate: null));
         }
+
+        var missing = binding.Lines.Where(s => !seen.Contains(Key(s.EmployeeId, s.AccountNumber)))
+            .Select(s => s.WpsReference).OrderBy(r => r, StringComparer.Ordinal).ToList();
 
         // Stable order: the same bank state always renders the same bytes, so the import's file-hash
         // dedupe turns a repeated poll into a no-op.
@@ -165,14 +211,41 @@ public static class AnbPayrollStatusMapper
             .Select((r, i) => r with { RowNumber = i + 2 })
             .ToList();
 
-        return new BankStatusSnapshot(snapshot.BankPayrollId, payroll, ordered, unresolved, Array.Empty<string>(), anomalies, snapshot.Complete);
+        var complete = snapshot.Complete && snapshot.ItemCount > 0 && snapshot.ItemCount == binding.Lines.Count
+                       && missing.Count == 0 && unresolved.Count == 0;
+        return new BankStatusSnapshot(snapshot.BankPayrollId, payroll, ordered, unresolved, missing, anomalies, complete);
     }
+
+    /// <summary>
+    /// Refuses a snapshot that cannot be this batch's payroll. An item count of zero is "the bank is still
+    /// loading" and is reported as incomplete instead.
+    /// </summary>
+    private static void CheckBinding(AnbPayrollStatusSnapshot snapshot, BankBatchBinding binding)
+    {
+        if (snapshot.ItemCount == 0) return;
+        if (snapshot.ItemCount != binding.Lines.Count)
+            throw new BankChannelException(BankChannelCodes.PayrollNotThisBatch);
+
+        var earliest = binding.IntentAtUtc - CreatedAtTolerance;
+        if (snapshot.Lines.Any(l => l.CreatedAt is not { } created || created < earliest))
+            throw new BankChannelException(BankChannelCodes.PayrollNotThisBatch);
+
+        // Every line the bank counts was seen: the amounts must add up to the frozen total.
+        var distinct = snapshot.Lines.GroupBy(l => Key(l.EmployeeId, l.EmployeeAccountNumber)).Select(g => g.First()).ToList();
+        if (distinct.Count == snapshot.ItemCount && distinct.Sum(l => l.SalaryAmount) != binding.ExpectedTotal)
+            throw new BankChannelException(BankChannelCodes.PayrollNotThisBatch);
+    }
+
+    private static (string, string) Key(string? employeeId, string? account) => ((employeeId ?? string.Empty).Trim(), (account ?? string.Empty).Trim());
 
     private static string? Blank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
-    private static string? Reason(string? text)
+    /// <summary>Bank free text with the employee's own name removed and IBAN/ID shapes masked.</summary>
+    private static string? Reason(string? text, string? employeeName)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
+        if (!string.IsNullOrWhiteSpace(employeeName) && employeeName.Trim().Length >= 3)
+            text = text.Replace(employeeName.Trim(), "***", StringComparison.Ordinal);
         var masked = new string(SensitiveFieldClassifier.MaskEmbedded(text).Where(c => !char.IsControl(c)).ToArray()).Trim();
         return masked.Length > MaxReasonLength ? masked[..MaxReasonLength] : masked;
     }
