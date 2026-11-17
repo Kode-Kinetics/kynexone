@@ -58,6 +58,8 @@ public sealed class BankConfirmationImportResult
     public int PaidApplied { get; set; }
     public int ReturnedApplied { get; set; }
     public int PendingReported { get; set; }
+    /// <summary>Of <see cref="PendingReported"/>: lines where the bank only accepted the file, with no proof of credit.</summary>
+    public int AcceptedCreditNotConfirmed { get; set; }
     public int Unchanged { get; set; }
     public int CollapsedDuplicateRows { get; set; }
 
@@ -298,10 +300,12 @@ public sealed class BankConfirmationService
             if (row.Outcome == BankConfirmationOutcomes.Pending)
             {
                 // Informational: the bank accepted the instruction but has not settled. Recorded as
-                // evidence, changes no status — an "accepted" record is still unconfirmed money.
+                // evidence, changes no status — an "accepted" record is still unconfirmed money. The reason
+                // tells "settlement in process" apart from "the bank accepted the file, credit not confirmed".
                 apply = false;
-                hold = "pending_informational";
+                hold = row.OutcomeReason ?? BankOutcomeReasons.PendingInformational;
                 result.PendingReported++;
+                if (hold == BankOutcomeReasons.AcceptedCreditNotConfirmed) result.AcceptedCreditNotConfirmed++;
             }
             else if (mismatch && !options.AcknowledgeAmountMismatch)
             {
@@ -431,6 +435,7 @@ public sealed class BankConfirmationService
                         paid = result.PaidApplied,
                         returned = result.ReturnedApplied,
                         pending = result.PendingReported,
+                        acceptedCreditNotConfirmed = result.AcceptedCreditNotConfirmed,
                         unmatched = result.Unmatched.Count,
                         conflicting = result.ConflictingRows.Count,
                         amountMismatchesHeld = result.AmountMismatchesHeld.Count,
