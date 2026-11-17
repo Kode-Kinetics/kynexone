@@ -568,6 +568,35 @@ public class OvertimeLateSettlementRunTests
             .Should().Be("CarriedForward", "the impact is paid by its adjustment; no run takes it");
     }
 
+    /// <summary>
+    /// Accepted behaviour (audit P2-5): once the run that carried late overtime is voided, the overtime is paid again only while
+    /// the mode is BackPay. If the company moved to Refuse in between, the replacement run does not pay it; it must then say so,
+    /// naming the employee and the AMOUNT owed, so Finance can settle it through the overtime record.
+    /// </summary>
+    [Fact]
+    public async Task CarrierVoided_ThenRefuse_TheReplacementFlagsTheEmployeeAndTheAmountOwed()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var s = await ArrangeAsync(db, OvertimeLateSettlement.BackPay, impactStatus: "CarriedForward");
+        await AddApprovalTimeCarryAsync(db, s, s.June);
+        await ProcessOkAsync(db, s, s.June);
+        (await new PayrollVoidService(db).VoidAsync(s.June.Id, s.TenantId, null, "test", "wrong run", CancellationToken.None)).IsVoided.Should().BeTrue();
+        db.ChangeTracker.Clear();
+        var setting = await db.SystemSettings.SingleAsync(x => x.TenantId == s.TenantId && x.SettingKey == PolicyRegistry.OvertimeLateApprovalMode);
+        setting.SettingValue = OvertimeLateSettlement.Refuse;
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var replacement = await AddReplacementAsync(db, s, month: 6);
+        await ProcessOkAsync(db, s, replacement);
+
+        (await BackPayLines(db, replacement.Id)).Should().BeEmpty("in Refuse mode no run pays it automatically");
+        var finding = await db.PayrollValidationResults.AsNoTracking().SingleAsync(v => v.PayrollRunId == replacement.Id && v.Code == Code);
+        finding.EmployeeId.Should().Be(s.Emp.Id);
+        finding.Message.Should().Contain("E-LATE-1").And.Contain("150.00", "the amount owed is named, not only the hours");
+    }
+
     [Fact]
     public async Task CarriedAtApproval_ThenVoided_IsFlaggedByRule11b_WhileTheReplacementIsNotYetProcessed_InRefuseMode()
     {

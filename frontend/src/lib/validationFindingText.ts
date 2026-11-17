@@ -18,7 +18,14 @@ const BY_CODE: Record<string, string> = {
 const PERMIT_ACTIVE = 'Records required before payroll are missing. Until they are recorded, exporting the WPS or bank file needs an explicit acknowledgement to include this employee.';
 const PERMIT_LEFT = 'Records required before payroll are missing. The WPS or bank file will refuse this employee until they are recorded.';
 
+const OVERTIME_UNPAID = 'Approved overtime of {amount} from an earlier pay period has not been paid by any run. Settle it through the overtime record, or override this finding with a written reason if it was settled outside payroll.';
+
 export function findingText(t: T, finding: { code: string; message: string }): string {
+  // Late overtime no run pays (rule 11b): the amount owed, in the reader's language. The row already names the employee.
+  if (finding.code === 'OVERTIME_PRIOR_PERIOD_UNPAID') {
+    const amount = /\(([\d.,]+) owed\)/.exec(finding.message)?.[1];
+    if (amount) return t(OVERTIME_UNPAID, { amount });
+  }
   if (finding.code === 'READINESS_PAY_BLOCKED') return t(/explicit acknowledgement/.test(finding.message) ? PERMIT_ACTIVE : PERMIT_LEFT);
   const known = BY_CODE[finding.code];
   if (known) return t(known);

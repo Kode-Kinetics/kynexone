@@ -730,7 +730,8 @@ public static class PayrollValidationEngine
                   "belongs to another company's period (the request is recorded under the company the employee used to work for), so no run of this company pays it: " +
                   "settle it through the overtime record, or override this error with a written basis if it was already settled.";
             Err(PriorPeriodOvertimeUnpaid,
-                $"Employee {otEmp?.EmployeeCode ?? byEmp.Key.ToString()} has {minutes / 60m:0.00##} h of approved overtime from an " +
+                $"Employee {otEmp?.EmployeeCode ?? byEmp.Key.ToString()} has {minutes / 60m:0.00##} h of approved overtime " +
+                $"({byEmp.Sum(x => x.Amount).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)} owed) from an " +
                 $"earlier pay period ({dates}) that no payroll run has paid. This run pays only its own period's overtime and will not pay it." +
                 (otherCompany.Count == byEmp.Count() ? string.Empty : " " + LateApprovalAdvice(ctx)) + otherCompanyNote,
                 byEmp.Key);
