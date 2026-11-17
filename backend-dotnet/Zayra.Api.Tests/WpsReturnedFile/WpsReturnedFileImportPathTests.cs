@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports;
@@ -33,17 +34,20 @@ public class WpsReturnedFileImportPathTests
     private sealed record Seeded(Guid TenantId, Guid BatchId, IReadOnlyList<SynthRow> Rows, IReadOnlyList<PayrollPaymentRecord> Records, Company Company);
 
     /// <summary>A company with a configured establishment, a run, a batch, and one Pending payment record per synthetic row.</summary>
-    private static Seeded Seed(ZayraDbContext db, int count, string establishment = "7-1234567", Guid? tenant = null, string? arabicName = null)
+    private static readonly DateTime BatchCreatedUtc = new(2026, 9, 20, 0, 0, 0, DateTimeKind.Utc);
+
+    private static Seeded Seed(ZayraDbContext db, int count, string establishment = "7-1234567", Guid? tenant = null, string? arabicName = null,
+        Company? existing = null, int offset = 0, DateTime? createdUtc = null)
     {
-        var tenantId = tenant ?? Guid.NewGuid();
-        var company = new Company { TenantId = tenantId, LegalNameEn = "Synthetic Co", CountryCode = "SA", DefaultCurrency = "SAR", WpsEmployerId = establishment };
-        db.Companies.Add(company);
+        var tenantId = tenant ?? existing?.TenantId ?? Guid.NewGuid();
+        var company = existing ?? new Company { TenantId = tenantId, LegalNameEn = "Synthetic Co", CountryCode = "SA", DefaultCurrency = "SAR", WpsEmployerId = establishment };
+        if (existing is null) db.Companies.Add(company);
         var run = new PayrollRun { TenantId = tenantId, CompanyId = company.Id, Year = 2026, Month = 9, Status = "Locked" };
         db.PayrollRuns.Add(run);
-        var batch = new PayrollPaymentBatch { TenantId = tenantId, PayrollRunId = run.Id, Currency = "SAR", BatchNumber = "B-1" };
+        var batch = new PayrollPaymentBatch { TenantId = tenantId, PayrollRunId = run.Id, Currency = "SAR", BatchNumber = "B-1", CreatedAtUtc = createdUtc ?? BatchCreatedUtc };
         db.PayrollPaymentBatches.Add(batch);
 
-        var rows = WpsReturnedFileOracle.Rows(count, arabicName);
+        var rows = WpsReturnedFileOracle.Rows(count + offset, arabicName).Skip(offset).ToList();
         var employees = rows.Select((r, i) => new Employee
         {
             TenantId = tenantId, CompanyId = company.Id, EmployeeCode = $"EMP{i + 1:D4}", FullName = $"Employee {i + 1}",
@@ -72,14 +76,21 @@ public class WpsReturnedFileImportPathTests
 
     // ── Selection: OFF unless chosen ─────────────────────────────────────────
 
-    [Fact]
-    public void The_parser_is_not_registered_unless_the_flag_is_on()
+    private static IReadOnlyList<string> RegisteredKeys(Dictionary<string, string?> config)
     {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var services = new ServiceCollection();
+        BankConfirmationParserRegistration.AddBankConfirmationParsers(services, configuration);
+        return services.BuildServiceProvider().GetServices<IBankConfirmationParser>().Select(p => p.Key).ToList();
+    }
+
+    [Fact]
+    public void The_returned_file_format_is_not_registered_or_listed_unless_the_flag_is_on()
+    {
+        RegisteredKeys(new()).Should().Equal("generic-csv", "wps-ack");
+        RegisteredKeys(new() { [WpsReturnedFileFeature.ConfigKey] = "false" }).Should().Equal("generic-csv", "wps-ack");
+        RegisteredKeys(new() { [WpsReturnedFileFeature.ConfigKey] = "true" }).Should().Equal("generic-csv", "wps-ack", Key);
         WpsReturnedFileFeature.IsEnabled(new ConfigurationBuilder().Build()).Should().BeFalse();
-        WpsReturnedFileFeature.IsEnabled(new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { [WpsReturnedFileFeature.ConfigKey] = "true" }).Build()).Should().BeTrue();
-        WpsReturnedFileFeature.IsEnabled(new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { [WpsReturnedFileFeature.ConfigKey] = "false" }).Build()).Should().BeFalse();
     }
 
     [Fact]
@@ -140,14 +151,14 @@ public class WpsReturnedFileImportPathTests
         var rejected = db.BankPaymentConfirmations.Single(c => c.PaymentRecordId == s.Records[1].Id);
         rejected.Outcome.Should().Be("Returned");
         rejected.ReasonCode.Should().Be("REJECTED");
-        rejected.ReasonText.Should().Contain("not paid");
-        Arabic.IsMatch(rejected.ReasonText!).Should().BeTrue("the reason is stored in both languages");
+        rejected.ReasonText.Should().Contain("bank statement").And.NotContain("not paid");
         rejected.MatchedBy.Should().Be(BankConfirmationMatchModes.EmployeeCode);
         rejected.BankReference.Should().Be("BNKREF");
 
         var missing = JsonSerializer.Serialize(result.ParseErrors, Readable);
-        missing.Should().Contain("missing_from_file");
-        Arabic.IsMatch(missing).Should().BeTrue("the missing-from-file reason is stored in Arabic too");
+        missing.Should().Contain("missing_from_file").And.Contain("\"rejected\"").And.Contain("scope_notice");
+        Arabic.IsMatch(missing).Should().BeTrue("every reason is also given in Arabic, in its own field");
+        missing.Should().Contain("detailAr").And.Contain("does not show whether Mudad accepted");
     }
 
     [Fact]
@@ -203,21 +214,22 @@ public class WpsReturnedFileImportPathTests
     public async Task A_government_id_we_do_not_have_is_reported_and_applied_to_nobody()
     {
         using var db = NewDb();
-        var s = Seed(db, 3);
-        var extra = WpsReturnedFileOracle.Rows(4)[3] with { MolId = "1555555555", Status = "PAID" };
-        var rows = s.Rows.Select(r => r with { Status = "PAID" }).Append(extra).ToList();
+        var s = Seed(db, 4);
+        // two known employees plus one the batch does not have (same net as the fourth, so the total still fits the batch)
+        var stranger = s.Rows[3] with { MolId = "1555555555", Iban = WpsReturnedFileOracle.SaIban(80, 555_555_555_555L), Status = "PAID" };
+        var rows = s.Rows.Take(2).Select(r => r with { Status = "PAID" }).Append(stranger).ToList();
 
         var (result, _) = await Import(db, s, WpsReturnedFileOracle.Build(rows));
         db.SaveChanges();
 
-        result!.PaidApplied.Should().Be(3);
+        result!.PaidApplied.Should().Be(2);
         var errors = JsonSerializer.Serialize(result.ParseErrors);
         errors.Should().Contain("unknown_employee").And.NotContain("1555555555");
-        db.BankPaymentConfirmations.Should().HaveCount(3);
+        db.BankPaymentConfirmations.Should().HaveCount(2);
     }
 
     [Fact]
-    public async Task A_row_naming_a_different_bank_account_than_our_record_is_not_applied()
+    public async Task A_row_naming_a_different_bank_account_than_our_record_refuses_the_whole_file()
     {
         using var db = NewDb();
         var s = Seed(db, 3);
@@ -225,12 +237,48 @@ public class WpsReturnedFileImportPathTests
         rec.Iban = WpsReturnedFileOracle.SaIban(10, 424_242_424_242L);
         db.SaveChanges();
 
-        var (result, _) = await Import(db, s, WpsReturnedFileOracle.Build(s.Rows.Select(r => r with { Status = "PAID" }).ToList()));
+        var (result, refusal) = await Import(db, s, WpsReturnedFileOracle.Build(s.Rows.Select(r => r with { Status = "PAID" }).ToList()));
         db.SaveChanges();
 
-        Reload(db, rec).Status.Should().Be("Pending");
-        result!.PaidApplied.Should().Be(2);
-        JsonSerializer.Serialize(result.ParseErrors).Should().Contain("account_mismatch");
+        result.Should().BeNull("one altered account refuses the file, so the clean lines are not applied either");
+        JsonSerializer.Serialize(refusal!.Payload).Should().Contain("file_refused_account_mismatch");
+        db.PayrollPaymentRecords.Should().OnlyContain(r => r.Status == "Pending");
+        db.BankPaymentConfirmations.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_rejected_line_is_recorded_as_returned_even_when_its_amount_differs()
+    {
+        using var db = NewDb();
+        var s = Seed(db, 2);
+        s.Records[0].Amount += 25m;
+        db.SaveChanges();
+        var rows = s.Rows.Select(r => r with { Status = "PAID" }).ToList();
+        rows[0] = rows[0] with { Status = "REJECTED" };
+
+        var (result, _) = await Import(db, s, WpsReturnedFileOracle.Build(rows));
+        db.SaveChanges();
+
+        result!.ReturnedApplied.Should().Be(1);
+        result.AmountMismatchesHeld.Should().BeEmpty();
+        Reload(db, s.Records[0]).Status.Should().Be("Returned");
+    }
+
+    [Fact]
+    public async Task A_rejected_line_with_no_iban_on_our_record_is_held()
+    {
+        using var db = NewDb();
+        var s = Seed(db, 2);
+        s.Records[0].Iban = "";
+        db.SaveChanges();
+        var rows = s.Rows.Select(r => r with { Status = "PAID" }).ToList();
+        rows[0] = rows[0] with { Status = "REJECTED" };
+
+        var (result, _) = await Import(db, s, WpsReturnedFileOracle.Build(rows));
+        db.SaveChanges();
+
+        Reload(db, s.Records[0]).Status.Should().Be("Pending");
+        JsonSerializer.Serialize(result!.ParseErrors).Should().Contain("account_missing");
     }
 
     [Fact]
@@ -292,6 +340,132 @@ public class WpsReturnedFileImportPathTests
 
         second!.Duplicate.Should().BeTrue();
         db.BankPaymentConfirmations.Should().HaveCount(3);
+    }
+
+    // ── Replay: the file must belong to THIS batch ───────────────────────────
+
+    [Fact]
+    public async Task Last_months_file_against_this_months_batch_applies_nothing()
+    {
+        using var db = NewDb();
+        var s = Seed(db, 3, createdUtc: new DateTime(2026, 10, 5, 0, 0, 0, DateTimeKind.Utc));   // this month's batch
+        var lastMonth = WpsReturnedFileOracle.Build(s.Rows.Select(r => r with { Status = "PAID" }).ToList(),
+            new WpsReturnedFileOracle.Header(ValueDate: "20260930"));                              // dated 30 September
+
+        var (result, refusal) = await Import(db, s, lastMonth);
+        db.SaveChanges();
+
+        result.Should().BeNull();
+        JsonSerializer.Serialize(refusal!.Payload).Should().Contain("file_date_before_batch");
+        db.PayrollPaymentRecords.Should().OnlyContain(r => r.Status == "Pending");
+    }
+
+    [Fact]
+    public async Task A_file_larger_than_the_batch_is_refused()
+    {
+        using var db = NewDb();
+        var s = Seed(db, 3);
+        var stranger = WpsReturnedFileOracle.Rows(4)[3] with { MolId = "1555555555", Iban = WpsReturnedFileOracle.SaIban(80, 555_555_555_555L) };
+        var rows = s.Rows.Append(stranger).Select(r => r with { Status = "PAID" }).ToList();
+
+        var (result, refusal) = await Import(db, s, WpsReturnedFileOracle.Build(rows));
+        db.SaveChanges();
+
+        result.Should().BeNull("a file whose total exceeds the batch's cannot belong to it");
+        JsonSerializer.Serialize(refusal!.Payload).Should().Contain("file_total_exceeds_batch");
+        db.PayrollPaymentRecords.Should().OnlyContain(r => r.Status == "Pending");
+    }
+
+    [Fact]
+    public async Task A_trivially_edited_copy_of_an_imported_file_is_still_the_same_file()
+    {
+        using var db = NewDb();
+        var s = Seed(db, 3);
+        var rows = s.Rows.Select(r => r with { Status = "PAID" }).ToList();
+        await Import(db, s, WpsReturnedFileOracle.Build(rows));
+        db.SaveChanges();
+
+        var edited = WpsReturnedFileOracle.Build(rows, newline: "\r\n", bom: true) + "\r\n\r\n";
+        var (second, _) = await Import(db, s, edited);
+
+        second!.Duplicate.Should().BeTrue("line endings, BOM and blank lines do not make a new file");
+        db.BankPaymentConfirmations.Should().HaveCount(3);
+    }
+
+    [Fact]
+    public async Task A_file_reference_already_imported_for_the_company_is_refused_even_on_another_batch_with_changed_content()
+    {
+        using var db = NewDb();
+        var a = Seed(db, 3);
+        var first = a.Rows.Select(r => r with { Status = "PAID" }).ToList();
+        var (ok, _) = await Import(db, a, WpsReturnedFileOracle.Build(first));
+        ok!.PaidApplied.Should().Be(3);
+        db.SaveChanges();
+
+        // a second batch of the same company, whose file reuses the same FILE-REF
+        var b = Seed(db, 3, existing: a.Company, offset: 10);
+        var replay = WpsReturnedFileOracle.Build(b.Rows.Select(r => r with { Status = "PAID" }).ToList());   // same default FILE-REF
+        var (result, refusal) = await Import(db, b, replay);
+        db.SaveChanges();
+
+        result.Should().BeNull();
+        JsonSerializer.Serialize(refusal!.Payload).Should().Contain("file_ref_already_imported");
+        db.PayrollPaymentRecords.AsNoTracking().Where(r => r.PaymentBatchId == b.BatchId).Should().OnlyContain(r => r.Status == "Pending");
+
+        // a new reference is accepted
+        var fresh = WpsReturnedFileOracle.Build(b.Rows.Select(r => r with { Status = "PAID" }).ToList(), new WpsReturnedFileOracle.Header(FileRef: "WPS2026090002"));
+        var (accepted, _) = await Import(db, b, fresh);
+        accepted!.PaidApplied.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task A_refused_file_does_not_use_up_its_file_reference()
+    {
+        using var db = NewDb();
+        var s = Seed(db, 3);
+        var rows = s.Rows.Select(r => r with { Status = "PAID" }).ToList();
+        var bad = WpsReturnedFileOracle.Build(rows, declaredTotal: rows.Sum(r => r.Net) + 1m);
+        (await Import(db, s, bad)).Result.Should().BeNull();
+        db.SaveChanges();
+
+        var (good, _) = await Import(db, s, WpsReturnedFileOracle.Build(rows));
+        good!.PaidApplied.Should().Be(3);
+    }
+
+    // ── Establishment: the same resolution the outbound file uses ────────────
+
+    [Fact]
+    public async Task A_company_with_no_number_of_its_own_uses_the_workspace_wps_agent_id_like_the_outbound_file()
+    {
+        using var db = NewDb();
+        var s = Seed(db, 2, establishment: "");
+        db.GCCComplianceSettings.Add(new GCCComplianceSetting { TenantId = s.TenantId, CompanyId = null, CountryCode = "SA", IsActive = true, WpsAgentId = "7-1234567" });
+        db.SaveChanges();
+
+        var (result, refusal) = await Import(db, s, WpsReturnedFileOracle.Build(s.Rows.Select(r => r with { Status = "PAID" }).ToList()));
+
+        refusal.Should().BeNull();
+        result!.PaidApplied.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Two_different_recorded_establishments_leave_the_company_without_one_and_the_file_is_refused()
+    {
+        using var db = NewDb();
+        var s = Seed(db, 2, establishment: "");
+        db.SystemSettings.Add(new SystemSetting
+        {
+            TenantId = s.TenantId, Category = SaudiBankExportService.SettingsCategory, SettingKey = SaudiBankExportService.SettingsKey(s.Company.Id),
+            SettingValue = JsonSerializer.Serialize(new { molEstablishmentId = "7-1111111" }),
+        });
+        db.GCCComplianceSettings.Add(new GCCComplianceSetting { TenantId = s.TenantId, CompanyId = null, CountryCode = "SA", IsActive = true, WpsAgentId = "7-2222222" });
+        db.SaveChanges();
+
+        var (result, refusal) = await Import(db, s, WpsReturnedFileOracle.Build(s.Rows.Select(r => r with { Status = "PAID" }).ToList(),
+            new WpsReturnedFileOracle.Header(MolEstablishmentId: "7-1111111")));
+
+        result.Should().BeNull("outbound refuses on the conflict, so the returned file cannot pick one silently");
+        JsonSerializer.Serialize(refusal!.Payload).Should().Contain("establishment_not_configured");
     }
 
     // ── Scope ────────────────────────────────────────────────────────────────
