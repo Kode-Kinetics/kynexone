@@ -198,6 +198,16 @@ public static class FeatureKeys
     /// can. It owns no route: SaudiBankExportActivation reads it. See PlatformDefaultOnFeatures.
     /// </summary>
     public const string SaudiBankExport = "saudi_bank_export";
+    /// <summary>
+    /// Sending this tenant's data to GOSI over an API, once one exists (G2 of the government live gate). OPT-IN, default OFF:
+    /// an absent row means OFF. Only the platform team can switch it on, and only with a consent record in ConfigJson
+    /// (GovernmentOptIn); never in bulk; Tenant Admin never can. Owns no route. See OptInFeatures.
+    /// </summary>
+    public const string GovGosiApi = "gov_gosi_api";
+    /// <summary>Sending this tenant's data to Muqeem over an API, once one exists. Same rules as <see cref="GovGosiApi"/>.</summary>
+    public const string GovMuqeem = "gov_muqeem";
+    /// <summary>Submitting this tenant's approved payroll file to ANB over its API, once built. Same rules as <see cref="GovGosiApi"/>.</summary>
+    public const string BankApiAnb = "bank_api_anb";
 }
 
 // ── Tenant Subscription ───────────────────────────────────────────────────────

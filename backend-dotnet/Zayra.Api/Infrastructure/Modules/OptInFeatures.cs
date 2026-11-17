@@ -87,6 +87,11 @@ public static class OptInFeatures
             // Designation-driven access owns no route: the designation save and every employee path that gives a
             // designation consult DesignationAccessService, which checks the flag (default OFF) before doing anything.
             [FeatureKeys.DesignationAccess] = [],
+            // Government and bank API opt-ins (G2 of GovernmentLivePolicy) own no route: the live gate reads them, with the
+            // consent record the platform endpoint requires before switching one on (GovernmentOptIn).
+            [FeatureKeys.GovGosiApi] = [],
+            [FeatureKeys.GovMuqeem] = [],
+            [FeatureKeys.BankApiAnb] = [],
         };
 
     public static IReadOnlyCollection<string> Keys => RoutePrefixes.Keys.ToArray();

@@ -568,6 +568,15 @@ public static class ModuleCatalog
                 "The Saudi bank-instruction export (ANB Connect) is on for every Saudi company by default. Only the platform team can "
                 + "switch it off for a tenant, and Tenant Admin cannot. It owns no route: the bank-export endpoints read it. "
                 + "See PlatformDefaultOnFeatures.",
+            [FeatureKeys.GovGosiApi] =
+                "Sending this tenant's data to GOSI over an API is an opt-in the platform team switches on per tenant, and only "
+                + "with the customer's recorded consent. It is off unless enabled, and Tenant Admin cannot switch it. It owns no route.",
+            [FeatureKeys.GovMuqeem] =
+                "Sending this tenant's data to Muqeem over an API is an opt-in the platform team switches on per tenant, and only "
+                + "with the customer's recorded consent. It is off unless enabled, and Tenant Admin cannot switch it. It owns no route.",
+            [FeatureKeys.BankApiAnb] =
+                "Submitting this tenant's payroll file to ANB over its API is an opt-in the platform team switches on per tenant, "
+                + "and only with the customer's recorded consent. It is off unless enabled, and Tenant Admin cannot switch it. It owns no route.",
             ["demo_seed_version"] =
                 "Not a feature. The demo seeder stamps its version into this row; it is not a module.",
         };
