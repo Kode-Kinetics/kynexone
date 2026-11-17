@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Configuration;
+using Zayra.Api.Infrastructure.Government;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Qiwa;
@@ -45,8 +46,20 @@ public static class QiwaLiveAdapterPolicy
     public static bool HasPartnerAgreement(IConfiguration? config) =>
         !string.IsNullOrWhiteSpace(config?[PartnerAgreementKey]);
 
+    /// <summary>
+    /// Not asked for: the simulator. Asked for: whatever the government live gate's deployment half says (G1 the recorded
+    /// partner agreement, G4 the operator switch, which for Qiwa is <see cref="LiveSwitchEnvVar"/>).
+    /// </summary>
     public static Mode Decide(bool liveRequested, bool hasPartnerAgreement) =>
-        !liveRequested ? Mode.Sandbox : hasPartnerAgreement ? Mode.Live : Mode.RefusedLive;
+        !liveRequested ? Mode.Sandbox : DeploymentDecision(liveRequested, hasPartnerAgreement).IsOpen ? Mode.Live : Mode.RefusedLive;
+
+    /// <summary>
+    /// The Qiwa process decision expressed through <see cref="GovernmentLivePolicy"/>. Its tenant half (G2, G3) is not part of
+    /// the process decision: the sync worker checks the tenant's qiwa_integration flag and credential per tenant.
+    /// </summary>
+    public static GovernmentLiveDecision DeploymentDecision(bool liveRequested, bool hasPartnerAgreement) =>
+        GovernmentLivePolicy.Decide(GovernmentBodies.Qiwa,
+            new GovernmentLiveGates(PartnerAgreement: hasPartnerAgreement, TenantConsent: true, Credential: true, OperatorEnabled: liveRequested));
 
     public static Mode Decide(IConfiguration? config) => Decide(LiveRequested(config), HasPartnerAgreement(config));
 

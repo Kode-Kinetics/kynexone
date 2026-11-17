@@ -5,6 +5,8 @@ using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Operations;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Government;
+
 namespace Zayra.Api.Infrastructure.Qiwa;
 
 /// <summary>
@@ -157,13 +159,15 @@ public sealed class QiwaSyncWorker : BackgroundService
             var credential = await db.QiwaApiCredentials.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(c => c.TenantId == tenantId, ct);
 
-            // Acquire / reuse token for this tenant.
-            string? token = _tokenCache.TryGet(tenantId);
+            // Acquire / reuse token for this tenant, in its environment, under its current credential (security R8:
+            // the cache used to be keyed by tenant only, so a token survived an environment change or a rotation).
+            var environment = connection?.Environment ?? credential?.Environment ?? "sandbox";
+            var tokenKey = new GovernmentTokenCacheKey(tenantId, GovernmentBodies.Qiwa, environment, CredentialVersion(credential));
+            string? token = _tokenCache.TryGet(tokenKey);
             if (token is null)
             {
                 var clientId     = credential?.ClientId;
                 var clientSecret = SafeUnprotect(protector, credential?.EncryptedClientSecret);
-                var environment  = connection?.Environment ?? credential?.Environment ?? "sandbox";
 
                 // Validate credentials before calling the adapter.
                 // Missing or un-decryptable secrets are a non-retryable configuration
@@ -210,7 +214,7 @@ public sealed class QiwaSyncWorker : BackgroundService
                 // without null-forgiving operators.
                 token = await _adapter.AcquireAccessTokenAsync(clientId, clientSecret, environment, ct);
                 if (token is not null)
-                    _tokenCache.Set(tenantId, token, credential?.TokenExpiresAtUtc is { } e
+                    _tokenCache.Set(tokenKey, token, credential?.TokenExpiresAtUtc is { } e
                         ? (int)Math.Max(60, (e - DateTime.UtcNow).TotalSeconds)
                         : (int?)null);
             }
@@ -218,7 +222,7 @@ public sealed class QiwaSyncWorker : BackgroundService
             foreach (var log in group)
             {
                 if (!await TryClaimAsync(db, log, DateTime.UtcNow, ct)) continue;
-                await ProcessLogAsync(db, connection, token, log, tenantId, ct);
+                await ProcessLogAsync(db, connection, token, environment, log, tenantId, ct);
             }
 
             if (connection is not null)
@@ -230,8 +234,12 @@ public sealed class QiwaSyncWorker : BackgroundService
         }
     }
 
+    /// <summary>Changes whenever the tenant's Qiwa credential is saved again, so a cached token never outlives it.</summary>
+    internal static string CredentialVersion(QiwaApiCredential? credential) =>
+        credential is null ? "none" : $"{credential.Id:N}:{(credential.UpdatedAtUtc ?? credential.CreatedAtUtc).Ticks}";
+
     private async Task ProcessLogAsync(
-        ZayraDbContext db, QiwaTenantConnection? connection, string? token,
+        ZayraDbContext db, QiwaTenantConnection? connection, string? token, string environment,
         QiwaSyncLog log, Guid tenantId, CancellationToken ct)
     {
         // SYSTEM CONTEXT: tenant scope intentionally bypassed; explicit TenantId and IsDeleted
@@ -303,7 +311,7 @@ public sealed class QiwaSyncWorker : BackgroundService
         QiwaApiResult result;
         try
         {
-            result = await _adapter.PushEmployeeAsync(token, payload, log.Id, ct);
+            result = await _adapter.PushEmployeeAsync(token, environment, payload, log.Id, ct);
         }
         catch (Exception ex)
         {

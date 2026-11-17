@@ -310,8 +310,8 @@ public sealed class SessionVerdictHardeningTests
         var timeout = new TaskCanceledException("timed out", new TimeoutException());
         var adapter = Adapter(timeout);
 
-        var push = await adapter.PushEmployeeAsync("t", Payload, Guid.NewGuid(), CancellationToken.None);
-        var status = await adapter.GetEmployeeStatusAsync("t", "7-1", "1", CancellationToken.None);
+        var push = await adapter.PushEmployeeAsync("t", "production", Payload, Guid.NewGuid(), CancellationToken.None);
+        var status = await adapter.GetEmployeeStatusAsync("t", "production", "7-1", "1", CancellationToken.None);
         var token = await adapter.AcquireAccessTokenAsync("id", "secret", "production", CancellationToken.None);
 
         push.Success.Should().BeFalse();
@@ -327,7 +327,7 @@ public sealed class SessionVerdictHardeningTests
         cts.Cancel();
         var adapter = Adapter(new TaskCanceledException("cancelled", null, cts.Token));
 
-        var act = () => adapter.PushEmployeeAsync("t", Payload, Guid.NewGuid(), cts.Token);
+        var act = () => adapter.PushEmployeeAsync("t", "production", Payload, Guid.NewGuid(), cts.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
