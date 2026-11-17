@@ -210,15 +210,17 @@ public class AnbRejectedOutcomeAndReasonTests
     }
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task EndToEnd_AnAnbDuplicate_IsHeldByTheImport_BlocksTheHandoff_AndEachExitWorks(bool originalReceived)
+    [InlineData(true, "DUPL duplicate payment")]
+    [InlineData(false, "DUPL duplicate payment")]
+    [InlineData(true, "عملية دفع مكررة")]       // the word only, in Arabic: no code in the bank's text
+    [InlineData(false, "Duplicate transaction")] // the word only, in English
+    public async Task EndToEnd_AnAnbDuplicate_IsHeldByTheImport_BlocksTheHandoff_AndEachExitWorks(bool originalReceived, string description)
     {
         var batch = BuildBatch(2);
         var mapped = AnbPayrollStatusMapper.Map(
             Snapshot("IN_PROGRESS", new[]
             {
-                Bank(batch.Rows[0], "FAILED", "P1", "T1", "DUPL duplicate payment"),
+                Bank(batch.Rows[0], "FAILED", "P1", "T1", description),
                 Bank(batch.Rows[1], "PAID", "P2", "T2"),
             }, 2),
             Binding(batch));
