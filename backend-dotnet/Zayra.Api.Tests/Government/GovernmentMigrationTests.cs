@@ -48,4 +48,15 @@ public sealed partial class GovernmentMigrationTests
             .Should().BeEquivalentTo(new[] { "government_credentials", "government_exchanges" });
         down.Should().NotContainAny("AddColumn", "AlterColumn", "CreateTable", "migrationBuilder.Sql(");
     }
+
+    [Fact]
+    public void TheCredentialTable_KeepsARevokedRow_OnlyWithItsSecretWiped()
+    {
+        var (_, up, _) = Load();
+        up.Should().Contain("revoked_at_utc").And.Contain("revoked_by");
+        up.Should().Contain("\"ck_government_credentials__revoked\", \"(revoked_at_utc IS NULL) = (revoked_by IS NULL)\"");
+        // An empty ciphertext is allowed only on a revoked row, and a revoked row holds no secret.
+        up.Should().Contain("CASE WHEN revoked_at_utc IS NOT NULL THEN octet_length(ciphertext) = 0 WHEN octet_length(ciphertext) >= 30 "
+            + "THEN get_byte(ciphertext, 0) IN (1, 2) ELSE false END");
+    }
 }

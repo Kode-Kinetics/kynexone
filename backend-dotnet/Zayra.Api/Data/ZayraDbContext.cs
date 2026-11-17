@@ -6076,10 +6076,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                 t.HasCheckConstraint("ck_government_credentials__environment", "environment IN ('sandbox','production')");
                 t.HasCheckConstraint("ck_government_credentials__kind", "kind IN ('oauth_client','api_key','private_key','certificate')");
                 t.HasCheckConstraint("ck_government_credentials__version", "credential_version >= 1 AND dek_version BETWEEN 1 AND 250");
-                // A field-encryption envelope: format byte, DEK version, nonce, tag; never an empty or plaintext value.
-                // PostgreSQL functions, so PostgreSQL only (the SQLite test host builds this model too).
+                // A field-encryption envelope: format byte, DEK version, nonce, tag; never an empty or plaintext value, except on a
+                // revoked row, which holds nothing at all. A CASE, because PostgreSQL does not promise to evaluate AND/OR in order and
+                // get_byte on an empty value raises. PostgreSQL functions, so PostgreSQL only (the SQLite test host builds this model too).
                 if (Database.IsNpgsql())
-                    t.HasCheckConstraint("ck_government_credentials__ciphertext", "octet_length(ciphertext) >= 30 AND get_byte(ciphertext, 0) IN (1, 2)");
+                    t.HasCheckConstraint("ck_government_credentials__ciphertext", "CASE WHEN revoked_at_utc IS NOT NULL THEN octet_length(ciphertext) = 0 WHEN octet_length(ciphertext) >= 30 THEN get_byte(ciphertext, 0) IN (1, 2) ELSE false END");
+                t.HasCheckConstraint("ck_government_credentials__revoked", "(revoked_at_utc IS NULL) = (revoked_by IS NULL)");
                 t.HasCheckConstraint("ck_government_credentials__rotation", "(rotated_at_utc IS NULL) = (credential_version = 1)");
             });
             entity.Property(x => x.CredentialVersion).IsConcurrencyToken();

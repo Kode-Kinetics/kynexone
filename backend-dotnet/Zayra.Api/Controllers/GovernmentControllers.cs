@@ -45,11 +45,11 @@ public sealed record GovernmentCredentialSaveRequest(string? Environment, string
 }
 
 /// <summary>
-/// PUT / GET / DELETE /api/government/credentials/{body}: a customer's credential for a government or bank body. Metadata only
+/// PUT / GET /api/government/credentials/{body} and POST .../{body}/revoke: a customer's credential for a government or bank body. Metadata only
 /// in every response (body, environment, kind, fingerprint, version, expiry, last used, rotation): never the secret.
 /// <list type="bullet">
 /// <item>Permission <see cref="Permission"/>, which no built-in role holds (not even Admin by default).</item>
-/// <item>Save, rotate and remove need a fresh "confirm it's you" step-up (<see cref="StepUpService"/>, header <c>X-Step-Up</c>);
+/// <item>Save, rotate and revoke need a fresh "confirm it's you" step-up (<see cref="StepUpService"/>, header <c>X-Step-Up</c>);
 /// without it the answer is 403 <c>step_up_required</c> and nothing changes.</item>
 /// <item>The store fails closed: with no field-encryption KEK on this server every call answers 503
 /// <c>government_credentials_unavailable</c> and nothing is stored.</item>
@@ -100,16 +100,18 @@ public sealed class GovernmentCredentialsController(GovernmentCredentialStore st
             new GovernmentCredentialBinding(request.ClientIdentifier, request.BaseUrlHost, request.AuthorizationHost))));
     }
 
-    [HttpDelete("{body}")]
+    /// <summary>Revokes the credential: the secret is wiped, the record stays (marked revoked, with who and when) and never opens
+    /// again; saving a new one is a new version. Same permission, step-up and company scope as saving.</summary>
+    [HttpPost("{body}/revoke")]
     [HasPermission(Permission)]
-    public async Task<IActionResult> Delete(string body, [FromQuery] string? environment, [FromQuery] Guid? companyId, CancellationToken ct)
+    public async Task<IActionResult> Revoke(string body, [FromQuery] string? environment, [FromQuery] Guid? companyId, CancellationToken ct)
     {
         if (Scope() is not { } scope) return Unauthorized();
         var env = environment ?? GovernmentEnvironments.Sandbox;
         if (Invalid(body, env) is { } bad) return bad;
         if (await StepUpRefusalAsync(scope, ct) is { } refusal) return refusal;
-        return await Guarded(async () => await store.DeleteAsync(scope.TenantId, companyId, body, env, Context(scope), ct)
-            ? NoContent()
+        return await Guarded(async () => await store.RevokeAsync(scope.TenantId, companyId, body, env, Context(scope), ct) is { } revoked
+            ? Ok(revoked)
             : (IActionResult)NotFound(new { code = "government_credential_not_found" }));
     }
 

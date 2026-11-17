@@ -63,12 +63,43 @@ public sealed class GovernmentApiTests
         ((ObjectResult)result).StatusCode.Should().Be(StatusCodes.Status403Forbidden);
         Json(result).Should().Contain("step_up_required");
         (await db.GovernmentCredentials.CountAsync()).Should().Be(0);
-        var delete = await controller.Delete(GovernmentBodies.Gosi, "sandbox", null, default);
-        ((ObjectResult)delete).StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+        var revoke = await controller.Revoke(GovernmentBodies.Gosi, "sandbox", null, default);
+        ((ObjectResult)revoke).StatusCode.Should().Be(StatusCodes.Status403Forbidden);
     }
 
     [Fact]
-    public async Task Put_Get_Delete_ReturnMetadataOnly_NeverTheSecret()
+    public async Task Revoke_WithoutAStepUp_IsRefused_AndTheCredentialStillOpens()
+    {
+        var kit = new FeKit();
+        await using var db = kit.Db(interceptors: false);
+        var tenant = Guid.NewGuid();
+        var store = new GovernmentCredentialStore(db, kit.Keys, kit.Kek, kit.Options, new AuditService(db));
+        await store.SaveAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, Secret, null,
+            new Zayra.Api.Application.Auth.RequestContext("ip", "ua", Guid.NewGuid(), tenant), default);
+        var controller = WithUser(new GovernmentCredentialsController(store, StepUpTestKit.Real(db)), tenant, Guid.NewGuid());
+
+        var revoke = await controller.Revoke(GovernmentBodies.Gosi, "sandbox", null, default);
+
+        ((ObjectResult)revoke).StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+        Json(revoke).Should().Contain("step_up_required");
+        (await store.OpenAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default))!.Secret.Should().Be(Secret);
+    }
+
+    [Fact]
+    public void TheCredentialsController_HasNoDeleteAction_AndRevokeIsAPostWithThePermission()
+    {
+        typeof(GovernmentCredentialsController).GetMethods()
+            .Where(m => m.GetCustomAttributes(typeof(Microsoft.AspNetCore.Mvc.HttpDeleteAttribute), true).Any())
+            .Should().BeEmpty("a credential is revoked, never hard-deleted");
+        var revoke = typeof(GovernmentCredentialsController).GetMethod(nameof(GovernmentCredentialsController.Revoke))!;
+        revoke.GetCustomAttributes(typeof(Microsoft.AspNetCore.Mvc.HttpPostAttribute), true).Cast<Microsoft.AspNetCore.Mvc.HttpPostAttribute>()
+            .Single().Template.Should().Be("{body}/revoke");
+        revoke.GetCustomAttributes(typeof(Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute), true)
+            .Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Put_Get_Revoke_ReturnMetadataOnly_NeverTheSecret()
     {
         var kit = new FeKit();
         await using var db = kit.Db(interceptors: false);
@@ -89,8 +120,13 @@ public sealed class GovernmentApiTests
             json.Should().Contain("\"Fingerprint\"").And.Contain("\"Version\":1");
         }
         NewProof(controller);
-        (await controller.Delete(GovernmentBodies.BankAnb, "sandbox", null, default)).Should().BeOfType<NoContentResult>();
-        (await controller.Get(GovernmentBodies.BankAnb, "sandbox", null, default)).Should().BeOfType<NotFoundObjectResult>();
+        var revoked = await controller.Revoke(GovernmentBodies.BankAnb, "sandbox", null, default);
+        revoked.Should().BeOfType<OkObjectResult>();
+        Json(revoked).Should().NotContain(Secret).And.Contain("\"RevokedAtUtc\":\"");
+        // The record stays visible, marked revoked.
+        var after = await controller.Get(GovernmentBodies.BankAnb, "sandbox", null, default);
+        after.Should().BeOfType<OkObjectResult>();
+        Json(after).Should().Contain("\"RevokedAtUtc\":\"");
     }
 
     [Fact]
@@ -129,7 +165,7 @@ public sealed class GovernmentApiTests
     [Fact]
     public void TheCredentialEndpoints_RequireTheGovernmentPermission()
     {
-        foreach (var name in new[] { nameof(GovernmentCredentialsController.Get), nameof(GovernmentCredentialsController.Put), nameof(GovernmentCredentialsController.Delete) })
+        foreach (var name in new[] { nameof(GovernmentCredentialsController.Get), nameof(GovernmentCredentialsController.Put), nameof(GovernmentCredentialsController.Revoke) })
         {
             var attribute = typeof(GovernmentCredentialsController).GetMethod(name)!
                 .GetCustomAttributes(typeof(Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute), false).Single();

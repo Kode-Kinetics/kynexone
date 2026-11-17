@@ -39,6 +39,10 @@ public class GovernmentCredential : ITenantOwned, ICompanyScoped
     public Guid? CreatedBy { get; set; }
     public DateTime? RotatedAtUtc { get; set; }
     public Guid? RotatedBy { get; set; }
+    /// <summary>Set when the credential was revoked: its <see cref="Ciphertext"/> is wiped (empty) and it never opens again. The row
+    /// stays, so who revoked it and when stay visible; saving a new secret is a new version and clears this.</summary>
+    public DateTime? RevokedAtUtc { get; set; }
+    public Guid? RevokedBy { get; set; }
 }
 
 public static class GovernmentCredentialKinds

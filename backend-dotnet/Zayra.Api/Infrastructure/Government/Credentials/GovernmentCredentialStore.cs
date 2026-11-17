@@ -25,7 +25,9 @@ public sealed record GovernmentCredentialMetadata(
     Guid? RotatedBy,
     string? ClientIdentifier = null,
     string? BaseUrlHost = null,
-    string? AuthorizationHost = null);
+    string? AuthorizationHost = null,
+    DateTime? RevokedAtUtc = null,
+    Guid? RevokedBy = null);
 
 /// <summary>The non-secret things a credential is bound to: its client id and the hosts it was issued for. All go into the AAD.</summary>
 public sealed record GovernmentCredentialBinding(string? ClientIdentifier = null, string? BaseUrlHost = null, string? TokenUrlHost = null);
@@ -161,6 +163,9 @@ public sealed class GovernmentCredentialStore(
             row.RotatedAtUtc = now;
             row.RotatedBy = context.UserId;
             row.LastUsedAtUtc = null;
+            // A new secret after a revocation is a new version; the revocation stays in the audit trail.
+            row.RevokedAtUtc = null;
+            row.RevokedBy = null;
         }
         row.Kind = kind;
         row.ExpiresAtUtc = expires;
@@ -190,17 +195,29 @@ public sealed class GovernmentCredentialStore(
         return row is null ? null : ToMetadata(row);
     }
 
-    /// <summary>Removes the credential (the ciphertext is destroyed with the row). Allowed without a KEK: removing a secret is always safe.</summary>
-    public async Task<bool> DeleteAsync(Guid tenantId, Guid? companyId, string body, string environment, RequestContext context, CancellationToken ct)
+    /// <summary>
+    /// Revokes the credential: the ciphertext is wiped (the database refuses a revoked row that still holds one), the row stays
+    /// with who revoked it and when, and it never opens again. Saving a new secret afterwards is a new version. Allowed without a
+    /// KEK: removing a secret is always safe. Null when there is no credential here (the caller's company scope applies, as for
+    /// every read). Revoking a revoked credential changes nothing.
+    /// </summary>
+    public async Task<GovernmentCredentialMetadata?> RevokeAsync(Guid tenantId, Guid? companyId, string body, string environment,
+        RequestContext context, CancellationToken ct)
     {
+        if (context.UserId is not Guid revoker) throw new ArgumentException("A revocation names who revoked.", nameof(context));
         var effectiveCompany = companyId ?? db.SingleScopedCompanyId;
         var row = await Find(tenantId, effectiveCompany, body, environment).SingleOrDefaultAsync(ct);
-        if (row is null) return false;
-        db.GovernmentCredentials.Remove(row);
-        audit.Stage("government.credential.removed", nameof(GovernmentCredential), row.Id.ToString(),
+        if (row is null) return null;
+        if (row.RevokedAtUtc is not null) return ToMetadata(row);
+        CryptographicOperations.ZeroMemory(row.Ciphertext);
+        row.Ciphertext = [];
+        row.RevokedAtUtc = DateTime.UtcNow;
+        row.RevokedBy = revoker;
+        row.LastUsedAtUtc = null;
+        audit.Stage("government.credential.revoked", nameof(GovernmentCredential), row.Id.ToString(),
             context with { TenantId = tenantId }, AuditJson(row), row.CompanyId);
         await SaveOrForgetAsync(row, ct);
-        return true;
+        return ToMetadata(row);
     }
 
     /// <summary>
@@ -214,7 +231,7 @@ public sealed class GovernmentCredentialStore(
         var now = DateTime.UtcNow;
         var row = companyId is not null ? await Find(tenantId, companyId, body, environment).AsNoTracking().SingleOrDefaultAsync(ct) : null;
         row ??= await Find(tenantId, null, body, environment).AsNoTracking().SingleOrDefaultAsync(ct);
-        if (row is null || row.TenantId != tenantId || IsExpired(row, now)) return null;
+        if (row is null || row.TenantId != tenantId || row.RevokedAtUtc is not null || IsExpired(row, now)) return null;
 
         string secret;
         try
@@ -345,10 +362,11 @@ public sealed class GovernmentCredentialStore(
         body = row.Body, environment = row.Environment, kind = row.Kind, companyId = row.CompanyId,
         version = row.CredentialVersion, fingerprint = row.Fingerprint, expiresAtUtc = row.ExpiresAtUtc,
         baseUrlHost = row.BaseUrlHost, authorizationHost = row.TokenUrlHost, clientIdentifierSet = row.ClientIdentifier is not null,
+        revokedAtUtc = row.RevokedAtUtc, revokedBy = row.RevokedBy,
     });
 
     private static GovernmentCredentialMetadata ToMetadata(GovernmentCredential row) => new(
         row.Body, row.Environment, row.Kind, row.CompanyId, row.Fingerprint, row.CredentialVersion, row.ExpiresAtUtc,
         row.LastUsedAtUtc, row.CreatedAtUtc, row.CreatedBy, row.RotatedAtUtc, row.RotatedBy,
-        row.ClientIdentifier, row.BaseUrlHost, row.TokenUrlHost);
+        row.ClientIdentifier, row.BaseUrlHost, row.TokenUrlHost, row.RevokedAtUtc, row.RevokedBy);
 }

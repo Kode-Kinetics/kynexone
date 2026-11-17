@@ -87,7 +87,7 @@ public sealed class GovernmentIsolationTests
         (await Controller(w, db, http).Get(GovernmentBodies.Gosi, "sandbox", w.CompanyB, default)).Should().BeOfType<NotFoundObjectResult>();
         var put = await Controller(w, db, http).Put(GovernmentBodies.Gosi, new GovernmentCredentialSaveRequest("sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, w.CompanyB, null), default);
         ((ObjectResult)put).StatusCode.Should().Be(StatusCodes.Status403Forbidden);
-        (await Controller(w, db, http).Delete(GovernmentBodies.Gosi, "sandbox", w.CompanyB, default)).Should().BeOfType<NotFoundObjectResult>();
+        (await Controller(w, db, http).Revoke(GovernmentBodies.Gosi, "sandbox", w.CompanyB, default)).Should().BeOfType<NotFoundObjectResult>();
 
         // Its own company works, and company B's credential is untouched.
         (await Controller(w, db, http).Put(GovernmentBodies.Gosi, new GovernmentCredentialSaveRequest("sandbox", GovernmentCredentialKinds.OAuthClient, SecretA, w.CompanyA, null), default))
@@ -107,12 +107,17 @@ public sealed class GovernmentIsolationTests
         await using var _ = db;
 
         (await Controller(w, db, http).Get(GovernmentBodies.Gosi, "sandbox", null, default)).Should().BeOfType<NotFoundObjectResult>();
-        (await Controller(w, db, http).Delete(GovernmentBodies.Gosi, "sandbox", null, default)).Should().BeOfType<NotFoundObjectResult>();
+        (await Controller(w, db, http).Revoke(GovernmentBodies.Gosi, "sandbox", null, default)).Should().BeOfType<NotFoundObjectResult>();
         var store = new GovernmentCredentialStore(db, w.Kit.Keys, w.Kit.Kek, w.Kit.Options, new AuditService(db));
         (await store.OpenAsync(w.OtherTenantId, null, GovernmentBodies.Gosi, "sandbox", default)).Should().BeNull();
         // Even asking for the first tenant's id from the second tenant's context finds nothing: the filter pins the tenant.
         (await store.OpenAsync(w.TenantId, null, GovernmentBodies.Gosi, "sandbox", default)).Should().BeNull();
         (await db.GovernmentCredentials.CountAsync()).Should().Be(0);
+        // And the other tenant's revoke changed nothing: the credential is not revoked and still opens for its own tenant.
+        await using var verify = w.Kit.Db(interceptors: false);
+        var own = new GovernmentCredentialStore(verify, w.Kit.Keys, w.Kit.Kek, w.Kit.Options, new AuditService(verify));
+        (await own.GetMetadataAsync(w.TenantId, null, GovernmentBodies.Gosi, "sandbox", default))!.RevokedAtUtc.Should().BeNull();
+        (await own.OpenAsync(w.TenantId, null, GovernmentBodies.Gosi, "sandbox", default))!.Secret.Should().Be(SecretA);
     }
 
     [Fact]

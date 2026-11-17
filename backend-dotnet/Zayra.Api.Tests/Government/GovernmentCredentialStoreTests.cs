@@ -193,18 +193,91 @@ public sealed class GovernmentCredentialStoreTests
     }
 
     [Fact]
-    public async Task Delete_RemovesTheRow_AndAudits()
+    public async Task Revoke_WipesTheSecret_KeepsTheRowMarkedRevoked_WithWhoAndWhen_AndAudits()
     {
         var kit = new FeKit();
         var (store, db) = Create(kit);
         var tenant = Guid.NewGuid();
+        var revoker = Guid.NewGuid();
         await store.SaveAsync(tenant, null, GovernmentBodies.Gosi, "production", GovernmentCredentialKinds.PrivateKey, SecretA, null, Ctx(tenant), default, new GovernmentCredentialBinding(BaseUrlHost: "api.gosi.example.test"));
 
-        (await store.DeleteAsync(tenant, null, GovernmentBodies.Gosi, "production", Ctx(tenant), default)).Should().BeTrue();
+        var revoked = await store.RevokeAsync(tenant, null, GovernmentBodies.Gosi, "production", Ctx(tenant, revoker), default);
 
-        (await db.GovernmentCredentials.CountAsync()).Should().Be(0);
-        (await db.AuditLogs.Select(a => a.Action).ToListAsync()).Should().Contain("government.credential.removed");
-        (await store.DeleteAsync(tenant, null, GovernmentBodies.Gosi, "production", Ctx(tenant), default)).Should().BeFalse();
+        revoked.Should().NotBeNull();
+        revoked!.RevokedBy.Should().Be(revoker);
+        revoked.RevokedAtUtc.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromMinutes(1));
+        var row = await db.GovernmentCredentials.AsNoTracking().SingleAsync();
+        row.Ciphertext.Should().BeEmpty("the secret is wiped, not kept behind a flag");
+        row.RevokedAtUtc.Should().NotBeNull();
+        row.RevokedBy.Should().Be(revoker);
+        (await db.AuditLogs.Select(a => a.Action).ToListAsync()).Should().Contain("government.credential.revoked");
+
+        // The metadata stays visible, marked revoked; nothing opens it, and the live gate's credential check (G3) is closed.
+        (await store.GetMetadataAsync(tenant, null, GovernmentBodies.Gosi, "production", default))!.RevokedAtUtc.Should().NotBeNull();
+        (await store.OpenAsync(tenant, null, GovernmentBodies.Gosi, "production", default)).Should().BeNull();
+        (await store.IsUsableAsync(tenant, null, GovernmentBodies.Gosi, "production", default)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ARevokedCredential_NeverOpensAgain_EvenWithItsOldCiphertextPutBack()
+    {
+        var kit = new FeKit();
+        var (store, db) = Create(kit);
+        var tenant = Guid.NewGuid();
+        await store.SaveAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, SecretA, null, Ctx(tenant), default);
+        var oldCiphertext = (await db.GovernmentCredentials.AsNoTracking().SingleAsync()).Ciphertext;
+
+        await store.RevokeAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", Ctx(tenant), default);
+        var row = await db.GovernmentCredentials.SingleAsync();
+        row.Ciphertext = oldCiphertext; // a restored backup or a stray write
+        await db.SaveChangesAsync();
+
+        (await store.OpenAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default)).Should().BeNull("a revoked row never opens");
+    }
+
+    [Fact]
+    public async Task ARevokedCompanyCredential_NeverFallsBackToTheTenantWideOne()
+    {
+        var kit = new FeKit();
+        var (store, db) = Create(kit);
+        var tenant = Guid.NewGuid();
+        var company = await CompanyAsync(db, tenant);
+        await store.SaveAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, SecretA, null, Ctx(tenant), default);
+        await store.SaveAsync(tenant, company, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, SecretB, null, Ctx(tenant), default);
+
+        await store.RevokeAsync(tenant, company, GovernmentBodies.Gosi, "sandbox", Ctx(tenant), default);
+
+        (await store.OpenAsync(tenant, company, GovernmentBodies.Gosi, "sandbox", default)).Should().BeNull();
+        (await store.OpenAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default))!.Secret.Should().Be(SecretA, "the tenant-wide one is untouched");
+    }
+
+    [Fact]
+    public async Task SavingAfterARevoke_IsANewVersion_ThatOpens()
+    {
+        var kit = new FeKit();
+        var (store, _) = Create(kit);
+        var tenant = Guid.NewGuid();
+        await store.SaveAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, SecretA, null, Ctx(tenant), default);
+        await store.RevokeAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", Ctx(tenant), default);
+
+        var saved = await store.SaveAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, SecretB, null, Ctx(tenant), default);
+
+        saved.Version.Should().Be(2);
+        saved.RevokedAtUtc.Should().BeNull();
+        var opened = await store.OpenAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", default);
+        opened!.Secret.Should().Be(SecretB);
+        opened.Version.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Revoke_OfNothing_IsNull_AndWritesNothing()
+    {
+        var kit = new FeKit();
+        var (store, db) = Create(kit);
+        var tenant = Guid.NewGuid();
+
+        (await store.RevokeAsync(tenant, null, GovernmentBodies.Gosi, "sandbox", Ctx(tenant), default)).Should().BeNull();
+        (await db.AuditLogs.CountAsync()).Should().Be(0);
     }
 
     [Fact]

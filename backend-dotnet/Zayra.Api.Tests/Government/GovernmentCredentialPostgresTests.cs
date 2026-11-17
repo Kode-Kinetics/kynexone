@@ -117,6 +117,65 @@ public sealed class GovernmentCredentialPostgresTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task Revoke_OnARealDatabase_WipesTheSecret_KeepsTheRow_AndTheNextSaveIsVersionTwo()
+    {
+        var (tenantId, a, _) = await SeedAsync();
+        var kit = new FeKit();
+        var revoker = Guid.NewGuid();
+        await using (var db = fixture.CreateDbWithAccessor(CompanyUser(tenantId, a)))
+        {
+            var store = Store(kit, db);
+            await store.SaveAsync(tenantId, a, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, SecretA, null,
+                new RequestContext("127.0.0.1", "test", Guid.NewGuid(), tenantId), CancellationToken.None);
+            Assert.NotNull(await store.RevokeAsync(tenantId, a, GovernmentBodies.Gosi, "sandbox",
+                new RequestContext("127.0.0.1", "test", revoker, tenantId), CancellationToken.None));
+        }
+
+        await using (var verify = fixture.CreateDb())
+        {
+            var row = await verify.GovernmentCredentials.IgnoreQueryFilters().SingleAsync(x => x.TenantId == tenantId);
+            Assert.Empty(row.Ciphertext);
+            Assert.Equal(revoker, row.RevokedBy);
+            Assert.NotNull(row.RevokedAtUtc);
+            Assert.Null(await Store(kit, verify).OpenAsync(tenantId, a, GovernmentBodies.Gosi, "sandbox", CancellationToken.None));
+            Assert.Equal(1, await verify.AuditLogs.IgnoreQueryFilters().CountAsync(x => x.TenantId == tenantId && x.Action == "government.credential.revoked"));
+        }
+
+        await using (var db = fixture.CreateDbWithAccessor(CompanyUser(tenantId, a)))
+        {
+            var saved = await Store(kit, db).SaveAsync(tenantId, a, GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, SecretB, null,
+                new RequestContext("127.0.0.1", "test", Guid.NewGuid(), tenantId), CancellationToken.None);
+            Assert.Equal(2, saved.Version);
+            Assert.Null(saved.RevokedAtUtc);
+            Assert.Equal(SecretB, (await Store(kit, db).OpenAsync(tenantId, a, GovernmentBodies.Gosi, "sandbox", CancellationToken.None))!.Secret);
+        }
+    }
+
+    [Fact]
+    public async Task TheDatabase_RefusesARevokedRowThatStillHoldsASecret_AndAnEmptySecretThatIsNotRevoked()
+    {
+        var (tenantId, _, _) = await SeedAsync();
+        GovernmentCredential Row(byte[] ciphertext, DateTime? revokedAt) => new()
+        {
+            TenantId = tenantId, Body = GovernmentBodies.Gosi, Environment = "sandbox", Kind = GovernmentCredentialKinds.ApiKey,
+            Ciphertext = ciphertext, DekVersion = 1, Fingerprint = "0011223344556677", RevokedAtUtc = revokedAt,
+            RevokedBy = revokedAt is null ? null : Guid.NewGuid(),
+        };
+        var envelope = new byte[40];
+        envelope[0] = 2;
+
+        foreach (var bad in new[] { Row(envelope, DateTime.UtcNow), Row([], null) })
+        {
+            await using var db = fixture.CreateDb();
+            db.GovernmentCredentials.Add(bad);
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        }
+        await using var ok = fixture.CreateDb();
+        ok.GovernmentCredentials.Add(Row([], DateTime.UtcNow));
+        await ok.SaveChangesAsync();
+    }
+
+    [Fact]
     public async Task TwoRotationsRacing_OneWins_TheOtherIsA409()
     {
         var (tenantId, _, _) = await SeedAsync();

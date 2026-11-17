@@ -17115,6 +17115,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_used_at_utc");
 
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at_utc");
+
+                    b.Property<Guid?>("RevokedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("revoked_by");
+
                     b.Property<DateTime?>("RotatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("rotated_at_utc");
@@ -17152,11 +17160,13 @@ namespace Zayra.Api.Migrations
                         {
                             t.HasCheckConstraint("ck_government_credentials__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb')");
 
-                            t.HasCheckConstraint("ck_government_credentials__ciphertext", "octet_length(ciphertext) >= 30 AND get_byte(ciphertext, 0) IN (1, 2)");
+                            t.HasCheckConstraint("ck_government_credentials__ciphertext", "CASE WHEN revoked_at_utc IS NOT NULL THEN octet_length(ciphertext) = 0 WHEN octet_length(ciphertext) >= 30 THEN get_byte(ciphertext, 0) IN (1, 2) ELSE false END");
 
                             t.HasCheckConstraint("ck_government_credentials__environment", "environment IN ('sandbox','production')");
 
                             t.HasCheckConstraint("ck_government_credentials__kind", "kind IN ('oauth_client','api_key','private_key','certificate')");
+
+                            t.HasCheckConstraint("ck_government_credentials__revoked", "(revoked_at_utc IS NULL) = (revoked_by IS NULL)");
 
                             t.HasCheckConstraint("ck_government_credentials__rotation", "(rotated_at_utc IS NULL) = (credential_version = 1)");
 

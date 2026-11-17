@@ -33,15 +33,18 @@ namespace Zayra.Api.Migrations
                     created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
                     created_by = table.Column<Guid>(type: "uuid", nullable: true),
                     rotated_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
-                    rotated_by = table.Column<Guid>(type: "uuid", nullable: true)
+                    rotated_by = table.Column<Guid>(type: "uuid", nullable: true),
+                    revoked_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
+                    revoked_by = table.Column<Guid>(type: "uuid", nullable: true)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_government_credentials", x => x.id);
                     table.CheckConstraint("ck_government_credentials__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb')");
-                    table.CheckConstraint("ck_government_credentials__ciphertext", "octet_length(ciphertext) >= 30 AND get_byte(ciphertext, 0) IN (1, 2)");
+                    table.CheckConstraint("ck_government_credentials__ciphertext", "CASE WHEN revoked_at_utc IS NOT NULL THEN octet_length(ciphertext) = 0 WHEN octet_length(ciphertext) >= 30 THEN get_byte(ciphertext, 0) IN (1, 2) ELSE false END");
                     table.CheckConstraint("ck_government_credentials__environment", "environment IN ('sandbox','production')");
                     table.CheckConstraint("ck_government_credentials__kind", "kind IN ('oauth_client','api_key','private_key','certificate')");
+                    table.CheckConstraint("ck_government_credentials__revoked", "(revoked_at_utc IS NULL) = (revoked_by IS NULL)");
                     table.CheckConstraint("ck_government_credentials__rotation", "(rotated_at_utc IS NULL) = (credential_version = 1)");
                     table.CheckConstraint("ck_government_credentials__version", "credential_version >= 1 AND dek_version BETWEEN 1 AND 250");
                     table.ForeignKey(
