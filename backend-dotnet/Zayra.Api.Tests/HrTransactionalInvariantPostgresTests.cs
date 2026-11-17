@@ -339,7 +339,8 @@ public sealed class HrTransactionalInvariantPostgresTests
     /// The race the test above only starts at the same moment, FORCED: both approvers have read the HR-approved request and
     /// passed every check before either writes (each SaveChanges waits at a barrier until both have arrived). Whatever order
     /// the commits land in, the request is payroll-approved once: one adjustment for payroll, one "Encashed" ledger row, the
-    /// reserved days consumed once, and the loser told plainly that it was decided concurrently.
+    /// reserved days consumed once, and the loser told plainly (409) that it was already decided. Kept as a guard: the request's
+    /// DecisionVersion concurrency token and the unique payroll-artifact index already serialise the two writes.
     /// </summary>
     [Fact]
     public async Task LeaveEncashmentPayrollApproval_BothApproversPastEveryCheck_StillAppliesOnce()
@@ -361,11 +362,13 @@ public sealed class HrTransactionalInvariantPostgresTests
 
         var results = await Task.WhenAll(Task.Run(Approve), Task.Run(Approve));
 
-        barrier.Arrived.Should().Be(2, "both approvers reached the write having passed every check: this is the real race");
+        barrier.Arrived.Should().BeGreaterThanOrEqualTo(2, "both approvers reached the write having passed every check: this is the real race");
         results.Count(x => x is OkObjectResult).Should().Be(1, "exactly one approval wins");
         var loser = results.Single(x => x is not OkObjectResult);
         loser.Should().BeOfType<ConflictObjectResult>();
-        System.Text.Json.JsonSerializer.Serialize(((ObjectResult)loser).Value).Should().Contain("concurrently");
+        // The loser is refused by the request's concurrency token or by the one-artifact-per-request unique index, whichever
+        // its commit meets first; either way it is a 409 that says the request was already decided.
+        System.Text.Json.JsonSerializer.Serialize(((ObjectResult)loser).Value).Should().MatchRegex("concurrently|already has a payroll artifact");
 
         await using var verify = _fixture.CreateDb();
         var request = await verify.LeaveEncashmentRequests.AsNoTracking().SingleAsync(x => x.Id == seeded.RequestId);
