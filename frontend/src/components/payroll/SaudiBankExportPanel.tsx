@@ -129,7 +129,7 @@ export const EN: Copy = {
   acceptance: 'Status',
   disclaimerTitle: 'This does not pay anyone',
   disclaimer: 'Generating these files moves no money and submits nothing to ANB. Pass the files to your approved ANB Connect integration/operator for submission and authorisation under your bank agreement. Bank acceptance of this file layout has not been verified — this is not a certified format, and it is not the ANB corporate-portal (WPY) upload or a format for other Saudi banks.',
-  zipNote: 'The download is a zip for transport only. ANB Connect takes header.csv and body.csv as two separate files — extract them before uploading.',
+  zipNote: 'The download is a zip for transport only. ANB Connect takes its two files separately — extract them before uploading.',
   legacyNote: 'This is your Saudi bank payroll file. The "Payroll register (internal — not a bank/WPS file)" in the batch list is for review only — never send it to a bank or Mudad.',
   autoWpsUpload: 'Ask ANB to upload the WPS file to Mudad for us (auto-WPS)',
   autoWpsHelp: 'When on, ANB builds and signs the WPS file from this instruction and uploads it to Mudad. It needs the national unified number: its field appears below once this is ticked. Check with ANB that auto-WPS is enabled on your account.',
@@ -247,7 +247,7 @@ export const AR: Copy = {
   acceptance: 'الحالة',
   disclaimerTitle: 'هذا لا يدفع لأحد',
   disclaimer: 'إنشاء هذه الملفات لا يحوّل أي أموال ولا يرسل شيئًا إلى البنك العربي الوطني. سلّم الملفات إلى مشغّل أو تكامل ANB Connect المعتمد لديك للإرسال والتفويض وفق اتفاقيتك مع البنك. لم يتم التحقق من قبول البنك لهذا التنسيق — ليست صيغة معتمدة، وليست صيغة رفع بوابة الشركات (WPY) ولا صيغة لبنوك سعودية أخرى.',
-  zipNote: 'الملف المضغوط للنقل فقط. يستقبل ANB Connect الملفين header.csv و body.csv بشكل منفصل — استخرجهما قبل الرفع.',
+  zipNote: 'الملف المضغوط للنقل فقط. يستقبل ANB Connect ملفيه بشكل منفصل — استخرجهما قبل الرفع.',
   legacyNote: 'هذا هو ملف الرواتب البنكي السعودي. أما "سجل الرواتب (داخلي — ليس ملفًا بنكيًا أو ملف حماية أجور)" في قائمة الدفعات فهو للمراجعة فقط — لا ترسله إلى البنك أو منصة مدد.',
   autoWpsUpload: 'اطلب من البنك العربي الوطني رفع ملف حماية الأجور إلى مدد نيابةً عنا',
   autoWpsHelp: 'عند التفعيل يُعدّ البنك ملف حماية الأجور الموقّع من هذه التعليمات ويرفعه إلى مدد. يتطلب الرقم الوطني الموحد: يظهر حقله أدناه بعد التفعيل. تأكد من تفعيل الخدمة على حسابك لدى البنك.',
@@ -1155,7 +1155,11 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   const sendAside = (
     <div className="space-y-3">
       <p className="text-body font-medium text-fg">{bankName ? t('Send this file only to {bank}. It is not the Mudad file.', { bank: bankName }) : t('Send this file only to your bank. It is not the Mudad file.')}</p>
-      <p className="text-meta">{c.zipNote}</p>
+      <p className="text-meta" data-testid="bank-zip-note">{c.zipNote}</p>
+      {/* The English file names on a line of their own, left to right, never inside an Arabic sentence. */}
+      {artifact && artifact.files.length > 0 && (
+        <p dir="ltr" className="font-mono text-meta text-fg rtl:text-end" data-testid="bank-file-names">{artifact.files.map((f) => f.name).join(' · ')}</p>
+      )}
       <p className="text-meta" data-testid="bank-pays-nobody">{t('Creating the file moves no money. Your bank pays once you hand it the file.')}</p>
     </div>
   );

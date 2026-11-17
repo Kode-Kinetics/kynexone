@@ -306,6 +306,20 @@ test.describe('the reviews\' rules', () => {
     await expect(page.locator('#pipeline-run-picker option:checked')).toHaveText(/— Needs a fix$/);
   });
 
+  test('Arabic: step 5 is تأكيد البنك everywhere, and the English file names stand on their own LTR line', async ({ page }) => {
+    const downloaded = { ...GENERATED, wpsStatus: 'Downloaded', effectiveWpsStatus: 'Downloaded', wpsStatusLabel: 'Downloaded', allowedNextStatuses: ['Submitted'] };
+    await boot(page, { locale: 'ar', url, routes: bankHandler({ batches: [downloaded], existingExport: FILE }), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'send', { timeout: 90_000 });
+    await expect(page.locator('[data-step-strip="bank-file"] [data-step="response"]')).toContainText('تأكيد البنك');
+    await expect(page.getByTestId('bank-guide-next').locator('strong')).toHaveText('تأكيد البنك');
+    const names = page.getByTestId('bank-file-names');
+    await expect(names).toHaveAttribute('dir', 'ltr');
+    await expect(names).toContainText('header.csv');
+    await expect(names).toContainText('body.csv');
+    // The Arabic sentence about the zip carries no English file name inside it.
+    await expect(page.getByTestId('bank-zip-note')).not.toContainText('.csv');
+  });
+
   test('a tying file: the difference is neutral before the check and passed (green) after it', async ({ page }) => {
     await boot(page, { locale: 'en', url, routes: bankHandler(), waitMs: 2500, stages: 'default' });
     const diff = page.getByTestId('bank-file-facts').locator('[data-matches]').first();
@@ -317,7 +331,8 @@ test.describe('the reviews\' rules', () => {
   });
 
   test('step 5: each bucket carries its money, they add up to the file, and the duplicate warning stands above the step', async ({ page }) => {
-    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [SUBMITTED], existingExport: FILE, records: withStatus(6, 1) }), waitMs: 2500, stages: 'default' });
+    const recs = withStatus(6, 1).map(r => (r.status === 'Returned' ? { ...r, isReturned: true, returnReasonCode: 'AC04', returnReasonText: 'Account closed' } : r));
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [SUBMITTED], existingExport: FILE, records: recs }), waitMs: 2500, stages: 'default' });
     const buckets = page.getByTestId('bank-response-buckets');
     await expect(buckets).toBeVisible({ timeout: 90_000 });
     await expect(buckets).toContainText('6 confirmed paid');
@@ -325,7 +340,18 @@ test.describe('the reviews\' rules', () => {
     await expect(buckets).toContainText('2 waiting');
     await expect(page.getByTestId('bank-response-tie')).toContainText('Confirmed + Returned + Waiting = SAR 129,438.90 (file)');
     await expect(page.getByTestId('bank-response-mismatch')).toHaveCount(0);
-    await expect(page.getByTestId('bank-returned-lines')).toContainText('Omar Aldosari');
+    // Returned lines: name, amount and the bank's reason, with the way to pay again and the rule never to re-upload.
+    const returned = page.getByTestId('bank-returned-lines');
+    await expect(returned).toContainText('Omar Aldosari');
+    await expect(returned).toContainText('14,100.00');
+    await expect(returned).toContainText('Account closed');
+    await expect(returned).toContainText('Paying again creates a new payment batch with a new file reference. Never upload this file again.');
+    await expect(returned.getByRole('button', { name: 'Open Payment Tracking' })).toBeVisible();
+    const step = page.getByTestId('bank-step-body-response');
+    await expect(step).toContainText('Settle only payments the bank confirmed.');
+    await expect(step).toContainText('The bank reports salaries to WPS (Mudad). KynexOne does not send anything to Mudad.');
+    // Recorded as submitted is not a confirmation: step 4's done mark is not green.
+    await expect(page.locator('[data-step-strip="bank-file"] [data-step="send"] [data-testid="bank-step-reason-send"]')).not.toHaveClass(/text-success-fg/);
     const banner = page.getByTestId('bank-submitted-banner');
     await expect(banner).toContainText('ANB-55821-0924');
     await expect(banner).toContainText('Uploading this file again can pay employees twice.');

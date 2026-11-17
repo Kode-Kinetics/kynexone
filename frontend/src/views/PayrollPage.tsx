@@ -3408,8 +3408,11 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
             <p className="text-body font-semibold text-fg">{t('Returned or rejected ({count})', { count: answeredBad.length })}</p>
             <ul className="mt-2 divide-y divide-line text-body-sm">
               {answeredBad.map(r => (
-                <li key={r.id} className="flex items-center justify-between gap-3 py-1.5">
-                  <span className="min-w-0 text-fg">{r.employeeName ? <bdi>{r.employeeName}</bdi> : runNames[r.employeeId] ? <EmployeeLabelText label={runNames[r.employeeId]} /> : t('Emp #{id}', { id: r.employeeId })}</span>
+                <li key={r.id} className="flex items-start justify-between gap-3 py-1.5">
+                  <span className="min-w-0 text-fg">
+                    {r.employeeName ? <bdi>{r.employeeName}</bdi> : runNames[r.employeeId] ? <EmployeeLabelText label={runNames[r.employeeId]} /> : t('Emp #{id}', { id: r.employeeId })}
+                    {(r.returnReasonText || r.returnReasonCode) && <span className="block text-meta text-fg-muted">{t('Reason')}: <bdi>{r.returnReasonText || r.returnReasonCode}</bdi></span>}
+                  </span>
                   <span className="shrink-0 tabular-nums text-fg"><bdi dir="ltr">{fmtAmt(r.amount, cur)}</bdi></span>
                 </li>
               ))}

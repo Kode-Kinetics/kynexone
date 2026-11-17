@@ -125,7 +125,7 @@ const ar: Record<string, string> = {
   'Next: File details — choose the salary credit date and create the file.': 'التالي: تفاصيل الملف — اختر تاريخ إيداع الرواتب وأنشئ الملف.',
   'Next: Send to bank — download the file and hand it to your bank.': 'التالي: الإرسال إلى البنك — نزّل الملف وسلّمه إلى بنكك.',
   'Next: Record it as submitted once the bank has it.': 'التالي: سجّله كمُرسل بعد أن يتسلّمه البنك.',
-  'Next: Bank response — the bank confirms each payment.': 'التالي: رد البنك — يؤكد البنك كل دفعة.',
+  'Next: Bank response — the bank confirms each payment.': 'التالي: تأكيد البنك — يؤكد البنك كل دفعة.',
   'Next: Finance settles the payments after the bank confirms.': 'التالي: تسوّي المالية المدفوعات بعد تأكيد البنك.',
   'Next: fix each problem, then check again.': 'التالي: عالج كل مشكلة ثم افحص مجددًا.',
   'Next: Check employees again on the corrected batch.': 'التالي: فحص الموظفين مجددًا على الدفعة المصحّحة.',
