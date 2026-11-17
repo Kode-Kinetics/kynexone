@@ -41,14 +41,18 @@ public class BankConfirmationOutcomeVocabularyTests
     private const string Paid = BankConfirmationOutcomes.Paid;
     private const string Returned = BankConfirmationOutcomes.Returned;
     private const string Pending = BankConfirmationOutcomes.Pending;
+    private const string Rejected = "Rejected";
     private const string InProcess = "pending_informational";
     private const string AcceptedOnly = "accepted_credit_not_confirmed";
+    private const string SettledByBank = "settled_by_bank";
+    private const string AcceptedWithChange = "accepted_with_change_held";
 
     /// <summary>Every word the vocabulary has ever known, plus the round-1 removals, with its outcome now.</summary>
     public static readonly TheoryData<string, string?, string?> EveryToken = new()
     {
-        // Unambiguous credit: Paid.
-        { "PAID", Paid, null }, { "ACSC", Paid, null }, { "ACCC", Paid, null },
+        // Unambiguous credit: Paid. The ISO settlement codes say the BANK settled it (8.4.4), never that the
+        // employee received it, and carry that as their reason.
+        { "PAID", Paid, null }, { "ACSC", Paid, SettledByBank }, { "ACCC", Paid, SettledByBank },
         { "SETTLED", Paid, null }, { "CREDITED", Paid, null },
 
         // The bank accepted the file; no proof an account was credited.
@@ -59,17 +63,23 @@ public class BankConfirmationOutcomeVocabularyTests
         // Still in process.
         { "PDNG", Pending, InProcess }, { "PENDING", Pending, InProcess }, { "ACCP", Pending, InProcess },
         { "ACSP", Pending, InProcess }, { "ACWP", Pending, InProcess }, { "ACTC", Pending, InProcess },
-        { "ACWC", Pending, InProcess }, { "RCVD", Pending, InProcess }, { "RECEIVED", Pending, InProcess },
+        { "RCVD", Pending, InProcess }, { "RECEIVED", Pending, InProcess },
         { "INPROGRESS", Pending, InProcess }, { "IN_PROGRESS", Pending, InProcess },
         { "PROCESSING", Pending, InProcess }, { "SUBMITTED", Pending, InProcess },
         { "QUEUED", Pending, InProcess }, { "AWAITING", Pending, InProcess },
 
-        // Unambiguous failure: Returned.
-        { "RJCT", Returned, null }, { "REJECT", Returned, null }, { "REJECTED", Returned, null },
+        // ISO ACWC, "accepted with change": the bank changed something in the instruction. Not recognised as any
+        // outcome, so it confirms nothing; the reason says a person must check what changed (8.4.4).
+        { "ACWC", null, AcceptedWithChange },
+
+        // The bank refused the instruction: NOT PAID, the money never left (8.4.2). Never "Returned".
+        { "RJCT", Rejected, null }, { "REJECT", Rejected, null }, { "REJECTED", Rejected, null },
+        { "DECLINED", Rejected, null }, { "FAIL", Rejected, null }, { "FAILED", Rejected, null },
+        { "FAILURE", Rejected, null }, { "CANCELLED_BY_BANK", Rejected, null },
+
+        // The money came back: Returned.
         { "RETURN", Returned, null }, { "RETURNED", Returned, null }, { "RTRN", Returned, null },
-        { "BOUNCE", Returned, null }, { "BOUNCED", Returned, null }, { "FAIL", Returned, null },
-        { "FAILED", Returned, null }, { "FAILURE", Returned, null }, { "DECLINED", Returned, null },
-        { "CANCELLED_BY_BANK", Returned, null },
+        { "BOUNCE", Returned, null }, { "BOUNCED", Returned, null },
 
         // Ambiguous: not recognised, held for a person.
         { "SETTLE", null, null }, { "CREDIT", null, null }, { "COMPLETE", null, null }, { "YES", null, null },
@@ -117,8 +127,8 @@ public class BankConfirmationOutcomeVocabularyTests
     public void NoPaidOrReturnedToken_IsTwoCharactersOrFewer()
     {
         var sets = BankOutcomeVocabulary.TokenSets;
-        sets.Should().ContainKeys(Paid, Returned);
-        foreach (var key in new[] { Paid, Returned })
+        sets.Should().ContainKeys(Paid, Returned, Rejected);
+        foreach (var key in new[] { Paid, Returned, Rejected })
             sets[key].Where(t => t.Trim().Length <= 2).Should().BeEmpty(
                 $"a one- or two-letter code is too ambiguous to move a salary to {key}");
     }
