@@ -570,6 +570,9 @@ public static class ModuleCatalog
                 "The Saudi bank-instruction export (ANB Connect) is on for every Saudi company by default. Only the platform team can "
                 + "switch it off for a tenant, and Tenant Admin cannot. It owns no route: the bank-export endpoints read it. "
                 + "See PlatformDefaultOnFeatures.",
+            [FeatureKeys.GovQiwaApi] =
+                "Sending this tenant's data to Qiwa through the live connection is an opt-in the platform team switches on per tenant, "
+                + "and only with the customer's recorded consent. The Qiwa data check is unaffected. Tenant Admin cannot switch it. It owns no route.",
             [FeatureKeys.GovGosiApi] =
                 "Sending this tenant's data to GOSI over an API is an opt-in the platform team switches on per tenant, and only "
                 + "with the customer's recorded consent. It is off unless enabled, and Tenant Admin cannot switch it. It owns no route.",

@@ -16,10 +16,27 @@ namespace Zayra.Api.Tests.Government;
 /// </summary>
 public sealed class GovernmentOptInTests : Zayra.Api.Tests.Platform.PlatformTestBase
 {
-    public static IEnumerable<object[]> Keys() => [[FeatureKeys.GovGosiApi], [FeatureKeys.GovMuqeem], [FeatureKeys.BankApiAnb]];
+    public static IEnumerable<object[]> Keys() => [[FeatureKeys.GovQiwaApi], [FeatureKeys.GovGosiApi], [FeatureKeys.GovMuqeem], [FeatureKeys.BankApiAnb]];
 
-    private static string Consent(string on = "2026-11-01", string categories = "[\"payroll\",\"bank_account\"]") =>
-        $"{{\"consent\":{{\"authorisedBy\":\"Synthetic Signatory\",\"authorisedOn\":\"{on}\",\"agreementReference\":\"AGR-2026-001\",\"dataCategories\":{categories}}}}}";
+    private static string Consent(string reference = "AGR-2026-001", string categories = "[\"payroll\",\"bank_account\"]") =>
+        $"{{\"consent\":{{\"agreementReference\":\"{reference}\",\"dataCategories\":{categories}}}}}";
+
+    /// <summary>A controller signed in as a named platform Owner (the only role that may switch a connection on).</summary>
+    private static async Task<PlatformController> OwnerAsync(ZayraDbContext db)
+    {
+        var ownerId = Guid.NewGuid();
+        db.PlatformUsers.Add(new PlatformUser { Id = ownerId, Email = $"{ownerId:N}@platform.test", FullName = "Platform owner", PasswordHash = "x", Role = PlatformRoles.Owner, IsActive = true });
+        await db.SaveChangesAsync();
+        var controller = CreateController(db);
+        controller.ControllerContext.HttpContext.User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+        [
+            new System.Security.Claims.Claim("sub", ownerId.ToString()),
+            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, ownerId.ToString()),
+            new System.Security.Claims.Claim("platform_role", PlatformRoles.Owner),
+            new System.Security.Claims.Claim("is_platform_admin", "true"),
+        ], "Test"));
+        return controller;
+    }
 
     private static async Task<Guid> TenantAsync(ZayraDbContext db)
     {
@@ -47,9 +64,10 @@ public sealed class GovernmentOptInTests : Zayra.Api.Tests.Platform.PlatformTest
         await using var db = CreateDb();
         var tenantId = await TenantAsync(db);
 
-        foreach (var config in new string?[] { null, "{}", Consent(on: "2099-01-01"), Consent(categories: "[]"), Consent(categories: "[\"medical\"]"), "not json" })
+        var owner = await OwnerAsync(db);
+        foreach (var config in new string?[] { null, "{}", Consent(reference: "x"), Consent(categories: "[]"), Consent(categories: "[\"medical\"]"), "not json" })
         {
-            var result = await CreateController(db).SetFeatureFlag(tenantId, key, new SetFeatureFlagRequest(true, config), default);
+            var result = await owner.SetFeatureFlag(tenantId, key, new SetFeatureFlagRequest(true, config), default);
             var refused = result.Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
             System.Text.Json.JsonSerializer.Serialize(refused.Value).Should().Contain(GovernmentOptIn.ConsentMissingCode);
         }
@@ -62,7 +80,7 @@ public sealed class GovernmentOptInTests : Zayra.Api.Tests.Platform.PlatformTest
     {
         await using var db = CreateDb();
         var tenantId = await TenantAsync(db);
-        var controller = CreateController(db);
+        var controller = await OwnerAsync(db);
 
         (await controller.SetFeatureFlag(tenantId, FeatureKeys.GovGosiApi, new SetFeatureFlagRequest(true, Consent()), default))
             .Should().BeOfType<OkObjectResult>();
@@ -70,7 +88,7 @@ public sealed class GovernmentOptInTests : Zayra.Api.Tests.Platform.PlatformTest
         (await GovernmentOptIn.HasConsentAsync(db, tenantId, GovernmentBodies.Gosi, default)).Should().BeTrue();
         (await GovernmentOptIn.HasConsentAsync(db, tenantId, GovernmentBodies.BankAnb, default)).Should().BeFalse("consent is per body");
         var enabled = await db.AdminAuditLogs.SingleAsync(a => a.Action == "FeatureEnabled");
-        enabled.NewValuesJson.Should().Contain("AGR-2026-001").And.Contain("Synthetic Signatory");
+        enabled.NewValuesJson.Should().Contain("AGR-2026-001").And.Contain("recordedBy");
 
         (await controller.SetFeatureFlag(tenantId, FeatureKeys.GovGosiApi, new SetFeatureFlagRequest(false, null), default))
             .Should().BeOfType<OkObjectResult>();

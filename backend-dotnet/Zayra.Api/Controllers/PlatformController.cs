@@ -1177,19 +1177,34 @@ public class PlatformController : ControllerBase
         }
         else if (Zayra.Api.Infrastructure.Government.GovernmentOptIn.IsGovernmentKey(featureKey))
         {
-            // Sending a customer's data to a government or bank body needs that customer's recorded consent before it can be
-            // switched on (who authorised it, when, under which agreement, which data). Disabling is always allowed and keeps it.
-            effectiveConfig ??= flag?.ConfigJson;
-            if (req.IsEnabled
-                && Zayra.Api.Infrastructure.Government.GovernmentOptIn.ConsentProblems(effectiveConfig, DateTime.UtcNow) is { Count: > 0 } missingConsent)
-                return UnprocessableEntity(new
-                {
-                    code = Zayra.Api.Infrastructure.Government.GovernmentOptIn.ConsentMissingCode,
-                    message = "This connection cannot be switched on until the customer's consent is recorded: consent.authorisedBy (who "
-                              + "authorised it), consent.authorisedOn (yyyy-MM-dd, not in the future), consent.agreementReference, and "
-                              + "consent.dataCategories (one or more of: " + string.Join(", ", Zayra.Api.Infrastructure.Government.GovernmentOptIn.DataCategories.Order()) + ").",
-                    missing = missingConsent,
-                });
+            // Sending a customer's data to a government or bank body needs that customer's consent, recorded in THIS request by a
+            // named platform Owner (the selfie precedent). The server stamps who and when; a typed who or when is dropped, and a
+            // stored record is never reused: switching back on needs a fresh one. Disabling is always allowed (an Admin may) and
+            // keeps the record, marked withdrawn.
+            if (req.IsEnabled)
+            {
+                if (!string.Equals(User.FindFirst("platform_role")?.Value, PlatformRoles.Owner, StringComparison.OrdinalIgnoreCase)
+                    || GetPlatformUserId() is not Guid recorder)
+                    return StatusCode(StatusCodes.Status403Forbidden, new
+                    {
+                        code = Zayra.Api.Infrastructure.Government.GovernmentOptIn.OwnerOnlyCode,
+                        message = "Only a platform Owner, signed in with a named account, can switch a government or bank connection on. An Admin can switch it off.",
+                    });
+                if (Zayra.Api.Infrastructure.Government.GovernmentOptIn.RequestProblems(req.ConfigJson) is { Count: > 0 } missingConsent)
+                    return UnprocessableEntity(new
+                    {
+                        code = Zayra.Api.Infrastructure.Government.GovernmentOptIn.ConsentMissingCode,
+                        message = "This connection cannot be switched on without the customer's consent in this request: consent.agreementReference "
+                                  + "and consent.dataCategories (one or more of: " + string.Join(", ", Zayra.Api.Infrastructure.Government.GovernmentOptIn.DataCategories.Order())
+                                  + "). Who recorded it and when are stamped by the server.",
+                        missing = missingConsent,
+                    });
+                effectiveConfig = Zayra.Api.Infrastructure.Government.GovernmentOptIn.Stamp(req.ConfigJson, recorder, PlatformActorEmail(), DateTime.UtcNow);
+            }
+            else
+            {
+                effectiveConfig = Zayra.Api.Infrastructure.Government.GovernmentOptIn.Withdraw(flag?.ConfigJson, DateTime.UtcNow);
+            }
         }
 
         // A feature that is on by default and has no row yet was ON: the audit's "before" must say so, not the column default.
@@ -2676,7 +2691,9 @@ public class PlatformController : ControllerBase
             }
 
             flag.IsEnabled = req.IsEnabled;
-            if (req.ConfigJson is not null) flag.ConfigJson = req.ConfigJson;
+            if (Zayra.Api.Infrastructure.Government.GovernmentOptIn.IsGovernmentKey(req.FeatureKey))
+                flag.ConfigJson = Zayra.Api.Infrastructure.Government.GovernmentOptIn.Withdraw(flag.ConfigJson, DateTime.UtcNow); // bulk is off-only here
+            else if (req.ConfigJson is not null) flag.ConfigJson = req.ConfigJson;
             flag.UpdatedAtUtc = DateTime.UtcNow;
             // Designation-driven access is a kill switch: switching it off takes away every role it granted.
             if (req.FeatureKey == FeatureKeys.DesignationAccess && oldEnabled && !req.IsEnabled)
@@ -4795,9 +4812,10 @@ public class PlatformController : ControllerBase
         [FeatureKeys.SelfieAttendance] = "Enabling needs the recorded DPIA sign-off and KSA data-residency confirmation in ConfigJson.",
         [FeatureKeys.PunchGeofence] = "Enabling needs a geofence configuration (PunchGeofenceConfig) in ConfigJson.",
         [FeatureKeys.DesignationAccess] = "A one-line tenant setting with no console toggle: PUT /api/platform/tenants/{id}/features/designation_access with isEnabled true.",
-        [FeatureKeys.GovGosiApi] = "Enabling needs the customer's consent record (who, when, agreement, data categories) in ConfigJson (GovernmentOptIn).",
-        [FeatureKeys.GovMuqeem] = "Enabling needs the customer's consent record (who, when, agreement, data categories) in ConfigJson (GovernmentOptIn).",
-        [FeatureKeys.BankApiAnb] = "Enabling needs the customer's consent record (who, when, agreement, data categories) in ConfigJson (GovernmentOptIn).",
+        [FeatureKeys.GovQiwaApi] = "A platform Owner enables it with the customer's consent record (agreement, data categories) in ConfigJson; the server stamps who and when (GovernmentOptIn).",
+        [FeatureKeys.GovGosiApi] = "A platform Owner enables it with the customer's consent record (agreement, data categories) in ConfigJson; the server stamps who and when (GovernmentOptIn).",
+        [FeatureKeys.GovMuqeem] = "A platform Owner enables it with the customer's consent record (agreement, data categories) in ConfigJson; the server stamps who and when (GovernmentOptIn).",
+        [FeatureKeys.BankApiAnb] = "A platform Owner enables it with the customer's consent record (agreement, data categories) in ConfigJson; the server stamps who and when (GovernmentOptIn).",
     };
 
     // ── Platform Settings ─────────────────────────────────────────────────────

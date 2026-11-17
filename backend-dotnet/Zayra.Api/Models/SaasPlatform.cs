@@ -204,6 +204,11 @@ public static class FeatureKeys
     /// (GovernmentOptIn); never in bulk; Tenant Admin never can. Owns no route. See OptInFeatures.
     /// </summary>
     public const string GovGosiApi = "gov_gosi_api";
+    /// <summary>
+    /// Sending this tenant's data to Qiwa over the LIVE adapter. Same rules as <see cref="GovGosiApi"/>. It does not change the
+    /// Qiwa data check (the simulator), which stays as it is; it is G2 of the live path only.
+    /// </summary>
+    public const string GovQiwaApi = "gov_qiwa_api";
     /// <summary>Sending this tenant's data to Muqeem over an API, once one exists. Same rules as <see cref="GovGosiApi"/>.</summary>
     public const string GovMuqeem = "gov_muqeem";
     /// <summary>Submitting this tenant's approved payroll file to ANB over its API, once built. Same rules as <see cref="GovGosiApi"/>.</summary>

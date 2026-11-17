@@ -89,6 +89,7 @@ public static class OptInFeatures
             [FeatureKeys.DesignationAccess] = [],
             // Government and bank API opt-ins (G2 of GovernmentLivePolicy) own no route: the live gate reads them, with the
             // consent record the platform endpoint requires before switching one on (GovernmentOptIn).
+            [FeatureKeys.GovQiwaApi] = [],
             [FeatureKeys.GovGosiApi] = [],
             [FeatureKeys.GovMuqeem] = [],
             [FeatureKeys.BankApiAnb] = [],
