@@ -34,8 +34,14 @@ const WITH_DETAILS: Record<string, { pattern: RegExp; names: string[]; template:
     template: '{name} ({code}): the previous benefits system’s enrolment in {plan} was not paid (reference {enrolment}). Benefits are now set in Benefits by grade. Review it in the legacy enrolment reconcile report, and end it or move it to the employee’s grade package.',
   },
 };
+const OVERTIME_UNPAID = 'Approved overtime of {amount} from an earlier pay period has not been paid by any run. Settle it through the overtime record, or override this finding with a written reason if it was settled outside payroll.';
 
 export function findingText(t: T, finding: { code: string; message: string }): string {
+  // Late overtime no run pays (rule 11b): the amount owed, in the reader's language. The row already names the employee.
+  if (finding.code === 'OVERTIME_PRIOR_PERIOD_UNPAID') {
+    const amount = /\(([\d.,]+) owed\)/.exec(finding.message)?.[1];
+    if (amount) return t(OVERTIME_UNPAID, { amount });
+  }
   if (finding.code === 'READINESS_PAY_BLOCKED') return t(/explicit acknowledgement/.test(finding.message) ? PERMIT_ACTIVE : PERMIT_LEFT);
   const detailed = WITH_DETAILS[finding.code];
   const match = detailed?.pattern.exec(finding.message);

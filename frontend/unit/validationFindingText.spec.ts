@@ -56,6 +56,16 @@ test.describe('benefit findings keep their details in both languages', () => {
   });
 });
 
+test.describe('late overtime no run pays', () => {
+  const LATE = { code: 'OVERTIME_PRIOR_PERIOD_UNPAID', message: 'Employee EVT2-0008 has 2.00 h of approved overtime (150.00 owed) from an earlier pay period (2026-05-28) that no payroll run has paid.' };
+  test('names the amount owed, in English and in Arabic', () => {
+    expect(findingText(en, LATE)).toContain('150.00');
+    const arabic = findingText(ar, LATE);
+    expect(arabic).toContain('150.00');
+    expect(latin(arabic)).toEqual([]);
+  });
+});
+
 test.describe('pay item labels', () => {
   const labels = ['Overtime (5.00 h × (168.75 + 125.00 × 0.90)/h)', 'Late/early attendance deduction', 'Loss of Pay (1.00 d × 133.33/d)', 'Basic Salary', 'Housing Allowance'];
 

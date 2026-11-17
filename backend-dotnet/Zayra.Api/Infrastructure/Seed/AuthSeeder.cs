@@ -330,6 +330,9 @@ public class AuthSeeder : IAuthSeeder
             "dashboard.read", "employees.read", "approvals.read", "approvals.write", "approvals.decide", "notifications.read",
             "manager.read", "manager.approve", "ess.read", "ess.write", "leave.read", "leave.approve",
             "attendance.read", "overtime.read", "overtime.approve", "profile.read", "loans.read",
+            // File overtime for a member of the manager's OWN team (data scope), while the company allows it
+            // (overtime_manager_files_for_team, default on). Never overtime.write, which files for anyone.
+            "overtime.file_for_team",
             "performance.read", "performance.write",
             // CMP: a line manager plans merit for their own direct reports only (their own line sits on their manager's sheet).
             "compensation.plan",
@@ -456,6 +459,7 @@ public class AuthSeeder : IAuthSeeder
             ("overtime.read", "Overtime", "Read overtime requests"),
             ("overtime.write", "Overtime", "Submit overtime requests"),
             ("overtime.approve", "Overtime", "Approve or reject overtime requests"),
+            ("overtime.file_for_team", "Overtime", "File overtime for a member of your own team, when the company allows line managers to"),
             ("overtime.policy_manage", "Overtime", "Manage overtime types and policies"),
             // Payroll
             ("payroll.read", "Payroll", "Read payroll runs and slips"),

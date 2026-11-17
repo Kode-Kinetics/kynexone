@@ -16,6 +16,8 @@ export interface PayrollRulesResponse {
   rules: PayrollRuleView[];
   pending?: PendingPayrollRuleChange[];
   annualLeaveTypeFound?: boolean;
+  /** Whether the company has any department overtime budget; until it does, budget Warn/Block are refused. */
+  overtimeBudgetsDefined?: boolean;
 }
 
 export interface PayrollRuleWarning { key: PayrollRuleKey; code: string; message: string }

@@ -753,8 +753,13 @@ public sealed class PayrollRunProcessor
         var overtimeWorkDates = periodOvertimeRequests.ToDictionary(r => r.Id, r => r.WorkDate);
         // The company's own holidays (active calendars, company-wide or this company's), read by the same function attendance uses.
         var periodPublicHolidays = await CompanyPayrollRules.HolidayDatesAsync(_db, tenantId, company.Id, periodStart, periodEnd, cancellationToken);
+        // Only overtime still waiting for pay. A CarriedForward impact was approved after its month closed and is paid by its
+        // "Overtime Back Pay" adjustment on a LATER run; a Replacement run of the original month used to select it here by work
+        // date (it skipped only Processed rows), pay it as ordinary overtime and mark it Processed, while the adjustment paid it
+        // again. Its own adjustment, or a void that returns it to PendingPayroll, is the only way it is paid.
         var overtimeImpacts = await _db.OvertimePayrollImpacts.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId) && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
+            .Where(x => x.TenantId == tenantId && x.Status != "Processed" && x.Status != OvertimeImpactStatuses.CarriedForward
+                        && employeeIdsForRun.Contains(x.EmployeeId) && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
             .ToListAsync(cancellationToken);
 
         // L1: use policy-configured monthly hours as divisor; fall back to 240.
@@ -1303,8 +1308,11 @@ public sealed class PayrollRunProcessor
         // OVT-04 / rule 11b: with overtime.late_approval_mode = BackPay, this run pays approved overtime from an EARLIER period whose own
         // run already consumed that month, as an "Overtime Back Pay" adjustment line. The matching impacts are marked Processed below,
         // in this same transaction, so no later run (or rule 11b) can pay or flag them again. Refuse mode stages nothing.
-        var lateOvertimeMode = await new Zayra.Api.Infrastructure.Policy.PolicySettingsService(_db).GetEnumAsync(
-            tenantId, Zayra.Api.Infrastructure.Policy.PolicyRegistry.OvertimeLateApprovalMode, cancellationToken);
+        // The company's own overtime_late_approval_mode (Setup > Payroll rules) first, else the account-wide policy: the same
+        // order the overtime approval uses, so approval and the run never disagree about a company's late overtime.
+        var lateOvertimeMode = companyPayrollRules.OvertimeLateApprovalMode
+            ?? await new Zayra.Api.Infrastructure.Policy.PolicySettingsService(_db).GetEnumAsync(
+                tenantId, Zayra.Api.Infrastructure.Policy.PolicyRegistry.OvertimeLateApprovalMode, cancellationToken);
         var lateOvertime = await OvertimeLateSettlement.StageAsync(_db, run,
             await PriorPeriodOvertimeFinder.FindSettleableAsync(_db, tenantId, company.Id, employeeIdsForRun, periodStart,
                 cancellationToken, lateOvertimeMode, includesRecurringPay, id),
@@ -2472,7 +2480,7 @@ public sealed class PayrollRunProcessor
 
 
             var consumedOtImpacts = overtimeImpacts
-                .Where(x => x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId)
+                .Where(x => x.Status != "Processed" && x.Status != OvertimeImpactStatuses.CarriedForward && employeeIdsForRun.Contains(x.EmployeeId)
                          && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
                 .ToList();
             var consumedOtIds = consumedOtImpacts.Select(x => x.Id).ToList();
@@ -2482,7 +2490,7 @@ public sealed class PayrollRunProcessor
             // Same compare-and-swap: two concurrent runs (or a double-submit) could otherwise both pay this
             // overtime, with the PayrollRunId stamp last-writer-wins.
             var markedOvertime = await _db.OvertimePayrollImpacts
-                .Where(x => x.TenantId == tenantId && consumedOtIds.Contains(x.Id) && x.Status != "Processed")
+                .Where(x => x.TenantId == tenantId && consumedOtIds.Contains(x.Id) && x.Status != "Processed" && x.Status != OvertimeImpactStatuses.CarriedForward)
                 .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.PayrollRunId, id).SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
 
             // OVT-04: the prior-period overtime this run pays as back pay leaves PendingPayroll here, with this run's id, in the same
@@ -3780,6 +3788,9 @@ public sealed class PayrollRunProcessor
     /// <item>Everything else is unchanged: persisted driver, else the compiled switch.</item>
     /// </list></para>
     /// </summary>
+    /// <summary>The payslip component code of an "Overtime Back Pay" adjustment (ADJ_ + the normalised adjustment type).</summary>
+    internal const string OvertimeBackPayComponentCode = "ADJ_OVERTIME_BACK_PAY";
+
     internal static string EarningDriverKeyFor(IReadOnlyList<GlDriverRow> drivers, string componentCode, string source)
     {
         var direct = ResolveDriverForComponent(drivers, componentCode, source, GlDriverCategories.Earning);
@@ -3796,6 +3807,14 @@ public sealed class PayrollRunProcessor
         // settlement its own account by a SPECIFIC predicate still wins — that is the rule above.
         if (FinalSettlementComponents.IsSettlementEarning(componentCode))
             return EarningDriverKey(componentCode, source);
+
+        // Late-approved overtime paid as an "Overtime Back Pay" adjustment is overtime expense, exactly as the OVERTIME line it
+        // stands in for: it resolves through the tenant's own OVERTIME driver (so an account remap of it applies too). The
+        // persisted catch-all EARN:OTHER claimed it before, so on every seeded tenant late overtime landed in 5099 Other
+        // Earnings while on-time overtime landed in 5005; the journal balanced and nothing reported it. A driver that claims
+        // the back-pay code by a specific predicate still wins (above).
+        if (string.Equals(componentCode, OvertimeBackPayComponentCode, StringComparison.Ordinal))
+            return ResolveDriverForComponent(drivers, "OVERTIME", source, GlDriverCategories.Earning)?.Key ?? "EARN:OVERTIME";
 
         var settles = PayrollArrearsComponents.SourceComponent(componentCode);
         if (!string.Equals(settles, componentCode, StringComparison.Ordinal))
