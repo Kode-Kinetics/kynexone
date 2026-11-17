@@ -8,18 +8,16 @@
  *     phone or ID number, so search cannot confirm a value the caller may not see.
  */
 import { test, expect, request as pwRequest, type APIRequestContext } from '@playwright/test';
-import fs from 'node:fs';
-import { BASE_URL, roleByKey, tokenPath } from './roles';
+import { BASE_URL, roleByKey, roleToken } from './roles';
 import { stampActor } from '../identity/actor';
 
 interface Detail { id: number; employeeCode: string; fullName: string; designation?: string; phone?: string; idNumber?: string; personalEmail?: string; workEmail?: string }
 
-const tokenFor = (key: string): string => JSON.parse(fs.readFileSync(tokenPath(key), 'utf8')).token;
 
 async function apiAs(key: string): Promise<APIRequestContext> {
   const role = roleByKey(key);
   stampActor({ email: role.email, tenantSlug: role.tenantSlug, via: `security-gate role '${key}'` });
-  return pwRequest.newContext({ baseURL: BASE_URL, timeout: 30_000, extraHTTPHeaders: { Authorization: `Bearer ${tokenFor(key)}` } });
+  return pwRequest.newContext({ baseURL: BASE_URL, timeout: 30_000, extraHTTPHeaders: { Authorization: `Bearer ${await roleToken(key)}` } });
 }
 
 const found = async (api: APIRequestContext, term: string): Promise<number[]> => {

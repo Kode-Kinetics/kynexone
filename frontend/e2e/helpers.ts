@@ -29,7 +29,7 @@ export const BASE_URL = resolveTarget().baseUrl;
 export const PLATFORM_STATE = 'e2e/.auth/platform.json';
 export const TENANT_STATE = 'e2e/.auth/tenants.json';
 
-type TenantSession = { accessToken: string; refreshToken: string };
+export type TenantSession = { accessToken: string; refreshToken: string };
 
 export const tenantSessionKey = (email: string, slug: string): string =>
   `${slug.toLowerCase()}|${email.toLowerCase()}`;
@@ -118,19 +118,10 @@ export async function tenantLogin(
   password: string,
   slug: string
 ): Promise<void> {
-  let session = await tenantSetupSession(email, slug);
   // The setup session was minted at the start of the run; a full run outlasts its 30-minute access token, and a
   // browser handed the spent pair lands on /login (Browser Pilot main, 2026-10-28: payroll-run-to-wps, saudi-compliance
   // UI). Past the margin, sign the SAME persona in again, once per persona per token life.
-  if (secondsUntilExpiry(session.accessToken) <= TOKEN_MARGIN_SECONDS) {
-    const key = tenantSessionKey(email, slug);
-    let live = liveTenantSessions.get(key);
-    if (!live || secondsUntilExpiry(live.accessToken) <= TOKEN_MARGIN_SECONDS) {
-      live = await apiLoginSessionLive(page.request, email, password, slug);
-      liveTenantSessions.set(key, live);
-    }
-    session = live;
-  }
+  const session = await freshTenantSession(page.request, email, password, slug);
   await page.goto('/login');
   await page.evaluate(({ accessToken, refreshToken }) => {
     localStorage.setItem('zayra_access_token', accessToken);
@@ -186,7 +177,7 @@ export async function apiLoginSessionLive(
 }
 
 /** Seconds left before a JWT's `exp`; Infinity when it carries none or cannot be read. */
-function secondsUntilExpiry(token: string): number {
+export function secondsUntilExpiry(token: string): number {
   try {
     const payload = JSON.parse(Buffer.from(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')) as { exp?: number };
     return typeof payload.exp === 'number' ? payload.exp - Date.now() / 1000 : Infinity;
@@ -195,10 +186,39 @@ function secondsUntilExpiry(token: string): number {
   }
 }
 
-/** A persona's fresh token once its setup token has run out, so each persona signs in at most once per token life. */
-const liveTenantTokens = new Map<string, string>();
+/** A persona's fresh session once its setup session has run out, so each persona signs in at most once per token life. */
 const liveTenantSessions = new Map<string, TenantSession>();
-const TOKEN_MARGIN_SECONDS = 5 * 60;
+export const TOKEN_MARGIN_SECONDS = 5 * 60;
+
+/**
+ * The session to use for a persona: the setup-time one while its access token has more than the margin left, else the
+ * cached fresh one while IT does, else a new sign-in (`mint`), cached under `key`. Pure apart from the cache, so it is
+ * unit-tested (unit/e2eSessionReuse.spec.ts).
+ */
+export async function liveSession(
+  setup: TenantSession,
+  key: string,
+  mint: () => Promise<TenantSession>,
+  cache: Map<string, TenantSession> = liveTenantSessions,
+): Promise<TenantSession> {
+  if (secondsUntilExpiry(setup.accessToken) > TOKEN_MARGIN_SECONDS) return setup;
+  const cached = cache.get(key);
+  if (cached && secondsUntilExpiry(cached.accessToken) > TOKEN_MARGIN_SECONDS) return cached;
+  const fresh = await mint();
+  cache.set(key, fresh);
+  return fresh;
+}
+
+/** A persona's setup session, or a fresh sign-in AS THE SAME persona once it is within the margin of expiry. */
+export async function freshTenantSession(
+  request: import('@playwright/test').APIRequestContext,
+  email: string,
+  password: string,
+  slug: string,
+): Promise<TenantSession> {
+  const setup = await tenantSetupSession(email, slug);
+  return liveSession(setup, tenantSessionKey(email, slug), () => apiLoginSessionLive(request, email, password, slug));
+}
 
 /**
  * The persona's token for API feature/workflow assertions: the setup-time token while it is still good, else a fresh
@@ -211,14 +231,7 @@ export async function apiLogin(
   password: string,
   slug: string
 ): Promise<string> {
-  const setup = (await tenantSetupSession(email, slug)).accessToken;
-  if (secondsUntilExpiry(setup) > TOKEN_MARGIN_SECONDS) return setup;
-  const key = tenantSessionKey(email, slug);
-  const cached = liveTenantTokens.get(key);
-  if (cached && secondsUntilExpiry(cached) > TOKEN_MARGIN_SECONDS) return cached;
-  const fresh = await apiLoginLive(request, email, password, slug);
-  liveTenantTokens.set(key, fresh);
-  return fresh;
+  return (await freshTenantSession(request, email, password, slug)).accessToken;
 }
 
 /** Read the one platform session created by the setup project. */

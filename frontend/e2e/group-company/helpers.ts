@@ -21,7 +21,7 @@ import {
   Page,
   Locator,
 } from '@playwright/test';
-import { platformSetupToken, tenantSetupSession } from '../helpers';
+import { apiPlatformLogin, freshTenantSession } from '../helpers';
 import { collectAllPages, pageTotal } from '../paging';
 import {
   ALMARAI_COMPANY_CODES, ALMARAI_SLUG, GROUP_PASSWORD, INTELLIFLOW_ADMIN, INTELLIFLOW_SLUG,
@@ -118,12 +118,14 @@ export async function assertStackReachable(): Promise<void> {
 
 /** Login via API; throws with details on failure. Returns the raw auth payload. */
 export async function apiLogin(
-  _api: APIRequestContext,
+  api: APIRequestContext,
   email: string,
   slug: string,
-  _password: string = GROUP_PASSWORD,
+  password: string = GROUP_PASSWORD,
 ): Promise<{ token: string; body: any }> {
-  const session = await tenantSetupSession(email, slug);
+  // The setup session while its access token has more than 5 minutes left; else the same persona signs in again (once per
+  // token life). A long run reaches this folder well past the 30-minute token (CI #351: every call here got 401).
+  const session = await freshTenantSession(api, email, password, slug);
   return { token: session.accessToken, body: {} };
 }
 
@@ -171,10 +173,10 @@ export async function assertFixtureWorld(
 
 /** Platform admin API login; returns null (with reason) when unavailable. */
 export async function tryPlatformApiLogin(
-  _api: APIRequestContext,
+  api: APIRequestContext,
 ): Promise<{ token: string } | null> {
   try {
-    return { token: await platformSetupToken() };
+    return { token: await apiPlatformLogin(api) };
   } catch {
     return null;
   }
@@ -276,9 +278,10 @@ export async function uiLogin(
   page: Page,
   email: string,
   slug: string,
-  _password: string = GROUP_PASSWORD,
+  password: string = GROUP_PASSWORD,
 ): Promise<void> {
-  const session = await tenantSetupSession(email, slug);
+  // An expired setup pair bounces the browser to /login (and its refresh token may already be spent by another test).
+  const session = await freshTenantSession(page.request, email, password, slug);
   await page.goto('/login', { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.evaluate(({ accessToken, refreshToken }) => {
     localStorage.setItem('zayra_access_token', accessToken);
