@@ -58,3 +58,26 @@ test('Arabic spells Mudad as مدد and the Arab National Bank in full', () => {
   }
   expect(bad, bad.join('\n')).toEqual([]);
 });
+
+/**
+ * Wave-1 officer-facing wording (package F5). The login page must not say a certification is in progress, must not call the Saudi
+ * bank file a wage-protection file, and the batch status "Reconciled" must not share its Arabic with "Settled by bank" (تمت التسوية).
+ */
+test('the login page claims no certification in progress and calls the Saudi file a bank payroll file', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../src/components/LoginMarketing.tsx'), 'utf8').replace(/\s+/g, ' ');
+  expect(source).not.toContain('pending ANB certification');
+  expect(source).not.toContain('ملفات حماية الأجور');
+  expect(source).not.toContain("name: 'WPS files'");
+  expect(source).toContain("name: 'Wage files'");
+  expect(source).toContain("nameAr: 'ملفات الأجور'");
+  expect(source).toContain('a Saudi bank payroll file, bank acceptance not verified');
+  expect(source).toContain('ملف رواتب للبنك في السعودية لم يُتحقق من قبول البنك له');
+});
+
+test('the Arabic batch status Reconciled reads تمت المطابقة and never collides with Settled by bank', () => {
+  const reconciled = arabicEntries().filter(e => e.key === 'enum.Status.Reconciled');
+  expect(reconciled.length).toBeGreaterThan(0);
+  expect(reconciled.map(e => e.value)).toEqual(reconciled.map(() => 'تمت المطابقة'));
+  // "Settled by bank" is the bank's settlement of an instruction (تمت التسوية لدى البنك), a different fact from a reconciled batch.
+  expect(reconciled.some(e => e.value.startsWith('تمت التسوية'))).toBe(false);
+});

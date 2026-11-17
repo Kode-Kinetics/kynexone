@@ -57,7 +57,7 @@ const enums: Record<string, [string, string]> = {
   'enum.Status.Exempted': ['Exempted', 'معفى'],
   'enum.Status.Converted': ['Converted', 'محوّل'],
   'enum.Status.Downloaded': ['Downloaded', 'تم التنزيل'],
-  'enum.Status.Reconciled': ['Reconciled', 'تمت التسوية'],
+  'enum.Status.Reconciled': ['Reconciled', 'تمت المطابقة'],
   'enum.BankAcceptance.SpecificationImplemented': ['Specification implemented; bank acceptance not verified', 'مُنفَّذ وفق المواصفات؛ لم يُتحقق من قبول البنك له'],
   'enum.BankAcceptance.CustomerConfigured': ['Customer-configured layout; bank acceptance not verified', 'تخطيط يضبطه العميل؛ لم يُتحقق من قبول البنك له'],
   'enum.BankBatchType.PAYROLL': ['Payroll', 'رواتب'],
