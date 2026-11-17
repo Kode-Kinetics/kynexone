@@ -442,12 +442,16 @@ test.describe('Payroll — run to WPS file', () => {
           createBatch,
           'a payment batch must not be creatable before the run is locked',
         ).toBeDisabled();
+        // The reason sits beside the disabled button and describes it (the step's purpose line repeats the same sentence, so
+        // the reason is located by its role on the page, not by its words alone).
+        const reason = content(admin).getByTestId('bank-guide-primary-reason');
+        await expect(reason, 'the operator must be told why the control is disabled')
+          .toContainText(/a payment batch can only be created once the run is/i);
+        const reasonId = await reason.evaluate((el) => el.closest('[id]')?.id ?? '');
+        await expect(createBatch, 'the disabled control must be described by its reason').toHaveAttribute('aria-describedby', reasonId);
         await expect(
-          content(admin).getByText(/a payment batch can only be created once the run is/i),
-          'the operator must be told why the control is disabled',
-        ).toBeVisible();
-        await expect(
-          content(admin).getByText(/This run is\s*Approved\s*\./),
+          // Step 1 of the guided flow states the run's status beside the blocked button.
+          content(admin).getByText(/Run status:\s*Approved/),
           "the notice must name the run's actual current status",
         ).toBeVisible();
       });
