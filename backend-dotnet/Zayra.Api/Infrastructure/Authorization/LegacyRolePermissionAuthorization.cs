@@ -211,10 +211,28 @@ public static class LegacyRolePermissionResolver
             ["Payroll.DownloadRunPdfBundle"] = ["payroll.export"],
         };
 
+    /// <summary>
+    /// A line manager's two recruitment jobs (owner decision 2026-11-16): raising a requisition for their own department and giving feedback
+    /// on an interview they are named on. Each of these actions also accepts a narrow key, so the built-in Manager needs neither
+    /// recruitment.read nor recruitment.write (and so is not made a privileged user). The controllers then limit a narrow-only caller to their own
+    /// requisitions and their own panels; the inferred key still opens the action for HR, as before.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string[]> NarrowRecruitmentActions =
+        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Requisitions.Create"] = ["recruitment.write", "recruitment.requisition.raise"],
+            ["Requisitions.Update"] = ["recruitment.write", "recruitment.requisition.raise"],
+            ["Requisitions.Submit"] = ["recruitment.write", "recruitment.requisition.raise"],
+            ["Interviews.SubmitFeedback"] = ["recruitment.write", "recruitment.interview.feedback"],
+            ["Applications.RecordFeedback"] = ["recruitment.write", "recruitment.interview.feedback"],
+            ["Interviews.Get"] = ["recruitment.read", "recruitment.interview.feedback"],
+        };
+
     /// <summary>Every permission that satisfies the inferred gate for this action (one, except the payslip reads above).</summary>
     public static IReadOnlyList<string>? ResolveAllFor(string controller, string action, IReadOnlyList<string> httpMethods)
     {
         if (PayslipReadActions.TryGetValue($"{controller}.{action}", out var payslipReads)) return payslipReads;
+        if (NarrowRecruitmentActions.TryGetValue($"{controller}.{action}", out var narrow)) return narrow;
         return Resolve(controller, action, httpMethods) is { } inferred ? new[] { inferred } : null;
     }
 

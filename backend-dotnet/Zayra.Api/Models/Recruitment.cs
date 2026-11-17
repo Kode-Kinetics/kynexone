@@ -232,6 +232,10 @@ public class OfferLetter : ITenantOwned, ICompanyScopedOperational
     public decimal? AnnualRecurringCash { get; set; }
     public decimal? OneTimeCash { get; set; }
     public int ProbationMonths { get; set; } = 3;
+    /// <summary>"Permanent" or "Fixed-term". Null on an offer written before the term was recorded, which reads as Permanent.</summary>
+    public string? ContractType { get; set; }
+    /// <summary>The length of a fixed term in months; null for a permanent offer.</summary>
+    public int? ContractTermMonths { get; set; }
     public string ContentHtml { get; set; } = string.Empty;
     // Self-contained, immutable after approval begins. Never re-resolve a template on download.
     [System.Text.Json.Serialization.JsonIgnore]

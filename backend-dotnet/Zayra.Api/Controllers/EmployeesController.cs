@@ -3412,7 +3412,8 @@ public class EmployeesController : ControllerBase
         var moved = await TransitionDraftAsync(tenantId, draftId, EmployeeDraftStatuses.Open,
             s => s.SetProperty(d => d.Status, EmployeeDraftStatuses.Rejected).SetProperty(d => d.CurrentStep, EmployeeDraftStatuses.Rejected),
             d => { d.Status = EmployeeDraftStatuses.Rejected; d.CurrentStep = EmployeeDraftStatuses.Rejected; },
-            EmployeeDraftAuditActions.Rejected, JsonSerializer.Serialize(new { reason }), cancellationToken);
+            EmployeeDraftAuditActions.Rejected, JsonSerializer.Serialize(new { reason }), cancellationToken,
+            ct => OfferHireReversal.ReleaseAsync(_db, tenantId, draftId, GetUserId(), ActorName(), reason, ct));
         if (!moved) return await DraftClosedConflictAsync(tenantId, draftId, await CurrentDraftStatusAsync(tenantId, draftId, cancellationToken), cancellationToken);
 
         await NotifyBestEffortAsync([draft.CreatedByUserId], "Employee draft rejected", $"A new-hire draft was rejected: {reason}", draftId, cancellationToken);
@@ -3442,7 +3443,8 @@ public class EmployeesController : ControllerBase
             s => s.SetProperty(d => d.Status, EmployeeDraftStatuses.Cancelled).SetProperty(d => d.CurrentStep, EmployeeDraftStatuses.Cancelled),
             d => { d.Status = EmployeeDraftStatuses.Cancelled; d.CurrentStep = EmployeeDraftStatuses.Cancelled; },
             EmployeeDraftAuditActions.Cancelled,
-            reason.Length == 0 ? null : JsonSerializer.Serialize(new { reason }), cancellationToken);
+            reason.Length == 0 ? null : JsonSerializer.Serialize(new { reason }), cancellationToken,
+            ct => OfferHireReversal.ReleaseAsync(_db, tenantId, draftId, GetUserId(), ActorName(), reason.Length == 0 ? "withdrawn" : reason, ct));
         if (!moved) return await DraftClosedConflictAsync(tenantId, draftId, await CurrentDraftStatusAsync(tenantId, draftId, cancellationToken), cancellationToken);
         return NoContent();
     }
@@ -6898,7 +6900,8 @@ public class EmployeesController : ControllerBase
         Guid tenantId, Guid draftId, string[] from,
         System.Linq.Expressions.Expression<Func<Microsoft.EntityFrameworkCore.Query.SetPropertyCalls<EmployeeDraft>, Microsoft.EntityFrameworkCore.Query.SetPropertyCalls<EmployeeDraft>>> setters,
         Action<EmployeeDraft> applyTracked,
-        string auditAction, string? auditMetadata, CancellationToken cancellationToken)
+        string auditAction, string? auditMetadata, CancellationToken cancellationToken,
+        Func<CancellationToken, Task>? alsoInSameUnit = null)
     {
         var auditId = Guid.NewGuid();
         var at = DateTime.UtcNow;
@@ -6922,6 +6925,8 @@ public class EmployeesController : ControllerBase
                 if (tracked is null || !from.Contains(tracked.Status)) return false;
                 applyTracked(tracked);
             }
+            // Work that must commit or roll back with this transition (an offer hire's seat is released with its draft).
+            if (alsoInSameUnit is not null) await alsoInSameUnit(ct);
             _db.AuditLogs.Add(AuthAuditEntry.Create(auditId, at, auditAction, "EmployeeDraft", draftId.ToString(), context, auditMetadata));
             await _db.SaveChangesAsync(ct);
             return true;
@@ -7265,6 +7270,7 @@ public class EmployeesController : ControllerBase
         Status = EmployeeStatuses.Active,
         JoiningDate = draft.JoiningDate ?? approvedAtUtc.Date,
         ContractType = draft.ContractType,
+        EmploymentType = draft.EmploymentType,
         Grade = placement.GradeCode,
         GradeId = placement.GradeId,
         CostCenter = draft.CostCenter,
@@ -7731,6 +7737,7 @@ public class EmployeesController : ControllerBase
     private EmployeeListItemDto ToListItem(Employee employee) => new(employee.Id, employee.EmployeeCode, employee.FullName, employee.ArabicName, employee.Department, employee.Designation, employee.Branch, employee.ManagerEmployeeId, employee.Status, employee.ProfileCompletenessScore, employee.VisaExpiryDate, employee.PassportExpiryDate, employee.ReadinessState, employee.ActivationBlockersCount, employee.PublicId);
     private static string FirstNonEmpty(params string[] values) => values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "Unnamed Employee";
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id") ?? throw new UnauthorizedAccessException("Tenant claim missing."));
+    private string ActorName() => User.FindFirstValue("name") ?? User.Identity?.Name ?? "System";
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant(), Permissions: User.EffectivePermissions());
     private async Task<bool> CanAccessEmployeeAsync(int employeeId, CancellationToken cancellationToken)

@@ -33,6 +33,10 @@ public sealed partial class OfferLifecycleService
             if (input.StartDate == DateOnly.MinValue || input.ProbationMonths is < 0 or > 12
                 || input.ResponseDeadline is not { Kind: DateTimeKind.Utc } deadline || deadline <= DateTime.UtcNow)
                 throw new OfferLifecycleException("offer_terms_invalid", "Choose a start date, a future UTC response deadline, and probation of zero to twelve months.", 422);
+            var termType = input.ContractType ?? offer.ContractType;
+            var termMonths = input.ContractType is null && input.ContractTermMonths is null ? offer.ContractTermMonths : input.ContractTermMonths;
+            if (OfferContractTerm.Validate(termType, termMonths) is { } termError)
+                throw new OfferLifecycleException(termError, OfferContractTerm.ErrorMessage(termError), 422) { MessageAr = OfferContractTerm.ErrorMessageAr(termError) };
             if (Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ProbationOverLimit(
                     await Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ResolveAsync(db, actor.TenantId, company, ct),
                     input.StartDate, input.ProbationMonths) is { } probationMessage)
@@ -73,6 +77,8 @@ public sealed partial class OfferLifecycleService
             offer.CandidateId ??= app.CandidateId;
             offer.RecipientEmail = email; offer.StartDate = input.StartDate; offer.ResponseDeadline = deadline;
             offer.ProbationMonths = input.ProbationMonths; offer.OfferedJobTitle = placement.Designation;
+            offer.ContractType = OfferContractTerm.Normalize(termType);
+            offer.ContractTermMonths = offer.ContractType == OfferContractTerm.FixedTerm ? termMonths : null;
             offer.OfferedDepartment = placement.Department;
             OfferCompensation.ApplySnapshot(offer, compensation);
             try

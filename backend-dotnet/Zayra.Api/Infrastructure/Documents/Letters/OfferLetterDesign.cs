@@ -8,6 +8,7 @@ using QuestPDF.Fluent;
 using QuestPDF.Helpers;
 using QuestPDF.Infrastructure;
 using SkiaSharp;
+using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
@@ -241,7 +242,7 @@ public static class OfferLetterDesign
                                  join o in db.JobOpenings.AsNoTracking() on a.JobOpeningId equals o.Id
                                  where a.TenantId == offer.TenantId && a.Id == offer.ApplicationId
                                  select o.Location).FirstOrDefaultAsync(ct);
-        foreach (var (key, value) in OfferLetterClauses.Values(arabic, OfferLetterClauses.IsSaudi(nationality), noticeDays, jobLocation, null)) values[key] = value;
+        foreach (var (key, value) in OfferLetterClauses.Values(arabic, OfferLetterClauses.IsSaudi(nationality), noticeDays, jobLocation, OfferContractTerm.LetterTerm(offer.ContractType, offer.ContractTermMonths, arabic))) values[key] = value;
         values["compensation_lines"] = OfferLetterClauses.CompensationLines(arabic, values["currency"], offer.BasicSalary, offer.HousingAllowance, offer.TransportAllowance, offer.OtherAllowances, offer.GrossSalary);
         var compensation = offer.CompensationSnapshotJson is null ? null
             : JsonSerializer.Deserialize<OfferCompensationSnapshot>(offer.CompensationSnapshotJson, OfferCompensation.Json);

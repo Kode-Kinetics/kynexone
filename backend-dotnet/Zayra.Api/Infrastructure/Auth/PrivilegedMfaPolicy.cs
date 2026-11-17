@@ -86,6 +86,9 @@ public static class PrivilegedMfaPolicy
         // Read-only views.
         "dashboard.read", "employees.read", "organization.read", "attendance.read", "leave.read",
         "overtime.read", "payroll.rates.read", "loans.read", "recruitment.read",
+        // A line manager's own requisitions and the interviews they are named on: scoped to their own department and panels, no candidate,
+        // offer or hiring access, so not privileged (the role would otherwise be pushed into two-factor).
+        "recruitment.requisition.raise", "recruitment.interview.feedback",
         "performance.read", "compliance.read", "manager.read", "approvals.read", "reports.read",
         "notifications.read", "localization.read", "shifts.read", "qiwa.read", "audit.read",
         "finance.gl.read", "ai.query", "ai.insights_view",

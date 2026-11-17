@@ -2,6 +2,8 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Recruitment;
@@ -67,11 +69,40 @@ public class InterviewsController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (interview == null) return NotFound();
 
-        var feedbacks = await _db.InterviewFeedbacks
-            .Where(x => x.TenantId == tid && x.InterviewScheduleId == id)
-            .ToListAsync(ct);
+        // A line manager (narrow key only) reads an interview they are named on, and only their own scorecard on it: never a peer's.
+        var narrow = !InterviewPanel.IsCoordinator(User) && !User.HasClaim("permission", "recruitment.read");
+        if (narrow && !InterviewPanel.IsAssigned(interview, GetUserName())) return NotFound();
+
+        var feedbackQuery = _db.InterviewFeedbacks.Where(x => x.TenantId == tid && x.InterviewScheduleId == id);
+        if (narrow) { var me = GetUserId(); feedbackQuery = feedbackQuery.Where(x => x.InterviewerUserId == me); }
+        var feedbacks = await feedbackQuery.ToListAsync(ct);
 
         return Ok(new { interview, feedbacks });
+    }
+
+    // GET /api/recruitment/interviews/mine : the interviews the caller is named on, for a line manager on a panel. Names the candidate and the
+    // job only; no contact details, resume or peer feedback.
+    [HttpGet("mine")]
+    [HasPermission("recruitment.read", "recruitment.interview.feedback")]
+    public async Task<IActionResult> Mine(CancellationToken ct)
+    {
+        var tid = GetTenantId();
+        var name = GetUserName();
+        if (string.IsNullOrWhiteSpace(name)) return Ok(new { total = 0, items = Array.Empty<object>() });
+        var rows = await _db.InterviewSchedules.AsNoTracking()
+            .Where(x => x.TenantId == tid && x.Status != "Cancelled" && x.InterviewerNames.ToLower().Contains(name.ToLower()))
+            .OrderByDescending(x => x.ScheduledAt).Take(100).ToListAsync(ct);
+        var applicationIds = rows.Select(r => r.ApplicationId).Distinct().ToList();
+        var applications = await _db.JobApplications.AsNoTracking()
+            .Where(a => a.TenantId == tid && applicationIds.Contains(a.Id))
+            .Select(a => new { a.Id, a.CandidateName, a.JobTitle }).ToDictionaryAsync(a => a.Id, ct);
+        var items = rows.Select(r => new
+        {
+            r.Id, r.ApplicationId, r.InterviewType, r.ScheduledAt, r.DurationMinutes, r.Mode, r.Location, r.MeetingLink, r.Status,
+            candidateName = applications.TryGetValue(r.ApplicationId, out var a) ? a.CandidateName : string.Empty,
+            jobTitle = applications.TryGetValue(r.ApplicationId, out var b) ? b.JobTitle : string.Empty,
+        }).ToList();
+        return Ok(new { total = items.Count, items });
     }
 
     // POST /api/recruitment/interviews
@@ -83,6 +114,8 @@ public class InterviewsController : ControllerBase
 
         var app = await _db.JobApplications.FirstOrDefaultAsync(x => x.Id == req.ApplicationId && x.TenantId == tid, ct);
         if (app == null) return BadRequest("Application not found.");
+        if (await CandidateStanding.IsBlacklistedAsync(_db, tid, app.CandidateId, ct))
+            return Conflict(new { error = CandidateStanding.ErrorCode, message = CandidateStanding.Message, messageAr = CandidateStanding.MessageAr });
 
         var interview = new InterviewSchedule
         {
@@ -176,16 +209,8 @@ public class InterviewsController : ControllerBase
         // may submit feedback ONLY for an interview they are assigned to — prevents tenant-wide
         // feedback injection into arbitrary interview ids. HR coordinators (Admin/HR Manager/
         // HR Officer/Recruiter) run panels and may record on behalf of any interviewer.
-        var isHrCoordinator = User.IsInRole("Admin") || User.IsInRole("HR Manager")
-            || User.IsInRole("HR Officer") || User.IsInRole("Recruiter");
-        if (!isHrCoordinator)
-        {
-            var me = GetUserName();
-            var assigned = !string.IsNullOrWhiteSpace(me)
-                && interview.InterviewerNames.Contains(me, StringComparison.OrdinalIgnoreCase);
-            if (!assigned)
-                return Forbid();
-        }
+        if (!InterviewPanel.MayWriteFeedback(User, interview, GetUserName()))
+            return Forbid();
 
         var feedback = new InterviewFeedback
         {
