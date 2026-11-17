@@ -940,6 +940,51 @@ public class OpeningBalanceCutoverTests
         report.KynexOneNetTotal.Should().Be(slips["EMP-001"].NetSalary);
     }
 
+    /// <summary>
+    /// A scoped caller uploads the customer's whole file. Rows for people outside their scope must go whether or not that
+    /// person has a payslip in this run (one hired after processing has none), or their pay feeds the register totals and
+    /// the "only in the register" count. A code that names no KynexOne employee reveals nothing and stays.
+    /// </summary>
+    [Fact]
+    public async Task VarianceReport_ForAScopedCaller_DropsOutOfScopeRegisterRowsWithOrWithoutAPayslip()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        await SeedEmployee(db, tid, co.Id, "EMP-001");   // in scope, has a payslip
+        await SeedEmployee(db, tid, co.Id, "EMP-002");   // out of scope, has a payslip
+        var run = await CreateRun(db, tid, 2026, 9, co.Id);
+        (await Payroll(db, tid, Maker).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        await SeedEmployee(db, tid, co.Id, "EMP-003");   // out of scope, exists in the tenant, NO payslip in this run
+        db.ChangeTracker.Clear();
+        var slips = await db.PayrollSlips.AsNoTracking().Where(s => s.RunId == run.Id).ToDictionaryAsync(s => s.EmployeeCode);
+        slips.Should().NotContainKey("EMP-003");
+
+        var register = "EmployeeCode,ComponentCode,Amount\n" +
+                       $"EMP-001,NET,{slips["EMP-001"].NetSalary}\n" +
+                       $"EMP-002,NET,{slips["EMP-002"].NetSalary}\n" +
+                       " emp-003 ,NET,5000\n" +          // case and spaces: still that person
+                       "ZZZ-999,NET,7000\n";             // names no employee at all
+        var request = new ParallelRunController.VarianceRequest(register, Tolerance: 0.01m);
+
+        var all = (ParallelRunController.VarianceReport)((OkObjectResult)(await Parallel(db, tid).Variance(run.Id, request, CancellationToken.None)).Result!).Value!;
+        all.EmployeesOnlyInRegister.Should().Be(2, "an unrestricted caller sees everyone, EMP-003 and the unknown code");
+        all.ExternalNetTotal.Should().Be(slips["EMP-001"].NetSalary + slips["EMP-002"].NetSalary + 5000m + 7000m);
+
+        var scopedController = Parallel(db, tid, new _ObScopedTo(slips["EMP-001"].EmployeeId));
+        var report = (ParallelRunController.VarianceReport)((OkObjectResult)(await scopedController.Variance(run.Id, request, CancellationToken.None)).Result!).Value!;
+
+        report.Lines.Select(l => l.EmployeeCode.Trim().ToUpperInvariant()).Distinct().Should().BeEquivalentTo(new[] { "EMP-001", "ZZZ-999" },
+            "both out-of-scope people are gone from the lines; the unknown code is register-only and stays");
+        report.ExternalNetTotal.Should().Be(slips["EMP-001"].NetSalary + 7000m, "no out-of-scope figure feeds the register total");
+        report.KynexOneNetTotal.Should().Be(slips["EMP-001"].NetSalary);
+        report.EmployeesInRegister.Should().Be(2);
+        report.EmployeesInRun.Should().Be(1);
+        report.EmployeesOnlyInRegister.Should().Be(1, "only the unknown code; the out-of-scope employee without a payslip is not 'missing'");
+        report.MatchedEmployees.Should().Be(1);
+    }
+
     /// <summary>A run with no payslips would report every register employee as missing — the server refuses, not just the UI.</summary>
     [Fact]
     public async Task VarianceReport_RefusesARunThatHasNoPayslips()

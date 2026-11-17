@@ -161,11 +161,25 @@ public sealed class ParallelRunController : ControllerBase
             : allSlips.Where(s => scope.CanAccessEmployee(s.EmployeeId)).ToList();
         if (!scope.IsUnrestricted)
         {
-            var hiddenCodes = allSlips.Where(s => !scope.CanAccessEmployee(s.EmployeeId))
-                .Select(s => (s.EmployeeCode ?? string.Empty).Trim())
-                .Where(c => c.Length > 0)
+            // Who is out of scope is decided by the employee master, not by who has a payslip in this run: a person
+            // hired after processing has no payslip here but is still outside this caller's scope. The register's
+            // codes are matched to the tenant's employees the way the rest of the report matches them (trimmed,
+            // case-insensitive). A code that names no employee in the tenant reveals nothing and stays.
+            var registerCodes = external.Keys.Select(k => k.Code.Trim().ToUpperInvariant()).Distinct().ToList();
+            var named = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && registerCodes.Contains(e.EmployeeCode.Trim().ToUpper()))
+                .Select(e => new { e.Id, e.EmployeeCode })
+                .ToListAsync(ct);
+            var inScopeCodes = named.Where(e => scope.CanAccessEmployee(e.Id))
+                .Select(e => e.EmployeeCode.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var hiddenCodes = named.Where(e => !scope.CanAccessEmployee(e.Id))
+                .Select(e => e.EmployeeCode.Trim())
+                .Where(c => c.Length > 0 && !inScopeCodes.Contains(c))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var key in external.Keys.Where(k => hiddenCodes.Contains(k.Code)).ToList())
+            foreach (var c in allSlips.Where(x => !scope.CanAccessEmployee(x.EmployeeId))
+                         .Select(x => (x.EmployeeCode ?? string.Empty).Trim()).Where(c => c.Length > 0))
+                hiddenCodes.Add(c);
+            foreach (var key in external.Keys.Where(k => hiddenCodes.Contains(k.Code.Trim())).ToList())
                 external.Remove(key);
         }
         var earnings = await _db.PayrollEarnings.AsNoTracking()
