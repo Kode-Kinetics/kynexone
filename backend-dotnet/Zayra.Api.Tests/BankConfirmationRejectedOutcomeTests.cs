@@ -188,14 +188,18 @@ public class BankConfirmationRejectedOutcomeTests
     }
 
     [Theory]
-    [InlineData("generic-csv")]
-    [InlineData("wps-ack")]
-    public async Task PaidAndRejectedRowsForOneRecord_AreConflictingRows(string parserKey)
+    [InlineData("generic-csv", "PAID")]
+    [InlineData("wps-ack", "PAID")]
+    // Before F1 a RETURNED row and an RJCT row for one record were the same outcome and were collapsed and applied as
+    // Returned. They now say two different things (money came back / money never left): a broken file.
+    [InlineData("generic-csv", "RETURNED")]
+    [InlineData("wps-ack", "BOUNCED")]
+    public async Task ARejectedRowBesideAPaidOrReturnedRowForOneRecord_IsConflictingRows(string parserKey, string other)
     {
         using var db = NewDb();
         var s = Seed(db);
 
-        var result = await Import(db, s, parserKey, null, ("PAID", null), ("RJCT", "AC01"));
+        var result = await Import(db, s, parserKey, null, (other, null), ("RJCT", "AC01"));
 
         result.ConflictingRows.Should().ContainSingle();
         Json(result.ConflictingRows).Should().Contain("conflicting_rows");
@@ -229,6 +233,23 @@ public class BankConfirmationRejectedOutcomeTests
     }
 
     [Theory]
+    [InlineData("Paid", "RJCT", "paid_then_rejected_held")]
+    [InlineData("Returned", "RJCT", "failed_outcome_changed_held")]
+    [InlineData("Rejected", "RETURNED", "failed_outcome_changed_held")]
+    public async Task AllowReturnReversal_OpensNeitherNewHold(string previous, string word, string hold)
+    {
+        using var db = NewDb();
+        var s = Seed(db, previous);
+
+        var result = await Import(db, s, "generic-csv",
+            new BankConfirmationImportOptions(AllowReturnReversal: true, ReturnReversalReason: "Bank re-ran the line"), (word, null));
+
+        s.Record.Status.Should().Be(previous);
+        db.BankPaymentConfirmations.Single().HoldReason.Should().Be(hold);
+        result.Overrides.Should().BeEmpty();
+    }
+
+    [Theory]
     [InlineData("generic-csv")]
     [InlineData("wps-ack")]
     public async Task PaidThenRejected_IsHeldForAPerson_NeverSilentlyUnpaid(string parserKey)
@@ -246,6 +267,10 @@ public class BankConfirmationRejectedOutcomeTests
         evidence.Applied.Should().BeFalse();
         evidence.HoldReason.Should().Be("paid_then_rejected_held");
         evidence.Outcome.Should().Be(BankConfirmationOutcomes.Rejected);
+        result.LateReturns.Should().BeEmpty("a refusal after Paid is not money that came back");
+        result.ReturnedAmountAwaitingGlCorrection.Should().Be(0m);
+        result.HeldForPerson.Should().ContainSingle();
+        Json(result.HeldForPerson).Should().Contain("paid_then_rejected_held");
     }
 
     [Theory]
@@ -345,18 +370,28 @@ public class BankConfirmationRejectedOutcomeTests
     }
 
     [Theory]
-    [InlineData("RJCT", null)]
-    [InlineData("FAILED", null)]
-    [InlineData("ACSC", "2026-07-30")]
-    public async Task Dashboard_Paid_IsUnaffectedByRejected(string word, string? expectedPayDate)
+    [InlineData("RJCT")]
+    [InlineData("FAILED")]
+    [InlineData("DECLINED")]
+    public async Task Dashboard_PaidCountAndPayDate_ComeFromThePaidLineOnly_NeverFromARejection(string word)
     {
         using var db = NewDb();
         var s = Seed(db);
+        var second = new PayrollPaymentRecord
+        {
+            TenantId = s.TenantId, PaymentBatchId = s.BatchId, EmployeeId = 2, Amount = 100m, Iban = Iban, Status = "Pending", WpsReference = "W2",
+        };
+        db.PayrollPaymentRecords.Add(second);
+        db.SaveChanges();
+        var content = "wpsReference,amount,valueDate,status\nW1,100,2026-07-30,PAID\n" + $"W2,100,2026-08-02,{word}\n";
+        var (result, refusal) = await Service(db).ImportAsync(s.TenantId, s.BatchId, "bank.csv", content, "generic-csv",
+            new BankConfirmationImportOptions(), Guid.NewGuid(), "Payroll Officer", default);
+        refusal.Should().BeNull();
+        await db.SaveChangesAsync();
 
-        var result = await Import(db, s, "generic-csv", word);
-
-        result.Coverage.PaidCount.Should().Be(expectedPayDate is null ? 0 : 1);
-        (await DashboardPayDate(db, s.TenantId)).Should().Be(expectedPayDate);
+        result!.Coverage.PaidCount.Should().Be(1);
+        result.Coverage.RejectedCount.Should().Be(1);
+        (await DashboardPayDate(db, s.TenantId)).Should().Be("2026-07-30", "the rejected line's later date is not a pay date");
     }
 
     private static BankConfirmationsController Controller(ZayraDbContext db, Seeded s)

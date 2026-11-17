@@ -283,7 +283,7 @@ public class BankPaymentConfirmation : ITenantOwned
 
 public static class BankConfirmationOutcomes
 {
-    /// <summary>Bank settled the credit — money reached the employee.</summary>
+    /// <summary>The bank reports the credit settled. A bank word, never proof the employee received it (CTO gate 8.4.4).</summary>
     public const string Paid = "Paid";
     /// <summary>The money left and came back (returned, bounced). Counts toward the GL correction of returned money.</summary>
     public const string Returned = "Returned";

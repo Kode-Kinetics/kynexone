@@ -12,7 +12,26 @@ public sealed record BankConfirmationImportOptions(
     bool AllowReturnReversal = false,
     string? ReturnReversalReason = null,
     bool AllowCrossBatchReimport = false,
-    bool DryRun = false);
+    bool DryRun = false,
+    // CTO ruling B2: the reasoned exits from the two holds. Both need OverrideReason; Paid -> Rejected also needs the bank's
+    // reference. Every use is audited with the before and after status.
+    // SEAM (wave 2, Setting 3): a company may require a SECOND person to approve these exits. Not built here.
+    bool AllowPaidToRejected = false,
+    bool AllowFailedOutcomeChange = false,
+    string? OverrideReason = null,
+    string? OverrideBankReference = null,
+    // No one-way traps (CTO follow-up 2): the opposite exits. Each needs OverrideReason AND OverrideBankReference.
+    //  - ConfirmPaidDespiteRejection: a rejection held after Paid; the record stays Paid and the hold clears.
+    //  - ConfirmOriginalPaymentReceived: a DUPL hold; the record stays or becomes Paid.
+    //  - ConfirmDuplicateNotPaid: a DUPL hold; the record becomes Rejected ("Not paid: rejected by bank").
+    bool ConfirmPaidDespiteRejection = false,
+    bool ConfirmOriginalPaymentReceived = false,
+    bool ConfirmDuplicateNotPaid = false)
+{
+    /// <summary>True when any reasoned exit was asked for.</summary>
+    public bool AnyExit => AllowPaidToRejected || AllowFailedOutcomeChange || ConfirmPaidDespiteRejection
+                          || ConfirmOriginalPaymentReceived || ConfirmDuplicateNotPaid;
+}
 
 /// <summary>Per-employee outcome tallies for a batch, as the ledger of record sees them.</summary>
 public sealed record BatchPaymentCoverage(
@@ -79,6 +98,17 @@ public sealed class BankConfirmationImportResult
     /// <summary>Money the bank refused to send. Still owed to the employees, but no cash left for it, so it is NOT part
     /// of <see cref="ReturnedAmountAwaitingGlCorrection"/>.</summary>
     public decimal RejectedAmountNotPaid { get; set; }
+
+    /// <summary>Of <see cref="RejectedAmountNotPaid"/>: rejections imported AFTER the batch's settlement journal. That journal
+    /// credited Cash/Bank for them, so they need the same GL correction as returned money (CTO ruling C1). Reported, never
+    /// posted. Zero while the batch is not settled.</summary>
+    public decimal RejectedAfterSettlementAwaitingGlCorrection { get; set; }
+
+    /// <summary>Lines this import applied through an explicit exit (AllowPaidToRejected / AllowFailedOutcomeChange).</summary>
+    public List<object> Overrides { get; } = new();
+
+    /// <summary>Holds on this batch still waiting for a person, after this import.</summary>
+    public List<object> HeldForPerson { get; } = new();
 }
 
 /// <summary>
@@ -138,6 +168,8 @@ public sealed class BankConfirmationService
         Guid tenantId, Guid paymentBatchId, string sourceFileName, string content, string? parserKey,
         BankConfirmationImportOptions options, Guid? actorId, string actorName, CancellationToken ct)
     {
+        if (OverrideRefusal(options) is { } overrideRefusal) return (null, overrideRefusal);
+
         var parser = FindParser(parserKey);
         if (parser is null)
             return (null, new JournalExportRefusal(400, new
@@ -178,6 +210,15 @@ public sealed class BankConfirmationService
         if (prior.Count > 0)
         {
             var priorBatches = prior.Select(p => p.PaymentBatchId).Distinct().ToList();
+            if (priorBatches.Contains(paymentBatchId) && options.AnyExit)
+                return (null, new JournalExportRefusal(409, new
+                {
+                    error = "exit_needs_the_line_again",
+                    message = "This exact file was already imported for this batch, so it would apply nothing. Send the line "
+                            + "the exit is about again (for example as a one-row payload) with the exit, the reason and the "
+                            + "bank's reference.",
+                    sourceFileHash = hash,
+                }));
             if (priorBatches.Contains(paymentBatchId))
             {
                 var rows = await LoadRecordsAsync(tenantId, paymentBatchId, ct);
@@ -192,8 +233,8 @@ public sealed class BankConfirmationService
                     RowsParsed = prior.Count(p => p.PaymentBatchId == paymentBatchId),
                     Coverage = Coverage(rows),
                 };
-                already.ReturnedAmountAwaitingGlCorrection = already.Coverage.ReturnedTotal;
-                already.RejectedAmountNotPaid = already.Coverage.RejectedTotal;
+                await FillReportAsync(already, tenantId, batch, rows,
+                    await LoadConfirmationsAsync(tenantId, paymentBatchId, ct), ct);
                 return (already, null);
             }
             if (!options.AllowCrossBatchReimport)
@@ -244,6 +285,9 @@ public sealed class BankConfirmationService
                 error = "batch_has_no_records",
                 message = "This payment batch holds no payment records to reconcile.",
             }));
+
+        // What the bank said before this import: the reason behind a failed line and the open holds are read from here too.
+        var priorConfirmations = await LoadConfirmationsAsync(tenantId, paymentBatchId, ct);
 
         var employeeCodes = await _db.Employees.AsNoTracking()
             .Where(e => e.TenantId == tenantId && records.Select(r => r.EmployeeId).Contains(e.Id))
@@ -316,8 +360,63 @@ public sealed class BankConfirmationService
 
             string? hold = null;
             var apply = true;
+            // The status a person's reasoned exit sets when it differs from the bank's word (null: none).
+            string? personStatus = null;
 
-            if (row.Outcome == BankConfirmationOutcomes.Pending)
+            if (BankStatusReasonCatalogue.IsDuplicate(row.ReasonCode)
+                && (options.ConfirmOriginalPaymentReceived || options.ConfirmDuplicateNotPaid))
+            {
+                // The DUPL exits (CTO follow-up 2). The person checked the original payment with the bank.
+                var to = options.ConfirmOriginalPaymentReceived ? PaymentRecordStatuses.Paid : PaymentRecordStatuses.Rejected;
+                if (mismatch && !options.AcknowledgeAmountMismatch)
+                {
+                    // An exit never overrides the amount check: a different figure is still held.
+                    apply = false;
+                    hold = "amount_mismatch_held";
+                    result.AmountMismatchesHeld.Add(new
+                    {
+                        paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
+                        recordAmount = record.Amount, confirmedAmount, delta = confirmedAmount - record.Amount,
+                        outcome = row.Outcome,
+                    });
+                }
+                else
+                {
+                    // Always recorded as the person's exit, never as an applied bank line, even when the bank's word happens to
+                    // agree: only these two resolution rows clear a DUPL hold (CTO ruling: "when in doubt, hold").
+                    apply = false;
+                    hold = options.ConfirmOriginalPaymentReceived
+                        ? BankOutcomeHolds.DuplicateOriginalReceivedConfirmed
+                        : BankOutcomeHolds.DuplicateNotPaidConfirmed;
+                    personStatus = to;
+                }
+                if (hold != "amount_mismatch_held")
+                    result.Overrides.Add(new
+                {
+                    paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
+                    kind = options.ConfirmOriginalPaymentReceived
+                        ? BankOutcomeHolds.ConfirmOriginalPaymentReceivedOverride
+                        : BankOutcomeHolds.ConfirmDuplicateNotPaidOverride,
+                    from = previous, to,
+                });
+            }
+            else if (BankStatusReasonCatalogue.IsDuplicate(row.ReasonCode))
+            {
+                // CTO ruling 4: a duplicate refusal usually means the ORIGINAL payment went through. Whatever the word, it
+                // is never "not paid, still owed" and never "paid": held for a person to check the original payment.
+                apply = false;
+                hold = BankOutcomeHolds.DuplicateRejection;
+                result.Refused.Add(new
+                {
+                    paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
+                    from = previous, to = row.Outcome, reason = hold,
+                    message = BankOutcomeLabels.HeldDuplicateRejection.English,
+                    messageAr = BankOutcomeLabels.HeldDuplicateRejection.Arabic,
+                    nextStep = "Send the line again with confirmOriginalPaymentReceived or confirmDuplicateNotPaid, a reason "
+                             + "and the bank's reference.",
+                });
+            }
+            else if (row.Outcome == BankConfirmationOutcomes.Pending)
             {
                 // Informational: the bank accepted the instruction but has not settled. Recorded as
                 // evidence, changes no status — an "accepted" record is still unconfirmed money. The reason
@@ -354,19 +453,54 @@ public sealed class BankConfirmationService
                 });
             }
             else if (string.Equals(previous, PaymentRecordStatuses.Paid, StringComparison.OrdinalIgnoreCase)
+                     && row.Outcome == BankConfirmationOutcomes.Rejected && options.AllowPaidToRejected)
+            {
+                // The reasoned exit (CTO ruling B2): a person confirmed with the bank that the money did not leave.
+                result.Overrides.Add(new
+                {
+                    paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
+                    kind = BankOutcomeHolds.PaidToRejectedOverride, from = previous, to = PaymentRecordStatuses.Rejected,
+                });
+            }
+            else if (string.Equals(previous, PaymentRecordStatuses.Paid, StringComparison.OrdinalIgnoreCase)
+                     && row.Outcome == BankConfirmationOutcomes.Rejected && options.ConfirmPaidDespiteRejection)
+            {
+                // The opposite exit (CTO follow-up 2): the person showed the money did leave (a statement line). The record
+                // stays Paid; the rejection is kept as evidence, not applied, and its row says why.
+                apply = false;
+                hold = BankOutcomeHolds.PaidConfirmedDespiteRejection;
+                result.Overrides.Add(new
+                {
+                    paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
+                    kind = BankOutcomeHolds.ConfirmPaidDespiteRejectionOverride, from = previous, to = PaymentRecordStatuses.Paid,
+                });
+            }
+            else if (string.Equals(previous, PaymentRecordStatuses.Paid, StringComparison.OrdinalIgnoreCase)
                      && row.Outcome == BankConfirmationOutcomes.Rejected)
             {
                 // The bank already said Paid and now says it refused the instruction. Applying it would hide money the
                 // ledger shows as sent (a rejection is never in the returned-money GL correction); ignoring it could
                 // hide an unpaid salary. A contradiction: held for a person.
                 apply = false;
-                hold = "paid_then_rejected_held";
+                hold = BankOutcomeHolds.PaidThenRejected;
                 result.Refused.Add(new
                 {
                     paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
                     from = previous, to = row.Outcome, reason = hold,
-                    message = "The bank confirmed this payment as paid and now reports it rejected. Nothing was changed: "
-                            + "check with the bank whether the money left, then record what it confirms.",
+                    message = "The bank confirmed this payment as paid and now reports it rejected. Nothing was changed: check "
+                            + "with the bank whether the money left. Then send the line again with allowPaidToRejected (it did "
+                            + "not) or confirmPaidDespiteRejection (it did), a reason and the bank's reference.",
+                    messageAr = BankOutcomeLabels.HeldRejectionAfterPaid.Arabic,
+                });
+            }
+            else if (PaymentRecordStatuses.IsFailed(previous) && row.Outcome is BankConfirmationOutcomes.Returned or BankConfirmationOutcomes.Rejected
+                     && !string.Equals(previous, row.Outcome, StringComparison.OrdinalIgnoreCase) && options.AllowFailedOutcomeChange)
+            {
+                // The reasoned exit (CTO ruling B2), also for a legacy rejection an earlier import stored as Returned.
+                result.Overrides.Add(new
+                {
+                    paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
+                    kind = BankOutcomeHolds.FailedOutcomeOverride, from = previous, to = row.Outcome,
                 });
             }
             else if (PaymentRecordStatuses.IsFailed(previous) && row.Outcome is BankConfirmationOutcomes.Returned or BankConfirmationOutcomes.Rejected
@@ -375,13 +509,15 @@ public sealed class BankConfirmationService
                 // Returned (money came back) and Rejected (money never left) differ in what the GL must correct. A file
                 // that swaps one for the other is held for a person, never applied silently.
                 apply = false;
-                hold = "failed_outcome_changed_held";
+                hold = BankOutcomeHolds.FailedOutcomeChanged;
                 result.Refused.Add(new
                 {
                     paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
                     from = previous, to = row.Outcome, reason = hold,
                     message = "The bank earlier reported this payment as " + previous + " and now as " + row.Outcome
-                            + ". Nothing was changed: check with the bank which is right.",
+                            + ". Nothing was changed: check with the bank which is right, then re-import with "
+                            + "allowFailedOutcomeChange and a reason.",
+                    messageAr = BankOutcomeLabels.HeldFailedOutcomeChanged.Arabic,
                 });
             }
 
@@ -398,13 +534,7 @@ public sealed class BankConfirmationService
             }
 
             // Each terminal outcome sets its own payment status; a rejection is never written as Returned.
-            var target = row.Outcome switch
-            {
-                BankConfirmationOutcomes.Paid => PaymentRecordStatuses.Paid,
-                BankConfirmationOutcomes.Returned => PaymentRecordStatuses.Returned,
-                BankConfirmationOutcomes.Rejected => PaymentRecordStatuses.Rejected,
-                _ => null,
-            };
+            var target = StatusFor(row.Outcome);
 
             if (apply && target is not null)
             {
@@ -416,6 +546,15 @@ public sealed class BankConfirmationService
                     result.SettledByBank++;
 
                 if (!options.DryRun) record.Status = target;
+            }
+            else if (personStatus is not null)
+            {
+                // A reasoned exit set a status the bank's word did not say. Counted like any other change.
+                if (string.Equals(previous, personStatus, StringComparison.OrdinalIgnoreCase)) result.Unchanged++;
+                else if (personStatus == PaymentRecordStatuses.Paid) result.PaidApplied++;
+                else result.RejectedApplied++;
+
+                if (!options.DryRun) record.Status = personStatus;
             }
 
             if (!options.DryRun)
@@ -455,14 +594,13 @@ public sealed class BankConfirmationService
                                           && !PaymentRecordStatuses.IsCancelled(r.Status)))
             result.Unconfirmed.Add(new { paymentRecordId = r.Id, employeeId = r.EmployeeId, amount = r.Amount, status = r.Status });
 
-        result.Coverage = Coverage(records);
-        // Only money that LEFT and came back awaits a GL correction. A rejection never left: it is reported apart.
-        result.ReturnedAmountAwaitingGlCorrection = result.Coverage.ReturnedTotal;
-        result.RejectedAmountNotPaid = result.Coverage.RejectedTotal;
-        foreach (var r in records.Where(r => string.Equals(r.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase)))
-            result.Returns.Add(FailedLine(r, BankConfirmationOutcomes.Returned, BankOutcomeLabels.ReturnedMoneyCameBack, options.DryRun));
-        foreach (var r in records.Where(r => string.Equals(r.Status, PaymentRecordStatuses.Rejected, StringComparison.OrdinalIgnoreCase)))
-            result.Rejections.Add(FailedLine(r, BankConfirmationOutcomes.Rejected, BankOutcomeLabels.NotPaidRejectedByBank, options.DryRun));
+        // What the bank has said about this batch after this import: the stored rows plus this import's own (none in a dry run).
+        var confirmations = options.DryRun
+            ? priorConfirmations
+            : priorConfirmations.Concat(_db.ChangeTracker.Entries<BankPaymentConfirmation>()
+                .Where(e => e.State == EntityState.Added && e.Entity.PaymentBatchId == paymentBatchId)
+                .Select(e => e.Entity)).ToList();
+        await FillReportAsync(result, tenantId, batch, records, confirmations, ct);
 
         if (!options.DryRun)
             _db.PayrollAuditLogs.Add(new PayrollAuditLog
@@ -498,6 +636,17 @@ public sealed class BankConfirmationService
                         crossBatchReimport = options.AllowCrossBatchReimport,
                         returnReversalAllowed = options.AllowReturnReversal,
                         returnReversalReason = options.ReturnReversalReason,
+                        rejectedAfterSettlementAwaitingGlCorrection = result.RejectedAfterSettlementAwaitingGlCorrection,
+                        heldForPerson = result.HeldForPerson.Count,
+                        paidToRejectedAllowed = options.AllowPaidToRejected,
+                        failedOutcomeChangeAllowed = options.AllowFailedOutcomeChange,
+                        overrideReason = options.OverrideReason,
+                        overrideBankReference = options.OverrideBankReference,
+                        confirmPaidDespiteRejection = options.ConfirmPaidDespiteRejection,
+                        confirmOriginalPaymentReceived = options.ConfirmOriginalPaymentReceived,
+                        confirmDuplicateNotPaid = options.ConfirmDuplicateNotPaid,
+                        // Each exit used, with the status before and after.
+                        overrides = result.Overrides,
                     },
                 }, parse.ImportKey)),
             });
@@ -505,26 +654,75 @@ public sealed class BankConfirmationService
         return (result, null);
     }
 
-    /// <summary>One returned or rejected record, with the bank's latest word on it from this import, its label and the
-    /// plain EN/AR text for the bank's reason code (<see cref="BankStatusReasonCatalogue"/>).</summary>
-    private object FailedLine(PayrollPaymentRecord r, string outcome, BankText label, bool dryRun)
+    /// <summary>The figures and lists every import result carries, read through the shared <see cref="BankOutcomeLedger"/> so
+    /// the import, the batch history and the period handoff report the same thing.</summary>
+    private async Task FillReportAsync(BankConfirmationImportResult result, Guid tenantId, PayrollPaymentBatch batch,
+        IReadOnlyList<PayrollPaymentRecord> records, IReadOnlyList<BankPaymentConfirmation> confirmations, CancellationToken ct)
     {
-        var latest = !dryRun
-            ? _db.ChangeTracker.Entries<BankPaymentConfirmation>()
-                 .Select(e => e.Entity)
-                 .Where(c => c.PaymentRecordId == r.Id && c.Outcome == outcome)
-                 .OrderByDescending(c => c.ImportedAtUtc).FirstOrDefault()
-            : null;
-        var reason = BankStatusReasonCatalogue.Describe(latest?.ReasonCode);
-        return new
-        {
-            paymentRecordId = r.Id, employeeId = r.EmployeeId, amount = r.Amount, status = r.Status,
-            label = new { en = label.English, ar = label.Arabic },
-            reasonCode = latest?.ReasonCode, reasonText = latest?.ReasonText,
-            reasonDescription = new { en = reason.English, ar = reason.Arabic, known = reason.IsKnown },
-            bankReference = latest?.BankReference, valueDate = latest?.ValueDate,
-        };
+        result.Coverage = Coverage(records);
+        // Only money that LEFT and came back is "returned". A rejection is reported apart; it needs a GL correction only when
+        // the batch was settled before it arrived.
+        result.ReturnedAmountAwaitingGlCorrection = result.Coverage.ReturnedTotal;
+        result.RejectedAmountNotPaid = result.Coverage.RejectedTotal;
+        var settledAt = await BankOutcomeLedger.SettledAtAsync(_db, tenantId, new[] { batch }, ct);
+        result.RejectedAfterSettlementAwaitingGlCorrection =
+            BankOutcomeLedger.RejectedAfterSettlement(records, confirmations, settledAt).Sum(r => r.Amount);
+        foreach (var r in records.Where(r => string.Equals(r.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase)))
+            result.Returns.Add(BankOutcomeLedger.FailedLine(r, BankConfirmationOutcomes.Returned, BankOutcomeLabels.ReturnedMoneyCameBack, confirmations));
+        foreach (var r in records.Where(r => string.Equals(r.Status, PaymentRecordStatuses.Rejected, StringComparison.OrdinalIgnoreCase)))
+            result.Rejections.Add(BankOutcomeLedger.FailedLine(r, BankConfirmationOutcomes.Rejected, BankOutcomeLabels.NotPaidRejectedByBank, confirmations));
+        foreach (var h in BankOutcomeLedger.UnresolvedHolds(records, confirmations))
+            result.HeldForPerson.Add(BankOutcomeLedger.View(h));
     }
+
+    /// <summary>An exit asked for without what it needs refuses the whole import.</summary>
+    private static JournalExportRefusal? OverrideRefusal(BankConfirmationImportOptions options)
+    {
+        if ((options.AllowPaidToRejected && options.ConfirmPaidDespiteRejection)
+            || (options.ConfirmOriginalPaymentReceived && options.ConfirmDuplicateNotPaid))
+            return new JournalExportRefusal(400, new
+            {
+                error = "opposing_exits",
+                message = "Two exits that say opposite things were asked for together. Choose the one the bank confirmed.",
+            });
+        var noReason = string.IsNullOrWhiteSpace(options.OverrideReason);
+        var noReference = string.IsNullOrWhiteSpace(options.OverrideBankReference);
+        if ((options.ConfirmPaidDespiteRejection || options.ConfirmOriginalPaymentReceived || options.ConfirmDuplicateNotPaid)
+            && (noReason || noReference))
+            return new JournalExportRefusal(400, new
+            {
+                error = "override_reason_required",
+                message = "Confirming what the bank really did needs a reason and the bank's reference (for example a "
+                        + "statement line).",
+            });
+        if (options.AllowPaidToRejected && (noReason || string.IsNullOrWhiteSpace(options.OverrideBankReference)))
+            return new JournalExportRefusal(400, new
+            {
+                error = "override_reason_required",
+                message = "Recording a rejection for a salary already marked Paid needs a reason and the bank's reference: it "
+                        + "asserts that money the bank first confirmed never reached the employee.",
+            });
+        if (options.AllowFailedOutcomeChange && noReason)
+            return new JournalExportRefusal(400, new
+            {
+                error = "override_reason_required",
+                message = "Changing a payment between returned and rejected needs a reason: it changes what the GL must correct.",
+            });
+        return null;
+    }
+
+    /// <summary>The payment status a canonical bank outcome sets; null for Pending or an unknown outcome.</summary>
+    private static string? StatusFor(string? outcome) => outcome switch
+    {
+        BankConfirmationOutcomes.Paid => PaymentRecordStatuses.Paid,
+        BankConfirmationOutcomes.Returned => PaymentRecordStatuses.Returned,
+        BankConfirmationOutcomes.Rejected => PaymentRecordStatuses.Rejected,
+        _ => null,
+    };
+
+    private async Task<IReadOnlyList<BankPaymentConfirmation>> LoadConfirmationsAsync(Guid tenantId, Guid batchId, CancellationToken ct) =>
+        await _db.BankPaymentConfirmations.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.PaymentBatchId == batchId).ToListAsync(ct);
 
     /// <summary>The audit metadata, plus the accepted file's remembered key when its parser supplied one. Unchanged otherwise.</summary>
     private static object WithImportKey(object metadata, string? importKey)

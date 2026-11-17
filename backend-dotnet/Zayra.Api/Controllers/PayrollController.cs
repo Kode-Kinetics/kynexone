@@ -4107,6 +4107,8 @@ public partial class PayrollController : ControllerBase
                 .Select(x => new { x.EmployeeId, x.Amount, x.Status })
                 .ToListAsync(cancellationToken);
             var d4Failed = d4Records.Where(x => PaymentRecordStatuses.IsFailed(x.Status)).ToList();
+            var d4Returned = d4Failed.Where(x => string.Equals(x.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase)).ToList();
+            var d4Rejected = d4Failed.Where(x => string.Equals(x.Status, PaymentRecordStatuses.Rejected, StringComparison.OrdinalIgnoreCase)).ToList();
             var d4Unconfirmed = d4Records
                 .Where(x => !PaymentRecordStatuses.IsConfirmed(x.Status) && !PaymentRecordStatuses.IsCancelled(x.Status))
                 .ToList();
@@ -4114,12 +4116,12 @@ public partial class PayrollController : ControllerBase
                 return UnprocessableEntity(new
                 {
                     error   = "payments_not_reconciled",
-                    message = "This batch cannot reach Reconciled while payments are returned or unconfirmed by the "
-                            + "bank. Import the bank/WPS response (POST payment-batches/{id}/bank-confirmations) and "
-                            + "resolve any returns first — reconciling now would close the month over money that "
-                            + "came back or was never confirmed.",
-                    returnedCount = d4Failed.Count,
-                    returnedTotal = d4Failed.Sum(x => x.Amount),
+                    message = Infrastructure.Finance.BankOutcomeMessages.NotReconciled(d4Returned.Count, d4Rejected.Count, d4Unconfirmed.Count),
+                    // Returned (the money came back) and rejected ("Not paid: rejected by bank") are counted apart.
+                    returnedCount = d4Returned.Count,
+                    returnedTotal = d4Returned.Sum(x => x.Amount),
+                    rejectedCount = d4Rejected.Count,
+                    rejectedTotal = d4Rejected.Sum(x => x.Amount),
                     unconfirmedCount = d4Unconfirmed.Count,
                     unconfirmedTotal = d4Unconfirmed.Sum(x => x.Amount),
                 });
@@ -5968,7 +5970,9 @@ public partial class PayrollController : ControllerBase
                 b.Id, b.TenantId, b.PayrollRunId, b.BatchNumber, b.PaymentMethod, b.TotalAmount, b.Currency,
                 b.Status, b.WpsStatus, b.WpsStatusChangedAtUtc, b.WpsSubmissionReference, b.WpsRejectionReason,
                 b.CreatedAtUtc,
-                unresolvedReturns = new { count = cov.FailedCount, total = cov.FailedTotal },
+                // Returned only: the money came back. A rejection (never left) is counted apart.
+                unresolvedReturns = new { count = cov.ReturnedCount, total = cov.ReturnedTotal },
+                unresolvedRejections = new { count = cov.RejectedCount, total = cov.RejectedTotal },
                 unconfirmedPayments = new { count = cov.UnconfirmedCount, total = cov.UnconfirmedTotal },
                 confirmationCoverage = cov.ConfirmationCoverage,
                 presentsCleanButIsNot = b.WpsStatus is WpsStatuses.Paid or WpsStatuses.Reconciled
@@ -6045,7 +6049,9 @@ public partial class PayrollController : ControllerBase
                 r.Status,
                 r.WpsReference,
                 Iban = canSeeIban ? r.Iban : Infrastructure.Payroll.SifFileGenerator.MaskIban(r.Iban),
-                isReturned = PaymentRecordStatuses.IsFailed(r.Status),
+                // Returned = the money came back; Rejected = "Not paid: rejected by bank", it never left.
+                isReturned = string.Equals(r.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase),
+                isRejected = string.Equals(r.Status, PaymentRecordStatuses.Rejected, StringComparison.OrdinalIgnoreCase),
                 bankConfirmed = PaymentRecordStatuses.IsConfirmed(r.Status),
                 returnReasonCode = latest is null || latest.Outcome != BankConfirmationOutcomes.Returned ? null : latest.ReasonCode,
                 returnReasonText = latest is null || latest.Outcome != BankConfirmationOutcomes.Returned ? null : latest.ReasonText,

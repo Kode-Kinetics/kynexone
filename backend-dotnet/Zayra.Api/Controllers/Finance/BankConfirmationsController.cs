@@ -68,6 +68,16 @@ public class BankConfirmationsController : ControllerBase
         [FromQuery] string? returnReversalReason = null,
         [FromQuery] bool allowCrossBatchReimport = false,
         [FromQuery] bool dryRun = false,
+        // CTO ruling B2: the reasoned exits from the two holds. Same permission as the import and as allowReturnReversal.
+        // SEAM (wave 2, Setting 3): a second approver for these exits. Not built here.
+        [FromQuery] bool allowPaidToRejected = false,
+        [FromQuery] bool allowFailedOutcomeChange = false,
+        [FromQuery] string? overrideReason = null,
+        [FromQuery] string? overrideBankReference = null,
+        // The opposite exits (CTO follow-up 2): each needs overrideReason AND overrideBankReference.
+        [FromQuery] bool confirmPaidDespiteRejection = false,
+        [FromQuery] bool confirmOriginalPaymentReceived = false,
+        [FromQuery] bool confirmDuplicateNotPaid = false,
         CancellationToken ct = default)
     {
         if (!HasPermission("payroll.export")) return Forbid();
@@ -79,15 +89,28 @@ public class BankConfirmationsController : ControllerBase
             return BadRequest(new
             {
                 error = "return_reversal_reason_required",
-                message = "Re-marking a returned payment as paid requires an explicit reason — it asserts that money "
-                        + "the bank told us came back actually reached the employee.",
+                message = "Re-marking a returned or rejected payment as paid requires an explicit reason — it asserts that "
+                        + "money the bank told us did not reach the employee actually did.",
+            });
+
+        if ((allowPaidToRejected && (string.IsNullOrWhiteSpace(overrideReason) || string.IsNullOrWhiteSpace(overrideBankReference)))
+            || (allowFailedOutcomeChange && string.IsNullOrWhiteSpace(overrideReason))
+            || ((confirmPaidDespiteRejection || confirmOriginalPaymentReceived || confirmDuplicateNotPaid)
+                && (string.IsNullOrWhiteSpace(overrideReason) || string.IsNullOrWhiteSpace(overrideBankReference))))
+            return BadRequest(new
+            {
+                error = "override_reason_required",
+                message = "Recording a rejection after Paid, or confirming what the bank really did with a held line, needs a "
+                        + "reason and the bank's reference; changing a payment between returned and rejected needs a reason.",
             });
 
         var (fileName, content, readError) = await ReadPayloadAsync(ct);
         if (readError is not null) return readError;
 
         var options = new BankConfirmationImportOptions(
-            acknowledgeAmountMismatch, allowReturnReversal, returnReversalReason?.Trim(), allowCrossBatchReimport, dryRun);
+            acknowledgeAmountMismatch, allowReturnReversal, returnReversalReason?.Trim(), allowCrossBatchReimport, dryRun,
+            allowPaidToRejected, allowFailedOutcomeChange, overrideReason?.Trim(), overrideBankReference?.Trim(),
+            confirmPaidDespiteRejection, confirmOriginalPaymentReceived, confirmDuplicateNotPaid);
 
         var (result, refusal) = await _service.ImportAsync(
             tid.Value, batchId, fileName!, content!, format, options, this.GetUserId(), UserName(), ct);
@@ -121,6 +144,9 @@ public class BankConfirmationsController : ControllerBase
 
         var coverage = BankConfirmationService.Coverage(records);
         var canSeeBankRefs = HasPermission("payroll.export");
+        var settledAt = await BankOutcomeLedger.SettledAtAsync(_db, tid.Value, new[] { batch }, ct);
+        var rejectedAfterSettlement = BankOutcomeLedger.RejectedAfterSettlement(records, confirmations, settledAt).Sum(r => r.Amount);
+        var heldForPerson = BankOutcomeLedger.UnresolvedHolds(records, confirmations);
 
         return Ok(new
         {
@@ -132,10 +158,14 @@ public class BankConfirmationsController : ControllerBase
             coverage,
             // A batch whose WPS status reads Paid/Reconciled while money came back or is unaccounted for.
             presentsCleanButIsNot = batch.WpsStatus is WpsStatuses.Paid or WpsStatuses.Reconciled
-                                    && (coverage.FailedCount > 0 || coverage.UnconfirmedCount > 0),
+                                    && (coverage.FailedCount > 0 || coverage.UnconfirmedCount > 0 || heldForPerson.Count > 0),
             // Only money that left and came back. A rejection never left, so it is reported on its own.
             returnedAmountAwaitingGlCorrection = coverage.ReturnedTotal,
             rejectedAmountNotPaid = coverage.RejectedTotal,
+            // Of those: rejections that arrived after the settlement journal credited Cash/Bank for them (C1).
+            rejectedAfterSettlementAwaitingGlCorrection = rejectedAfterSettlement,
+            // Lines a person must resolve: a rejection after Paid, a Returned/Rejected swap, a DUPL refusal.
+            heldForPerson = heldForPerson.Select(BankOutcomeLedger.View).ToList(),
             imports = confirmations.GroupBy(c => c.ImportBatchId).Select(g => new
             {
                 importBatchId = g.Key,
@@ -145,8 +175,9 @@ public class BankConfirmationsController : ControllerBase
                 importedByName = g.First().ImportedByName,
                 importedAtUtc = g.First().ImportedAtUtc,
                 rows = g.Count(),
-                applied = g.Count(c => c.Applied),
-                held = g.Count(c => !c.Applied),
+                // A person's reasoned exit counts as applied: it set the record's status.
+                applied = g.Count(c => c.Applied || BankOutcomeHolds.IsPersonDecision(c.HoldReason)),
+                held = g.Count(c => !c.Applied && !BankOutcomeHolds.IsPersonDecision(c.HoldReason)),
             }).OrderByDescending(x => x.importedAtUtc).ToList(),
             confirmations = confirmations.Select(c => new
             {
@@ -250,9 +281,20 @@ public class BankConfirmationsController : ControllerBase
         rejectedAmountNotPaid = new
         {
             amount = r.RejectedAmountNotPaid,
-            note = "Not paid: the bank rejected these lines, so no money left for them and they are not part of the GL "
-                 + "correction above. The salaries are still owed.",
+            note = "Not paid: the bank rejected these lines and they are not returned money. Where the batch was settled "
+                 + "before a rejection arrived, the ledger shows that salary as sent: see "
+                 + "rejectedAfterSettlementAwaitingGlCorrection.",
         },
+        rejectedAfterSettlementAwaitingGlCorrection = new
+        {
+            amount = r.RejectedAfterSettlementAwaitingGlCorrection,
+            label = new { en = BankOutcomeLabels.NotPaidRejectedByBank.English, ar = BankOutcomeLabels.NotPaidRejectedByBank.Arabic },
+            correction = "DR Cash-Bank / CR 2100 Salaries Payable (per rejected employee whose batch was settled first)",
+            note = "REPORTED, NOT POSTED. The settlement journal credited Cash/Bank before the bank rejected these lines.",
+        },
+        // The exits used in this import, and the lines still held for a person.
+        overrides = r.Overrides,
+        heldForPerson = r.HeldForPerson,
     };
 
     /// <summary>

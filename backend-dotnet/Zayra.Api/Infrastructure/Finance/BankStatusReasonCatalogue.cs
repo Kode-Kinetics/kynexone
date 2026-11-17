@@ -35,13 +35,22 @@ public static class BankStatusReasonCatalogue
         ["AM04"] = new("There was not enough money in the paying account.", "الرصيد في حساب الدفع غير كافٍ."),
         // InconsistentWithEndCustomer
         ["BE01"] = new("The name or ID does not match the account holder.", "الاسم أو رقم الهوية لا يطابق صاحب الحساب."),
-        // DuplicatePayment
-        ["DUPL"] = new("The bank treated this payment as a duplicate.", "اعتبر البنك هذه الدفعة مكررة."),
+        // DuplicatePayment. A duplicate refusal usually means the ORIGINAL payment went through, so it never reads "not paid":
+        // the line is held for a person (CTO ruling 4).
+        ["DUPL"] = new(DuplicateEnglish, DuplicateArabic),
         // InvalidFileFormat
         ["FF01"] = new("The bank could not read the file format.", "تعذّر على البنك قراءة صيغة الملف."),
     };
 
+    internal const string DuplicateEnglish =
+        "The bank refused this as a duplicate. Check whether the original payment reached the employee before paying again.";
+    internal const string DuplicateArabic =
+        "رفض البنك هذه العملية لأنها مكررة. تحقق مما إذا كانت عملية الدفع الأصلية قد وصلت إلى الموظف قبل الدفع مرة أخرى.";
+
     public static IReadOnlyCollection<string> KnownCodes => Codes.Keys.ToList();
+
+    /// <summary>True when the code is ISO DUPL (DuplicatePayment), in any letter case.</summary>
+    public static bool IsDuplicate(string? code) => Normalise(code) == "DUPL";
 
     public static bool IsKnown(string? code) => Normalise(code) is { } c && Codes.ContainsKey(c);
 
@@ -62,11 +71,13 @@ public static class BankStatusReasonCatalogue
             : new(normalised, $"Bank reason code {normalised}: ask your bank", $"رمز السبب من البنك {normalised}: استفسر من البنك", false);
     }
 
-    /// <summary>Upper-cased code, or null when it is not one: ASCII letters, digits, '_' and '-' only, at most 35.</summary>
+    /// <summary>Upper-cased code, or null when it is not one: ASCII letters, digits, '_' and '-' only, at most 35, and
+    /// starting with a letter or digit (a leading '-' reads as a formula in a spreadsheet export).</summary>
     private static string? Normalise(string? code)
     {
         var trimmed = (code ?? string.Empty).Trim();
         if (trimmed.Length == 0 || trimmed.Length > MaxCodeLength) return null;
+        if (!char.IsAsciiLetterOrDigit(trimmed[0])) return null;
         foreach (var ch in trimmed)
             if (!(ch is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' or '_' or '-')) return null;
         return trimmed.ToUpperInvariant();
@@ -88,7 +99,25 @@ public static class BankOutcomeLabels
     /// <summary>ISO ACWC: the bank accepted the instruction with a change. Nothing is recorded until a person checks.</summary>
     public static readonly BankText HeldAcceptedWithChange = new(
         "Held: the bank accepted it with a change; a person must check what changed",
-        "معلّق: قبل البنك التعليمات مع تعديل، ويلزم أن يراجع شخص ما تغيّر");
+        "معلّق: قبل البنك التعليمات مع تعديل، ويجب أن يراجع أحد الموظفين ما الذي تغيّر");
 
-    public static IReadOnlyList<BankText> All => new[] { NotPaidRejectedByBank, SettledByBank, ReturnedMoneyCameBack, HeldAcceptedWithChange };
+    /// <summary>Reason code DUPL: held, never "not paid" (CTO ruling 4).</summary>
+    public static readonly BankText HeldDuplicateRejection =
+        new(BankStatusReasonCatalogue.DuplicateEnglish, BankStatusReasonCatalogue.DuplicateArabic);
+
+    /// <summary>A rejection after the salary was marked Paid (CTO ruling B2).</summary>
+    public static readonly BankText HeldRejectionAfterPaid = new(
+        "Held: the bank reported a rejection for a salary already marked Paid; a person must check whether the money left",
+        "معلّق: أبلغ البنك برفض راتب سبق تسجيله مدفوعًا، ويجب أن يتحقق أحد الموظفين مما إذا كان المبلغ قد خرج");
+
+    /// <summary>The bank's answer moved between Returned and Rejected (CTO ruling B2).</summary>
+    public static readonly BankText HeldFailedOutcomeChanged = new(
+        "Held: the bank changed its answer between returned and rejected; a person must check which is right",
+        "معلّق: غيّر البنك ردّه بين مرتجع ومرفوض، ويجب أن يتحقق أحد الموظفين من الرد الصحيح");
+
+    public static IReadOnlyList<BankText> All => new[]
+    {
+        NotPaidRejectedByBank, SettledByBank, ReturnedMoneyCameBack, HeldAcceptedWithChange, HeldDuplicateRejection,
+        HeldRejectionAfterPaid, HeldFailedOutcomeChanged,
+    };
 }
