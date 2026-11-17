@@ -1861,6 +1861,8 @@ const GOSI_COHORT_NOT_RECORDED = 'GOSI_COHORT_NOT_RECORDED';
 const GOSI_NEW_ENTRANT_BLOCKED = 'GOSI_NEW_ENTRANT_SCHEDULE_NOT_MODELLED';
 const GOSI_NEW_ENTRANT_APPLIED = 'GOSI_NEW_ENTRANT_SCHEDULE_APPLIED';
 const GOSI_BELOW_MINIMUM_WAGE = 'GOSI_BELOW_MINIMUM_CONTRIBUTORY_WAGE';
+/** PayrollValidationEngine.ZeroNetUnpaidLeaveDebtDeferred — a Warning, never a block. */
+const ZERO_NET_UNPAID_LEAVE_DEBT_DEFERRED = 'ZERO_NET_UNPAID_LEAVE_DEBT_DEFERRED';
 
 /**
  * The run a payroll tab works on. The page holds ONE selected run (the pipeline's Run selector and the tabs' own selectors are the same choice):
@@ -1924,6 +1926,7 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
   const cohortBlocked = results.filter(r => r.code === GOSI_NEW_ENTRANT_BLOCKED);
   const cohortApplied = results.filter(r => r.code === GOSI_NEW_ENTRANT_APPLIED);
   const belowMinimumWage = results.filter(r => r.code === GOSI_BELOW_MINIMUM_WAGE);
+  const zeroNetLeave = results.filter(r => r.code === ZERO_NET_UNPAID_LEAVE_DEBT_DEFERRED);
   const [cohortOnly, setCohortOnly] = useState(false);
   const shown = cohortOnly && cohortBlocked.length + cohortNotRecorded.length + cohortApplied.length > 0
     ? [...cohortBlocked, ...cohortNotRecorded, ...cohortApplied]
@@ -1984,6 +1987,15 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
         </div>
       )}
 
+      {zeroNetLeave.length > 0 && (
+        <div className="surface space-y-1 px-5 py-4" data-testid="zero-net-unpaid-leave-findings">
+          <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Zero net pay from a full month of unpaid leave')}</p>
+          <p className="text-sm text-amber-700 dark:text-amber-400">
+            {t('{count} employee(s) net zero this month: unpaid leave took the whole wage, and the loan or advance instalment they owe was carried forward to the next run, not written off. Nothing is paid to them, so they are left out of the bank file. This is a warning, not a block: check the leave, then approve the run.', { count: zeroNetLeave.length })}
+          </p>
+        </div>
+      )}
+
       {results.length === 0 && !loading ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <CheckCircle2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
@@ -2002,7 +2014,11 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
                   <span className="font-mono text-xs text-slate-500">{r.code}</span>
                   {r.employeeId && <span className="text-xs text-slate-400"><EmployeeLabelText label={employeeLabel(r.employeeId, names, id => t('Emp #{employeeId}', { employeeId: id }))} /></span>}
                 </div>
-                <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{r.message}</p>
+                <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
+                  {r.code === ZERO_NET_UNPAID_LEAVE_DEBT_DEFERRED
+                    ? t('Net pay is zero: unpaid leave took the whole wage this month. The loan or advance instalment is carried forward to the next run, not written off.')
+                    : r.message}
+                </p>
               </div>
               {r.isResolved
                 ? <span className="ms-auto shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">{t('Overridden')}</span>

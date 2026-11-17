@@ -58,6 +58,10 @@ const ar: Record<string, string> = {
   'Waits for the bank file.': 'بانتظار ملف البنك.',
   'Download the files, send them to your bank, then record the batch as submitted in Payment Tracking.': 'نزّل الملفات وأرسلها إلى بنكك ثم سجّل الدفعة «مُرسلة» في تتبع المدفوعات.',
   'Open Payment Tracking': 'فتح تتبع المدفوعات',
+  // Validation tab: the zero-net warning (unpaid leave took the whole month's wage and a loan or advance instalment was carried forward).
+  'Zero net pay from a full month of unpaid leave': 'صافي أجر صفري بسبب إجازة غير مدفوعة طوال الشهر',
+  '{count} employee(s) net zero this month: unpaid leave took the whole wage, and the loan or advance instalment they owe was carried forward to the next run, not written off. Nothing is paid to them, so they are left out of the bank file. This is a warning, not a block: check the leave, then approve the run.': '{count} من الموظفين صافي أجرهم صفر هذا الشهر: استغرقت الإجازة غير المدفوعة الأجر كاملًا، وأُرجئ قسط القرض أو السلفة المستحق عليهم إلى المسير التالي دون إسقاطه. لا يُصرف لهم شيء، لذلك لا يُدرجون في ملف البنك. هذا تنبيه وليس مانعًا: راجع الإجازة ثم اعتمد المسير.',
+  'Net pay is zero: unpaid leave took the whole wage this month. The loan or advance instalment is carried forward to the next run, not written off.': 'صافي الأجر صفر: استغرقت الإجازة غير المدفوعة الأجر كاملًا هذا الشهر. يُرجأ قسط القرض أو السلفة إلى المسير التالي دون إسقاطه.',
 };
 
 export const payrollUx = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) };
