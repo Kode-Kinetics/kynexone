@@ -572,6 +572,20 @@ test.describe('fix batch 2: the flow', () => {
     });
   }
 
+  test('E: the answered bar is coloured by bucket, sized by money', async ({ page }) => {
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [SUBMITTED], existingExport: FILE, records: SUB_RETURNED }), waitMs: 2500, stages: 'default' });
+    const bar = page.getByRole('progressbar');
+    await expect(bar).toBeVisible({ timeout: 90_000 });
+    const whole = (await bar.boundingBox())!.width;
+    const width = async (k: string) => (await bar.locator(`[data-bucket="${k}"]`).boundingBox())?.width ?? 0;
+    const file = 129438.9;
+    for (const [k, amount] of [['paid', 86088.9], ['returned', 14100], ['waiting', 29250]] as const) {
+      expect(Math.abs(await width(k) - whole * amount / file), k).toBeLessThanOrEqual(2);
+    }
+    await expect(bar.locator('[data-bucket="returned"]')).toHaveClass(/bg-danger/);
+    await expect(bar.locator('[data-bucket="paid"]')).toHaveClass(/bg-success/);
+  });
+
 });
 
 test.describe('Payroll Runs on a locked run', () => {

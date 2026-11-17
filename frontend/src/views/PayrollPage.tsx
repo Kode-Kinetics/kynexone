@@ -3383,8 +3383,15 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
         {total !== undefined && answered !== undefined && (
           <div className="rounded-xl border border-line p-4" data-testid="bank-response-tracker">
             <p className="text-body font-semibold text-fg">{t('The bank has answered for {answered} of {total} payments', { answered, total })}</p>
-            <div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={answered} aria-label={t('Bank response')} className="mt-3 h-2 overflow-hidden rounded-full bg-line" data-essential-motion="">
-              <div className="h-full rounded-full bg-success transition-[width] duration-base ease-standard" style={{ width: `${pct}%` }} data-essential-motion="" />
+            {/* One segment per bucket, sized by its money: green only for what the bank confirmed, red for returned, grey for waiting. */}
+            <div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={answered} aria-label={t('Bank response')} className="mt-3 flex h-2 overflow-hidden rounded-full bg-line" data-essential-motion="">
+              {split && split.totalAmount > 0 ? ([
+                ['paid', 'bg-success', split.paidAmount], ['returned', 'bg-danger', split.returnedAmount], ['waiting', 'bg-line-strong', split.waitingAmount],
+              ] as const).map(([key, tone, amount]) => amount > 0 && (
+                <div key={key} data-bucket={key} className={`h-full ${tone} transition-[width] duration-base ease-standard`} style={{ width: `${(amount / split.totalAmount) * 100}%` }} data-essential-motion="" />
+              )) : (
+                <div data-bucket="answered" className="h-full bg-primary transition-[width] duration-base ease-standard" style={{ width: `${pct}%` }} data-essential-motion="" />
+              )}
             </div>
             {split ? (
               <>
