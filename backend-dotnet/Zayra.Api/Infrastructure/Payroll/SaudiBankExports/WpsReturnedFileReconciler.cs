@@ -1,4 +1,5 @@
 using Zayra.Api.Application.Common;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports;
@@ -23,46 +24,96 @@ public static class WpsReconciliationClass
     public const string AccountMissing = "account_missing";
     public const string UnknownEmployee = "unknown_employee";
     public const string MissingFromFile = "missing_from_file";
+    /// <summary>The bank refused the instruction: "Not paid: rejected by bank". The money never left.</summary>
     public const string Rejected = "rejected";
+    /// <summary>The money left and came back.</summary>
+    public const string Returned = "returned";
+    /// <summary>ISO ACWC or a bank reason code (DUPL included) in the status field: nothing is recorded until a person checks.</summary>
+    public const string HeldForPerson = "held_for_person";
     public const string StatusNotRecognised = "status_not_recognised";
     public const string InvalidRow = "invalid_row";
     public const string Ambiguous = "ambiguous_employee";
 }
 
 /// <summary>
-/// The status words THIS reader accepts for a line. Its Paid words are the same as the shared <c>BankOutcomeVocabulary</c>'s.
-/// Its Returned list still holds the rejection words (RJCT, REJECT(ED), DECLINED, FAIL(ED/URE), CANCELLED_BY_BANK) that the shared
-/// vocabulary now reads as Rejected ("not paid", not "money came back"); moving this reader to Rejected is an open follow-up, not
-/// done here. Its Pending list is narrower (ISO ACWC, "accepted with change", is in no list here, so it confirms
-/// nothing and the line is held), and "COMPLETE" and "ACCEPTED" are read as accepted-only. No single letters, no "OK"/"YES", and ISO
-/// ACSP ("settlement in process") is pending, never paid. The per-line status tag itself is unverified (see the rule catalogue), so anything not listed
-/// here confirms nothing. Paid or Returned only on an unambiguous bank word; "success"/"completed"/"executed" words mean the bank
-/// accepted the file, not that the credit is confirmed, so they are informational and change nothing.
+/// The status words THIS reader accepts for a line. Their meaning comes from the shared <see cref="BankOutcomeVocabulary"/>
+/// (<see cref="BankOutcomeVocabulary.Read"/>), so one word means one thing everywhere: Paid, Returned ("the money came back")
+/// or Rejected ("not paid: rejected by bank"). The reader stays STRICTER than the shared vocabulary: it gives an outcome only
+/// for the words in <see cref="OutcomeWords"/> (its Pending list is narrower), "COMPLETE" and "ACCEPTED" are read as
+/// accepted-only, and no single letters, no "OK"/"YES", ISO ACSP pending, never paid. The per-line status tag itself is
+/// unverified (see the rule catalogue), so anything not listed here confirms nothing.
+///
+/// <para>The status is classified on the RAW value as written. A value with any character outside plain printable ASCII
+/// (zero-width, bidi, non-breaking space, a look-alike letter) or starting with a formula character (= + - @) is not
+/// <see cref="IsPlain"/>: the reader refuses that row and nothing is ever stripped first and then classified.</para>
+///
+/// <para>Held for a person, never an outcome: ISO ACWC (accepted with change) and an ISO reason code written in the status
+/// field (<see cref="BankStatusReasonCatalogue"/>), including DUPL, which may mean the salary WAS paid by an earlier payment.</para>
 /// </summary>
 public static class WpsReturnedFileStatus
 {
-    private static readonly HashSet<string> Paid = new(StringComparer.OrdinalIgnoreCase) { "PAID", "SETTLED", "CREDITED", "ACSC", "ACCC" };
-    private static readonly HashSet<string> Returned = new(StringComparer.OrdinalIgnoreCase)
+    // Paid, Returned and Rejected words: the shared vocabulary's own lists, read through BankOutcomeVocabulary.Read.
+    private static readonly HashSet<string> Decisive = new(StringComparer.OrdinalIgnoreCase)
     {
-        "RJCT", "REJECT", "REJECTED", "RETURN", "RETURNED", "RTRN", "BOUNCE", "BOUNCED", "FAIL", "FAILED", "FAILURE", "DECLINED", "CANCELLED_BY_BANK",
+        "PAID", "SETTLED", "CREDITED", "ACSC", "ACCC",
+        "RETURN", "RETURNED", "RTRN", "BOUNCE", "BOUNCED",
+        "RJCT", "REJECT", "REJECTED", "DECLINED", "FAIL", "FAILED", "FAILURE", "CANCELLED_BY_BANK",
     };
+    // Narrower than the shared Pending list (no SUBMITTED, QUEUED, AWAITING, INPROGRESS).
     private static readonly HashSet<string> Pending = new(StringComparer.OrdinalIgnoreCase)
         { "PENDING", "PDNG", "PROCESSING", "IN_PROGRESS", "ACSP", "ACWP", "ACCP", "ACTC", "RCVD", "RECEIVED" };
     private static readonly HashSet<string> AcceptedOnly = new(StringComparer.OrdinalIgnoreCase)
         { "SUCCESS", "SUCCESSFUL", "SUCCEEDED", "COMPLETED", "COMPLETE", "EXECUTED", "ACCEPTED" };
 
-    /// <summary>True for a word that means "the bank accepted the file" without confirming the credit.</summary>
-    public static bool IsAcceptedOnly(string? status) => AcceptedOnly.Contains((status ?? string.Empty).Trim().Replace(' ', '_'));
+    /// <summary>Every word this reader gives an outcome for. Each reads exactly as the shared vocabulary reads it (pinned by a test).</summary>
+    public static IReadOnlyCollection<string> OutcomeWords => Decisive.Concat(Pending).ToList();
 
-    /// <summary>"Paid", "Returned" or "Pending" (<see cref="BankConfirmationOutcomes"/>), or null for any other word.</summary>
+    /// <summary>
+    /// True when the raw status is safe to classify as written: printable ASCII only, and not starting with = + - @. Leading and
+    /// trailing ASCII spaces are allowed (they hide nothing). Null or empty is plain (no status).
+    /// </summary>
+    public static bool IsPlain(string? raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return true;
+        foreach (var c in raw)
+            if (c is < ' ' or > '~') return false;
+        var token = raw.Trim(' ');
+        return token.Length == 0 || token[0] is not ('=' or '+' or '-' or '@');
+    }
+
+    private static string? Token(string? raw)
+    {
+        if (!IsPlain(raw)) return null;
+        var token = (raw ?? string.Empty).Trim(' ').Replace(' ', '_');
+        return token.Length == 0 ? null : token;
+    }
+
+    /// <summary>True for a word that means "the bank accepted the file" without confirming the credit.</summary>
+    public static bool IsAcceptedOnly(string? status) => Token(status) is { } t && AcceptedOnly.Contains(t);
+
+    /// <summary>
+    /// "Paid", "Returned", "Rejected" or "Pending" (<see cref="BankConfirmationOutcomes"/>), or null for any other word and for any
+    /// value that is not <see cref="IsPlain"/>. Classified on the raw value; nothing is cleaned first.
+    /// </summary>
     public static string? Classify(string? status)
     {
-        var token = (status ?? string.Empty).Trim().Replace(' ', '_');
-        if (token.Length == 0) return null;
-        if (Paid.Contains(token)) return BankConfirmationOutcomes.Paid;
-        if (Returned.Contains(token)) return BankConfirmationOutcomes.Returned;
-        if (Pending.Contains(token)) return BankConfirmationOutcomes.Pending;
-        return null;
+        if (Token(status) is not { } token) return null;
+        if (!Decisive.Contains(token) && !Pending.Contains(token)) return null;
+        return BankOutcomeVocabulary.Read(token).Outcome;
+    }
+
+    /// <summary>
+    /// Why a line is held for a person, or null. ISO ACWC (accepted with a change) and an ISO reason code in the status field
+    /// (DUPL included) confirm nothing: <paramref name="reasonCode"/> is the catalogue code, or null for ACWC.
+    /// </summary>
+    public static bool IsHeldForPerson(string? status, out string? reasonCode)
+    {
+        reasonCode = null;
+        if (Token(status) is not { } token) return false;
+        if (BankOutcomeVocabulary.Read(token).Reason == BankOutcomeReasons.AcceptedWithChangeHeld) return true;
+        if (!BankStatusReasonCatalogue.IsKnown(token)) return false;
+        reasonCode = BankStatusReasonCatalogue.Describe(token).Code;
+        return true;
     }
 }
 
@@ -86,8 +137,9 @@ public sealed record WpsReconciliation(IReadOnlyList<WpsReconciledLine> Lines)
 /// account and amount. PURE: it classifies and explains; it changes nothing and applies nothing.
 ///
 /// <para>Order for a matched employee: our record has no IBAN (cannot be checked); the file names a different account; the
-/// bank returned the line; the amount differs; a status word outside <see cref="WpsReturnedFileStatus"/>; otherwise one of
-/// matched paid / pending / figures-only. A returned line must pass the account check too.</para>
+/// bank rejected the line (not paid) or returned it (the money came back); the amount differs; accepted-only; held for a person
+/// (ACWC or a bank reason code, DUPL included); a status word outside <see cref="WpsReturnedFileStatus"/>; otherwise one of
+/// matched paid / pending / figures-only. A rejected or returned line must pass the account check too.</para>
 /// </summary>
 public static class WpsReturnedFileReconciler
 {
@@ -155,6 +207,18 @@ public static class WpsReturnedFileReconciler
             var statusRaw = WpsReturnedFileValidator.Safe(row.TrnStatus);
             WpsReconciledLine Line(string cls, string? reasonCode, string en, string ar) =>
                 new(cls, e.EmployeeId, e.EmployeeCode, row.Line, maskedId, maskedIban, e.Amount, row.Net, outcome, reasonCode, en, ar);
+            WpsReconciledLine HeldForReason(string code)
+            {
+                var reason = BankStatusReasonCatalogue.Describe(code);
+                // A duplicate usually means the EARLIER payment went through: never "not paid", never "owed".
+                return code == "DUPL"
+                    ? Line(WpsReconciliationClass.HeldForPerson, code,
+                        $"{reason.English} This salary may already have been paid by the earlier payment. Check on the bank statement whether the earlier payment arrived before doing anything else. Nothing was applied for this employee.",
+                        $"{reason.Arabic} قد يكون هذا الراتب قد صُرف بالعملية السابقة. تحقق من كشف حساب البنك هل وصلت العملية السابقة قبل أي إجراء آخر. لم يُطبَّق أي شيء لهذا الموظف.")
+                    : Line(WpsReconciliationClass.HeldForPerson, code,
+                        $"The status field holds the bank reason code {code}: {reason.English} It does not say whether the salary was paid. Check the bank statement. Nothing was applied for this employee.",
+                        $"يحمل حقل الحالة رمز السبب من البنك {Iso(code)}: {reason.Arabic} ولا يبيّن ما إذا كان الراتب قد صُرف. راجع كشف حساب البنك. لم يُطبَّق أي شيء لهذا الموظف.");
+            }
 
             if (string.IsNullOrEmpty(e.Iban))
             {
@@ -168,11 +232,22 @@ public static class WpsReturnedFileReconciler
                     $"The file credits a different bank account ({maskedIban}) than the one on this payment record ({Mask(e.Iban)}). The salary may have been sent to the account in the file. Confirm with the bank, then update the employee's IBAN or re-issue. It was not applied.",
                     $"يحوّل الملف إلى حساب بنكي مختلف ({Iso(maskedIban)}) عن الحساب في سجل الدفع هذا ({Iso(Mask(e.Iban))}). قد يكون الراتب أُرسل إلى الحساب المذكور في الملف. تأكد من البنك ثم حدّث آيبان الموظف أو أعد الإصدار. لم يُطبَّق."));
             }
+            else if (outcome == BankConfirmationOutcomes.Rejected)
+            {
+                // The bank refused the instruction: not paid. The file has no reason column, so the reason is "none given".
+                var label = BankOutcomeLabels.NotPaidRejectedByBank;
+                var noReason = BankStatusReasonCatalogue.Describe(null);
+                lines.Add(Line(WpsReconciliationClass.Rejected, null,
+                    $"{label.English}. The bank reported this line as {statusRaw}. {noReason.English}. Check the bank statement to confirm no money left before paying this salary again.",
+                    $"{label.Arabic}. أفاد البنك بأن حالة هذا السطر {Iso(statusRaw)}. {noReason.Arabic}. راجع كشف حساب البنك للتأكد من عدم تحويل أي مبلغ قبل صرف هذا الراتب مرة أخرى."));
+            }
             else if (outcome == BankConfirmationOutcomes.Returned)
             {
-                lines.Add(Line(WpsReconciliationClass.Rejected, statusRaw,
-                    $"The bank reported this line as {statusRaw}. A rejection does not by itself prove that no money moved: check your bank statement to see whether the amount was credited before paying this salary again. Please ask the bank what {statusRaw} means.",
-                    $"أفاد البنك بأن حالة هذا السطر {Iso(statusRaw)}. الرفض لا يثبت وحده أن المبلغ لم يُحوَّل: راجع كشف حساب البنك لمعرفة هل تم قيد المبلغ قبل صرف هذا الراتب مرة أخرى. يرجى مراجعة البنك لمعرفة معنى {Iso(statusRaw)}."));
+                var label = BankOutcomeLabels.ReturnedMoneyCameBack;
+                var noReason = BankStatusReasonCatalogue.Describe(null);
+                lines.Add(Line(WpsReconciliationClass.Returned, null,
+                    $"{label.English}. The bank reported this line as {statusRaw}. {noReason.English}. Check the bank statement, correct the employee's bank details if needed, then pay again.",
+                    $"{label.Arabic}. أفاد البنك بأن حالة هذا السطر {Iso(statusRaw)}. {noReason.Arabic}. راجع كشف حساب البنك وصحّح بيانات بنك الموظف عند الحاجة ثم أعد الصرف."));
             }
             else if (row.Net is { } net && Math.Abs(net - e.Amount) > 0.005m)
             {
@@ -186,6 +261,14 @@ public static class WpsReturnedFileReconciler
                 lines.Add(Line(WpsReconciliationClass.MatchedAccepted, statusRaw,
                     $"The bank reports {statusRaw}, which means it accepted the file but does not confirm that the money was credited. No status was changed. Check the bank statement.",
                     $"أفاد البنك بالحالة {Iso(statusRaw)} ومعناها أنه قبل الملف دون تأكيد قيد المبلغ. لم تتغير أي حالة. راجع كشف حساب البنك."));
+            }
+            else if (WpsReturnedFileStatus.IsHeldForPerson(row.TrnStatus, out var heldCode))
+            {
+                lines.Add(heldCode is null
+                    ? Line(WpsReconciliationClass.HeldForPerson, statusRaw,
+                        $"{BankOutcomeLabels.HeldAcceptedWithChange.English}. Nothing was applied for this employee.",
+                        $"{BankOutcomeLabels.HeldAcceptedWithChange.Arabic}. لم يُطبَّق أي شيء لهذا الموظف.")
+                    : HeldForReason(heldCode));
             }
             else if (!string.IsNullOrWhiteSpace(row.TrnStatus) && outcome is null)
             {
