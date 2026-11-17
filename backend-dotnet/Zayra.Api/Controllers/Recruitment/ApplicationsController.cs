@@ -22,7 +22,7 @@ public class ApplicationsController : ControllerBase
 
     public ApplicationsController(ZayraDbContext db, IRecruitmentService svc, INotificationService notify, OfferLifecycleService? lifecycle = null)
     {
-        _db = db; _svc = svc; _notify = notify; _lifecycle = lifecycle ?? new(db, new ConfigurationBuilder().Build());
+        _db = db; _svc = svc; _notify = notify; _lifecycle = lifecycle ?? new(db, new ConfigurationBuilder().Build(), null, notify);
     }
 
     private OfferActor Actor(Guid tenant, Guid? company) => new(tenant, company, this.GetUserId() ?? Guid.Empty, UserName());

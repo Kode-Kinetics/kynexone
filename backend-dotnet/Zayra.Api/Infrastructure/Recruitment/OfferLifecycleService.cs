@@ -6,7 +6,8 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Recruitment;
 
-public sealed partial class OfferLifecycleService(ZayraDbContext db, IConfiguration configuration, OfferArtifactService? artifacts = null)
+public sealed partial class OfferLifecycleService(ZayraDbContext db, IConfiguration configuration, OfferArtifactService? artifacts = null,
+    Zayra.Api.Infrastructure.Notifications.INotificationService? notifications = null)
 {
     public const string EnablementKey = "Recruitment:ManagedOfferLifecycleEnabled";
     public bool Enabled => configuration.GetValue<bool>(EnablementKey);

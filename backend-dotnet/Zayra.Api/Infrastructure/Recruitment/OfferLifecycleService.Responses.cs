@@ -20,6 +20,8 @@ public sealed partial class OfferLifecycleService
                 throw new OfferLifecycleException(outcome.Outcome == OfferAcceptanceOutcome.NotFound ? "offer_not_found" : "offer_response_blocked",
                     outcome.Message, outcome.Outcome == OfferAcceptanceOutcome.NotFound ? 404 : 409);
             offer = await ReadAsync(actor, offerId, ct);
+            if (outcome.WasAcceptedNow && outcome.OnboardingDraftId is Guid draftId && notifications is not null)
+                await HireDraftNotifier.NotifyApproversAsync(notifications, db, actor, draftId, offer.CandidateName, offer.OfferedJobTitle, ct);
             return new(offer.Id, offer.Version, offer.Status, outcome.OnboardingDraftId, !outcome.WasAcceptedNow);
         }
         return await MutateAsync(actor, offerId, request.ExpectedVersion, false, async (app, current) =>
