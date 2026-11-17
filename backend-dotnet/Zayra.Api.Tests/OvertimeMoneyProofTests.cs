@@ -199,8 +199,6 @@ public class OvertimeMoneyProofTests
         backPayLine.Should().Be(175.00m, "the late May entry, priced at approval, paid once in June");
         var slipOvertime = overtimeLine + backPayLine;
         slipOvertime.Should().Be(687.50m);
-        lines.Where(l => l.ComponentCode is "OVERTIME" or "ADJ_OVERTIME_BACK_PAY")
-            .Select(l => PayrollRunProcessor.EarningDriverKey(l.ComponentCode, l.Source)).Should().OnlyContain(k => k == "EARN:OVERTIME");
 
         // 2. The ledger: the accrual journal Lock posted for June.
         var gl = await db.FinanceGlEntries.AsNoTracking()
@@ -209,6 +207,11 @@ public class OvertimeMoneyProofTests
         var ledgerOvertime = gl.Where(g => g.DebitAccount.StartsWith("5005")).Sum(g => g.Amount)
                              - gl.Where(g => g.CreditAccount.StartsWith("5005")).Sum(g => g.Amount);
         ledgerOvertime.Should().Be(slipOvertime, "the overtime expense in the ledger is exactly what the payslip paid");
+        // Read from the posted journal, not from the routing function: nothing of the overtime landed in Other Earnings. The
+        // dataset has no other earning that maps there, so any amount on 5099 would be overtime posted to the wrong account.
+        (gl.Where(g => g.DebitAccount.StartsWith("5099")).Sum(g => g.Amount)).Should().Be(0m, "late-approved overtime is overtime expense, not Other Earnings");
+        // And every overtime amount the ledger holds is traceable to this employee's two overtime lines.
+        gl.Where(g => g.DebitAccount.StartsWith("5005")).Should().NotBeEmpty();
         gl.Where(g => !string.IsNullOrEmpty(g.DebitAccount)).Sum(g => g.Amount)
             .Should().Be(gl.Where(g => !string.IsNullOrEmpty(g.CreditAccount)).Sum(g => g.Amount), "the journal balances");
 
