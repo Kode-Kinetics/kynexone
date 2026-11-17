@@ -1,3 +1,10 @@
 {
-  "exceptions": []
+  "exceptions": [
+    {
+      "ghsa": "GHSA-fc5q-39xc-vjpf",
+      "package": "picomatch",
+      "expires": "2026-12-17",
+      "reason": "No patched release exists (4.0.7 is the latest and is inside the affected range). ReDoS needs an attacker-controlled glob pattern; picomatch is reached only through Expo CLI, Metro file watching, React Native codegen and Jest (@expo/cli, @expo/metro-config, metro-file-map, tinyglobby, jest-util), which match repo-controlled patterns at build and test time, never user input in the app. Re-check upstream for a patched release before this expires."
+    }
+  ]
 }
