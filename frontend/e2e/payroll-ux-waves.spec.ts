@@ -261,7 +261,8 @@ for (const locale of LOCALES) {
       await expect(d).toContainText(say(locale, 'Post the net pay settlement to the general ledger?'));
       const facts = d.getByTestId('gl-post-confirm');
       await expect(facts).toContainText('PAY-202611-220353');
-      await expect(facts).toContainText('133,588.90');
+      // The batch's own total (run net 133,588.90 less the 4,150.00 paid outside the file) is what is settled.
+      await expect(facts).toContainText('129,438.90');
       await expect(facts).toContainText(say(locale, 'Payment batch'));
       await expect(facts).toContainText(say(locale, 'Journal'));
       expect(posts.filter(x => x.endsWith('/settle'))).toHaveLength(0);

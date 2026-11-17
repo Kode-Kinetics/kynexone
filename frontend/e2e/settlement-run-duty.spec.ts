@@ -146,7 +146,8 @@ test.describe('Off-cycle run for an approved final settlement', () => {
 
   test('the dashboard card is silent when nothing waits, and for a reader without payroll.write', async ({ page }) => {
     await boot(page, '/payroll', { permissions: PAYROLL, rows: [row({ runDutyOpen: false, linkedRunId: RUN_ID })] });
-    await expect(page.getByRole('tab', { name: /dashboard/i }).or(page.getByText('Company scope', { exact: false })).first()).toBeVisible({ timeout: 60_000 });
+    // The Payroll Dashboard section is open (its heading is on screen on every width), so the card's absence means something.
+    await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeVisible({ timeout: 60_000 });
     await expect(page.getByTestId('settlement-run-duty-card')).toHaveCount(0);
     await boot(page, '/payroll', { permissions: ['payroll.read', 'dashboard.read'], rows: [row({})] });
     await page.waitForTimeout(1500);
