@@ -494,6 +494,8 @@ public class WpsReturnedFileValidatorTests
     {
         WpsReturnedFileValidator.FailClosedUnverified.Should().Equal(
             "control_character", "duplicate_tag", "file_date_after_batch_window", "file_date_before_batch", "file_date_missing", "file_ref_already_imported",
+            // Deliberate (final gate P3-2): the FILE-REF is the ledger key, so one that is not plain letters and digits refuses the file.
+            "file_reference_unreadable",
             "file_refused_account_mismatch", "file_rejected", "file_too_large", "file_total_exceeds_batch", "header_after_rows",
             "header_tag_duplicated", "header_total_mismatch", "header_total_unverifiable", "line_too_long", "mixed_line",
             "no_line_matches_batch", "status_too_long", "status_unsafe_characters", "stray_value", "too_many_findings", "too_many_rows", "trn_ref_too_long");
