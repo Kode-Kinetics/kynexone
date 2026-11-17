@@ -369,6 +369,38 @@ public sealed partial class GovernmentRatchetTests
         return offences;
     }
 
+    /// <summary>
+    /// The one file that may send its own writes (the bank client's payroll and token POSTs), and the one file that may build that
+    /// client and its channel: the gated factory, which wraps them in <c>GatedBankPayrollChannel</c> (live-write decision plus a
+    /// committed intent before any call). The allowance holds only while nothing else in the app builds the client or the channel.
+    /// </summary>
+    private const string BankClientWritesAllowed = OwnHttpClientAllowed;
+    private const string GatedBankFactoryFile = "Infrastructure/Payroll/SaudiBankExports/Api/AnbGatedChannelFactory.cs";
+    private const string GatedBankChannelFile = "Infrastructure/Payroll/SaudiBankExports/Channels/GatedBankPayrollChannel.cs";
+
+    [GeneratedRegex(@"new\s+(?:[\w.]+\.)?(?:AnbPayrollApiClient|AnbPayrollChannel)\s*\("
+        + @"|\b(?:AnbPayrollApiClient|AnbPayrollChannel)\s+\w+\s*=\s*new\s*\("
+        + @"|typeof\s*\(\s*(?:[\w.]+\.)?(?:AnbPayrollApiClient|AnbPayrollChannel)\s*\)"
+        + @"|\b(?:Add(?:Singleton|Scoped|Transient|HttpClient)|CreateInstance|GetService|GetRequiredService|GetServices)\s*<[^>;]*\b(?:AnbPayrollApiClient|AnbPayrollChannel)\b")]
+    private static partial Regex BankClientConstruction();
+
+    /// <summary>Places in <paramref name="code"/> that build, register or resolve the ANB client or channel.</summary>
+    internal static List<string> BankClientConstructions(string code) =>
+        BankClientConstruction().Matches(code).Select(m => $"{SourceScan.LineOf(code, m.Index)}: {m.Value.Trim()}").ToList();
+
+    [Theory]
+    [InlineData("var c = new AnbPayrollApiClient(handler, cfg, creds, log);", true)]
+    [InlineData("var ch = new Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api.AnbPayrollChannel(c);", true)]
+    [InlineData("AnbPayrollApiClient c = new(handler, cfg, creds, log);", true)]
+    [InlineData("services.AddSingleton<AnbPayrollChannel>();", true)]
+    [InlineData("services.AddScoped<IBankPayrollChannel, AnbPayrollChannel>();", true)]
+    [InlineData("ActivatorUtilities.CreateInstance<AnbPayrollApiClient>(sp, handler);", true)]
+    [InlineData("var t = typeof(AnbPayrollChannel);", true)]
+    [InlineData("public AnbPayrollChannel(AnbPayrollApiClient client) => _client = client;", false)]
+    [InlineData("ILogger<AnbPayrollApiClient> log", false)]
+    public void TheBankClientConstructionScan_FindsEveryWayToBuildOne(string code, bool found) =>
+        BankClientConstructions(code).Should().HaveCount(found ? 1 : 0);
+
     [Fact]
     public void I_OnlyThePolicyMakesDecisions_AndEveryGovernmentWriteGoesThroughTheWriteCheck()
     {
@@ -376,10 +408,28 @@ public sealed partial class GovernmentRatchetTests
             .SelectMany(f => DecisionConstruction().Matches(f.Code).Select(m => $"{f.Relative}:{SourceScan.LineOf(f.Code, m.Index)}")).ToList();
         made.Should().BeEmpty("a GovernmentLiveDecision is made only by GovernmentLivePolicy (its constructor is internal for that reason)");
 
-        var writes = Source().Where(f => IsGovernmentFolder(f.Relative) && f.Relative != GovernmentHttpFile)
+        var writes = Source().Where(f => IsGovernmentFolder(f.Relative) && f.Relative != GovernmentHttpFile && f.Relative != BankClientWritesAllowed)
             .SelectMany(f => WritesOutsideTheCheckedPath(f.Code).Select(o => $"{f.Relative}:{o}")).ToList();
         writes.Should().BeEmpty("every POST, PUT, PATCH or DELETE to a body goes through GovernmentHttp.ExchangeAsync, which refuses it without "
             + "a live-write decision (four gates plus the legal clearance).\n  " + string.Join("\n  ", writes));
+
+        // The bank client's own writes are allowed only behind the gated channel: the allowed file still sends them (else drop the
+        // allowance), and NOTHING but the gated factory builds, registers or resolves the client or its channel.
+        var files = Source().ToList();
+        WritesOutsideTheCheckedPath(files.Single(f => f.Relative == BankClientWritesAllowed).Code).Should().NotBeEmpty(
+            "an allowance for a file that no longer writes must be removed");
+        var stray = files.Where(f => f.Relative != GatedBankFactoryFile)
+            .SelectMany(f => BankClientConstructions(f.Code).Select(o => $"{f.Relative}:{o}")).ToList();
+        stray.Should().BeEmpty("the ANB client and channel are built only by the gated factory, so every call passes the live-write "
+            + "decision and the committed intent first.\n  " + string.Join("\n  ", stray));
+        var factory = files.Single(f => f.Relative == GatedBankFactoryFile).Code;
+        BankClientConstructions(factory).Should().NotBeEmpty("the factory is where the client is built");
+        factory.Should().Contain("new GatedBankPayrollChannel(", "and it hands out only the gated channel");
+        Regex.IsMatch(factory, @"public\s+static\s+(?:GatedBankPayrollChannel|IBankPayrollChannel)\s+Create\s*\(").Should().BeTrue();
+        Regex.Matches(factory, @"\bpublic\b").Count.Should().Be(2, "one public factory type with one public method: no other way out");
+        var gated = files.Single(f => f.Relative == GatedBankChannelFile).Code;
+        gated.Should().Contain("decision.AllowsWrites", "the gated channel asks for the write grade before a submit");
+        gated.Should().Contain("Intent", "and for the committed intent");
         var http = Source().Single(f => f.Relative == GovernmentHttpFile).Code;
         http.Should().Contain("!IsRead(method) && (!decision.AllowsWrites || decision.Environment is null)", "the transport itself refuses a write without the write grade");
         http.Should().Contain("requireIntent: !IsRead(method)", "and a write without a committed intent");
