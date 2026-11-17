@@ -753,8 +753,13 @@ public sealed class PayrollRunProcessor
         var overtimeWorkDates = periodOvertimeRequests.ToDictionary(r => r.Id, r => r.WorkDate);
         // The company's own holidays (active calendars, company-wide or this company's), read by the same function attendance uses.
         var periodPublicHolidays = await CompanyPayrollRules.HolidayDatesAsync(_db, tenantId, company.Id, periodStart, periodEnd, cancellationToken);
+        // Only overtime still waiting for pay. A CarriedForward impact was approved after its month closed and is paid by its
+        // "Overtime Back Pay" adjustment on a LATER run; a Replacement run of the original month used to select it here by work
+        // date (it skipped only Processed rows), pay it as ordinary overtime and mark it Processed, while the adjustment paid it
+        // again. Its own adjustment, or a void that returns it to PendingPayroll, is the only way it is paid.
         var overtimeImpacts = await _db.OvertimePayrollImpacts.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId) && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
+            .Where(x => x.TenantId == tenantId && x.Status != "Processed" && x.Status != OvertimeImpactStatuses.CarriedForward
+                        && employeeIdsForRun.Contains(x.EmployeeId) && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
             .ToListAsync(cancellationToken);
 
         // L1: use policy-configured monthly hours as divisor; fall back to 240.
@@ -2463,7 +2468,7 @@ public sealed class PayrollRunProcessor
 
 
             var consumedOtImpacts = overtimeImpacts
-                .Where(x => x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId)
+                .Where(x => x.Status != "Processed" && x.Status != OvertimeImpactStatuses.CarriedForward && employeeIdsForRun.Contains(x.EmployeeId)
                          && periodOvertimeRequestIds.Contains(x.OvertimeRequestId))
                 .ToList();
             var consumedOtIds = consumedOtImpacts.Select(x => x.Id).ToList();
@@ -2473,7 +2478,7 @@ public sealed class PayrollRunProcessor
             // Same compare-and-swap: two concurrent runs (or a double-submit) could otherwise both pay this
             // overtime, with the PayrollRunId stamp last-writer-wins.
             var markedOvertime = await _db.OvertimePayrollImpacts
-                .Where(x => x.TenantId == tenantId && consumedOtIds.Contains(x.Id) && x.Status != "Processed")
+                .Where(x => x.TenantId == tenantId && consumedOtIds.Contains(x.Id) && x.Status != "Processed" && x.Status != OvertimeImpactStatuses.CarriedForward)
                 .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.PayrollRunId, id).SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
 
             // OVT-04: the prior-period overtime this run pays as back pay leaves PendingPayroll here, with this run's id, in the same
