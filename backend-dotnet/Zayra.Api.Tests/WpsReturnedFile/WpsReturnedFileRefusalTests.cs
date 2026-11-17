@@ -20,7 +20,8 @@ public class WpsReturnedFileRefusalTests
         string Code, string Content, string? Establishment = Est, IReadOnlyList<SynthRow>? ExpectedRows = null,
         decimal? BatchTotal = null, bool ImportedRef = false, bool ParserLevel = false);
 
-    private static readonly IReadOnlyList<SynthRow> Rows3 = WpsReturnedFileOracle.Rows(3);
+    // Every line carries a PAID status, so if a refusal guard were removed the parser WOULD hand rows to the import.
+    private static readonly IReadOnlyList<SynthRow> Rows3 = WpsReturnedFileOracle.Rows(3).Select(r => r with { Status = "PAID" }).ToList();
 
     private static string Build(Func<WpsReturnedFileOracle.Header, WpsReturnedFileOracle.Header>? header = null, IReadOnlyList<SynthRow>? rows = null,
         string[]? omit = null, Func<SynthRow, string>? rowOverride = null) =>
@@ -45,7 +46,7 @@ public class WpsReturnedFileRefusalTests
             ("header_after_rows", new("header_after_rows", Build() + "[FILE-REF]\tOTHER\n")),
             ("header_tag_duplicated", new("header_tag_duplicated", Build().Replace("[DEST-ID]\tXXXX\n", "[DEST-ID]\tXXXX\n[DEST-ID]\tOTHR\n"))),
             ("header_total_invalid", new("header_total_invalid", System.Text.RegularExpressions.Regex.Replace(Build(), @"\[32A-AMT\]\t[0-9,]+", "[32A-AMT]\tabc"))),
-            ("header_total_unverifiable", new("header_total_unverifiable", Build(rowOverride: x => RowLine(x, "").Replace("[32B-AMT]\t\t", "")))),
+            ("header_total_unverifiable", new("header_total_unverifiable", Build(rowOverride: x => RowLine(x, "", "\t[TRN-STATUS]\tPAID").Replace("[32B-AMT]\t\t", "")))),
             ("mol_establishment_id_invalid", new("mol_establishment_id_invalid", Build(h => h with { MolEstablishmentId = "ABC-DEF" }))),
             ("mol_establishment_id_placeholder", new("mol_establishment_id_placeholder", Build(h => h with { MolEstablishmentId = "0-0000000" }))),
             ("stray_value", new("stray_value", Build().Replace("[DEST-ID]\tXXXX\n", "[DEST-ID]\tXXXX\tEXTRA\n"))),
@@ -59,11 +60,11 @@ public class WpsReturnedFileRefusalTests
             ("duplicate_mol_id", new("duplicate_mol_id", WpsReturnedFileOracle.Build(Rows3.Append(Rows3[0] with { Iban = WpsReturnedFileOracle.SaIban(80, 999_999_999_999L) }).ToList()))),
             ("duplicate_iban", new("duplicate_iban", WpsReturnedFileOracle.Build(new[] { Rows3[0], Rows3[1], Rows3[2] with { Iban = Rows3[0].Iban } }))),
             ("net_identity_failed", new("net_identity_failed",
-                WpsReturnedFileOracle.Build(Rows3, declaredTotal: Rows3.Sum(r => r.Net) + 3m, rowOverride: x => RowLine(x, WpsReturnedFileOracle.Amount(x.Net + 1m))),
+                WpsReturnedFileOracle.Build(Rows3, declaredTotal: Rows3.Sum(r => r.Net) + 3m, rowOverride: x => RowLine(x, WpsReturnedFileOracle.Amount(x.Net + 1m), "\t[TRN-STATUS]\tPAID")),
                 BatchTotal: 1_000_000m)),
             ("file_too_large", new("file_too_large", new string('x', WpsReturnedFileValidator.MaxContentChars + 1))),
             ("line_too_long", new("line_too_long", "[DEST-ID]\t" + new string('x', WpsReturnedFileValidator.MaxLineChars + 1) + "\n")),
-            ("too_many_rows", new("too_many_rows", WpsReturnedFileOracle.Build(WpsReturnedFileOracle.Rows(150)), ExpectedRows: Rows3, BatchTotal: 100_000_000m)),
+            ("too_many_rows", new("too_many_rows", WpsReturnedFileOracle.Build(WpsReturnedFileOracle.Rows(150).Select(r => r with { Status = "PAID" }).ToList()), ExpectedRows: Rows3, BatchTotal: 100_000_000m)),
             ("too_many_findings", new("too_many_findings", string.Concat(Enumerable.Repeat("[MOL-ID]\t\n", 400)) + "[DEST-ID]\tX\n")),
             ("file_date_missing", new("file_date_missing", Build(omit: new[] { "32A-VAL" }))),
             ("file_date_before_batch", new("file_date_before_batch", Build(h => h with { ValueDate = "20250101" }))),
