@@ -383,7 +383,7 @@ test.describe('the reviews\' rules', () => {
     await expect(page.getByTestId('bank-response-mismatch')).toContainText('Doesn’t match the file by SAR 50.00', { timeout: 90_000 });
   });
 
-  test('two open batches for one run: each row has its people, channel and amount, the matching one is tagged, and both warn', async ({ page }) => {
+  test('two open batches for one run: each row has its people, channel and amount; both tie, so neither is tagged, and both warn', async ({ page }) => {
     const other = { ...BATCH, id: 'b2', batchNumber: 'PAY-202611-220354', paymentMethod: 'BankTransfer', totalAmount: 133588.9, paymentExclusions: [], excludedTotal: 0 };
     const extra: Handler = (path) => (path === '/api/payroll/payment-batches/b2/records' ? RECORDS.slice(0, 4) : undefined);
     await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [BATCH, { ...other, payrollRunId: RUN_ID }], extra }), waitMs: 2500, stages: 'default' });
@@ -391,7 +391,8 @@ test.describe('the reviews\' rules', () => {
     await expect(rows.locator(`[data-batch-row="${BATCH_ID}"]`)).toContainText('9 employees', { timeout: 90_000 });
     await expect(rows.locator('[data-batch-row="b2"]')).toContainText('Bank transfer');
     await expect(rows.locator('[data-batch-row="b2"]')).not.toContainText('BankTransfer');
-    await expect(rows.locator(`[data-batch-row="${BATCH_ID}"]`).getByTestId('bank-batch-matches')).toBeVisible();
+    // Both tie to the run on their own figures (one leaves the cash employee out, one does not), so neither is tagged.
+    await expect(page.getByTestId('bank-batch-matches')).toHaveCount(0);
     await expect(page.getByTestId('bank-batch-overlap')).toHaveCount(2);
     await expect(page.getByTestId('bank-batch-overlap').first()).toContainText('also pays this run');
   });
@@ -533,6 +534,28 @@ test.describe('fix batch 2: the flow', () => {
     });
   }
 
+  test('C: only the single batch that ties to the run is tagged; every row has its people, bank and amount', async ({ page }) => {
+    const other = { ...BATCH, id: 'b2', batchNumber: 'PAY-202611-220354', paymentMethod: 'BankTransfer', totalAmount: 100000, paymentExclusions: [], excludedTotal: 0 };
+    const extra: Handler = (path) => (path === '/api/payroll/payment-batches/b2/records' ? RECORDS.slice(0, 4) : undefined);
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [BATCH, other], extra }), waitMs: 2500, stages: 'default' });
+    const rows = page.getByTestId('bank-batch-choices');
+    for (const [id, people, amount] of [[BATCH_ID, '9 employees', '129,438.90'], ['b2', '4 employees', '100,000.00']]) {
+      const row = rows.locator(`[data-batch-row="${id}"]`);
+      await expect(row).toContainText(people, { timeout: 90_000 });
+      await expect(row).toContainText('Arab National Bank (ANB)');
+      await expect(row).toContainText(amount);
+    }
+    await expect(page.getByTestId('bank-batch-matches')).toHaveCount(1);
+    await expect(rows.locator(`[data-batch-row="${BATCH_ID}"]`).getByTestId('bank-batch-matches')).toBeVisible();
+  });
+
+  test('C: two batches that both tie: neither is tagged, both warn', async ({ page }) => {
+    const twin = { ...BATCH, id: 'b2', batchNumber: 'PAY-202611-220354', paymentMethod: 'BankTransfer' };
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [BATCH, twin] }), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-batch-overlap')).toHaveCount(2, { timeout: 90_000 });
+    await expect(page.getByTestId('bank-batch-matches')).toHaveCount(0);
+  });
+
 });
 
 test.describe('Payroll Runs on a locked run', () => {
@@ -649,6 +672,7 @@ test.describe('walk-through as a payroll officer (EN, 1440)', () => {
       if (path === `/api/payroll/payment-batches/${BATCH_ID}/wps-status` && method === 'POST') { submitted = true; return { batchId: BATCH_ID, wpsStatus: 'Submitted' }; }
       if (path === '/api/employees/203' && method === 'GET') return { id: 203, employeeCode: 'EVT2-0004', fullName: 'Nora Alharbi', wpsBankDetails: '' };
       if (path === '/api/employees/203' && method === 'PUT') { fixed = true; return { id: 203 }; }
+      if (path === '/api/payroll/payment-batches/b2/records') return RECORDS;
       return undefined;
     };
     await boot(page, { locale: 'en', url, routes: bankHandler({ extra }), waitMs: 2500, stages: 'default' });

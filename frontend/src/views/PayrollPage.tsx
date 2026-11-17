@@ -86,6 +86,7 @@ import { RunDeductionsReview } from '../components/deductions/RunDeductionsRevie
 import { JournalExportsPanel } from '../components/gl/JournalExportsPanel';
 import { LoadError, serverMessage } from '../components/gl/glUi';
 import { financeGlApi } from '../api/financeGl';
+import { isCustomFormatId, saudiBankExportsApi } from '../api/saudiBankExports';
 import { CostCentreLockPreview, CostingOffNote, periodLabel } from '../components/payroll/CostCentreLockPreview';
 import { VoidRunForm } from '../components/payroll/VoidRunForm';
 import { HeldPayPanel } from '../components/payroll/HeldPayPanel';
@@ -2874,6 +2875,8 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
   const panelMenu = useRef<GuideSlots['menu'] | null>(null);
   // How many people each batch pays (its payment records), read only when there are batches to choose between.
   const [batchCounts, setBatchCounts] = useState<Record<string, number>>({});
+  // The employer's bank (from the company's bank setup), named on each batch row when there are batches to choose between.
+  const [chooseBank, setChooseBank] = useState<string | null>(null);
 
   useEffect(() => {
     setRunsState({ status: 'loading' });
@@ -3000,9 +3003,19 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
         .then(rows => { if (!cancelled && Array.isArray(rows)) setBatchCounts(prev => ({ ...prev, [b.id]: rows.filter(r => r.status !== 'Cancelled').length })); })
         .catch(() => { /* the count is left out, never guessed */ });
     }
+    const companyId = runs.find(r => r.id === runId)?.companyId;
+    if (companyId && live.some(b => b.isSaudi === true)) {
+      Promise.all([saudiBankExportsApi.getSettings(companyId), saudiBankExportsApi.listFormats()])
+        .then(([settings, formats]) => {
+          if (cancelled) return;
+          const f = Array.isArray(formats) ? formats.find(x => x.id === settings?.formatId) : undefined;
+          setChooseBank(f ? (isCustomFormatId(f.id) ? t(f.name) : t(f.bank)) : null);
+        })
+        .catch(() => { /* the bank is left out, never guessed */ });
+    }
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [batches]);
+  }, [batches, runs]);
 
   const currentBatch = batches.find(b => b.wpsStatus !== 'Voided') ?? null;
   const batchFileGenerated = !!currentBatch && (currentBatch.status === 'FileGenerated' || (!!currentBatch.effectiveWpsStatus && currentBatch.effectiveWpsStatus !== 'Draft'));
@@ -3255,7 +3268,9 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
       <legend className="sr-only">{t('Payment batches of this run')}</legend>
       {liveBatches.map(b => {
         const others = liveBatches.filter(o => o.id !== b.id);
-        const tie = tieOut(b, selectedRun);
+        // Tagged only when it is the ONE batch that ties to the run: two that tie cannot both be right, so neither is tagged.
+        const tying = liveBatches.filter(o => { const x = tieOut(o, selectedRun); return !!x && Math.abs(x.difference) < 0.005; });
+        const isTheMatch = tying.length === 1 && tying[0].id === b.id;
         const count = batchCounts[b.id];
         return (
           <div key={b.id} className={`rounded-xl border p-3 ${chosenBatchId === b.id ? 'border-primary bg-primary-soft' : 'border-line'}`} data-batch-row={b.id}>
@@ -3264,11 +3279,11 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
               <span className="min-w-0 flex-1">
                 <span className="flex flex-wrap items-center gap-2">
                   <span className="font-mono text-body font-semibold text-fg"><bdi>{b.batchNumber}</bdi></span>
-                  {tie && Math.abs(tie.difference) < 0.005 && <span className="badge badge-neutral" data-testid="bank-batch-matches">{t('Matches the run')}</span>}
+                  {isTheMatch && <span className="badge badge-neutral" data-testid="bank-batch-matches">{t('Matches the run')}</span>}
                 </span>
                 <span className="block text-meta text-fg-muted">
                   {count !== undefined && <>{t('{count, plural, one {# employee} other {# employees}}', { count })} · </>}
-                  {paymentMethodLabel(t, b.paymentMethod)} · <bdi dir="ltr">{fmtAmt(b.totalAmount, b.currency)}</bdi>
+                  {paymentMethodLabel(t, b.paymentMethod)}{chooseBank && <> · <bdi>{chooseBank}</bdi></>} · <bdi dir="ltr">{fmtAmt(b.totalAmount, b.currency)}</bdi>
                 </span>
               </span>
               <StatusBadge status={b.effectiveWpsStatus || b.wpsStatus || b.status} />
