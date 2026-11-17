@@ -222,12 +222,22 @@ public static class AnbPayrollStatusMapper
     /// </summary>
     private static void CheckBinding(AnbPayrollStatusSnapshot snapshot, BankBatchBinding binding)
     {
-        if (snapshot.ItemCount == 0) return;
+        if (snapshot.ItemCount == 0)
+        {
+            // "Still loading" only when the bank also sent no lines. Lines with a zero count cannot be bound to
+            // this batch and are never mapped.
+            if (snapshot.Lines.Count > 0) throw new BankChannelException(BankChannelCodes.PayrollNotThisBatch);
+            return;
+        }
         if (snapshot.ItemCount != binding.Lines.Count)
             throw new BankChannelException(BankChannelCodes.PayrollNotThisBatch);
 
         var earliest = binding.IntentAtUtc - CreatedAtTolerance;
-        if (snapshot.Lines.Any(l => l.CreatedAt is not { } created || created < earliest))
+        // createdAt is not in the spec's required list: a line without one falls back to the payroll's own date.
+        // A line date, when present, always wins (a recent payroll date cannot vouch for an old line).
+        if (snapshot.PayrollCreatedAt is { } payrollCreated && payrollCreated < earliest)
+            throw new BankChannelException(BankChannelCodes.PayrollNotThisBatch);
+        if (snapshot.Lines.Any(l => (l.CreatedAt ?? snapshot.PayrollCreatedAt) is not { } created || created < earliest))
             throw new BankChannelException(BankChannelCodes.PayrollNotThisBatch);
 
         // Every line the bank counts was seen: the amounts must add up to the frozen total.

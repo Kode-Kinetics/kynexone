@@ -93,7 +93,9 @@ public sealed record BankSubmittedLine(string EmployeeId, string AccountNumber, 
 /// fit is refused (<see cref="BankChannelCodes.PayrollNotThisBatch"/>).
 /// <para>TODO(ledger, wave 2): the submission ledger must also hold a unique (tenant, bank, bankPayrollId) so
 /// one bank id can never be bound to two batches; this binding is the second line of defence.</para></summary>
-/// <param name="IntentAtUtc">When the submit intent row was written, before the POST.</param>
+/// <param name="IntentAtUtc">When the FIRST submit intent row for this batch was written, before its POST. Must be the
+/// EARLIEST intent of the batch: after an Unknown that actually landed and a later second intent, the bank's lines
+/// date from the first attempt and the latest intent would wrongly refuse them.</param>
 public sealed record BankBatchBinding(
     IReadOnlyList<BankSubmittedLine> Lines, decimal ExpectedTotal, DateTimeOffset IntentAtUtc, string? ProfileId = null)
 {
