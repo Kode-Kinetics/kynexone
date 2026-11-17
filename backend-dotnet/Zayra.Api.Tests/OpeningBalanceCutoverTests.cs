@@ -1004,6 +1004,85 @@ public class OpeningBalanceCutoverTests
             "the first row stands; the duplicate is reported, not added on top");
     }
 
+    /// <summary>The page renders register errors in the viewer's language from a stable code and its parameters; the English text stays as the fallback.</summary>
+    [Fact]
+    public async Task VarianceReport_RegisterErrorsCarryAStableCodeAndParameters()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        await SeedEmployee(db, tid, co.Id, "EMP-001");
+        var run = await CreateRun(db, tid, 2026, 9, co.Id);
+        (await Payroll(db, tid, Maker).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+
+        var register = "EmployeeCode,ComponentCode,Amount\n" +
+                       "EMP-001,NET,100\n" +      // row 2: fine
+                       ",NET,100\n" +             // row 3: no employee code
+                       "EMP-001,,100\n" +         // row 4: no component
+                       "EMP-001,GROSS,\n" +       // row 5: blank amount
+                       "EMP-001,BASIC,abc\n" +    // row 6: not a number
+                       "emp-001,NET,100\n";       // row 7: duplicate of row 2
+        var res = await Parallel(db, tid).Variance(run.Id,
+            new ParallelRunController.VarianceRequest(register, Tolerance: 0.01m), CancellationToken.None);
+        var report = ((OkObjectResult)res.Result!).Value!;
+
+        var details = ErrorDetails(report, "RegisterErrorDetails");
+        details.Select(d => (d.Code, d.Row)).Should().BeEquivalentTo(new[]
+        {
+            ("register_row_employee_code_required", (int?)3),
+            ("register_row_component_required", 4),
+            ("register_row_amount_required", 5),
+            ("register_row_amount_not_a_number", 6),
+            ("register_row_duplicate", 7),
+        });
+        details.Single(d => d.Code == "register_row_amount_not_a_number").Params["value"].Should().Be("abc");
+        var dup = details.Single(d => d.Code == "register_row_duplicate").Params;
+        dup["row"].Should().Be("7");
+        dup["firstRow"].Should().Be("2");
+        dup["employeeCode"].Should().Be("emp-001");
+        dup["component"].Should().Be("NET");
+        details.Should().OnlyContain(d => d.Message.Length > 0, "the English text stays as the fallback");
+    }
+
+    /// <summary>An unreadable register is refused with the same codes, so the refusal can be translated too.</summary>
+    [Fact]
+    public async Task VarianceReport_AnEmptyRegisterIsRefusedWithACode()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        await SeedEmployee(db, tid, co.Id, "EMP-001");
+        var run = await CreateRun(db, tid, 2026, 9, co.Id);
+        (await Payroll(db, tid, Maker).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+
+        var res = await Parallel(db, tid).Variance(run.Id, new ParallelRunController.VarianceRequest("  "), CancellationToken.None);
+
+        var refused = res.Result.Should().BeOfType<UnprocessableEntityObjectResult>().Subject.Value!;
+        ErrorDetails(refused, "ErrorDetails").Should().ContainSingle(d => d.Code == "register_empty");
+    }
+
+    private sealed record ErrorDetail(string Code, int? Row, Dictionary<string, string> Params, string Message);
+
+    /// <summary>Reads the camel- or Pascal-cased detail list off a controller result without naming its type, so the test fails at run time, not compile time, before the field exists.</summary>
+    private static List<ErrorDetail> ErrorDetails(object body, string property)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(body));
+        var props = doc.RootElement.EnumerateObject().Where(p => string.Equals(p.Name, property, StringComparison.OrdinalIgnoreCase)).ToList();
+        props.Should().ContainSingle($"the body must carry {property}");
+        return props[0].Value.EnumerateArray().Select(e =>
+        {
+            string Get(string n) => e.EnumerateObject().First(p => string.Equals(p.Name, n, StringComparison.OrdinalIgnoreCase)).Value.ToString();
+            var row = e.EnumerateObject().First(p => string.Equals(p.Name, "row", StringComparison.OrdinalIgnoreCase)).Value;
+            var pars = e.EnumerateObject().First(p => string.Equals(p.Name, "params", StringComparison.OrdinalIgnoreCase)).Value
+                .EnumerateObject().ToDictionary(p => p.Name, p => p.Value.ToString());
+            return new ErrorDetail(Get("code"), row.ValueKind == System.Text.Json.JsonValueKind.Number ? row.GetInt32() : null, pars, Get("message"));
+        }).ToList();
+    }
+
     /// <summary>
     /// A legacy register routinely writes employee codes in a different case or with stray spaces
     /// ("emp-001 " for "EMP-001"). The coverage counts already treated those as one person; the lines

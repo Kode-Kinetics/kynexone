@@ -100,7 +100,14 @@ public sealed class ParallelRunController : ControllerBase
         decimal ExternalNetTotal,
         IReadOnlyList<VarianceLine> Lines,
         IReadOnlyList<string> RegisterErrors,
-        string Currency);
+        string Currency,
+        IReadOnlyList<RegisterError> RegisterErrorDetails);
+
+    /// <summary>
+    /// One complaint about the uploaded register: a stable <see cref="Code"/> and its <see cref="Params"/> let the page
+    /// say it in the viewer's language; <see cref="Message"/> is the English text, the fallback for older pages and API callers.
+    /// </summary>
+    public sealed record RegisterError(string Code, int? Row, IReadOnlyDictionary<string, string> Params, string Message);
 
     /// <summary>
     /// Compare a processed run against an uploaded external register, per employee and per component.
@@ -123,9 +130,10 @@ public sealed class ParallelRunController : ControllerBase
         if (request.Tolerance < 0)
             return UnprocessableEntity(new { message = "Tolerance cannot be negative." });
 
-        var (external, registerErrors) = ParseRegister(request.RegisterCsv);
+        var (external, registerErrorDetails) = ParseRegister(request.RegisterCsv);
+        var registerErrors = registerErrorDetails.Select(e => e.Message).ToList();
         if (external.Count == 0 && registerErrors.Count > 0)
-            return UnprocessableEntity(new { message = "The external register could not be read.", errors = registerErrors });
+            return UnprocessableEntity(new { message = "The external register could not be read.", errors = registerErrors, errorDetails = registerErrorDetails });
 
         var allSlips = await _db.PayrollSlips.AsNoTracking()
             .Where(s => s.TenantId == tenantId && s.RunId == runId)
@@ -247,7 +255,8 @@ public sealed class ParallelRunController : ControllerBase
             ExternalNetTotal: Math.Round(lines.Where(l => l.ComponentCode == TotalNet).Sum(l => l.ExternalAmount), 2),
             Lines: lines,
             RegisterErrors: registerErrors,
-            Currency: await ResolveRunCurrencyAsync(tenantId, run.CompanyId, ct));
+            Currency: await ResolveRunCurrencyAsync(tenantId, run.CompanyId, ct),
+            RegisterErrorDetails: registerErrorDetails);
 
         return Ok(report);
     }
@@ -373,31 +382,40 @@ public sealed class ParallelRunController : ControllerBase
 
     // ── Register parsing ────────────────────────────────────────────────────────────────────────────
 
-    private static (Dictionary<(string Code, string Component), decimal> Rows, List<string> Errors) ParseRegister(string csv)
+    private static (Dictionary<(string Code, string Component), decimal> Rows, List<RegisterError> Errors) ParseRegister(string csv)
     {
         var rows = new Dictionary<(string Code, string Component), decimal>(CodeComponentComparer.Instance);
         var firstRow = new Dictionary<(string Code, string Component), int>(CodeComponentComparer.Instance);
-        var errors = new List<string>();
+        var errors = new List<RegisterError>();
+        static IReadOnlyDictionary<string, string> P(params (string Key, string Value)[] pairs) => pairs.ToDictionary(p => p.Key, p => p.Value);
         if (string.IsNullOrWhiteSpace(csv))
         {
-            errors.Add("The external register was empty.");
+            errors.Add(new RegisterError("register_empty", null, P(), "The external register was empty."));
             return (rows, errors);
         }
 
         List<Dictionary<string, string>> parsed;
         try { parsed = Csv.Parse(csv); }
-        catch (Exception ex) { errors.Add($"The external register is not readable as CSV: {ex.Message}"); return (rows, errors); }
+        catch (Exception ex)
+        {
+            errors.Add(new RegisterError("register_unreadable", null, P(("reason", ex.Message)), $"The external register is not readable as CSV: {ex.Message}"));
+            return (rows, errors);
+        }
 
         foreach (var (row, index) in parsed.Select((r, i) => (r, i + 2)))
         {
             var code = row.GetValueOrDefault("EmployeeCode", string.Empty).Trim();
             var component = Normalise(row.GetValueOrDefault("ComponentCode", string.Empty));
             var amountRaw = row.GetValueOrDefault("Amount", string.Empty).Trim();
-            if (code.Length == 0) { errors.Add($"register row {index}: EmployeeCode is required."); continue; }
-            if (component.Length == 0) { errors.Add($"register row {index}: ComponentCode is required (use GROSS, DEDUCTIONS or NET for the totals)."); continue; }
-            if (amountRaw.Length == 0) { errors.Add($"register row {index}: Amount is required and was blank — a blank is not read as zero."); continue; }
+            var rowText = index.ToString(CultureInfo.InvariantCulture);
+            if (code.Length == 0)
+            { errors.Add(new RegisterError("register_row_employee_code_required", index, P(("row", rowText)), $"register row {index}: EmployeeCode is required.")); continue; }
+            if (component.Length == 0)
+            { errors.Add(new RegisterError("register_row_component_required", index, P(("row", rowText)), $"register row {index}: ComponentCode is required (use GROSS, DEDUCTIONS or NET for the totals).")); continue; }
+            if (amountRaw.Length == 0)
+            { errors.Add(new RegisterError("register_row_amount_required", index, P(("row", rowText)), $"register row {index}: Amount is required and was blank — a blank is not read as zero.")); continue; }
             if (!decimal.TryParse(amountRaw, NumberStyles.Number, CultureInfo.InvariantCulture, out var amount))
-            { errors.Add($"register row {index}: Amount is not a number (found '{amountRaw}')."); continue; }
+            { errors.Add(new RegisterError("register_row_amount_not_a_number", index, P(("row", rowText), ("value", amountRaw)), $"register row {index}: Amount is not a number (found '{amountRaw}').")); continue; }
 
             var key = (code, component);
             // The same employee and component twice is nearly always a doubled export row. Summing it
@@ -405,8 +423,10 @@ public sealed class ParallelRunController : ControllerBase
             // and the repeat is reported (and, like any errored row, is not compared).
             if (firstRow.TryGetValue(key, out var first))
             {
-                errors.Add($"register row {index}: duplicate of row {first} for {code} / {component} — ignored, the first row was kept. "
-                         + "If the legacy system really has several lines for one component, add them up before uploading.");
+                errors.Add(new RegisterError("register_row_duplicate", index,
+                    P(("row", rowText), ("firstRow", first.ToString(CultureInfo.InvariantCulture)), ("employeeCode", code), ("component", component)),
+                    $"register row {index}: duplicate of row {first} for {code} / {component} — ignored, the first row was kept. "
+                    + "If the legacy system really has several lines for one component, add them up before uploading."));
                 continue;
             }
             firstRow[key] = index;
