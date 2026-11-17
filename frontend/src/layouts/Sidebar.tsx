@@ -290,6 +290,8 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                             onBlur={hideTip}
                             onClick={(event) => { hideTip(); handleNav(item.path, event.currentTarget); }}
                             aria-current={active ? 'page' : undefined}
+                            // Folded to icons the label is not drawn: it is still the item's accessible name (the hover/focus tip shows it).
+                            aria-label={isCollapsed ? t(item.label) : undefined}
                             className={`nav-item group ${active ? 'nav-item-active' : 'nav-item-idle'} ${
                               isCollapsed ? 'justify-center' : ''
                             } min-h-11 lg:min-h-8`}

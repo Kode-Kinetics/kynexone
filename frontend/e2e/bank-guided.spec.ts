@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import { translate } from '../src/i18n/translations';
 import { boot, HANDLED, type Handler, type Locale } from './demo-polish.fixture';
@@ -727,6 +728,15 @@ for (const locale of LOCALES) {
       await boot(page, { locale, url, routes: bankHandler(), waitMs: 2500, stages: 'default' });
       const expand = page.getByRole('button', { name: 'Expand sidebar' });
       await expect(expand).toBeVisible({ timeout: 90_000 });
+      // Folded to icons, every entry still has a name: its label, in the reader's language (axe button-name).
+      const unnamed = await page.getByRole('navigation', { name: 'Primary navigation' }).evaluate(nav => Array.from(nav.querySelectorAll<HTMLElement>('button, a'))
+        .filter(el => !(el.getAttribute('aria-label') ?? '').trim() && !(el.innerText ?? '').trim() && !(el.getAttribute('aria-labelledby') ?? '').trim())
+        .map(el => el.outerHTML.slice(0, 120)));
+      expect(unnamed).toEqual([]);
+      await expect(page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('button', { name: say(locale, 'Payroll'), exact: true })).toHaveCount(1);
+      // And axe finds nothing serious on the Payroll page with the menu folded.
+      const axe = await new AxeBuilder({ page }).analyze();
+      expect(axe.violations.filter(v => v.impact === 'critical' || v.impact === 'serious').map(v => `${v.id}: ${v.nodes.map(x => x.target.join(' ')).join(', ')}`)).toEqual([]);
       await expand.click();
       await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toBeVisible();
       await page.reload();
