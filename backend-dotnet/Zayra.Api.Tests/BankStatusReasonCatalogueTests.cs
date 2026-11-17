@@ -17,7 +17,9 @@ public class BankStatusReasonCatalogueTests
         { "AC06", "The account is blocked.", "الحساب موقوف." },
         { "AM04", "There was not enough money in the paying account.", "الرصيد في حساب الدفع غير كافٍ." },
         { "BE01", "The name or ID does not match the account holder.", "الاسم أو رقم الهوية لا يطابق صاحب الحساب." },
-        { "DUPL", "The bank treated this payment as a duplicate.", "اعتبر البنك هذه الدفعة مكررة." },
+        // A duplicate refusal usually means the ORIGINAL payment went through: never "not paid, still owed" (CTO ruling 4).
+        { "DUPL", "The bank refused this as a duplicate. Check whether the original payment reached the employee before paying again.",
+                  "رفض البنك هذه العملية لأنها مكررة. تحقق مما إذا كانت عملية الدفع الأصلية قد وصلت إلى الموظف قبل الدفع مرة أخرى." },
         { "FF01", "The bank could not read the file format.", "تعذّر على البنك قراءة صيغة الملف." },
     };
 
@@ -72,6 +74,8 @@ public class BankStatusReasonCatalogueTests
     [InlineData("AC01\u202E")]   // a right-to-left override hidden after a real code
     [InlineData("A\u0131C1")]     // a look-alike letter
     [InlineData("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789X")] // 37 characters: longer than any ISO or proprietary code
+    [InlineData("-A1")]     // a leading minus reads as a formula in a spreadsheet export
+    [InlineData("_A1")]
     public void UnreadableCode_IsNeverEchoed(string code)
     {
         var text = BankStatusReasonCatalogue.Describe(code);
@@ -114,7 +118,18 @@ public class BankStatusReasonCatalogueTests
         BankOutcomeLabels.HeldAcceptedWithChange.English.Should().Be(
             "Held: the bank accepted it with a change; a person must check what changed");
         BankOutcomeLabels.HeldAcceptedWithChange.Arabic.Should().Be(
-            "معلّق: قبل البنك التعليمات مع تعديل، ويلزم أن يراجع شخص ما تغيّر");
+            "معلّق: قبل البنك التعليمات مع تعديل، ويجب أن يراجع أحد الموظفين ما الذي تغيّر");
+    }
+
+    [Fact]
+    public void DuplicateHeldLabel_TellsThePersonToCheckTheOriginal_NeverStillOwed()
+    {
+        BankOutcomeLabels.HeldDuplicateRejection.English.Should().Be(BankStatusReasonCatalogue.Describe("DUPL").English);
+        BankOutcomeLabels.HeldDuplicateRejection.Arabic.Should().Be(BankStatusReasonCatalogue.Describe("DUPL").Arabic);
+        BankOutcomeLabels.HeldDuplicateRejection.English.Should().NotContainEquivalentOf("owed").And.NotContainEquivalentOf("not paid");
+        BankStatusReasonCatalogue.IsDuplicate(" dupl ").Should().BeTrue();
+        BankStatusReasonCatalogue.IsDuplicate("AC01").Should().BeFalse();
+        BankStatusReasonCatalogue.IsDuplicate(null).Should().BeFalse();
     }
 
     [Fact]
