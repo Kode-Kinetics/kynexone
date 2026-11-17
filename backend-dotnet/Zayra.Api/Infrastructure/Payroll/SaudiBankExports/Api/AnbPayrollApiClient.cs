@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
 
 namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 
@@ -22,10 +23,10 @@ namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 /// <item>Submit sends the FROZEN files exactly as given, after checking each against the SHA-256 recorded
 /// when it was frozen and checking the header's count and total against the body. It never regenerates.</item>
 /// <item>Exactly one POST per <see cref="SubmitAsync"/>. No retry, ever. A transport failure, timeout or
-/// server error after the request left is <see cref="AnbSubmitOutcomeKind.Unknown"/>: the bank may hold
+/// server error after the request left is <see cref="BankSubmitOutcomeKind.Unknown"/>: the bank may hold
 /// the payroll, so only a person who has checked with the bank may decide what happens next.</item>
 /// <item>Any failure before the POST (settings, environment, credential, token, artifact) is
-/// <see cref="AnbSubmitOutcomeKind.Refused"/> and no socket is opened for the POST.</item>
+/// <see cref="BankSubmitOutcomeKind.Refused"/> and no socket is opened for the POST.</item>
 /// <item>Reads (status, WPS) may re-acquire the token once on a 401; nothing else is retried here.</item>
 /// </list>
 ///
@@ -53,10 +54,11 @@ public sealed partial class AnbPayrollApiClient
     private readonly TimeProvider _clock;
     private readonly ConcurrentDictionary<string, CachedToken> _tokens = new(StringComparer.Ordinal);
 
-    public AnbPayrollApiClient(HttpClient http, IAnbEndpointConfig config, IAnbCredentialSource credentials,
-        ILogger<AnbPayrollApiClient> log, TimeProvider? clock = null)
+    public AnbPayrollApiClient(HttpMessageHandler handler, IAnbEndpointConfig config, IAnbCredentialSource credentials,
+        ILogger<AnbPayrollApiClient> log, TimeProvider? clock = null, AnbClientLimits? limits = null)
     {
-        _http = http ?? throw new ArgumentNullException(nameof(http));
+        ArgumentNullException.ThrowIfNull(handler);
+        _http = new HttpClient(handler, disposeHandler: false) { Timeout = (limits ?? AnbClientLimits.Default).RequestTimeout };
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _credentials = credentials ?? throw new ArgumentNullException(nameof(credentials));
         _log = log ?? throw new ArgumentNullException(nameof(log));
@@ -66,26 +68,26 @@ public sealed partial class AnbPayrollApiClient
 
     // ── Submit ──────────────────────────────────────────────────────────────────────────────────
 
-    public async Task<AnbSubmitOutcome> SubmitAsync(AnbSubmitRequest request, CancellationToken ct)
+    public async Task<BankSubmitOutcome> SubmitAsync(AnbSubmitRequest request, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
         Endpoint endpoint;
         try { endpoint = Resolve(_config); }
-        catch (AnbPayrollApiRefusedException ex) { return Refuse(ex.Code); }
+        catch (BankChannelRefusedException ex) { return Refuse(ex.Code); }
 
-        if (!SameEnvironment(endpoint, request.Scope)) return Refuse(AnbApiCodes.EnvironmentMismatch);
-        if (!HashMatches(request.Header) || !HashMatches(request.Body)) return Refuse(AnbApiCodes.ArtifactHashMismatch);
+        if (!SameEnvironment(endpoint, request.Scope)) return Refuse(BankChannelCodes.EnvironmentMismatch);
+        if (!HashMatches(request.Header) || !HashMatches(request.Body)) return Refuse(BankChannelCodes.ArtifactHashMismatch);
         if (!SafeFileName(request.Header.FileName) || !SafeFileName(request.Body.FileName))
-            return Refuse(AnbApiCodes.ArtifactInconsistent);
+            return Refuse(BankChannelCodes.ArtifactInconsistent);
 
         var preflight = AnbArtifactPreflight.Check(request.Header.Content, request.Body.Content, request.Headers);
         if (preflight.Code is not null) return Refuse(preflight.Code);
 
         var headers = OptionalHeaders(request.Headers);
-        if (headers is null) return Refuse(AnbApiCodes.SubmitHeaderInvalid);
+        if (headers is null) return Refuse(BankChannelCodes.SubmitHeaderInvalid);
 
         var credential = await _credentials.GetAsync(request.Scope, ct);
-        if (credential is null) return Refuse(AnbApiCodes.CredentialMissing);
+        if (credential is null) return Refuse(BankChannelCodes.CredentialMissing);
 
         var token = await GetTokenAsync(endpoint, request.Scope, credential, ct);
         if (token.Value is null) return Refuse(token.Code);
@@ -113,7 +115,7 @@ public sealed partial class AnbPayrollApiClient
             var kind = ex.GetType().Name;
             _log.LogWarning("ANB payroll submit outcome unknown after a transport failure ({ExceptionType}); files {HeaderSha} {LinesSha}",
                 kind, headerSha, linesSha);
-            return new AnbSubmitOutcome(AnbSubmitOutcomeKind.Unknown, AnbApiCodes.OutcomeUnknown, RequestSent: true);
+            return new BankSubmitOutcome(BankSubmitOutcomeKind.Unknown, BankChannelCodes.OutcomeUnknown, RequestSent: true);
         }
 
         using (response)
@@ -128,7 +130,7 @@ public sealed partial class AnbPayrollApiClient
                 {
                     _log.LogWarning("ANB payroll submit outcome unknown: HTTP {Status} but the response could not be read; files {HeaderSha} {LinesSha}",
                         status, headerSha, linesSha);
-                    return new AnbSubmitOutcome(AnbSubmitOutcomeKind.Unknown, AnbApiCodes.AcceptedWithoutId, true, status);
+                    return new BankSubmitOutcome(BankSubmitOutcomeKind.Unknown, BankChannelCodes.AcceptedWithoutId, true, status);
                 }
             }
 
@@ -139,32 +141,32 @@ public sealed partial class AnbPayrollApiClient
         }
     }
 
-    private AnbSubmitOutcome Classify(int status, string? text, IReadOnlyList<string> redact, Endpoint endpoint,
-        AnbCredentialScope scope, AnbClientCredential credential)
+    private BankSubmitOutcome Classify(int status, string? text, IReadOnlyList<string> redact, Endpoint endpoint,
+        BankChannelScope scope, AnbClientCredential credential)
     {
         if (status is >= 200 and < 300)
         {
             var (id, bankStatus, message) = ParseSubmitResponse(text);
             if (id is null || !PayrollIdShape().IsMatch(id))
-                return new AnbSubmitOutcome(AnbSubmitOutcomeKind.Unknown, AnbApiCodes.AcceptedWithoutId, true, status,
+                return new BankSubmitOutcome(BankSubmitOutcomeKind.Unknown, BankChannelCodes.AcceptedWithoutId, true, status,
                     BankStatus: WordOrNull(bankStatus), Message: Clean(message, redact));
-            return new AnbSubmitOutcome(AnbSubmitOutcomeKind.Accepted, AnbApiCodes.Accepted, true, status, id,
+            return new BankSubmitOutcome(BankSubmitOutcomeKind.Accepted, BankChannelCodes.Accepted, true, status, id,
                 WordOrNull(bankStatus), Clean(message, redact));
         }
 
         if (status is 401 or 403)
         {
             _tokens.TryRemove(TokenKey(endpoint, scope, credential), out _);
-            return new AnbSubmitOutcome(AnbSubmitOutcomeKind.RejectedAuthorization, AnbApiCodes.RejectedAuthorization, true, status);
+            return new BankSubmitOutcome(BankSubmitOutcomeKind.RejectedAuthorization, BankChannelCodes.RejectedAuthorization, true, status);
         }
 
         // 408 timeout, 409 conflict (perhaps "already exists"), 425 too early, 429 throttled: the bank may
         // or may not hold the payroll. Every 1xx/3xx/5xx likewise. Only a clear 4xx is a structural refusal.
         if (status is >= 400 and < 500 and not (408 or 409 or 425 or 429))
-            return new AnbSubmitOutcome(AnbSubmitOutcomeKind.RejectedStructure, AnbApiCodes.RejectedStructure, true, status,
+            return new BankSubmitOutcome(BankSubmitOutcomeKind.RejectedStructure, BankChannelCodes.RejectedStructure, true, status,
                 Message: Clean(ParseSubmitResponse(text).Message, redact));
 
-        return new AnbSubmitOutcome(AnbSubmitOutcomeKind.Unknown, AnbApiCodes.OutcomeUnknown, true, status);
+        return new BankSubmitOutcome(BankSubmitOutcomeKind.Unknown, BankChannelCodes.OutcomeUnknown, true, status);
     }
 
     private static (string? Id, string? Status, string? Message) ParseSubmitResponse(string? text)
@@ -189,13 +191,13 @@ public sealed partial class AnbPayrollApiClient
         }
     }
 
-    private AnbSubmitOutcome Refuse(string code)
+    private BankSubmitOutcome Refuse(string code)
     {
         _log.LogWarning("ANB payroll submit refused before sending ({Code})", code);
-        return new AnbSubmitOutcome(AnbSubmitOutcomeKind.Refused, code, RequestSent: false);
+        return new BankSubmitOutcome(BankSubmitOutcomeKind.Refused, code, RequestSent: false);
     }
 
-    private static ByteArrayContent FilePart(AnbArtifactFile file, string part)
+    private static ByteArrayContent FilePart(BankArtifactFile file, string part)
     {
         var content = new ByteArrayContent(file.Content);
         content.Headers.ContentType = new MediaTypeHeaderValue("text/csv");
@@ -207,7 +209,7 @@ public sealed partial class AnbPayrollApiClient
         return content;
     }
 
-    private static bool HashMatches(AnbArtifactFile file)
+    private static bool HashMatches(BankArtifactFile file)
     {
         if (file.Content is null || string.IsNullOrEmpty(file.ExpectedSha256) || file.ExpectedSha256.Length != 64) return false;
         var actual = Encoding.ASCII.GetBytes(AnbConnectCsvGenerator.Sha256Hex(file.Content));
@@ -239,14 +241,14 @@ public sealed partial class AnbPayrollApiClient
 
     // ── Status ──────────────────────────────────────────────────────────────────────────────────
 
-    public async Task<AnbPayrollStatusSnapshot> GetStatusAsync(AnbCredentialScope scope, string bankPayrollId,
+    public async Task<AnbPayrollStatusSnapshot> GetStatusAsync(BankChannelScope scope, string bankPayrollId,
         string? profileId, CancellationToken ct)
     {
         var (endpoint, credential) = await PrepareReadAsync(scope, bankPayrollId, profileId, ct);
         var id = bankPayrollId.Trim();
 
         var merger = new LineMerger();
-        AnbPayrollPhase? phase = null;
+        BankPayrollPhase? phase = null;
         string payrollStatus = string.Empty;
         string? reason = null;
         int? itemCount = null, pageCount = null;
@@ -263,17 +265,17 @@ public sealed partial class AnbPayrollApiClient
 
             if (!string.Equals(parsed.Id, id, StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(parsed.PayrollId, id, StringComparison.OrdinalIgnoreCase))
-                throw new AnbPayrollApiException(AnbApiCodes.PagePayrollMismatch);
-            if (parsed.Page != page) throw new AnbPayrollApiException(AnbApiCodes.PageMismatch);
-            if (parsed.Data.Count > MaxTake) throw new AnbPayrollApiException(AnbApiCodes.PollInconsistent);
+                throw new BankChannelException(BankChannelCodes.PagePayrollMismatch);
+            if (parsed.Page != page) throw new BankChannelException(BankChannelCodes.PageMismatch);
+            if (parsed.Data.Count > MaxTake) throw new BankChannelException(BankChannelCodes.PollInconsistent);
             if (itemCount is null) { itemCount = parsed.ItemCount; pageCount = parsed.PageCount; }
             else if (itemCount != parsed.ItemCount || pageCount != parsed.PageCount)
-                throw new AnbPayrollApiException(AnbApiCodes.PollInconsistent);
+                throw new BankChannelException(BankChannelCodes.PollInconsistent);
 
             var pagePhase = AnbPayrollStatusMapper.MapPayrollStatus(parsed.Status);
             var advanced = AnbPayrollStatusMapper.AdvancePayroll(phase, pagePhase, out var held);
             if (held && phase is { } prior && AnbPayrollStatusMapper.IsTerminal(prior) && AnbPayrollStatusMapper.IsTerminal(pagePhase))
-                throw new AnbPayrollApiException(AnbApiCodes.PollInconsistent);
+                throw new BankChannelException(BankChannelCodes.PollInconsistent);
             if (phase is null || advanced != phase)
             {
                 payrollStatus = parsed.Status.Trim();
@@ -285,11 +287,11 @@ public sealed partial class AnbPayrollApiClient
 
             if (!parsed.HasNextPage)
             {
-                if (page < parsed.PageCount) throw new AnbPayrollApiException(AnbApiCodes.PollInconsistent);
+                if (page < parsed.PageCount) throw new BankChannelException(BankChannelCodes.PollInconsistent);
                 break;
             }
             page++;
-            if (page > parsed.PageCount || page > MaxPages) throw new AnbPayrollApiException(AnbApiCodes.PollInconsistent);
+            if (page > parsed.PageCount || page > MaxPages) throw new BankChannelException(BankChannelCodes.PollInconsistent);
         }
 
         var lines = merger.Lines();
@@ -387,7 +389,7 @@ public sealed partial class AnbPayrollApiClient
                 Date(e, "createdAt"), Date(e, "updatedAt"));
         }
 
-        private static AnbPayrollApiException Unparsable() => new(AnbApiCodes.ResponseUnparsable);
+        private static BankChannelException Unparsable() => new(BankChannelCodes.ResponseUnparsable);
 
         private static JsonElement Obj(JsonElement e, string name) =>
             e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Object ? v : throw Unparsable();
@@ -420,7 +422,7 @@ public sealed partial class AnbPayrollApiClient
 
     // ── WPS file ────────────────────────────────────────────────────────────────────────────────
 
-    public async Task<AnbWpsFile> DownloadWpsAsync(AnbCredentialScope scope, string bankPayrollId, string? profileId,
+    public async Task<BankWpsFile> DownloadWpsAsync(BankChannelScope scope, string bankPayrollId, string? profileId,
         CancellationToken ct)
     {
         var (endpoint, credential) = await PrepareReadAsync(scope, bankPayrollId, profileId, ct);
@@ -429,10 +431,10 @@ public sealed partial class AnbPayrollApiClient
 
         using var response = await SendReadAsync(endpoint, scope, credential, url, profileId, ct);
         var status = (int)response.StatusCode;
-        if (status == 404) throw new AnbPayrollApiException(AnbApiCodes.WpsNotReady, status);
+        if (status == 404) throw new BankChannelException(BankChannelCodes.WpsNotReady, status);
         ThrowIfReadFailed(status);
 
-        if (response.Content.Headers.ContentLength is > MaxWpsBytes) throw new AnbPayrollApiException(AnbApiCodes.WpsTooLarge);
+        if (response.Content.Headers.ContentLength is > MaxWpsBytes) throw new BankChannelException(BankChannelCodes.WpsTooLarge);
         byte[] bytes;
         try
         {
@@ -442,19 +444,19 @@ public sealed partial class AnbPayrollApiClient
             int read;
             while ((read = await stream.ReadAsync(chunk, ct)) > 0)
             {
-                if (buffer.Length + read > MaxWpsBytes) throw new AnbPayrollApiException(AnbApiCodes.WpsTooLarge);
+                if (buffer.Length + read > MaxWpsBytes) throw new BankChannelException(BankChannelCodes.WpsTooLarge);
                 buffer.Write(chunk, 0, read);
             }
             bytes = buffer.ToArray();
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or OperationCanceledException && !ct.IsCancellationRequested)
         {
-            throw new AnbPayrollApiException(AnbApiCodes.HttpError, status);
+            throw new BankChannelException(BankChannelCodes.HttpError, status);
         }
 
         var disposition = response.Content.Headers.ContentDisposition;
         var name = (disposition?.FileNameStar ?? disposition?.FileName)?.Trim('"');
-        var file = new AnbWpsFile(bytes, AnbConnectCsvGenerator.Sha256Hex(bytes), response.Content.Headers.ContentType?.MediaType,
+        var file = new BankWpsFile(bytes, AnbConnectCsvGenerator.Sha256Hex(bytes), response.Content.Headers.ContentType?.MediaType,
             SafeFileName(name) ? name : null);
         _log.LogInformation("ANB WPS file downloaded for {BankPayrollId}: {Length} bytes, sha256 {Sha}", id, bytes.Length, file.Sha256);
         return file;
@@ -462,21 +464,21 @@ public sealed partial class AnbPayrollApiClient
 
     // ── Shared read plumbing ────────────────────────────────────────────────────────────────────
 
-    private async Task<(Endpoint, AnbClientCredential)> PrepareReadAsync(AnbCredentialScope scope, string bankPayrollId,
+    private async Task<(Endpoint, AnbClientCredential)> PrepareReadAsync(BankChannelScope scope, string bankPayrollId,
         string? profileId, CancellationToken ct)
     {
         var endpoint = Resolve(_config);
-        if (!SameEnvironment(endpoint, scope)) throw new AnbPayrollApiRefusedException(AnbApiCodes.EnvironmentMismatch);
+        if (!SameEnvironment(endpoint, scope)) throw new BankChannelRefusedException(BankChannelCodes.EnvironmentMismatch);
         if (bankPayrollId is null || !PayrollIdShape().IsMatch(bankPayrollId.Trim()))
-            throw new AnbPayrollApiRefusedException(AnbApiCodes.PayrollIdInvalid);
+            throw new BankChannelRefusedException(BankChannelCodes.PayrollIdInvalid);
         if (OptionalHeaders(new AnbSubmitHeaders(ProfileId: profileId)) is null)
-            throw new AnbPayrollApiRefusedException(AnbApiCodes.SubmitHeaderInvalid);
+            throw new BankChannelRefusedException(BankChannelCodes.SubmitHeaderInvalid);
         var credential = await _credentials.GetAsync(scope, ct)
-                         ?? throw new AnbPayrollApiRefusedException(AnbApiCodes.CredentialMissing);
+                         ?? throw new BankChannelRefusedException(BankChannelCodes.CredentialMissing);
         return (endpoint, credential);
     }
 
-    private async Task<string> ReadJsonAsync(Endpoint endpoint, AnbCredentialScope scope, AnbClientCredential credential,
+    private async Task<string> ReadJsonAsync(Endpoint endpoint, BankChannelScope scope, AnbClientCredential credential,
         string url, string? profileId, CancellationToken ct)
     {
         using var response = await SendReadAsync(endpoint, scope, credential, url, profileId, ct);
@@ -484,28 +486,28 @@ public sealed partial class AnbPayrollApiClient
         ThrowIfReadFailed(status);
         try
         {
-            return await ReadCappedAsync(response, ct, MaxTake * 4096) ?? throw new AnbPayrollApiException(AnbApiCodes.ResponseUnparsable, status);
+            return await ReadCappedAsync(response, ct, MaxTake * 4096) ?? throw new BankChannelException(BankChannelCodes.ResponseUnparsable, status);
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or OperationCanceledException && !ct.IsCancellationRequested)
         {
-            throw new AnbPayrollApiException(AnbApiCodes.HttpError, status);
+            throw new BankChannelException(BankChannelCodes.HttpError, status);
         }
     }
 
     private static void ThrowIfReadFailed(int status)
     {
-        if (status == 401) throw new AnbPayrollApiException(AnbApiCodes.Unauthorized, status);
-        if (status is < 200 or >= 300) throw new AnbPayrollApiException(AnbApiCodes.HttpError, status);
+        if (status == 401) throw new BankChannelException(BankChannelCodes.Unauthorized, status);
+        if (status is < 200 or >= 300) throw new BankChannelException(BankChannelCodes.HttpError, status);
     }
 
     /// <summary>GET with the bearer token. A 401 drops the cached token and tries once more with a fresh one.</summary>
-    private async Task<HttpResponseMessage> SendReadAsync(Endpoint endpoint, AnbCredentialScope scope, AnbClientCredential credential,
+    private async Task<HttpResponseMessage> SendReadAsync(Endpoint endpoint, BankChannelScope scope, AnbClientCredential credential,
         string url, string? profileId, CancellationToken ct)
     {
         for (var attempt = 0; ; attempt++)
         {
             var token = await GetTokenAsync(endpoint, scope, credential, ct);
-            if (token.Value is null) throw new AnbPayrollApiException(token.Code);
+            if (token.Value is null) throw new BankChannelException(token.Code);
 
             using var get = new HttpRequestMessage(HttpMethod.Get, url);
             get.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Value);
@@ -521,7 +523,7 @@ public sealed partial class AnbPayrollApiClient
             {
                 var kind = ex.GetType().Name;
                 _log.LogWarning("ANB payroll read failed in transport ({ExceptionType})", kind);
-                throw new AnbPayrollApiException(AnbApiCodes.HttpError);
+                throw new BankChannelException(BankChannelCodes.HttpError);
             }
 
             if (response.StatusCode != HttpStatusCode.Unauthorized || attempt > 0) return response;
@@ -535,7 +537,7 @@ public sealed partial class AnbPayrollApiClient
 
     private sealed record CachedToken(string Value, DateTimeOffset UseUntil);
 
-    private async Task<(string? Value, string Code)> GetTokenAsync(Endpoint endpoint, AnbCredentialScope scope,
+    private async Task<(string? Value, string Code)> GetTokenAsync(Endpoint endpoint, BankChannelScope scope,
         AnbClientCredential credential, CancellationToken ct)
     {
         var key = TokenKey(endpoint, scope, credential);
@@ -574,7 +576,7 @@ public sealed partial class AnbPayrollApiClient
         {
             var kind = ex.GetType().Name;
             _log.LogWarning("ANB token request failed in transport ({ExceptionType})", kind);
-            return (null, AnbApiCodes.TokenUnavailable);
+            return (null, BankChannelCodes.TokenUnavailable);
         }
 
         using (response)
@@ -592,14 +594,14 @@ public sealed partial class AnbPayrollApiClient
                 // Never the raw body: an identity provider may echo the client id or the request back.
                 var oauthError = OAuthErrorCode(text);
                 _log.LogWarning("ANB token request refused: HTTP {Status} {OAuthError}", status, oauthError);
-                return (null, status is 400 or 401 or 403 ? AnbApiCodes.TokenRejected : AnbApiCodes.TokenUnavailable);
+                return (null, status is 400 or 401 or 403 ? BankChannelCodes.TokenRejected : BankChannelCodes.TokenUnavailable);
             }
 
             var token = ParseToken(text);
             if (token is null)
             {
                 _log.LogWarning("ANB token response was not a usable bearer token (HTTP {Status})", status);
-                return (null, AnbApiCodes.TokenUnavailable);
+                return (null, BankChannelCodes.TokenUnavailable);
             }
 
             var (value, expiresIn) = token.Value;
@@ -649,7 +651,7 @@ public sealed partial class AnbPayrollApiClient
     }
 
     /// <summary>Tenant + company + environment + endpoint + credential version + client id fingerprint.</summary>
-    private static string TokenKey(Endpoint endpoint, AnbCredentialScope scope, AnbClientCredential credential)
+    private static string TokenKey(Endpoint endpoint, BankChannelScope scope, AnbClientCredential credential)
     {
         var clientPrint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(credential.ClientId)))[..16];
         return string.Join("|", scope.TenantId.ToString("N"), scope.CompanyId?.ToString("N") ?? "-",
@@ -675,7 +677,7 @@ public sealed partial class AnbPayrollApiClient
             (nameof(IAnbEndpointConfig.ClientAuthMethod), c.ClientAuthMethod),
         };
         var missing = values.Where(v => string.IsNullOrWhiteSpace(v.Value)).Select(v => v.Name).ToList();
-        if (missing.Count > 0) throw new AnbPayrollApiRefusedException(AnbApiCodes.ConfigMissing, missing);
+        if (missing.Count > 0) throw new BankChannelRefusedException(BankChannelCodes.ConfigMissing, missing);
 
         var invalid = new List<string>();
         var baseUrl = HttpsUri(c.BaseUrl!);
@@ -687,7 +689,7 @@ public sealed partial class AnbPayrollApiClient
         var auth = c.ClientAuthMethod!.Trim();
         if (auth is not (AuthBasic or AuthPost)) invalid.Add(nameof(IAnbEndpointConfig.ClientAuthMethod));
         if (c.Scope!.Any(ch => ch < 0x20 || ch > 0x7E)) invalid.Add(nameof(IAnbEndpointConfig.Scope));
-        if (invalid.Count > 0) throw new AnbPayrollApiRefusedException(AnbApiCodes.ConfigInvalid, invalid);
+        if (invalid.Count > 0) throw new BankChannelRefusedException(BankChannelCodes.ConfigInvalid, invalid);
 
         return new Endpoint(c.Environment!.Trim(), baseUrl!, tokenUrl!, c.Scope!.Trim(), auth == AuthBasic);
     }
@@ -700,7 +702,7 @@ public sealed partial class AnbPayrollApiClient
         && string.IsNullOrEmpty(u.Fragment)
             ? u : null;
 
-    private static bool SameEnvironment(Endpoint endpoint, AnbCredentialScope scope) =>
+    private static bool SameEnvironment(Endpoint endpoint, BankChannelScope scope) =>
         string.Equals(endpoint.Environment, scope.Environment?.Trim(), StringComparison.OrdinalIgnoreCase);
 
     // ── Text hygiene ────────────────────────────────────────────────────────────────────────────

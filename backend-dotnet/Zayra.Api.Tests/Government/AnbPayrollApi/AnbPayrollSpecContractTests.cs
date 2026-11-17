@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using FluentAssertions;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
+using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
 using static Zayra.Api.Tests.Government.AnbPayrollApi.AnbApiTestKit;
 
 namespace Zayra.Api.Tests.Government.AnbPayrollApi;

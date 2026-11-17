@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
 
 namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 
@@ -72,7 +73,7 @@ internal static class AnbArtifactPreflight
         return new Result(null, sent);
     }
 
-    private static Result Fail() => new(AnbApiCodes.ArtifactInconsistent, Array.Empty<string>());
+    private static Result Fail() => new(BankChannelCodes.ArtifactInconsistent, Array.Empty<string>());
 
     private static bool TryAmount(string? s, out decimal value) =>
         decimal.TryParse(s, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out value) && value >= 0m;

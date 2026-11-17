@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using FluentAssertions;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
+using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
 using static Zayra.Api.Tests.Government.AnbPayrollApi.AnbApiTestKit;
 
 namespace Zayra.Api.Tests.Government.AnbPayrollApi;
@@ -73,7 +74,7 @@ public class AnbPayrollApiMaskingTests
         var handler = new StubAnbHandler((_, _) => throw new HttpRequestException(Echo, new IOException(Echo)));
         var outcome = await Client(handler, out var log).SubmitAsync(Submit(Data), CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Unknown);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Unknown);
         AssertClean(outcome.ToString(), "the outcome");
         AssertClean(log.All, "the log");
     }
@@ -84,7 +85,7 @@ public class AnbPayrollApiMaskingTests
         var handler = new StubAnbHandler(_ => Json(HttpStatusCode.BadRequest, new { message = Echo }));
         var client = Client(handler, out var log);
         var act = () => client.GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
-        var ex = (await act.Should().ThrowAsync<AnbPayrollApiException>()).Which;
+        var ex = (await act.Should().ThrowAsync<BankChannelException>()).Which;
 
         AssertClean(ex.ToString(), "the exception");
         AssertClean(log.All, "the log");
@@ -107,7 +108,7 @@ public class AnbPayrollApiMaskingTests
     [Fact]
     public void ToStrings_OfTypesHoldingSecretsOrPersonalData_AreClean()
     {
-        AssertClean(new AnbClientCredential(ClientId, ClientSecret, "v1").ToString(), "the credential");
+        AssertClean(Credential().ToString(), "the credential");
         AssertClean(Data.Submitted[0].ToString(), "a submitted line");
         AssertClean(Data.Body.ToString(), "an artifact");
         AssertClean(Submit(Data).ToString(), "a submit request");
@@ -119,6 +120,6 @@ public class AnbPayrollApiMaskingTests
         var config = Config();
         config.BaseUrl = "http://" + ClientSecret + ".test/api";
         var act = () => Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out _, config);
-        AssertClean(act.Should().Throw<AnbPayrollApiRefusedException>().Which.ToString(), "the refusal");
+        AssertClean(act.Should().Throw<BankChannelRefusedException>().Which.ToString(), "the refusal");
     }
 }

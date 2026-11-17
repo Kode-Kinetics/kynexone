@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
+using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
 using Zayra.Api.Models;
 using static Zayra.Api.Tests.Government.AnbPayrollApi.AnbApiTestKit;
 
@@ -14,16 +15,16 @@ namespace Zayra.Api.Tests.Government.AnbPayrollApi;
 public class AnbPayrollStatusMapperTests
 {
     [Theory]
-    [InlineData("ACCEPTED", AnbPayrollPhase.Accepted)]
-    [InlineData("INITIATED", AnbPayrollPhase.Initiated)]
-    [InlineData("VALIDATED", AnbPayrollPhase.Validated)]
-    [InlineData("IN_PROGRESS", AnbPayrollPhase.InProgress)]
-    [InlineData("IN PROGRESS", AnbPayrollPhase.InProgress)]
-    [InlineData("COMPLETED", AnbPayrollPhase.Completed)]
-    [InlineData("FAILED", AnbPayrollPhase.Failed)]
-    [InlineData("REJECTED", AnbPayrollPhase.Rejected)]
-    [InlineData(" completed ", AnbPayrollPhase.Completed)]
-    public void PayrollStatuses_MapToPhases(string raw, AnbPayrollPhase expected) =>
+    [InlineData("ACCEPTED", BankPayrollPhase.Accepted)]
+    [InlineData("INITIATED", BankPayrollPhase.Initiated)]
+    [InlineData("VALIDATED", BankPayrollPhase.Validated)]
+    [InlineData("IN_PROGRESS", BankPayrollPhase.InProgress)]
+    [InlineData("IN PROGRESS", BankPayrollPhase.InProgress)]
+    [InlineData("COMPLETED", BankPayrollPhase.Completed)]
+    [InlineData("FAILED", BankPayrollPhase.Failed)]
+    [InlineData("REJECTED", BankPayrollPhase.Rejected)]
+    [InlineData(" completed ", BankPayrollPhase.Completed)]
+    public void PayrollStatuses_MapToPhases(string raw, BankPayrollPhase expected) =>
         AnbPayrollStatusMapper.MapPayrollStatus(raw).Should().Be(expected);
 
     [Theory]
@@ -32,6 +33,7 @@ public class AnbPayrollStatusMapperTests
     [InlineData("IN PROGRESS", AnbTransactionPhase.InProgress, BankConfirmationOutcomes.Pending)]
     [InlineData("IN_PROGRESS", AnbTransactionPhase.InProgress, BankConfirmationOutcomes.Pending)]
     [InlineData("PAID", AnbTransactionPhase.Paid, BankConfirmationOutcomes.Paid)]
+    [InlineData("PAID ", AnbTransactionPhase.Paid, BankConfirmationOutcomes.Paid)]
     [InlineData("RETURNED", AnbTransactionPhase.Returned, BankConfirmationOutcomes.Returned)]
     [InlineData("FAILED", AnbTransactionPhase.Failed, BankConfirmationOutcomes.Returned)]
     public void TransactionStatuses_MapToTheExistingOutcomeVocabulary(string raw, AnbTransactionPhase phase, string outcome)
@@ -51,10 +53,12 @@ public class AnbPayrollStatusMapperTests
     [InlineData("SUCCESS")]
     [InlineData("")]
     [InlineData(null)]
-    [InlineData("PAID ")] // fine: trimmed; see below
+    [InlineData("COMPLETED")]
+    [InlineData("REJECTED")]
+    [InlineData("ACCEPTED")]
+    [InlineData("pa\u0131d")] // dotless i: upper-cases to PAID, must not read as Paid
     public void UnknownTransactionWords_FailLoudly(string? raw)
     {
-        if (raw == "PAID ") { AnbPayrollStatusMapper.MapTransactionStatus(raw).Should().Be(AnbTransactionPhase.Paid); return; }
         var act = () => AnbPayrollStatusMapper.MapTransactionStatus(raw);
         act.Should().Throw<AnbUnknownStatusException>().Which.Kind.Should().Be("transaction");
     }
@@ -79,17 +83,17 @@ public class AnbPayrollStatusMapperTests
     }
 
     [Theory]
-    [InlineData(null, AnbPayrollPhase.Accepted, AnbPayrollPhase.Accepted, false)]
-    [InlineData(AnbPayrollPhase.Validated, AnbPayrollPhase.InProgress, AnbPayrollPhase.InProgress, false)]
-    [InlineData(AnbPayrollPhase.InProgress, AnbPayrollPhase.Validated, AnbPayrollPhase.InProgress, true)]
-    [InlineData(AnbPayrollPhase.Completed, AnbPayrollPhase.InProgress, AnbPayrollPhase.Completed, true)]
-    [InlineData(AnbPayrollPhase.Completed, AnbPayrollPhase.Rejected, AnbPayrollPhase.Completed, true)]
-    [InlineData(AnbPayrollPhase.Rejected, AnbPayrollPhase.Completed, AnbPayrollPhase.Rejected, true)]
-    [InlineData(AnbPayrollPhase.Accepted, AnbPayrollPhase.Rejected, AnbPayrollPhase.Rejected, false)]
-    [InlineData(AnbPayrollPhase.InProgress, AnbPayrollPhase.Failed, AnbPayrollPhase.Failed, false)]
-    [InlineData(AnbPayrollPhase.Completed, AnbPayrollPhase.Completed, AnbPayrollPhase.Completed, false)]
-    public void PayrollPhase_IsMonotonic_AndTerminalsNeverFlip(AnbPayrollPhase? previous, AnbPayrollPhase next,
-        AnbPayrollPhase expected, bool held)
+    [InlineData(null, BankPayrollPhase.Accepted, BankPayrollPhase.Accepted, false)]
+    [InlineData(BankPayrollPhase.Validated, BankPayrollPhase.InProgress, BankPayrollPhase.InProgress, false)]
+    [InlineData(BankPayrollPhase.InProgress, BankPayrollPhase.Validated, BankPayrollPhase.InProgress, true)]
+    [InlineData(BankPayrollPhase.Completed, BankPayrollPhase.InProgress, BankPayrollPhase.Completed, true)]
+    [InlineData(BankPayrollPhase.Completed, BankPayrollPhase.Rejected, BankPayrollPhase.Completed, true)]
+    [InlineData(BankPayrollPhase.Rejected, BankPayrollPhase.Completed, BankPayrollPhase.Rejected, true)]
+    [InlineData(BankPayrollPhase.Accepted, BankPayrollPhase.Rejected, BankPayrollPhase.Rejected, false)]
+    [InlineData(BankPayrollPhase.InProgress, BankPayrollPhase.Failed, BankPayrollPhase.Failed, false)]
+    [InlineData(BankPayrollPhase.Completed, BankPayrollPhase.Completed, BankPayrollPhase.Completed, false)]
+    public void PayrollPhase_IsMonotonic_AndTerminalsNeverFlip(BankPayrollPhase? previous, BankPayrollPhase next,
+        BankPayrollPhase expected, bool held)
     {
         AnbPayrollStatusMapper.AdvancePayroll(previous, next, out var wasHeld).Should().Be(expected);
         wasHeld.Should().Be(held);
@@ -107,11 +111,11 @@ public class AnbPayrollStatusMapperTests
             Bank(batch.Rows[3], "RETURNED", "PMT-4", "TRX-4", "Returned by beneficiary bank"),
         };
 
-        var mapped = AnbPayrollStatusMapper.Map(Snapshot("IN_PROGRESS", lines, 4), batch.Submitted);
+        var mapped = AnbPayrollStatusMapper.Map(Snapshot("IN_PROGRESS", lines, 4), Binding(batch));
 
-        mapped.PayrollPhase.Should().Be(AnbPayrollPhase.InProgress);
+        mapped.PayrollPhase.Should().Be(BankPayrollPhase.InProgress);
         mapped.Unresolved.Should().BeEmpty();
-        mapped.SnapshotComplete.Should().BeTrue();
+        mapped.Complete.Should().BeTrue();
         mapped.Rows.Select(r => (r.WpsReference, r.Outcome, r.RawOutcome, r.Amount)).Should().Equal(
             (WpsReference(1), BankConfirmationOutcomes.Paid, "PAID", batch.Rows[0].SalaryAmount),
             (WpsReference(2), BankConfirmationOutcomes.Returned, "FAILED", batch.Rows[1].SalaryAmount),
@@ -131,7 +135,7 @@ public class AnbPayrollStatusMapperTests
         var stranger = batch.Rows[1] with { AccountNumber = Iban(999) };
         var mapped = AnbPayrollStatusMapper.Map(
             Snapshot("COMPLETED", new[] { Bank(batch.Rows[0], "PAID", "P1", "T1"), Bank(stranger, "PAID", "P2", "T2") }, 2),
-            batch.Submitted);
+            Binding(batch));
 
         mapped.Rows.Should().ContainSingle().Which.WpsReference.Should().Be(WpsReference(1));
         var unresolved = mapped.Unresolved.Should().ContainSingle().Subject;
@@ -143,18 +147,23 @@ public class AnbPayrollStatusMapperTests
     public void Map_PaidWithoutAPaymentId_IsKept_ButFlagged()
     {
         var batch = BuildBatch(1);
-        var mapped = AnbPayrollStatusMapper.Map(Snapshot("COMPLETED", new[] { Bank(batch.Rows[0], "PAID", null, null) }, 1), batch.Submitted);
+        var mapped = AnbPayrollStatusMapper.Map(Snapshot("COMPLETED", new[] { Bank(batch.Rows[0], "PAID", null, null) }, 1), Binding(batch));
         mapped.Rows.Single().Outcome.Should().Be(BankConfirmationOutcomes.Paid);
-        mapped.Anomalies.Should().ContainSingle().Which.Should().Be(new AnbLineAnomaly(WpsReference(1), "paid_without_payment_id"));
+        mapped.Anomalies.Should().ContainSingle().Which.Should().Be(new BankLineAnomaly(WpsReference(1), "paid_without_payment_id"));
     }
 
     [Fact]
-    public void Map_AnUnknownStatusAnywhere_FailsTheWholeMapping()
+    public void Map_AnUnknownLineStatus_IsHeld_AndTheOtherLinesStillMap()
     {
         var batch = BuildBatch(2);
-        var act = () => AnbPayrollStatusMapper.Map(
-            Snapshot("IN_PROGRESS", new[] { Bank(batch.Rows[0], "PAID", "P", "T"), Bank(batch.Rows[1], "QUEUED") }, 2), batch.Submitted);
-        act.Should().Throw<AnbUnknownStatusException>();
+        var mapped = AnbPayrollStatusMapper.Map(
+            Snapshot("IN_PROGRESS", new[] { Bank(batch.Rows[0], "PAID", "P", "T"), Bank(batch.Rows[1], "QUEUED") }, 2), Binding(batch));
+
+        mapped.Rows.Should().ContainSingle().Which.Outcome.Should().Be(BankConfirmationOutcomes.Paid);
+        var held = mapped.Unresolved.Should().ContainSingle().Subject;
+        held.Reason.Should().Be("unknown_status");
+        held.RawStatus.Should().Be("QUEUED");
+        mapped.Complete.Should().BeFalse("a held line is not a settled line");
     }
 
     [Fact]
@@ -162,9 +171,9 @@ public class AnbPayrollStatusMapperTests
     {
         var batch = BuildBatch(30);
         var lines = batch.Rows.Select(r => Bank(r, r.EmployeeRef % 2 == 0 ? "PAID" : "PENDING", r.EmployeeRef % 2 == 0 ? "P" + r.EmployeeRef : null, null)).ToList();
-        var a = AnbPayrollStatusMapper.ToConfirmationCsv(AnbPayrollStatusMapper.Map(Snapshot("IN_PROGRESS", lines, 30), batch.Submitted).Rows);
+        var a = BankChannelConfirmationFile.Render(PayrollId, AnbPayrollStatusMapper.Map(Snapshot("IN_PROGRESS", lines, 30), Binding(batch)).Rows);
         var shuffled = lines.OrderBy(l => l.EmployeeId.GetHashCode()).ToList();
-        var b = AnbPayrollStatusMapper.ToConfirmationCsv(AnbPayrollStatusMapper.Map(Snapshot("IN_PROGRESS", shuffled, 30), batch.Submitted).Rows);
+        var b = BankChannelConfirmationFile.Render(PayrollId, AnbPayrollStatusMapper.Map(Snapshot("IN_PROGRESS", shuffled, 30), Binding(batch)).Rows);
         a.Should().Be(b);
         BankConfirmationService.Sha256(a).Should().Be(BankConfirmationService.Sha256(b),
             "the existing import's tenant-wide file-hash dedupe makes a repeated poll a no-op");
@@ -179,12 +188,12 @@ public class AnbPayrollStatusMapperTests
             statuses[i % statuses.Length] is "PAID" or "RETURNED" ? "P" + i : null,
             statuses[i % statuses.Length] is "PAID" or "RETURNED" ? "T" + i : null,
             i % 5 == 0 ? "Reason, with comma \"quoted\"" : null)).ToList();
-        var mapped = AnbPayrollStatusMapper.Map(Snapshot("IN_PROGRESS", lines, 3000), batch.Submitted);
+        var mapped = AnbPayrollStatusMapper.Map(Snapshot("IN_PROGRESS", lines, 3000), Binding(batch));
 
-        var csv = AnbPayrollStatusMapper.ToConfirmationCsv(mapped.Rows);
+        var csv = BankChannelConfirmationFile.Render(PayrollId, mapped.Rows);
         var parsed = new GenericCsvBankConfirmationParser().Parse(csv);
 
-        AnbPayrollStatusMapper.ConfirmationParserKey.Should().Be(new GenericCsvBankConfirmationParser().Key);
+        BankChannelConfirmationFile.ParserKey.Should().Be(new GenericCsvBankConfirmationParser().Key);
         parsed.Errors.Should().BeEmpty();
         parsed.Rows.Should().HaveCount(3000);
         parsed.Rows.Select(r => (r.WpsReference, r.Outcome, r.Amount, r.ReasonCode, r.BankReference, r.ReasonText))
@@ -198,14 +207,14 @@ public class AnbPayrollStatusMapperTests
     {
         var batch = BuildBatch(1);
         var mapped = AnbPayrollStatusMapper.Map(Snapshot("COMPLETED",
-            new[] { Bank(batch.Rows[0], "FAILED", null, null, $"Account {Iban(1)} of {NationalId(1)} closed") }, 1), batch.Submitted);
+            new[] { Bank(batch.Rows[0], "FAILED", null, null, $"Account {Iban(1)} of {NationalId(1)} closed") }, 1), Binding(batch));
         mapped.Rows.Single().ReasonText.Should().NotContain(Iban(1)).And.NotContain(NationalId(1)).And.Contain("closed");
     }
 
     private static AnbStatusLine Bank(Zayra.Api.Infrastructure.Payroll.SaudiBankExports.AnbPaymentInput r, string status,
         string? paymentId = null, string? trx = null, string? description = null) =>
         new(r.EmployeeNationalId!, r.AccountNumber!, r.SalaryAmount, r.BicCode, r.EmployeeName, paymentId, status,
-            description, trx, null, null);
+            description, trx, IntentAt.AddHours(1), IntentAt.AddHours(1));
 
     private static AnbPayrollStatusSnapshot Snapshot(string status, IReadOnlyList<AnbStatusLine> lines, int itemCount) =>
         new(PayrollId, status, null, lines, itemCount, 1, 0, lines.Select(l => (l.EmployeeId, l.EmployeeAccountNumber)).Distinct().Count() == itemCount);

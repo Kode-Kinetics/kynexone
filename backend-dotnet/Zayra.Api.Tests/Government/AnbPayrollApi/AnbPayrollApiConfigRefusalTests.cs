@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
+using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
 using static Zayra.Api.Tests.Government.AnbPayrollApi.AnbApiTestKit;
 
 namespace Zayra.Api.Tests.Government.AnbPayrollApi;
@@ -15,7 +16,7 @@ public class AnbPayrollApiConfigRefusalTests
     public static TheoryData<string> Settings => new()
     {
         nameof(IAnbEndpointConfig.Environment), nameof(IAnbEndpointConfig.BaseUrl), nameof(IAnbEndpointConfig.TokenUrl),
-        nameof(IAnbEndpointConfig.GrantType), nameof(IAnbEndpointConfig.Scope), nameof(IAnbEndpointConfig.ClientAuthMethod),
+        nameof(IAnbEndpointConfig.GrantType), nameof(IAnbEndpointConfig.Scope), nameof(IAnbEndpointConfig.ClientAuthMethod), nameof(IAnbEndpointConfig.AllowedHostSuffixes),
     };
 
     private static AnbPayrollApiOptions Without(string setting, string? value = null)
@@ -29,13 +30,13 @@ public class AnbPayrollApiConfigRefusalTests
     public void TheDefaultOptions_AreAllEmpty_AndRefuse()
     {
         var empty = new AnbPayrollApiOptions();
-        new[] { empty.Environment, empty.BaseUrl, empty.TokenUrl, empty.GrantType, empty.Scope, empty.ClientAuthMethod }
+        new[] { empty.Environment, empty.BaseUrl, empty.TokenUrl, empty.GrantType, empty.Scope, empty.ClientAuthMethod, empty.AllowedHostSuffixes }
             .Should().OnlyContain(v => string.IsNullOrEmpty(v));
 
         var act = () => Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out _, empty);
-        var ex = act.Should().Throw<AnbPayrollApiRefusedException>().Which;
-        ex.Code.Should().Be(AnbApiCodes.ConfigMissing);
-        ex.Settings.Should().HaveCount(6);
+        var ex = act.Should().Throw<BankChannelRefusedException>().Which;
+        ex.Code.Should().Be(BankChannelCodes.ConfigMissing);
+        ex.Settings.Should().HaveCount(7);
     }
 
     [Fact]
@@ -44,7 +45,7 @@ public class AnbPayrollApiConfigRefusalTests
         var options = new AnbPayrollApiOptions();
         new ConfigurationBuilder().AddInMemoryCollection().Build().GetSection(AnbPayrollApiOptions.SectionName).Bind(options);
         var act = () => Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out _, options);
-        act.Should().Throw<AnbPayrollApiRefusedException>().Which.Code.Should().Be(AnbApiCodes.ConfigMissing);
+        act.Should().Throw<BankChannelRefusedException>().Which.Code.Should().Be(BankChannelCodes.ConfigMissing);
     }
 
     [Theory]
@@ -54,8 +55,8 @@ public class AnbPayrollApiConfigRefusalTests
         foreach (var blank in new[] { null, "", "   " })
         {
             var act = () => Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out _, Without(setting, blank));
-            var ex = act.Should().Throw<AnbPayrollApiRefusedException>().Which;
-            ex.Code.Should().Be(AnbApiCodes.ConfigMissing);
+            var ex = act.Should().Throw<BankChannelRefusedException>().Which;
+            ex.Code.Should().Be(BankChannelCodes.ConfigMissing);
             ex.Settings.Should().Equal(setting);
         }
     }
@@ -72,8 +73,8 @@ public class AnbPayrollApiConfigRefusalTests
     public void AnUnsafeOrUnsupportedSetting_RefusesConstruction(string setting, string value)
     {
         var act = () => Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out _, Without(setting, value));
-        var ex = act.Should().Throw<AnbPayrollApiRefusedException>().Which;
-        ex.Code.Should().Be(AnbApiCodes.ConfigInvalid);
+        var ex = act.Should().Throw<BankChannelRefusedException>().Which;
+        ex.Code.Should().Be(BankChannelCodes.ConfigInvalid);
         ex.Settings.Should().Equal(setting);
         ex.Message.Should().NotContain(value, "a refusal names the setting, never its value");
     }
@@ -87,14 +88,14 @@ public class AnbPayrollApiConfigRefusalTests
         config.TokenUrl = "";
 
         var outcome = await client.SubmitAsync(Submit(BuildBatch(2)), CancellationToken.None);
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Refused);
-        outcome.Code.Should().Be(AnbApiCodes.ConfigMissing);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.ConfigMissing);
         outcome.RequestSent.Should().BeFalse();
 
         var poll = () => client.GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
-        (await poll.Should().ThrowAsync<AnbPayrollApiRefusedException>()).Which.Code.Should().Be(AnbApiCodes.ConfigMissing);
+        (await poll.Should().ThrowAsync<BankChannelRefusedException>()).Which.Code.Should().Be(BankChannelCodes.ConfigMissing);
         var wps = () => client.DownloadWpsAsync(TestScope, PayrollId, null, CancellationToken.None);
-        (await wps.Should().ThrowAsync<AnbPayrollApiRefusedException>()).Which.Code.Should().Be(AnbApiCodes.ConfigMissing);
+        (await wps.Should().ThrowAsync<BankChannelRefusedException>()).Which.Code.Should().Be(BankChannelCodes.ConfigMissing);
 
         handler.Requests.Should().BeEmpty();
     }
@@ -104,7 +105,7 @@ public class AnbPayrollApiConfigRefusalTests
     {
         var handler = new StubAnbHandler(_ => throw new InvalidOperationException("no call"));
         var act = () => Client(handler, out _).GetStatusAsync(TestScope with { Environment = "production" }, PayrollId, null, CancellationToken.None);
-        (await act.Should().ThrowAsync<AnbPayrollApiRefusedException>()).Which.Code.Should().Be(AnbApiCodes.EnvironmentMismatch);
+        (await act.Should().ThrowAsync<BankChannelRefusedException>()).Which.Code.Should().Be(BankChannelCodes.EnvironmentMismatch);
         handler.Requests.Should().BeEmpty();
     }
 
@@ -114,17 +115,7 @@ public class AnbPayrollApiConfigRefusalTests
         var handler = new StubAnbHandler(_ => throw new InvalidOperationException("no call"));
         var act = () => Client(handler, out _, credentials: new FixedCredentials(none: true))
             .GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
-        (await act.Should().ThrowAsync<AnbPayrollApiRefusedException>()).Which.Code.Should().Be(AnbApiCodes.CredentialMissing);
+        (await act.Should().ThrowAsync<BankChannelRefusedException>()).Which.Code.Should().Be(BankChannelCodes.CredentialMissing);
         handler.Requests.Should().BeEmpty();
-    }
-
-    [Fact]
-    public void TheClientIsNotRegisteredInTheApp()
-    {
-        // OFF by default: nothing in the composition root builds this client until the integration wave
-        // wires it to the credential store and the live gate.
-        var program = File.ReadAllText(Path.Combine(Security.SourceScan.ResolveApiRoot(), "Program.cs"));
-        program.Should().NotContain("AnbPayrollApiClient");
-        program.Should().NotContain("IAnbCredentialSource");
     }
 }

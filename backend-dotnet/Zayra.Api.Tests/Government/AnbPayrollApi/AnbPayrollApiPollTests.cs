@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using FluentAssertions;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
+using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
 using static Zayra.Api.Tests.Government.AnbPayrollApi.AnbApiTestKit;
 
 namespace Zayra.Api.Tests.Government.AnbPayrollApi;
@@ -105,7 +106,7 @@ public class AnbPayrollApiPollTests
 
         var act = () => Client(handler, out _).GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
 
-        (await act.Should().ThrowAsync<AnbPayrollApiException>()).Which.Code.Should().Be(AnbApiCodes.PageMismatch);
+        (await act.Should().ThrowAsync<BankChannelException>()).Which.Code.Should().Be(BankChannelCodes.PageMismatch);
     }
 
     [Fact]
@@ -121,7 +122,7 @@ public class AnbPayrollApiPollTests
         });
 
         var act = () => Client(handler, out _).GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
-        (await act.Should().ThrowAsync<AnbPayrollApiException>()).Which.Code.Should().Be(AnbApiCodes.PollInconsistent);
+        (await act.Should().ThrowAsync<BankChannelException>()).Which.Code.Should().Be(BankChannelCodes.PollInconsistent);
     }
 
     [Fact]
@@ -141,7 +142,7 @@ public class AnbPayrollApiPollTests
         });
 
         var act = () => Client(handler, out _).GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
-        (await act.Should().ThrowAsync<AnbPayrollApiException>()).Which.Code.Should().Be(AnbApiCodes.PollInconsistent);
+        (await act.Should().ThrowAsync<BankChannelException>()).Which.Code.Should().Be(BankChannelCodes.PollInconsistent);
         handler.ApiRequests.Count.Should().BeLessThanOrEqualTo(2);
     }
 
@@ -153,7 +154,7 @@ public class AnbPayrollApiPollTests
             Page("COMPLETED", batch.Rows.Select(r => Line(r, "PAID", "P")).ToList(), 1, 50, 2, id: "9e0c0000-0000-4000-8000-000000000000")));
 
         var act = () => Client(handler, out _).GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
-        (await act.Should().ThrowAsync<AnbPayrollApiException>()).Which.Code.Should().Be(AnbApiCodes.PagePayrollMismatch);
+        (await act.Should().ThrowAsync<BankChannelException>()).Which.Code.Should().Be(BankChannelCodes.PagePayrollMismatch);
     }
 
     [Fact]
@@ -194,8 +195,8 @@ public class AnbPayrollApiPollTests
         var client = Client(handler, out _);
 
         var act = () => client.GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
-        var ex = (await act.Should().ThrowAsync<AnbPayrollApiException>()).Which;
-        ex.Code.Should().Be(AnbApiCodes.Unauthorized);
+        var ex = (await act.Should().ThrowAsync<BankChannelException>()).Which;
+        ex.Code.Should().Be(BankChannelCodes.Unauthorized);
         ex.HttpStatus.Should().Be(401);
         handler.TokenRequests.Should().HaveCount(2, "exactly one re-acquire, no loop");
     }
@@ -207,8 +208,8 @@ public class AnbPayrollApiPollTests
     {
         var handler = new StubAnbHandler(_ => Json((HttpStatusCode)status, new { message = "x" }));
         var act = () => Client(handler, out _).GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
-        var ex = (await act.Should().ThrowAsync<AnbPayrollApiException>()).Which;
-        ex.Code.Should().Be(AnbApiCodes.HttpError);
+        var ex = (await act.Should().ThrowAsync<BankChannelException>()).Which;
+        ex.Code.Should().Be(BankChannelCodes.HttpError);
         ex.HttpStatus.Should().Be(status);
         handler.ApiRequests.Should().ContainSingle("a failed read is not retried in a loop by the client");
     }
@@ -218,18 +219,27 @@ public class AnbPayrollApiPollTests
     {
         var handler = new StubAnbHandler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"id\":") });
         var act = () => Client(handler, out _).GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
-        (await act.Should().ThrowAsync<AnbPayrollApiException>()).Which.Code.Should().Be(AnbApiCodes.ResponseUnparsable);
+        (await act.Should().ThrowAsync<BankChannelException>()).Which.Code.Should().Be(BankChannelCodes.ResponseUnparsable);
     }
 
     [Fact]
-    public async Task AnUnknownLineStatus_FailsLoudly()
+    public async Task AnUnknownLineStatus_IsKeptForTheMapperToHold_NotThrown()
     {
         var batch = BuildBatch(2);
         var data = new[] { Line(batch.Rows[0], "PAID", "P1"), Line(batch.Rows[1], "SETTLED_MAYBE") };
         var handler = new StubAnbHandler(_ => Json(HttpStatusCode.OK, Page("IN_PROGRESS", data, 1, 50, 2)));
 
+        var snapshot = await Client(handler, out _).GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
+        snapshot.Lines.Select(l => l.PaymentStatus).Should().BeEquivalentTo("PAID", "SETTLED_MAYBE");
+    }
+
+    [Fact]
+    public async Task AnUnknownPayrollStatus_StillFailsLoudly()
+    {
+        var batch = BuildBatch(1);
+        var handler = new StubAnbHandler(_ => Json(HttpStatusCode.OK, Page("ALMOST_DONE", new[] { Line(batch.Rows[0], "PAID", "P1") }, 1, 50, 1)));
         var act = () => Client(handler, out _).GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
-        (await act.Should().ThrowAsync<AnbUnknownStatusException>()).Which.Token.Should().Be("SETTLED_MAYBE");
+        (await act.Should().ThrowAsync<AnbUnknownStatusException>()).Which.Kind.Should().Be("payroll");
     }
 
     [Fact]
@@ -251,7 +261,7 @@ public class AnbPayrollApiPollTests
     {
         var handler = new StubAnbHandler(_ => throw new InvalidOperationException("no call"));
         var act = () => Client(handler, out _).GetStatusAsync(TestScope, id, null, CancellationToken.None);
-        (await act.Should().ThrowAsync<AnbPayrollApiRefusedException>()).Which.Code.Should().Be(AnbApiCodes.PayrollIdInvalid);
+        (await act.Should().ThrowAsync<BankChannelRefusedException>()).Which.Code.Should().Be(BankChannelCodes.PayrollIdInvalid);
         handler.Requests.Should().BeEmpty();
     }
 
@@ -291,7 +301,7 @@ public class AnbPayrollApiPollTests
     {
         var handler = new StubAnbHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
         var act = () => Client(handler, out _).DownloadWpsAsync(TestScope, PayrollId, null, CancellationToken.None);
-        (await act.Should().ThrowAsync<AnbPayrollApiException>()).Which.Code.Should().Be(AnbApiCodes.WpsNotReady);
+        (await act.Should().ThrowAsync<BankChannelException>()).Which.Code.Should().Be(BankChannelCodes.WpsNotReady);
     }
 
     [Fact]
@@ -300,7 +310,7 @@ public class AnbPayrollApiPollTests
         var handler = new StubAnbHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         { Content = new ByteArrayContent(new byte[AnbPayrollApiClient.MaxWpsBytes + 1]) });
         var act = () => Client(handler, out _).DownloadWpsAsync(TestScope, PayrollId, null, CancellationToken.None);
-        (await act.Should().ThrowAsync<AnbPayrollApiException>()).Which.Code.Should().Be(AnbApiCodes.WpsTooLarge);
+        (await act.Should().ThrowAsync<BankChannelException>()).Which.Code.Should().Be(BankChannelCodes.WpsTooLarge);
     }
 
     [Fact]

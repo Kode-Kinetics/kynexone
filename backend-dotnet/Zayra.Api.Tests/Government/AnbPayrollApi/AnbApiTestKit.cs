@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
+using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
 
 namespace Zayra.Api.Tests.Government.AnbPayrollApi;
 
@@ -23,7 +24,7 @@ internal static class AnbApiTestKit
     public const string AccessToken = "tok-SYNTHETIC-bearer-55aa77";
     public const string PayrollId = "3f2b8c1e-9d4a-4e7b-8a61-0c5d2e9f1a77";
 
-    public static readonly AnbCredentialScope TestScope = new(
+    public static readonly BankChannelScope TestScope = new(
         Guid.Parse("11111111-1111-1111-1111-111111111111"),
         Guid.Parse("22222222-2222-2222-2222-222222222222"),
         "sandbox");
@@ -36,20 +37,32 @@ internal static class AnbApiTestKit
         GrantType = "client_credentials",
         Scope = "payroll",
         ClientAuthMethod = "client_secret_basic",
+        AllowedHostSuffixes = "test",
     };
 
-    public static AnbPayrollApiClient Client(StubAnbHandler handler, out ListLogger<AnbPayrollApiClient> log,
-        IAnbEndpointConfig? config = null, IAnbCredentialSource? credentials = null, TimeSpan? timeout = null)
+    public static AnbPayrollApiClient Client(HttpMessageHandler handler, out ListLogger<AnbPayrollApiClient> log,
+        IAnbEndpointConfig? config = null, IAnbCredentialSource? credentials = null, TimeSpan? timeout = null,
+        TimeProvider? clock = null, TimeSpan? deadline = null)
     {
         log = new ListLogger<AnbPayrollApiClient>();
-        var http = new HttpClient(handler) { Timeout = timeout ?? TimeSpan.FromSeconds(10) };
-        return new AnbPayrollApiClient(http, config ?? Config(), credentials ?? new FixedCredentials(), log);
+        return new AnbPayrollApiClient(handler, config ?? Config(), credentials ?? new FixedCredentials(), log, clock,
+            new AnbClientLimits(timeout ?? TimeSpan.FromSeconds(10), deadline ?? TimeSpan.FromSeconds(30)));
     }
+
+    public static AnbClientCredential Credential(string clientId = ClientId, string secret = ClientSecret, string version = "v1",
+        string environment = "sandbox") =>
+        new(clientId, secret, version, environment, "anb-sandbox.test", "anb-auth.test");
+
+    public static BankBatchBinding Binding(Batch batch, DateTimeOffset? intentAt = null) =>
+        new(batch.Submitted, batch.Total, intentAt ?? IntentAt);
+
+    /// <summary>Intent time used by the synthetic status lines (createdAt is later).</summary>
+    public static readonly DateTimeOffset IntentAt = new(2026, 11, 27, 5, 0, 0, TimeSpan.Zero);
 
     // ── Synthetic batch through the REAL generator, at real size ─────────────────────────────────
 
-    public sealed record Batch(AnbArtifactFile Header, AnbArtifactFile Body, IReadOnlyList<AnbPaymentInput> Rows,
-        IReadOnlyList<AnbSubmittedLine> Submitted, decimal Total);
+    public sealed record Batch(BankArtifactFile Header, BankArtifactFile Body, IReadOnlyList<AnbPaymentInput> Rows,
+        IReadOnlyList<BankSubmittedLine> Submitted, decimal Total);
 
     /// <summary>A 35-character Arabic full name, distinct per index.</summary>
     public static string ArabicName35(int i)
@@ -92,10 +105,10 @@ internal static class AnbApiTestKit
         var h = gen.Files![0];
         var b = gen.Files![1];
         return new Batch(
-            new AnbArtifactFile(h.Name, h.Content, h.Sha256),
-            new AnbArtifactFile(b.Name, b.Content, b.Sha256),
+            new BankArtifactFile(h.Name, h.Content, h.Sha256),
+            new BankArtifactFile(b.Name, b.Content, b.Sha256),
             rows,
-            rows.Select(r => new AnbSubmittedLine(r.EmployeeNationalId!, r.AccountNumber!, WpsReference(r.EmployeeRef))).ToList(),
+            rows.Select(r => new BankSubmittedLine(r.EmployeeNationalId!, r.AccountNumber!, WpsReference(r.EmployeeRef))).ToList(),
             total);
     }
 
@@ -162,12 +175,18 @@ internal sealed class FixedCredentials : IAnbCredentialSource
     private readonly AnbClientCredential? _credential;
     public int Calls;
     public FixedCredentials(AnbClientCredential? credential = null, bool none = false) =>
-        _credential = none ? null : credential ?? new AnbClientCredential(AnbApiTestKit.ClientId, AnbApiTestKit.ClientSecret, "v1");
-    public Task<AnbClientCredential?> GetAsync(AnbCredentialScope scope, CancellationToken ct)
+        _credential = none ? null : credential ?? AnbApiTestKit.Credential();
+    public Task<AnbClientCredential?> GetAsync(BankChannelScope scope, CancellationToken ct)
     {
         Interlocked.Increment(ref Calls);
         return Task.FromResult(_credential);
     }
+}
+
+internal sealed class ManualClock : TimeProvider
+{
+    public DateTimeOffset Now = new(2026, 11, 27, 6, 0, 0, TimeSpan.Zero);
+    public override DateTimeOffset GetUtcNow() => Now;
 }
 
 internal sealed record CapturedRequest(HttpMethod Method, Uri Uri, IReadOnlyDictionary<string, string> Headers,

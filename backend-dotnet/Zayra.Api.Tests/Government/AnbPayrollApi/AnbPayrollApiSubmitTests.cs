@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Net.Http.Headers;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
+using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
 using static Zayra.Api.Tests.Government.AnbPayrollApi.AnbApiTestKit;
 
 namespace Zayra.Api.Tests.Government.AnbPayrollApi;
@@ -26,8 +27,8 @@ public class AnbPayrollApiSubmitTests
 
         var outcome = await client.SubmitAsync(Submit(Small), CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Accepted);
-        outcome.Code.Should().Be(AnbApiCodes.Accepted);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Accepted);
+        outcome.Code.Should().Be(BankChannelCodes.Accepted);
         outcome.BankPayrollId.Should().Be(PayrollId);
         outcome.BankStatus.Should().Be("ACCEPTED");
         outcome.RequestSent.Should().BeTrue();
@@ -63,7 +64,7 @@ public class AnbPayrollApiSubmitTests
 
         var outcome = await Client(handler, out _).SubmitAsync(Submit(Small) with { Body = frozen }, CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Accepted);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Accepted);
         var parts = await ReadMultipart(handler.Posts.Single());
         parts["body"].Should().Equal(bytes);
         AnbConnectCsvGenerator.Sha256Hex(parts["body"]).Should().Be(frozen.ExpectedSha256);
@@ -75,7 +76,7 @@ public class AnbPayrollApiSubmitTests
     {
         var handler = new StubAnbHandler(_ => Json(HttpStatusCode.Created, new { id = PayrollId, status = "ACCEPTED", message = "" }));
         var outcome = await Client(handler, out _).SubmitAsync(Submit(Small), CancellationToken.None);
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Accepted);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Accepted);
     }
 
     [Theory]
@@ -88,8 +89,8 @@ public class AnbPayrollApiSubmitTests
         { Content = new StringContent(body, Encoding.UTF8, "application/json") });
         var outcome = await Client(handler, out _).SubmitAsync(Submit(Small), CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Unknown);
-        outcome.Code.Should().Be(AnbApiCodes.AcceptedWithoutId);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Unknown);
+        outcome.Code.Should().Be(BankChannelCodes.AcceptedWithoutId);
         handler.Posts.Should().ContainSingle();
     }
 
@@ -103,8 +104,8 @@ public class AnbPayrollApiSubmitTests
         var handler = new StubAnbHandler(_ => Json((HttpStatusCode)status, new { message = "Invalid header file" }));
         var outcome = await Client(handler, out _).SubmitAsync(Submit(Small), CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.RejectedStructure);
-        outcome.Code.Should().Be(AnbApiCodes.RejectedStructure);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.RejectedStructure);
+        outcome.Code.Should().Be(BankChannelCodes.RejectedStructure);
         outcome.HttpStatus.Should().Be(status);
         outcome.Message.Should().Be("Invalid header file");
         handler.Posts.Should().ContainSingle();
@@ -119,7 +120,7 @@ public class AnbPayrollApiSubmitTests
         var client = Client(handler, out _);
 
         var outcome = await client.SubmitAsync(Submit(Small), CancellationToken.None);
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.RejectedAuthorization);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.RejectedAuthorization);
         handler.Posts.Should().ContainSingle();
 
         await client.SubmitAsync(Submit(Small), CancellationToken.None);
@@ -141,8 +142,8 @@ public class AnbPayrollApiSubmitTests
         var handler = new StubAnbHandler(_ => Json((HttpStatusCode)status, new { message = "x" }));
         var outcome = await Client(handler, out _).SubmitAsync(Submit(Small), CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Unknown);
-        outcome.Code.Should().Be(AnbApiCodes.OutcomeUnknown);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Unknown);
+        outcome.Code.Should().Be(BankChannelCodes.OutcomeUnknown);
         outcome.HttpStatus.Should().Be(status);
         handler.Posts.Should().ContainSingle();
     }
@@ -160,7 +161,7 @@ public class AnbPayrollApiSubmitTests
 
         var outcome = await client.SubmitAsync(Submit(Small), CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Unknown);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Unknown);
         outcome.RequestSent.Should().BeTrue();
         handler.Posts.Should().ContainSingle();
         handler.Posts[0].Content.Length.Should().BeGreaterThan(Small.Body.Content.Length);
@@ -173,7 +174,7 @@ public class AnbPayrollApiSubmitTests
             throw new HttpRequestException("reset", new IOException("Connection reset by peer")));
         var outcome = await Client(handler, out _).SubmitAsync(Submit(Small), CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Unknown);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Unknown);
         handler.Posts.Should().ContainSingle();
     }
 
@@ -189,7 +190,7 @@ public class AnbPayrollApiSubmitTests
         });
         var outcome = await Client(handler, out _).SubmitAsync(Submit(Small), cts.Token);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Unknown);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Unknown);
         handler.Posts.Should().ContainSingle();
     }
 
@@ -203,8 +204,8 @@ public class AnbPayrollApiSubmitTests
             _ => Json((HttpStatusCode)status, new { error = "temporarily_unavailable" }));
         var outcome = await Client(handler, out _).SubmitAsync(Submit(Small), CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Refused);
-        outcome.Code.Should().Be(AnbApiCodes.TokenUnavailable);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.TokenUnavailable);
         outcome.RequestSent.Should().BeFalse();
         handler.Posts.Should().BeEmpty();
         handler.TokenRequests.Should().ContainSingle("no retry storm against the token service");
@@ -219,8 +220,8 @@ public class AnbPayrollApiSubmitTests
             _ => Json((HttpStatusCode)status, new { error = "invalid_client" }));
         var outcome = await Client(handler, out _).SubmitAsync(Submit(Small), CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Refused);
-        outcome.Code.Should().Be(AnbApiCodes.TokenRejected);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.TokenRejected);
         handler.Posts.Should().BeEmpty();
     }
 
@@ -231,8 +232,8 @@ public class AnbPayrollApiSubmitTests
             async (_, ct) => { await Task.Delay(Timeout.Infinite, ct); return new HttpResponseMessage(HttpStatusCode.OK); });
         var outcome = await Client(handler, out _, timeout: TimeSpan.FromMilliseconds(200)).SubmitAsync(Submit(Small), CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Refused);
-        outcome.Code.Should().Be(AnbApiCodes.TokenUnavailable);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.TokenUnavailable);
         handler.Posts.Should().BeEmpty();
     }
 
@@ -246,8 +247,8 @@ public class AnbPayrollApiSubmitTests
             _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
         var outcome = await Client(handler, out _).SubmitAsync(Submit(Small), CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Refused);
-        outcome.Code.Should().Be(AnbApiCodes.TokenUnavailable);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.TokenUnavailable);
         handler.Posts.Should().BeEmpty();
     }
 
@@ -294,8 +295,8 @@ public class AnbPayrollApiSubmitTests
             var handler = new StubAnbHandler(_ => throw new InvalidOperationException("must not POST"));
             var outcome = await Client(handler, out _).SubmitAsync(tamper(Small), CancellationToken.None);
 
-            outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Refused);
-            outcome.Code.Should().Be(AnbApiCodes.ArtifactHashMismatch);
+            outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+            outcome.Code.Should().Be(BankChannelCodes.ArtifactHashMismatch);
             handler.Requests.Should().BeEmpty("not even a token is fetched for a tampered file");
         }
     }
@@ -310,8 +311,8 @@ public class AnbPayrollApiSubmitTests
 
         var outcome = await Client(handler, out _).SubmitAsync(request, CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Refused);
-        outcome.Code.Should().Be(AnbApiCodes.ArtifactInconsistent);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.ArtifactInconsistent);
         handler.Requests.Should().BeEmpty();
     }
 
@@ -324,11 +325,11 @@ public class AnbPayrollApiSubmitTests
         var client = Client(handler, out _);
 
         (await client.SubmitAsync(Submit(plain, new AnbSubmitHeaders(AutoWpsFileUpload: true, NationalUnifiedNo: "7001234567")), CancellationToken.None))
-            .Code.Should().Be(AnbApiCodes.ArtifactInconsistent);
+            .Code.Should().Be(BankChannelCodes.ArtifactInconsistent);
         (await client.SubmitAsync(Submit(withWps, new AnbSubmitHeaders()), CancellationToken.None))
-            .Code.Should().Be(AnbApiCodes.ArtifactInconsistent);
+            .Code.Should().Be(BankChannelCodes.ArtifactInconsistent);
         (await client.SubmitAsync(Submit(withWps, new AnbSubmitHeaders(AutoWpsFileUpload: true, NationalUnifiedNo: "7009999999")), CancellationToken.None))
-            .Code.Should().Be(AnbApiCodes.ArtifactInconsistent);
+            .Code.Should().Be(BankChannelCodes.ArtifactInconsistent);
         handler.Requests.Should().BeEmpty();
     }
 
@@ -341,7 +342,7 @@ public class AnbPayrollApiSubmitTests
             Submit(withWps, new AnbSubmitHeaders(ProfileId: "P-77", AutoWpsFileUpload: true, NationalUnifiedNo: "7001234567")),
             CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Accepted);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Accepted);
         var post = handler.Posts.Single();
         post.Headers["autowpsfileupload"].Should().Be("YES");
         post.Headers["nationalunifiedno"].Should().Be("7001234567");
@@ -358,8 +359,8 @@ public class AnbPayrollApiSubmitTests
         var handler = new StubAnbHandler(_ => throw new InvalidOperationException("must not POST"));
         var outcome = await Client(handler, out _).SubmitAsync(Submit(Small, new AnbSubmitHeaders(ProfileId: profile)), CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Refused);
-        outcome.Code.Should().Be(AnbApiCodes.SubmitHeaderInvalid);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.SubmitHeaderInvalid);
         handler.Requests.Should().BeEmpty();
     }
 
@@ -370,8 +371,8 @@ public class AnbPayrollApiSubmitTests
         var outcome = await Client(handler, out _, credentials: new FixedCredentials(none: true))
             .SubmitAsync(Submit(Small), CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Refused);
-        outcome.Code.Should().Be(AnbApiCodes.CredentialMissing);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.CredentialMissing);
         handler.Requests.Should().BeEmpty();
     }
 
@@ -382,8 +383,8 @@ public class AnbPayrollApiSubmitTests
         var request = Submit(Small) with { Scope = TestScope with { Environment = "production" } };
         var outcome = await Client(handler, out _).SubmitAsync(request, CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Refused);
-        outcome.Code.Should().Be(AnbApiCodes.EnvironmentMismatch);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.EnvironmentMismatch);
         handler.Requests.Should().BeEmpty();
     }
 
@@ -396,7 +397,7 @@ public class AnbPayrollApiSubmitTests
 
         var outcome = await Client(handler, out _).SubmitAsync(Submit(big), CancellationToken.None);
 
-        outcome.Kind.Should().Be(AnbSubmitOutcomeKind.Accepted);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Accepted);
         var parts = await ReadMultipart(handler.Posts.Single());
         parts["body"].Should().Equal(big.Body.Content);
         AnbConnectCsvGenerator.Sha256Hex(parts["body"]).Should().Be(big.Body.ExpectedSha256);
@@ -425,8 +426,8 @@ public class AnbPayrollApiSubmitTests
     private sealed class RotatingCredentials : IAnbCredentialSource
     {
         public string Version = "v1";
-        public Task<AnbClientCredential?> GetAsync(AnbCredentialScope scope, CancellationToken ct) =>
-            Task.FromResult<AnbClientCredential?>(new AnbClientCredential(ClientId, ClientSecret, Version));
+        public Task<AnbClientCredential?> GetAsync(BankChannelScope scope, CancellationToken ct) =>
+            Task.FromResult<AnbClientCredential?>(Credential(version: Version));
     }
 
     private static byte[] Flip(byte[] content)
