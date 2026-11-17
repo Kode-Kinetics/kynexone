@@ -32,9 +32,11 @@ public enum AnbTransactionPhase { Initiated, Pending, InProgress, Paid, Returned
 /// refused payroll rejects) gives <see cref="BankConfirmationRow.ReasonCode"/> only when it carries exactly one reason
 /// code (<see cref="ReasonCodeIn"/>), which the shared <see cref="BankStatusReasonCatalogue"/> then describes. A status
 /// word or free text is never a reason code (CTO gate 8.4.7).</item>
-/// <item>A duplicate-payment reason (DUPL, or the word duplicate) is held for a person
-/// (<see cref="DuplicateHeldReason"/>): the first payment may have gone through, so the line is never recorded as
-/// "not paid, still owed".</item>
+/// <item>A duplicate-payment reason (DUPL, or the word duplicate in English or Arabic) is sent to the import with reason
+/// code DUPL, where the shared import holds it for a person (<c>duplicate_rejection_held</c>, a handoff blocker, and the
+/// exits confirmOriginalPaymentReceived / confirmDuplicateNotPaid): the first payment may have gone through, so the line
+/// is never recorded as "not paid, still owed". The snapshot also lists it as an anomaly (<see cref="DuplicateHeldReason"/>)
+/// and is not complete.</item>
 /// <item>An unpublished line word is held (<see cref="BankUnresolvedLine"/>, reason <c>unknown_status</c>)
 /// and the other lines still map; an unpublished PAYROLL word throws.</item>
 /// <item>Lines are matched to what we sent by national ID AND account and carried by OUR WPS reference; no
@@ -56,8 +58,11 @@ public static class AnbPayrollStatusMapper
 
     private const int MaxReasonLength = 300;
 
-    /// <summary><see cref="BankUnresolvedLine.Reason"/> for a line whose bank reason is a duplicate payment.</summary>
+    /// <summary><see cref="BankLineAnomaly.Code"/> for a line whose bank reason is a duplicate payment (the import holds it).</summary>
     public const string DuplicateHeldReason = "duplicate_held";
+
+    /// <summary>The ISO reason code the import holds on (<see cref="BankStatusReasonCatalogue.IsDuplicate"/>).</summary>
+    private const string DuplicateReasonCode = "DUPL";
 
     /// <summary>ASCII words only (a look-alike letter such as a dotless i never upper-cases into a known
     /// word); trimmed, upper-cased, and a space treated like an underscore ("IN PROGRESS" and "IN_PROGRESS"
@@ -202,15 +207,11 @@ public static class AnbPayrollStatusMapper
                 }
             }
 
-            if (duplicate)
-            {
-                // The bank says this is a duplicate: the earlier payment may have reached the employee. A person checks
-                // before anything is recorded; it is never "not paid, still owed".
-                unresolved.Add(new BankUnresolvedLine(i + 1, SensitiveValueMask.MaskId(line.EmployeeId), DuplicateHeldReason,
-                    AnbStatusWords.Printable(raw)));
-                continue;
-            }
-            var reasonCode = ReasonCodeIn(reasonText);
+            // The bank says this is a duplicate: the earlier payment may have reached the employee. The line goes to the
+            // import with reason code DUPL, which holds it for a person exactly as for any bank file (duplicate_rejection_held,
+            // the handoff blocker, and the two explicit exits); it is never applied as "not paid, still owed".
+            if (duplicate) anomalies.Add(new BankLineAnomaly(wpsReference, DuplicateHeldReason));
+            var reasonCode = duplicate ? DuplicateReasonCode : ReasonCodeIn(reasonText);
 
             rows.Add(new BankConfirmationRow(
                 RowNumber: 0,
@@ -239,7 +240,7 @@ public static class AnbPayrollStatusMapper
             .ToList();
 
         var complete = snapshot.Complete && snapshot.ItemCount > 0 && snapshot.ItemCount == binding.Lines.Count
-                       && missing.Count == 0 && unresolved.Count == 0;
+                       && missing.Count == 0 && unresolved.Count == 0 && !anomalies.Any(a => a.Code == DuplicateHeldReason);
         return new BankStatusSnapshot(snapshot.BankPayrollId, payroll, ordered, unresolved, missing, anomalies, complete);
     }
 

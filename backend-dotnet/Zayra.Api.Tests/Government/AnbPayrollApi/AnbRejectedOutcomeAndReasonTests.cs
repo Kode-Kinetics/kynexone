@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
@@ -169,6 +170,8 @@ public class AnbRejectedOutcomeAndReasonTests
     }
 
     // ── 8.4.7: DUPL is held for a person, never "not paid, still owed" ─────────────────────────────────
+    // The ANB line goes INTO the import with reason code DUPL, so the shared import holds it exactly as for any bank file
+    // (duplicate_rejection_held, the handoff blocker, and the two explicit exits). It is never applied as Rejected.
 
     [Theory]
     [InlineData("FAILED", "DUPL")]
@@ -177,22 +180,23 @@ public class AnbRejectedOutcomeAndReasonTests
     [InlineData("RETURNED", "DUPL")]
     [InlineData("PAID", "DUPL")]
     [InlineData("FAILED", "عملية دفع مكررة")]
-    public void ADuplicateReason_IsHeldForAPerson_NeverRecorded(string status, string description)
+    public void ADuplicateReason_GoesToTheImport_WithReasonCodeDupl(string status, string description)
     {
         var batch = BuildBatch(2);
         var mapped = AnbPayrollStatusMapper.Map(
             Snapshot("IN_PROGRESS", new[] { Bank(batch.Rows[0], status, "P1", "T1", description), Bank(batch.Rows[1], "PAID", "P2", "T2") }, 2),
             Binding(batch));
 
-        mapped.Rows.Should().ContainSingle().Which.WpsReference.Should().Be(WpsReference(2));
-        var held = mapped.Unresolved.Should().ContainSingle().Subject;
-        held.Reason.Should().Be(AnbPayrollStatusMapper.DuplicateHeldReason);
-        held.MaskedEmployeeId.Should().NotContain(NationalId(1));
+        mapped.Rows.Should().HaveCount(2);
+        mapped.Rows.Single(r => r.WpsReference == WpsReference(1)).ReasonCode.Should().Be("DUPL");
+        mapped.Rows.Single(r => r.WpsReference == WpsReference(2)).ReasonCode.Should().BeNull();
+        mapped.Unresolved.Should().BeEmpty();
+        mapped.Anomalies.Should().ContainSingle(a => a.WpsReference == WpsReference(1) && a.Code == AnbPayrollStatusMapper.DuplicateHeldReason);
         mapped.Complete.Should().BeFalse("a held line is not settled");
     }
 
     [Fact]
-    public void ARefusedPayrollWithADuplicateReason_HoldsEveryLineItWouldHaveRejected()
+    public void ARefusedPayrollWithADuplicateReason_SendsEveryLineItWouldHaveRejected_AsDupl()
     {
         var batch = BuildBatch(3);
         var mapped = AnbPayrollStatusMapper.Map(
@@ -200,21 +204,57 @@ public class AnbRejectedOutcomeAndReasonTests
                 reason: "DUPL"),
             Binding(batch));
 
-        mapped.Rows.Should().ContainSingle().Which.Outcome.Should().Be(BankConfirmationOutcomes.Paid);
-        mapped.Unresolved.Should().HaveCount(2).And.OnlyContain(u => u.Reason == AnbPayrollStatusMapper.DuplicateHeldReason);
+        mapped.Rows.Where(r => r.ReasonCode == "DUPL").Select(r => r.WpsReference).Should().BeEquivalentTo(new[] { WpsReference(1), WpsReference(2) });
+        mapped.Rows.Single(r => r.WpsReference == WpsReference(3)).Outcome.Should().Be(BankConfirmationOutcomes.Paid);
+        mapped.Unresolved.Should().BeEmpty();
     }
 
-    [Fact]
-    public async Task EndToEnd_ADuplicateRejection_IsNeverImportedAsNotPaid()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task EndToEnd_AnAnbDuplicate_IsHeldByTheImport_BlocksTheHandoff_AndEachExitWorks(bool originalReceived)
     {
-        var batch = BuildBatch(1);
+        var batch = BuildBatch(2);
         var mapped = AnbPayrollStatusMapper.Map(
-            Snapshot("IN_PROGRESS", new[] { Bank(batch.Rows[0], "FAILED", description: "DUPL") }, 1), Binding(batch));
+            Snapshot("IN_PROGRESS", new[]
+            {
+                Bank(batch.Rows[0], "FAILED", "P1", "T1", "DUPL duplicate payment"),
+                Bank(batch.Rows[1], "PAID", "P2", "T2"),
+            }, 2),
+            Binding(batch));
+        var csv = BankChannelConfirmationFile.Render(PayrollId, mapped.Rows);
 
-        mapped.Rows.Should().BeEmpty();
+        // The shared parser reads the reason code.
+        var parsed = new GenericCsvBankConfirmationParser().Parse(csv);
+        parsed.Errors.Should().BeEmpty();
+        parsed.Rows.Single(r => r.WpsReference == WpsReference(1)).ReasonCode.Should().Be("DUPL");
+
         using var db = NewDb();
-        Seed(db, batch);
-        Status(db, 1).Should().Be(PaymentRecordStatuses.Pending, "nothing reaches the import, so the salary is not listed as still owed");
+        var seeded = Seed(db, batch);
+        var (result, refusal) = await ImportAsync(db, seeded, csv, new BankConfirmationImportOptions());
+        refusal.Should().BeNull();
+
+        Status(db, 1).Should().Be(PaymentRecordStatuses.Pending, "a duplicate is never applied as Rejected (not paid, still owed)");
+        Status(db, 2).Should().Be(PaymentRecordStatuses.Paid);
+        result!.RejectedApplied.Should().Be(0);
+        result.RejectedAmountNotPaid.Should().Be(0m);
+        JsonSerializer.Serialize(result.Refused).Should().Contain(BankOutcomeHolds.DuplicateRejection);
+        JsonSerializer.Serialize(result.HeldForPerson).Should().Contain(BankOutcomeHolds.DuplicateRejection);
+        (await Blockers(db, seeded)).Should().Contain(BankOutcomeHolds.DuplicateRejection);
+
+        // The exit: the held line sent again, with the person's finding, a reason and the bank's reference.
+        var line = BankChannelConfirmationFile.Render(PayrollId, mapped.Rows.Where(r => r.WpsReference == WpsReference(1)).ToList());
+        var exit = originalReceived
+            ? new BankConfirmationImportOptions(ConfirmOriginalPaymentReceived: true, OverrideReason: "Checked with the bank", OverrideBankReference: "STMT-0042")
+            : new BankConfirmationImportOptions(ConfirmDuplicateNotPaid: true, OverrideReason: "Checked with the bank", OverrideBankReference: "STMT-0042");
+        var (exited, exitRefusal) = await ImportAsync(db, seeded, line, exit);
+        exitRefusal.Should().BeNull();
+
+        Status(db, 1).Should().Be(originalReceived ? PaymentRecordStatuses.Paid : PaymentRecordStatuses.Rejected);
+        exited!.HeldForPerson.Should().BeEmpty();
+        var blockers = await Blockers(db, seeded);
+        blockers.Should().NotContain(BankOutcomeHolds.DuplicateRejection);
+        if (!originalReceived) blockers.Should().Contain("unpaid_rejected_payments");
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────────────────────────
@@ -222,7 +262,7 @@ public class AnbRejectedOutcomeAndReasonTests
     private static ZayraDbContext NewDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
-    private sealed record Seeded(Guid TenantId, Guid BatchId);
+    private sealed record Seeded(Guid TenantId, Guid BatchId, Guid RunId);
 
     /// <summary>One payment record per synthetic line, carrying the line's WPS reference and amount.</summary>
     private static Seeded Seed(ZayraDbContext db, Batch batch)
@@ -232,6 +272,13 @@ public class AnbRejectedOutcomeAndReasonTests
         db.PayrollRuns.Add(run);
         var paymentBatch = new PayrollPaymentBatch { TenantId = tenantId, PayrollRunId = run.Id };
         db.PayrollPaymentBatches.Add(paymentBatch);
+        // The run's accrual on the ledger, so the period handoff finds the run and its batch.
+        db.FinanceGlEntries.Add(new FinanceGlEntry
+        {
+            TenantId = tenantId, CompanyId = run.CompanyId, SourceModule = "Payroll", SourceEntityId = run.Id, SourceEntityRef = "RUN-2026-11",
+            EventType = GlEventTypes.Accrual, CreditAccount = "2100 - Salaries Payable", Description = "Net payable",
+            Amount = batch.Rows.Sum(r => r.SalaryAmount), Currency = "SAR", EntryDate = new DateOnly(2026, 11, 30), Period = "2026-11",
+        });
         foreach (var r in batch.Rows)
             db.PayrollPaymentRecords.Add(new PayrollPaymentRecord
             {
@@ -239,7 +286,26 @@ public class AnbRejectedOutcomeAndReasonTests
                 Iban = r.AccountNumber!, Status = PaymentRecordStatuses.Pending, WpsReference = WpsReference(r.EmployeeRef),
             });
         db.SaveChanges();
-        return new Seeded(tenantId, paymentBatch.Id);
+        return new Seeded(tenantId, paymentBatch.Id, run.Id);
+    }
+
+    private static async Task<(BankConfirmationImportResult? Result, JournalExportRefusal? Refusal)> ImportAsync(
+        ZayraDbContext db, Seeded seeded, string csv, BankConfirmationImportOptions options)
+    {
+        var outcome = await new BankConfirmationService(db, new IBankConfirmationParser[] { new GenericCsvBankConfirmationParser() })
+            .ImportAsync(seeded.TenantId, seeded.BatchId, $"anb-status-{Guid.NewGuid():N}.csv", csv, BankChannelConfirmationFile.ParserKey,
+                options, Guid.NewGuid(), "Payroll Officer", default);
+        if (outcome.Refusal is null) await db.SaveChangesAsync();
+        return outcome;
+    }
+
+    private static async Task<List<string>> Blockers(ZayraDbContext db, Seeded seeded)
+    {
+        var exports = new JournalExportService(db, Zayra.Api.Tests.JournalExportFormatterGoldenTests.AllFormatters());
+        var report = await new PeriodHandoffReconciler(db, exports)
+            .ReconcileAsync(seeded.TenantId, new JournalExportFilter(PayrollRunId: seeded.RunId), groupScopedCaller: true, default);
+        return JsonDocument.Parse(JsonSerializer.Serialize(report)).RootElement.GetProperty("blockers").EnumerateArray()
+            .Select(b => b.GetString()!).ToList();
     }
 
     private static string Status(ZayraDbContext db, int employeeRef) =>
