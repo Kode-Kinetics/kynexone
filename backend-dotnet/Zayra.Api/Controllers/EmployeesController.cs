@@ -7265,6 +7265,7 @@ public class EmployeesController : ControllerBase
         Status = EmployeeStatuses.Active,
         JoiningDate = draft.JoiningDate ?? approvedAtUtc.Date,
         ContractType = draft.ContractType,
+        EmploymentType = draft.EmploymentType,
         Grade = placement.GradeCode,
         GradeId = placement.GradeId,
         CostCenter = draft.CostCenter,

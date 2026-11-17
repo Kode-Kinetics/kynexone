@@ -88,6 +88,7 @@ public sealed partial class OfferLifecycleService(ZayraDbContext db, IConfigurat
                 RecipientEmail = source.RecipientEmail ?? app.CandidateEmail,
                 OfferedJobTitle = source.OfferedJobTitle, OfferedDepartment = source.OfferedDepartment,
                 StartDate = source.StartDate, ProbationMonths = source.ProbationMonths,
+                ContractType = source.ContractType, ContractTermMonths = source.ContractTermMonths,
                 ResponseDeadline = source.ResponseDeadline, BasicSalary = source.BasicSalary,
                 HousingAllowance = source.HousingAllowance, TransportAllowance = source.TransportAllowance,
                 OtherAllowances = source.OtherAllowances, GrossSalary = source.GrossSalary,

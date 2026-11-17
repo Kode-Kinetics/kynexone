@@ -51,7 +51,8 @@ public sealed record OfferReasonRequest(long ExpectedVersion, string Reason);
 public sealed record OfferCreateInput(DateOnly StartDate, int ProbationMonths, string? OfferedJobTitle = null, string? OfferedDepartment = null,
     Guid? DepartmentId = null, Guid? DesignationId = null, DateTime? ResponseDeadline = null, Guid? TemplateId = null,
     IReadOnlyList<OfferComponentInput>? Components = null, decimal? BasicSalary = null, decimal? HousingAllowance = null,
-    decimal? TransportAllowance = null, decimal? OtherAllowances = null, string? ContentHtml = null, long? ExpectedApplicationVersion = null);
+    decimal? TransportAllowance = null, decimal? OtherAllowances = null, string? ContentHtml = null, long? ExpectedApplicationVersion = null,
+    string? ContractType = null, int? ContractTermMonths = null);
 public sealed record OfferHistoryQuery(string? Search = null, Guid? ApplicationId = null, Guid? CompanyId = null,
     string? Position = null, string? Status = null, string? CommunicationOutcome = null,
     DateTime? IssuedFrom = null, DateTime? IssuedTo = null, int Page = 1, int PageSize = 20);
@@ -71,7 +72,8 @@ public sealed record OfferDraftInput(long ExpectedVersion, long? ReviewedPolicyV
     string OfferedJobTitle, string OfferedDepartment, IReadOnlyList<OfferComponentInput>? Components = null,
     decimal? BasicSalary = null, decimal? HousingAllowance = null, decimal? TransportAllowance = null,
     decimal? OtherAllowances = null, Guid? DepartmentId = null, Guid? DesignationId = null,
-    Guid? TemplateId = null, string? DesignJson = null, bool AdoptLegacy = false, string? RecipientChangeReason = null);
+    Guid? TemplateId = null, string? DesignJson = null, bool AdoptLegacy = false, string? RecipientChangeReason = null,
+    string? ContractType = null, int? ContractTermMonths = null);
 public sealed record OfferPolicyDto(Guid CompanyId, string Currency, int Precision,
     IReadOnlyList<string> RequiredComponentCodes, long ExpectedVersion);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

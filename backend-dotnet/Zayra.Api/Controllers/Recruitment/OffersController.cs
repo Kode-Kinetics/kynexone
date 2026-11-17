@@ -29,7 +29,7 @@ public class OffersController : ControllerBase
     private OfferActor Actor(OfferLetter offer) => new(offer.TenantId, offer.CompanyId, GetUserId() ?? Guid.Empty, GetUserName());
     private IActionResult LifecycleFailure(OfferLifecycleException e)
     {
-        var body = new { error = e.Code, message = e.Message };
+        var body = new { error = e.Code, message = e.Message, messageAr = e.MessageAr };
         return e.Status switch { 409 => Conflict(body), 404 => NotFound(body), 422 => UnprocessableEntity(body), 400 => BadRequest(body), _ => StatusCode(e.Status, body) };
     }
 
@@ -193,7 +193,7 @@ public class OffersController : ControllerBase
             var offer = await _lifecycle.CreateAsync(new(tid, app.CompanyId, GetUserId() ?? Guid.Empty, GetUserName()), app.Id,
                 new(req.StartDate, req.ProbationMonths, req.OfferedJobTitle, req.OfferedDepartment, req.DepartmentId, req.DesignationId,
                     req.ResponseDeadline, req.TemplateId, req.Components, req.BasicSalary, req.HousingAllowance, req.TransportAllowance,
-                    req.OtherAllowances, req.ContentHtml, req.ExpectedApplicationVersion), ct);
+                    req.OtherAllowances, req.ContentHtml, req.ExpectedApplicationVersion, req.ContractType, req.ContractTermMonths), ct);
             return CreatedAtAction(nameof(Get), new { id = offer.Id }, offer);
         }
         catch (OfferLifecycleException e) { return LifecycleFailure(e); }
@@ -341,7 +341,8 @@ public record CreateOfferRequest(
     decimal? TransportAllowance, decimal? OtherAllowances, int ProbationMonths,
     string? ContentHtml, DateTime? ResponseDeadline,
     Guid? DepartmentId = null, Guid? DesignationId = null, Guid? TemplateId = null,
-    IReadOnlyList<OfferComponentInput>? Components = null, long? ExpectedApplicationVersion = null);
+    IReadOnlyList<OfferComponentInput>? Components = null, long? ExpectedApplicationVersion = null,
+    string? ContractType = null, int? ContractTermMonths = null);
 
 public record DeclineOfferRequest(string? Reason, long? ExpectedVersion = null, string? Decision = null,
     string? Source = null, DateTime? OccurredAtUtc = null, string? EvidenceReference = null)

@@ -28,7 +28,7 @@ public class ApplicationsController : ControllerBase
     private OfferActor Actor(Guid tenant, Guid? company) => new(tenant, company, this.GetUserId() ?? Guid.Empty, UserName());
     private IActionResult LifecycleFailure(OfferLifecycleException e)
     {
-        var body = new { error = e.Code, message = e.Message };
+        var body = new { error = e.Code, message = e.Message, messageAr = e.MessageAr };
         return e.Status switch { 409 => Conflict(body), 404 => NotFound(body), 422 => UnprocessableEntity(body), 400 => BadRequest(body), _ => StatusCode(e.Status, body) };
     }
 
@@ -288,7 +288,8 @@ public class ApplicationsController : ControllerBase
             var offer = await _lifecycle.CreateAsync(Actor(tenantId, app.CompanyId), id,
                 new(req.StartDate, req.ProbationMonths, req.Designation, req.Department, req.DepartmentId, req.DesignationId,
                     req.ResponseDeadline, req.TemplateId, req.Components, req.BasicSalary, req.HousingAllowance,
-                    req.TransportAllowance, req.OtherAllowances, ExpectedApplicationVersion: req.ExpectedApplicationVersion), ct);
+                    req.TransportAllowance, req.OtherAllowances, ExpectedApplicationVersion: req.ExpectedApplicationVersion,
+                    ContractType: req.ContractType, ContractTermMonths: req.ContractTermMonths), ct);
             return Created($"/api/recruitment/offers/{offer.Id}", offer);
         }
         catch (OfferLifecycleException e) { return LifecycleFailure(e); }
@@ -435,4 +436,5 @@ public record GenerateOfferRequest(
     int ProbationMonths,
     Guid? DepartmentId = null, Guid? DesignationId = null, string? Designation = null, Guid? TemplateId = null,
     IReadOnlyList<Zayra.Api.Application.Recruitment.OfferComponentInput>? Components = null,
-    long? ExpectedApplicationVersion = null, DateTime? ResponseDeadline = null);
+    long? ExpectedApplicationVersion = null, DateTime? ResponseDeadline = null,
+    string? ContractType = null, int? ContractTermMonths = null);

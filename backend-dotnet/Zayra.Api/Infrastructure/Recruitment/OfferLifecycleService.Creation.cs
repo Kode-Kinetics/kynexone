@@ -23,6 +23,8 @@ public sealed partial class OfferLifecycleService
             var deadline = input.ResponseDeadline ?? DateTime.UtcNow.AddDays(7);
             if (input.StartDate == DateOnly.MinValue || input.ProbationMonths is < 0 or > 12 || deadline.Kind != DateTimeKind.Utc || deadline <= DateTime.UtcNow)
                 throw new OfferLifecycleException("offer_terms_invalid", "Choose a start date, future UTC deadline and probation from zero to twelve months.", 422);
+            if (OfferContractTerm.Validate(input.ContractType, input.ContractTermMonths) is { } termError)
+                throw new OfferLifecycleException(termError, OfferContractTerm.ErrorMessage(termError), 422) { MessageAr = OfferContractTerm.ErrorMessageAr(termError) };
             if (Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ProbationOverLimit(
                     await Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ResolveAsync(db, actor.TenantId, actor.CompanyId, ct),
                     input.StartDate, input.ProbationMonths) is { } probationMessage)
@@ -54,7 +56,8 @@ public sealed partial class OfferLifecycleService
             }
             var offer = new OfferLetter { TenantId = actor.TenantId, CompanyId = actor.CompanyId, ApplicationId = app.Id,
                 CandidateId = app.CandidateId, CandidateName = candidateName, RecipientEmail = email, OfferedJobTitle = placement.Designation,
-                OfferedDepartment = placement.Department, StartDate = input.StartDate, ProbationMonths = input.ProbationMonths, ResponseDeadline = deadline };
+                OfferedDepartment = placement.Department, StartDate = input.StartDate, ProbationMonths = input.ProbationMonths, ResponseDeadline = deadline,
+                ContractType = OfferContractTerm.Normalize(input.ContractType), ContractTermMonths = OfferContractTerm.Normalize(input.ContractType) == OfferContractTerm.FixedTerm ? input.ContractTermMonths : null };
             OfferCompensation.ApplySnapshot(offer, compensation);
             offer.ContentHtml = input.ContentHtml is not null ? HtmlEncoder.Default.Encode(input.ContentHtml)
                 : new RecruitmentService(db).GenerateOfferLetterHtml(new(candidateName, placement.Designation, placement.Department,
