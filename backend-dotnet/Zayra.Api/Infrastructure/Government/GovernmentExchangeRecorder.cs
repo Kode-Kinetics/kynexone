@@ -61,11 +61,14 @@ public sealed record GovernmentExchangeRecordResult(GovernmentExchange Exchange,
 /// </summary>
 public sealed class GovernmentExchangeIntentReceipt
 {
+    private int _spent;
+
     internal GovernmentExchangeIntentReceipt(Guid exchangeId, Guid tenantId, string body, string environment, string idempotencyKey, string? artifactSha256,
-        string? artifactSecondarySha256 = null)
+        string? artifactSecondarySha256 = null, Guid? companyId = null)
     {
         ExchangeId = exchangeId;
         TenantId = tenantId;
+        CompanyId = companyId;
         Body = body;
         Environment = environment;
         IdempotencyKey = idempotencyKey;
@@ -75,6 +78,19 @@ public sealed class GovernmentExchangeIntentReceipt
 
     public Guid ExchangeId { get; }
     public Guid TenantId { get; }
+    /// <summary>The company of the intent row (null for a tenant-wide one). A bank channel refuses a receipt for another company than its scope.</summary>
+    public Guid? CompanyId { get; }
+
+    /// <summary>
+    /// Spends the receipt: true exactly once, atomically, for the whole process. <see cref="GovernmentHttp"/> calls it immediately
+    /// before the socket of every write, and a gated channel burns an unused receipt when its one attempt ends without sending.
+    /// INTERIM (wave 1): in memory, on the one receipt object the recorder handed out (a replayed key never gets a receipt). Wave 2
+    /// makes it a ledger transition with a concurrency token.
+    /// </summary>
+    internal bool TryConsume() => Interlocked.Exchange(ref _spent, 1) == 0;
+
+    /// <summary>True once the receipt was spent (sent, or burnt by a channel).</summary>
+    public bool IsSpent => Volatile.Read(ref _spent) != 0;
     public string Body { get; }
     public string Environment { get; }
     public string IdempotencyKey { get; }
@@ -243,7 +259,7 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
             // Committed in this unit of work (an intent is never written inside a caller's transaction), so it is durable now.
             var receipt = isIntent
                 ? new GovernmentExchangeIntentReceipt(row.Id, row.TenantId, row.Body, row.Environment!, row.IdempotencyKey, row.ArtifactSha256,
-                    row.ArtifactSecondarySha256)
+                    row.ArtifactSecondarySha256, row.CompanyId)
                 : null;
             return new GovernmentExchangeRecordResult(row, true, receipt);
         },
