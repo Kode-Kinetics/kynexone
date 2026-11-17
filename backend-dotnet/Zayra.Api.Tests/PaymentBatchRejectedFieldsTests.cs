@@ -111,4 +111,112 @@ public class PaymentBatchRejectedFieldsTests
         body.GetProperty("message").GetString().Should().Contain("returned by the bank").And.Contain("not paid: rejected by bank");
         db.PayrollPaymentBatches.Single().WpsStatus.Should().Be(WpsStatuses.Paid);
     }
+
+    // ── N4: an open hold on a Paid record blocks Reconciled AND settle, and never reads clean ───
+
+    /// <summary>A batch whose only record is Paid, with a rejection held after Paid (an open hold for a person).</summary>
+    private static (Guid TenantId, PayrollPaymentBatch Batch, PayrollRun Run) SeedHeldPaid(ZayraDbContext db, string wpsStatus, bool settled)
+    {
+        var tenantId = Guid.NewGuid();
+        var companyId = Guid.NewGuid();
+        var run = new PayrollRun { TenantId = tenantId, CompanyId = companyId, Year = 2026, Month = 7, Status = "Locked" };
+        var batch = new PayrollPaymentBatch
+        {
+            TenantId = tenantId, PayrollRunId = run.Id, BatchNumber = "PB-2026-07-010", Currency = "SAR", TotalAmount = 100m,
+            WpsStatus = wpsStatus,
+        };
+        var record = new PayrollPaymentRecord
+        {
+            TenantId = tenantId, PaymentBatchId = batch.Id, EmployeeId = 1, Amount = 100m, Status = PaymentRecordStatuses.Paid,
+            Iban = "SA0380000000608010167519", WpsReference = "W1",
+        };
+        db.AddRange(run, batch, record);
+        db.WPSFileBatches.Add(new WPSFileBatch
+        {
+            TenantId = tenantId, CompanyId = companyId, PaymentBatchId = batch.Id, Status = wpsStatus, SifFileName = "f.sif",
+        });
+        db.BankPaymentConfirmations.Add(new BankPaymentConfirmation
+        {
+            TenantId = tenantId, PaymentBatchId = batch.Id, PaymentRecordId = record.Id, EmployeeId = 1,
+            Outcome = BankConfirmationOutcomes.Rejected, RawOutcome = "RJCT", PreviousStatus = PaymentRecordStatuses.Paid,
+            Applied = false, HoldReason = Zayra.Api.Infrastructure.Finance.BankOutcomeHolds.PaidThenRejected,
+            ConfirmedAmount = 100m, RecordAmount = 100m, MatchedBy = BankConfirmationMatchModes.WpsReference,
+            ImportBatchId = Guid.NewGuid(), SourceFileName = "b.csv", SourceFileHash = "h", ParserKey = "generic-csv",
+        });
+        db.FinanceGlEntries.Add(new FinanceGlEntry
+        {
+            TenantId = tenantId, CompanyId = companyId, SourceModule = "Payroll", SourceEntityId = run.Id,
+            SourceEntityRef = settled ? batch.BatchNumber : "RUN-2026-07", EventType = settled ? GlEventTypes.NetSettlement : GlEventTypes.Accrual,
+            DebitAccount = settled ? "2100 - Salaries Payable" : "", CreditAccount = settled ? "1000 - Cash/Bank" : "2100 - Salaries Payable",
+            Description = settled ? "Net pay settlement" : "Net payable", Amount = 100m, Currency = "SAR",
+            EntryDate = new DateOnly(2026, 7, 31), Period = "2026-07",
+        });
+        db.SaveChanges();
+        return (tenantId, batch, run);
+    }
+
+    [Fact]
+    public async Task AnOpenHoldOnAPaidRecord_BlocksReconciled()
+    {
+        using var db = NewDb();
+        var (tenantId, batch, _) = SeedHeldPaid(db, WpsStatuses.Paid, settled: true);
+
+        var refused = Assert.IsType<UnprocessableEntityObjectResult>(
+            await KsaWpsReviewFixesTests.Payroll(db, tenantId, Guid.NewGuid())
+                .UpdateWpsStatus(batch.Id, new WpsStatusRequest(WpsStatuses.Reconciled, null), default));
+
+        Web(refused.Value).GetProperty("error").GetString().Should().Be("bank_lines_held_for_person");
+        db.PayrollPaymentBatches.Single().WpsStatus.Should().Be(WpsStatuses.Paid);
+    }
+
+    [Fact]
+    public async Task AnOpenHoldOnAPaidRecord_BlocksSettle()
+    {
+        using var db = NewDb();
+        var (tenantId, batch, _) = SeedHeldPaid(db, WpsStatuses.Accepted, settled: false);
+
+        var refused = Assert.IsType<UnprocessableEntityObjectResult>(
+            await KsaWpsReviewFixesTests.Payroll(db, tenantId, Guid.NewGuid())
+                .SettlePaymentBatch(batch.Id, new SettlePaymentBatchRequest("settle", null), default));
+
+        Web(refused.Value).GetProperty("error").GetString().Should().Be("bank_lines_held_for_person");
+        db.FinanceGlEntries.Count(e => e.EventType == GlEventTypes.NetSettlement).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task AnOpenHoldOnAPaidRecord_NeverPresentsClean_OnTheListTheHistoryOrTheHandoff()
+    {
+        using var db = NewDb();
+        var (tenantId, batch, run) = SeedHeldPaid(db, WpsStatuses.Paid, settled: true);
+        var ctrl = KsaWpsReviewFixesTests.Payroll(db, tenantId, Guid.NewGuid());
+
+        var listed = Web(Assert.IsType<OkObjectResult>(await ctrl.ListPaymentBatches(null, default)).Value)
+            .EnumerateArray().Single(b => b.GetProperty("id").GetGuid() == batch.Id);
+        listed.GetProperty("presentsCleanButIsNot").GetBoolean().Should().BeTrue();
+
+        var principal = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(new[]
+        {
+            new System.Security.Claims.Claim("tenant_id", tenantId.ToString()),
+            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new System.Security.Claims.Claim("permission", "payroll.export"),
+            new System.Security.Claims.Claim("is_group_scope", "true"),
+        }, "Test"));
+        var history = new Zayra.Api.Controllers.Finance.BankConfirmationsController(db,
+            new Zayra.Api.Infrastructure.Finance.BankConfirmationService(db, new Zayra.Api.Infrastructure.Finance.IBankConfirmationParser[]
+                { new Zayra.Api.Infrastructure.Finance.GenericCsvBankConfirmationParser() }))
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext { User = principal },
+            },
+        };
+        var historyBody = Web(Assert.IsType<OkObjectResult>(await history.History(batch.Id, default)).Value);
+        historyBody.GetProperty("presentsCleanButIsNot").GetBoolean().Should().BeTrue();
+
+        var exports = new Zayra.Api.Infrastructure.Finance.JournalExportService(db, JournalExportFormatterGoldenTests.AllFormatters());
+        var handoff = Web(await new Zayra.Api.Infrastructure.Finance.PeriodHandoffReconciler(db, exports)
+            .ReconcileAsync(tenantId, new Zayra.Api.Infrastructure.Finance.JournalExportFilter(PayrollRunId: run.Id), groupScopedCaller: true, default));
+        handoff.GetProperty("payments").GetProperty("batches").EnumerateArray().Single()
+            .GetProperty("presentsCleanButIsNot").GetBoolean().Should().BeTrue();
+    }
 }

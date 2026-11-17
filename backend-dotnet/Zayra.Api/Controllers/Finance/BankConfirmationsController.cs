@@ -68,16 +68,6 @@ public class BankConfirmationsController : ControllerBase
         [FromQuery] string? returnReversalReason = null,
         [FromQuery] bool allowCrossBatchReimport = false,
         [FromQuery] bool dryRun = false,
-        // CTO ruling B2: the reasoned exits from the two holds. Same permission as the import and as allowReturnReversal.
-        // SEAM (wave 2, Setting 3): a second approver for these exits. Not built here.
-        [FromQuery] bool allowPaidToRejected = false,
-        [FromQuery] bool allowFailedOutcomeChange = false,
-        [FromQuery] string? overrideReason = null,
-        [FromQuery] string? overrideBankReference = null,
-        // The opposite exits (CTO follow-up 2): each needs overrideReason AND overrideBankReference.
-        [FromQuery] bool confirmPaidDespiteRejection = false,
-        [FromQuery] bool confirmOriginalPaymentReceived = false,
-        [FromQuery] bool confirmDuplicateNotPaid = false,
         CancellationToken ct = default)
     {
         if (!HasPermission("payroll.export")) return Forbid();
@@ -93,24 +83,15 @@ public class BankConfirmationsController : ControllerBase
                         + "money the bank told us did not reach the employee actually did.",
             });
 
-        if ((allowPaidToRejected && (string.IsNullOrWhiteSpace(overrideReason) || string.IsNullOrWhiteSpace(overrideBankReference)))
-            || (allowFailedOutcomeChange && string.IsNullOrWhiteSpace(overrideReason))
-            || ((confirmPaidDespiteRejection || confirmOriginalPaymentReceived || confirmDuplicateNotPaid)
-                && (string.IsNullOrWhiteSpace(overrideReason) || string.IsNullOrWhiteSpace(overrideBankReference))))
-            return BadRequest(new
-            {
-                error = "override_reason_required",
-                message = "Recording a rejection after Paid, or confirming what the bank really did with a held line, needs a "
-                        + "reason and the bank's reference; changing a payment between returned and rejected needs a reason.",
-            });
-
-        var (fileName, content, readError) = await ReadPayloadAsync(ct);
+        // Exits (CTO ruling N2) travel with the payload: a multipart "exits" field or the structured payload's "exits", each
+        // naming one record with its own reason. Same permission as the import and as allowReturnReversal.
+        // SEAM (wave 2, Setting 3): a second approver for these exits. Not built here.
+        var (fileName, content, exits, readError) = await ReadPayloadAsync(ct);
         if (readError is not null) return readError;
 
         var options = new BankConfirmationImportOptions(
             acknowledgeAmountMismatch, allowReturnReversal, returnReversalReason?.Trim(), allowCrossBatchReimport, dryRun,
-            allowPaidToRejected, allowFailedOutcomeChange, overrideReason?.Trim(), overrideBankReference?.Trim(),
-            confirmPaidDespiteRejection, confirmOriginalPaymentReceived, confirmDuplicateNotPaid);
+            exits?.Select(e => e with { Reason = e.Reason?.Trim(), BankReference = e.BankReference?.Trim() }).ToList());
 
         var (result, refusal) = await _service.ImportAsync(
             tid.Value, batchId, fileName!, content!, format, options, this.GetUserId(), UserName(), ct);
@@ -145,7 +126,7 @@ public class BankConfirmationsController : ControllerBase
         var coverage = BankConfirmationService.Coverage(records);
         var canSeeBankRefs = HasPermission("payroll.export");
         var settledAt = await BankOutcomeLedger.SettledAtAsync(_db, tid.Value, new[] { batch }, ct);
-        var rejectedAfterSettlement = BankOutcomeLedger.RejectedAfterSettlement(records, confirmations, settledAt).Sum(r => r.Amount);
+        var rejectedAfterSettlement = BankOutcomeLedger.RejectedAfterSettlement(records, settledAt).Sum(r => r.Amount);
         var heldForPerson = BankOutcomeLedger.UnresolvedHolds(records, confirmations);
 
         return Ok(new
@@ -157,8 +138,7 @@ public class BankConfirmationsController : ControllerBase
             batch.Currency,
             coverage,
             // A batch whose WPS status reads Paid/Reconciled while money came back or is unaccounted for.
-            presentsCleanButIsNot = batch.WpsStatus is WpsStatuses.Paid or WpsStatuses.Reconciled
-                                    && (coverage.FailedCount > 0 || coverage.UnconfirmedCount > 0 || heldForPerson.Count > 0),
+            presentsCleanButIsNot = BankOutcomeLedger.PresentsCleanButIsNot(batch.WpsStatus, coverage, heldForPerson.Count),
             // Only money that left and came back. A rejection never left, so it is reported on its own.
             returnedAmountAwaitingGlCorrection = coverage.ReturnedTotal,
             rejectedAmountNotPaid = coverage.RejectedTotal,
@@ -198,22 +178,35 @@ public class BankConfirmationsController : ControllerBase
     /// <summary>Reads either an uploaded file or a JSON body of canonical rows into one text payload.
     /// The JSON path is canonicalised to CSV so that BOTH paths hash identically and share the exact same
     /// parse, match and idempotency rules — a structured payload is not a back door around them.</summary>
-    private async Task<(string? FileName, string? Content, IActionResult? Error)> ReadPayloadAsync(CancellationToken ct)
+    private async Task<(string? FileName, string? Content, List<BankLineExit>? Exits, IActionResult? Error)> ReadPayloadAsync(CancellationToken ct)
     {
         if (Request.HasFormContentType)
         {
             var form = await Request.ReadFormAsync(ct);
             var file = form.Files.FirstOrDefault();
             if (file is null || file.Length == 0)
-                return (null, null, BadRequest(new { error = "file_required", message = "Attach the bank response file." }));
+                return (null, null, null, BadRequest(new { error = "file_required", message = "Attach the bank response file." }));
             using var reader = new StreamReader(file.OpenReadStream(), Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-            return (file.FileName, await reader.ReadToEndAsync(ct), null);
+            List<BankLineExit>? formExits = null;
+            if (form.TryGetValue("exits", out var exitsField) && !string.IsNullOrWhiteSpace(exitsField.ToString()))
+            {
+                try
+                {
+                    formExits = System.Text.Json.JsonSerializer.Deserialize<List<BankLineExit>>(exitsField.ToString(),
+                        new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return (null, null, null, BadRequest(new { error = "invalid_exits", message = "The exits field is not a JSON list of exits." }));
+                }
+            }
+            return (file.FileName, await reader.ReadToEndAsync(ct), formExits, null);
         }
 
         using var body = new StreamReader(Request.Body, Encoding.UTF8);
         var raw = await body.ReadToEndAsync(ct);
         if (string.IsNullOrWhiteSpace(raw))
-            return (null, null, BadRequest(new
+            return (null, null, null, BadRequest(new
             {
                 error = "payload_required",
                 message = "Upload the bank response file (multipart) or POST a JSON body "
@@ -223,14 +216,14 @@ public class BankConfirmationsController : ControllerBase
         // A raw CSV/ack body posted as text is accepted as-is.
         var trimmed = raw.TrimStart();
         if (!trimmed.StartsWith('{'))
-            return ("inline-payload", raw, null);
+            return ("inline-payload", raw, null, null);
 
         try
         {
             var payload = System.Text.Json.JsonSerializer.Deserialize<StructuredConfirmationPayload>(raw,
                 new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             if (payload?.Rows is null || payload.Rows.Count == 0)
-                return (null, null, BadRequest(new { error = "rows_required", message = "The payload contained no rows." }));
+                return (null, null, null, BadRequest(new { error = "rows_required", message = "The payload contained no rows." }));
 
             var headers = new[] { "WpsReference", "EmployeeCode", "Iban", "Amount", "Status", "ReasonCode", "ReasonText", "BankReference", "ValueDate" };
             var csv = Csv.Build(headers, payload.Rows.Select(r => (IReadOnlyList<object?>)new object?[]
@@ -240,11 +233,11 @@ public class BankConfirmationsController : ControllerBase
                 r.Status, r.ReasonCode, r.ReasonText, r.BankReference,
                 r.ValueDate?.ToString("yyyy-MM-dd"),
             }));
-            return (payload.FileName ?? "structured-payload", csv, null);
+            return (payload.FileName ?? "structured-payload", csv, payload.Exits, null);
         }
         catch (System.Text.Json.JsonException ex)
         {
-            return (null, null, BadRequest(new { error = "invalid_payload", message = ex.Message }));
+            return (null, null, null, BadRequest(new { error = "invalid_payload", message = ex.Message }));
         }
     }
 
@@ -316,6 +309,9 @@ public class BankConfirmationsController : ControllerBase
 
 public sealed class StructuredConfirmationPayload
 {
+    /// <summary>Reasoned exits, each naming one record (CTO ruling N2). Optional.</summary>
+    public List<BankLineExit>? Exits { get; set; }
+
     public string? FileName { get; set; }
     public List<StructuredConfirmationRow>? Rows { get; set; }
 }

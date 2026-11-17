@@ -90,8 +90,11 @@ public class BankConfirmationHoldsAndSettlementTests
     }
 
     private static string Csv(params (string Ref, decimal Amount, string Status, string? Reason)[] rows) =>
+        CsvDated("2026-07-30", rows);
+
+    private static string CsvDated(string valueDate, params (string Ref, decimal Amount, string Status, string? Reason)[] rows) =>
         "wpsReference,amount,valueDate,status,reasonCode\n"
-        + string.Concat(rows.Select(r => $"{r.Ref},{r.Amount},2026-07-30,{r.Status},{r.Reason}\n"));
+        + string.Concat(rows.Select(r => $"{r.Ref},{r.Amount},{valueDate},{r.Status},{r.Reason}\n"));
 
     private static BankConfirmationService Service(ZayraDbContext db) =>
         new(db, new IBankConfirmationParser[] { new GenericCsvBankConfirmationParser(), new WpsAckBankConfirmationParser() });
@@ -150,11 +153,26 @@ public class BankConfirmationHoldsAndSettlementTests
     private static async Task<JsonElement> History(ZayraDbContext db, World w) =>
         Element(Assert.IsType<OkObjectResult>(await Controller(db, w).History(w.Batch.Id, default)).Value!);
 
-    private static readonly BankConfirmationImportOptions PaidToRejected =
-        new(AllowPaidToRejected: true, OverrideReason: "Bank letter: the credit was refused after posting", OverrideBankReference: "BNK-77812");
+    /// <summary>One reasoned exit naming one record (N2: no file-wide switches).</summary>
+    private static BankConfirmationImportOptions ExitFor(string kind, PayrollPaymentRecord record, string? reason = Reason,
+        string? reference = Reference) =>
+        new(Exits: new[] { new BankLineExit(kind, record.Id, null, reason, reference) });
 
-    private static readonly BankConfirmationImportOptions FailedOutcomeChange =
-        new(AllowFailedOutcomeChange: true, OverrideReason: "Bank confirmed by phone which outcome is right");
+    /// <summary>The import endpoint with a one-row structured payload carrying one exit.</summary>
+    private static async Task<ObjectResult> ImportThroughEndpoint(ZayraDbContext db, World w, string word, string kind, Guid recordId,
+        string? reason)
+    {
+        var ctrl = Controller(db, w);
+        var payload = JsonSerializer.Serialize(new
+        {
+            fileName = "letter.json",
+            rows = new[] { new { wpsReference = "W1", amount = 100m, status = word, reasonCode = "AC04", valueDate = "2026-07-30" } },
+            exits = new[] { new { kind, paymentRecordId = recordId, reason, bankReference = Reference } },
+        });
+        ctrl.ControllerContext.HttpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(payload));
+        ctrl.ControllerContext.HttpContext.Request.ContentType = "application/json";
+        return Assert.IsAssignableFrom<ObjectResult>(await ctrl.Import(w.Batch.Id, ct: default));
+    }
 
     // ── B1: the period handoff agrees with the batch history ─────────────────────────────────────
 
@@ -238,18 +256,69 @@ public class BankConfirmationHoldsAndSettlementTests
         (await History(db, w)).GetProperty("rejectedAfterSettlementAwaitingGlCorrection").GetDecimal().Should().Be(100m);
     }
 
+    // N1: settlement is refused while any record is failed, so a Rejected record in a batch with a live settlement journal
+    // always needs the correction, even when the import's timestamp is just before the journal's (an import racing the settle).
     [Fact]
-    public async Task ASettlementPostedAfterTheRejection_DoesNotMakeItNeedACorrection()
+    public async Task ARejectedRecordInASettledBatch_NeedsTheCorrection_EvenWhenTheImportRacedTheSettle()
     {
         using var db = NewDb();
         var w = Seed(db);
         await Import(db, w, "RJCT", "AM04");
-        Settle(db, w, DateTime.UtcNow.AddDays(1));
+        Settle(db, w, DateTime.UtcNow.AddMinutes(1));
 
         var h = await Handoff(db, w);
 
-        h.GetProperty("deltas").GetProperty("rejectedAfterSettlementAwaitingGlCorrection").GetProperty("amount").GetDecimal().Should().Be(0m);
-        (await History(db, w)).GetProperty("rejectedAfterSettlementAwaitingGlCorrection").GetDecimal().Should().Be(0m);
+        h.GetProperty("deltas").GetProperty("rejectedAfterSettlementAwaitingGlCorrection").GetProperty("amount").GetDecimal().Should().Be(100m);
+        Blockers(h).Should().Contain("gl_correction_awaiting");
+        (await History(db, w)).GetProperty("rejectedAfterSettlementAwaitingGlCorrection").GetDecimal().Should().Be(100m);
+    }
+
+    // N1, Fable's sequence: RJCT applied, reversed to Paid, the batch settled, then a DUPL line confirmed not paid.
+    [Fact]
+    public async Task ARejectionDecidedByAnExitAfterSettlement_NeedsTheCorrection()
+    {
+        using var db = NewDb();
+        var w = Seed(db);
+        await Import(db, w, "RJCT", "AC01");
+        await Import(db, w, new BankConfirmationImportOptions(AllowReturnReversal: true, ReturnReversalReason: "Bank re-ran the line"),
+            ("W1", 100m, "PAID", null));
+        Settle(db, w, DateTime.UtcNow);
+        await Import(db, w, "FAILED", "DUPL");
+
+        var result = await Import(db, w, ExitFor(BankLineExitKinds.ConfirmDuplicateNotPaid, w.R(1)), ("W1", 100m, "FAILED", "dupl"));
+
+        w.R(1).Status.Should().Be(PaymentRecordStatuses.Rejected);
+        result.RejectedAfterSettlementAwaitingGlCorrection.Should().Be(100m, "the settlement credited cash for a salary that never left");
+        Blockers(await Handoff(db, w)).Should().Contain("gl_correction_awaiting");
+    }
+
+    // T2: the settlement journal is matched to THIS batch by its number, not just by the run.
+    [Fact]
+    public async Task AnotherBatchOfTheSameRunBeingSettled_IsNotThisBatchsSettlement()
+    {
+        using var db = NewDb();
+        var w = Seed(db);
+        db.FinanceGlEntries.AddRange(
+            new FinanceGlEntry
+            {
+                TenantId = w.TenantId, CompanyId = w.CompanyId, SourceModule = "Payroll", SourceEntityId = w.Run.Id,
+                SourceEntityRef = "PB-2026-07-OTHER", EventType = GlEventTypes.NetSettlement, DebitAccount = "2100 - Salaries Payable",
+                CreditAccount = "1000 - Cash/Bank", Description = "Net pay settlement", Amount = 50m, Currency = "SAR",
+                EntryDate = new DateOnly(2026, 7, 31), Period = "2026-07", CreatedAtUtc = DateTime.UtcNow.AddDays(-1),
+            },
+            new FinanceGlEntry
+            {
+                TenantId = w.TenantId, CompanyId = w.CompanyId, SourceModule = "Payroll", SourceEntityId = w.Run.Id,
+                SourceEntityRef = "OUTSIDE-BANK/" + w.Batch.BatchNumber + "/1", EventType = GlEventTypes.NetSettlement,
+                DebitAccount = "2100 - Salaries Payable", CreditAccount = "1000 - Cash/Bank", Description = "Paid outside the bank file",
+                Amount = 10m, Currency = "SAR", EntryDate = new DateOnly(2026, 7, 31), Period = "2026-07", CreatedAtUtc = DateTime.UtcNow.AddDays(-1),
+            });
+        db.SaveChanges();
+
+        var result = await Import(db, w, "RJCT", "AM04");
+
+        result.RejectedAfterSettlementAwaitingGlCorrection.Should().Be(0m, "this batch has no settlement journal of its own");
+        Blockers(await Handoff(db, w)).Should().NotContain("gl_correction_awaiting");
     }
 
     [Fact]
@@ -302,20 +371,23 @@ public class BankConfirmationHoldsAndSettlementTests
         Json(history.GetProperty("heldForPerson")).Should().Contain("paid_then_rejected_held");
     }
 
+    // The guard: an informational Pending line is never "the latest word" on a record. Without it, a later PENDING line
+    // would become the record's latest row and silently close the Returned <-> Rejected hold.
     [Fact]
-    public async Task PaidThenRejectedHold_StaysOpen_WhenALaterFileOnlySaysPending()
+    public async Task AHold_StaysOpen_WhenALaterFileOnlySaysPending()
     {
         using var db = NewDb();
-        var w = Seed(db, PaymentRecordStatuses.Paid);
+        var w = Seed(db, PaymentRecordStatuses.Returned);
         await Import(db, w, "RJCT", "AC04");
 
-        await Import(db, w, "PENDING");
+        var later = await Import(db, w, "PENDING");
 
-        Blockers(await Handoff(db, w)).Should().Contain("rejection_after_paid_held", "an informational line resolves nothing");
+        later.HeldForPerson.Should().ContainSingle("an informational line resolves nothing");
+        Blockers(await Handoff(db, w)).Should().Contain("bank_outcome_change_held");
     }
 
     [Fact]
-    public async Task PaidThenRejected_ExplicitExit_MovesToRejected_Audited_AndClearsTheHold()
+    public async Task PaidThenRejected_ExitNamingTheRecord_MovesToRejected_Audited_AndClearsTheHold()
     {
         using var db = NewDb();
         var w = Seed(db, PaymentRecordStatuses.Paid);
@@ -323,37 +395,43 @@ public class BankConfirmationHoldsAndSettlementTests
         await Import(db, w, "RJCT", "AC04");
 
         // A different file (the bank's later letter), so it is not refused as the same file imported twice.
-        var result = await Import(db, w, PaidToRejected, ("W1", 100m, "REJECTED", "AC04"));
+        var result = await Import(db, w, ExitFor(BankLineExitKinds.AllowPaidToRejected, w.R(1)), ("W1", 100m, "REJECTED", "AC04"));
 
         w.R(1).Status.Should().Be(PaymentRecordStatuses.Rejected);
         result.RejectedApplied.Should().Be(1);
         result.Overrides.Should().ContainSingle();
-        Json(result.Overrides).Should().Contain("\"from\":\"Paid\"").And.Contain("\"to\":\"Rejected\"");
+        Json(result.Overrides).Should().Contain("\"from\":\"Paid\"").And.Contain("\"to\":\"Rejected\"")
+            .And.Contain(Reason).And.Contain(Reference);
         result.LateReturns.Should().BeEmpty();
         result.ReturnedAmountAwaitingGlCorrection.Should().Be(0m);
         result.RejectedAfterSettlementAwaitingGlCorrection.Should().Be(100m);
 
-        var audit = db.PayrollAuditLogs.AsEnumerable().Single(a => a.MetadataJson!.Contains("paid_to_rejected"));
-        audit.MetadataJson.Should().Contain("Bank letter: the credit was refused after posting").And.Contain("BNK-77812")
-            .And.Contain("paid_to_rejected").And.Contain("\"from\":\"Paid\"").And.Contain("\"to\":\"Rejected\"");
+        var audit = db.PayrollAuditLogs.AsEnumerable().Single(a => a.MetadataJson!.Contains(BankLineExitKinds.AllowPaidToRejected));
+        audit.MetadataJson.Should().Contain(Reason).And.Contain(Reference)
+            .And.Contain("\"from\":\"Paid\"").And.Contain("\"to\":\"Rejected\"").And.Contain(w.R(1).Id.ToString());
 
         var blockers = Blockers(await Handoff(db, w));
         blockers.Should().NotContain("rejection_after_paid_held").And.Contain("unpaid_rejected_payments").And.Contain("gl_correction_awaiting");
     }
 
+    public static readonly TheoryData<string, string?, string?> ExitsMissingReasonOrReference = new()
+    {
+        { BankLineExitKinds.AllowPaidToRejected, null, Reference }, { BankLineExitKinds.AllowPaidToRejected, Reason, null },
+        { BankLineExitKinds.AllowPaidToRejected, " ", Reference }, { BankLineExitKinds.AllowPaidToRejected, Reason, " " },
+        { BankLineExitKinds.ConfirmPaidDespiteRejection, null, Reference }, { BankLineExitKinds.ConfirmPaidDespiteRejection, Reason, null },
+        { BankLineExitKinds.ConfirmOriginalPaymentReceived, null, Reference }, { BankLineExitKinds.ConfirmOriginalPaymentReceived, Reason, null },
+        { BankLineExitKinds.ConfirmDuplicateNotPaid, null, Reference }, { BankLineExitKinds.ConfirmDuplicateNotPaid, Reason, " " },
+        { BankLineExitKinds.AllowFailedOutcomeChange, null, null }, { BankLineExitKinds.AllowFailedOutcomeChange, " ", null },
+    };
+
     [Theory]
-    [InlineData(null, "BNK-1")]
-    [InlineData("  ", "BNK-1")]
-    [InlineData("Bank letter", null)]
-    [InlineData("Bank letter", " ")]
-    public async Task PaidThenRejected_Exit_NeedsAReasonAndABankReference(string? reason, string? bankReference)
+    [MemberData(nameof(ExitsMissingReasonOrReference))]
+    public async Task EveryExit_NeedsAReason_AndABankReferenceWhereStated(string kind, string? reason, string? reference)
     {
         using var db = NewDb();
         var w = Seed(db, PaymentRecordStatuses.Paid);
 
-        var (result, refusal) = await TryImport(db, w,
-            new BankConfirmationImportOptions(AllowPaidToRejected: true, OverrideReason: reason, OverrideBankReference: bankReference),
-            Csv(("W1", 100m, "RJCT", null)));
+        var (result, refusal) = await TryImport(db, w, ExitFor(kind, w.R(1), reason, reference), Csv(("W1", 100m, "RJCT", "DUPL")));
 
         result.Should().BeNull();
         refusal!.Status.Should().Be(400);
@@ -362,18 +440,20 @@ public class BankConfirmationHoldsAndSettlementTests
     }
 
     [Fact]
-    public async Task ImportEndpoint_RefusesTheExitWithoutAReason()
+    public async Task ImportEndpoint_ReadsPerRecordExitsFromTheStructuredPayload_AndRefusesOneWithoutAReason()
     {
         using var db = NewDb();
         var w = Seed(db, PaymentRecordStatuses.Paid);
-        var ctrl = Controller(db, w);
-        ctrl.ControllerContext.HttpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(Csv(("W1", 100m, "RJCT", null))));
-        ctrl.ControllerContext.HttpContext.Request.ContentType = "text/csv";
+        await Import(db, w, "RJCT", "AC04");
 
-        var bad = Assert.IsType<BadRequestObjectResult>(await ctrl.Import(w.Batch.Id, allowPaidToRejected: true, ct: default));
-
-        Json(bad.Value!).Should().Contain("override_reason_required");
+        var refused = await ImportThroughEndpoint(db, w, "REJECTED", BankLineExitKinds.AllowPaidToRejected, w.R(1).Id, reason: null);
+        refused.StatusCode.Should().Be(400);
+        Json(refused.Value!).Should().Contain("override_reason_required");
         w.R(1).Status.Should().Be(PaymentRecordStatuses.Paid);
+
+        var ok = await ImportThroughEndpoint(db, w, "REJECTED", BankLineExitKinds.AllowPaidToRejected, w.R(1).Id, Reason);
+        ok.StatusCode.Should().Be(200);
+        w.R(1).Status.Should().Be(PaymentRecordStatuses.Rejected);
     }
 
     // ── B2: Returned <-> Rejected ────────────────────────────────────────────────────────────────
@@ -381,7 +461,7 @@ public class BankConfirmationHoldsAndSettlementTests
     [Theory]
     [InlineData("Returned", "RJCT", "Rejected")]
     [InlineData("Rejected", "RETURNED", "Returned")]
-    public async Task FailedOutcomeChange_ExplicitExit_AppliesTheNewOutcome_Audited(string previous, string word, string expected)
+    public async Task FailedOutcomeChange_ExitNamingTheRecord_AppliesTheNewOutcome_Audited(string previous, string word, string expected)
     {
         using var db = NewDb();
         var w = Seed(db, previous);
@@ -390,14 +470,13 @@ public class BankConfirmationHoldsAndSettlementTests
         w.R(1).Status.Should().Be(previous);
         held.HeldForPerson.Should().ContainSingle();
 
-        var result = await Import(db, w, FailedOutcomeChange, ("W1", 100m, word, "AC04"));
+        var result = await Import(db, w, ExitFor(BankLineExitKinds.AllowFailedOutcomeChange, w.R(1), reference: null), ("W1", 100m, word, "AC04"));
 
         w.R(1).Status.Should().Be(expected);
         result.Overrides.Should().ContainSingle();
         result.HeldForPerson.Should().BeEmpty();
-        db.PayrollAuditLogs.AsEnumerable().Single(a => a.MetadataJson!.Contains("failed_outcome_override")).MetadataJson
-            .Should().Contain("Bank confirmed by phone which outcome is right").And.Contain("failed_outcome_override")
-            .And.Contain($"\"from\":\"{previous}\"").And.Contain($"\"to\":\"{expected}\"");
+        db.PayrollAuditLogs.AsEnumerable().Single(a => a.MetadataJson!.Contains(BankLineExitKinds.AllowFailedOutcomeChange)).MetadataJson
+            .Should().Contain(Reason).And.Contain($"\"from\":\"{previous}\"").And.Contain($"\"to\":\"{expected}\"");
     }
 
     [Fact]
@@ -416,39 +495,33 @@ public class BankConfirmationHoldsAndSettlementTests
         });
         db.SaveChanges();
         (await Handoff(db, w)).GetProperty("deltas").GetProperty("returnedAmountAwaitingGlCorrection").GetProperty("amount").GetDecimal().Should().Be(100m);
+        await Import(db, w, "RJCT", "AC01");   // the bank's word now: held, Returned <-> Rejected
 
-        await Import(db, w, FailedOutcomeChange, ("W1", 100m, "RJCT", "AC01"));
+        await Import(db, w, ExitFor(BankLineExitKinds.AllowFailedOutcomeChange, w.R(1), reference: null), ("W1", 100m, "REJECTED", "AC01"));
 
         w.R(1).Status.Should().Be(PaymentRecordStatuses.Rejected);
         (await Handoff(db, w)).GetProperty("deltas").GetProperty("returnedAmountAwaitingGlCorrection").GetProperty("amount").GetDecimal().Should().Be(0m);
     }
 
-    [Theory]
-    [InlineData(null)]
-    [InlineData(" ")]
-    public async Task FailedOutcomeChange_Exit_NeedsAReason(string? reason)
-    {
-        using var db = NewDb();
-        var w = Seed(db, PaymentRecordStatuses.Returned);
-
-        var (_, refusal) = await TryImport(db, w, new BankConfirmationImportOptions(AllowFailedOutcomeChange: true, OverrideReason: reason),
-            Csv(("W1", 100m, "RJCT", null)));
-
-        refusal!.Status.Should().Be(400);
-        Json(refusal.Payload).Should().Contain("override_reason_required");
-    }
-
     [Fact]
-    public async Task TheExits_DoNotOpenEachOther()
+    public async Task AnExitOfOneKind_DoesNotResolveAHoldOfAnother()
     {
         using var db = NewDb();
         var w = Seed(db, (100m, PaymentRecordStatuses.Paid), (100m, PaymentRecordStatuses.Returned));
+        await Import(db, w, null, ("W1", 100m, "RJCT", null), ("W2", 100m, "RJCT", null));   // both held, different kinds
 
-        await Import(db, w, PaidToRejected, ("W2", 100m, "RJCT", null));
-        await Import(db, w, FailedOutcomeChange, ("W1", 100m, "RJCT", null));
+        var (_, wrongForPaid) = await TryImport(db, w, ExitFor(BankLineExitKinds.AllowFailedOutcomeChange, w.R(1), reference: null),
+            Csv(("W1", 100m, "REJECTED", null)));
+        var (_, wrongForReturned) = await TryImport(db, w, ExitFor(BankLineExitKinds.AllowPaidToRejected, w.R(2)),
+            Csv(("W2", 100m, "REJECTED", null)));
 
-        w.R(1).Status.Should().Be(PaymentRecordStatuses.Paid, "the failed-outcome exit does not apply a rejection after Paid");
-        w.R(2).Status.Should().Be(PaymentRecordStatuses.Returned, "the paid-to-rejected exit does not swap Returned for Rejected");
+        foreach (var refusal in new[] { wrongForPaid, wrongForReturned })
+        {
+            refusal!.Status.Should().Be(400);
+            Json(refusal.Payload).Should().Contain("exit_matches_no_open_hold");
+        }
+        w.R(1).Status.Should().Be(PaymentRecordStatuses.Paid);
+        w.R(2).Status.Should().Be(PaymentRecordStatuses.Returned);
     }
 
     // ── Ruling 4: DUPL is held, never "not paid" ─────────────────────────────────────────────────
@@ -492,7 +565,7 @@ public class BankConfirmationHoldsAndSettlementTests
         Json((await History(db, w)).GetProperty("heldForPerson")).Should().Contain("duplicate_rejection_held");
     }
 
-    // ── No one-way traps: every hold has a reasoned exit in both directions ──────────────────────
+    // ── No one-way traps: every hold has a reasoned exit in both directions, per record (N2) ────
 
     private const string Reason = "Checked the bank statement line with the bank";
     private const string Reference = "STMT-2026-07-30-0042";
@@ -505,15 +578,13 @@ public class BankConfirmationHoldsAndSettlementTests
         await Import(db, w, "RJCT", "AC04");
         Blockers(await Handoff(db, w)).Should().Contain("rejection_after_paid_held");
 
-        var result = await Import(db, w,
-            new BankConfirmationImportOptions(ConfirmPaidDespiteRejection: true, OverrideReason: Reason, OverrideBankReference: Reference),
-            ("W1", 100m, "REJECTED", "AC04"));
+        var result = await Import(db, w, ExitFor(BankLineExitKinds.ConfirmPaidDespiteRejection, w.R(1)), ("W1", 100m, "REJECTED", "AC04"));
 
         w.R(1).Status.Should().Be(PaymentRecordStatuses.Paid);
         result.HeldForPerson.Should().BeEmpty();
         result.Rejections.Should().BeEmpty();
-        Json(result.Overrides).Should().Contain("confirm_paid_despite_rejection").And.Contain("\"from\":\"Paid\"").And.Contain("\"to\":\"Paid\"");
-        db.PayrollAuditLogs.AsEnumerable().Single(a => a.MetadataJson!.Contains("confirm_paid_despite_rejection")).MetadataJson
+        Json(result.Overrides).Should().Contain(BankLineExitKinds.ConfirmPaidDespiteRejection).And.Contain("\"from\":\"Paid\"").And.Contain("\"to\":\"Paid\"");
+        db.PayrollAuditLogs.AsEnumerable().Single(a => a.MetadataJson!.Contains(BankLineExitKinds.ConfirmPaidDespiteRejection)).MetadataJson
             .Should().Contain(Reason).And.Contain(Reference);
         var blockers = Blockers(await Handoff(db, w));
         blockers.Should().NotContain("rejection_after_paid_held").And.NotContain("unpaid_rejected_payments");
@@ -543,14 +614,12 @@ public class BankConfirmationHoldsAndSettlementTests
         await Import(db, w, word, "DUPL");
         Blockers(await Handoff(db, w)).Should().Contain("duplicate_rejection_held");
 
-        var result = await Import(db, w,
-            new BankConfirmationImportOptions(ConfirmOriginalPaymentReceived: true, OverrideReason: Reason, OverrideBankReference: Reference),
-            ("W1", 100m, word, "dupl"));
+        var result = await Import(db, w, ExitFor(BankLineExitKinds.ConfirmOriginalPaymentReceived, w.R(1)), ("W1", 100m, word, "dupl"));
 
         w.R(1).Status.Should().Be(PaymentRecordStatuses.Paid);
         result.HeldForPerson.Should().BeEmpty();
-        Json(result.Overrides).Should().Contain("confirm_original_payment_received").And.Contain($"\"from\":\"{previous}\"").And.Contain("\"to\":\"Paid\"");
-        db.PayrollAuditLogs.AsEnumerable().Single(a => a.MetadataJson!.Contains("confirm_original_payment_received")).MetadataJson
+        Json(result.Overrides).Should().Contain(BankLineExitKinds.ConfirmOriginalPaymentReceived).And.Contain($"\"from\":\"{previous}\"").And.Contain("\"to\":\"Paid\"");
+        db.PayrollAuditLogs.AsEnumerable().Single(a => a.MetadataJson!.Contains(BankLineExitKinds.ConfirmOriginalPaymentReceived)).MetadataJson
             .Should().Contain(Reason).And.Contain(Reference);
         Blockers(await Handoff(db, w)).Should().NotContain("duplicate_rejection_held");
     }
@@ -565,16 +634,14 @@ public class BankConfirmationHoldsAndSettlementTests
         var w = Seed(db, previous);
         await Import(db, w, word, "DUPL");
 
-        var result = await Import(db, w,
-            new BankConfirmationImportOptions(ConfirmDuplicateNotPaid: true, OverrideReason: Reason, OverrideBankReference: Reference),
-            ("W1", 100m, word, "dupl"));
+        var result = await Import(db, w, ExitFor(BankLineExitKinds.ConfirmDuplicateNotPaid, w.R(1)), ("W1", 100m, word, "dupl"));
 
         w.R(1).Status.Should().Be(PaymentRecordStatuses.Rejected);
         result.RejectedAmountNotPaid.Should().Be(100m);
         result.Rejections.Should().ContainSingle();
         Json(result.Rejections).Should().Contain(Json(BankOutcomeLabels.NotPaidRejectedByBank.English));
         result.HeldForPerson.Should().BeEmpty();
-        Json(result.Overrides).Should().Contain("confirm_duplicate_not_paid").And.Contain("\"to\":\"Rejected\"");
+        Json(result.Overrides).Should().Contain(BankLineExitKinds.ConfirmDuplicateNotPaid).And.Contain("\"to\":\"Rejected\"");
         var blockers = Blockers(await Handoff(db, w));
         blockers.Should().NotContain("duplicate_rejection_held").And.Contain("unpaid_rejected_payments");
     }
@@ -600,71 +667,114 @@ public class BankConfirmationHoldsAndSettlementTests
         Json((await History(db, w)).GetProperty("heldForPerson")).Should().Contain("duplicate_rejection_held");
     }
 
-    public static readonly TheoryData<string, string?, string?> ExitsMissingReasonOrReference = new()
+    [Fact]
+    public async Task AnExitResolvesOnlyTheRecordItNames_NeverTheWholeFile()
     {
-        { "confirmPaidDespiteRejection", null, Reference }, { "confirmPaidDespiteRejection", Reason, null },
-        { "confirmPaidDespiteRejection", " ", Reference }, { "confirmPaidDespiteRejection", Reason, " " },
-        { "confirmOriginalPaymentReceived", null, Reference }, { "confirmOriginalPaymentReceived", Reason, null },
-        { "confirmDuplicateNotPaid", null, Reference }, { "confirmDuplicateNotPaid", Reason, " " },
-    };
+        using var db = NewDb();
+        var w = Seed(db, (100m, PaymentRecordStatuses.Paid), (100m, PaymentRecordStatuses.Paid));
+        await Import(db, w, null, ("W1", 100m, "RJCT", "AC04"), ("W2", 100m, "RJCT", "AC04"));   // two open holds
 
-    private static BankConfirmationImportOptions Exit(string exit, string? reason, string? reference) => exit switch
+        var result = await Import(db, w, ExitFor(BankLineExitKinds.AllowPaidToRejected, w.R(1)),
+            ("W1", 100m, "REJECTED", "AC04"), ("W2", 100m, "REJECTED", "AC04"));
+
+        w.R(1).Status.Should().Be(PaymentRecordStatuses.Rejected);
+        w.R(2).Status.Should().Be(PaymentRecordStatuses.Paid, "the exit named only the first record");
+        result.Overrides.Should().ContainSingle();
+        Json(result.HeldForPerson).Should().Contain(w.R(2).Id.ToString()).And.NotContain(w.R(1).Id.ToString());
+    }
+
+    [Fact]
+    public async Task EachRecordCarriesItsOwnReason()
     {
-        "confirmPaidDespiteRejection" => new(ConfirmPaidDespiteRejection: true, OverrideReason: reason, OverrideBankReference: reference),
-        "confirmOriginalPaymentReceived" => new(ConfirmOriginalPaymentReceived: true, OverrideReason: reason, OverrideBankReference: reference),
-        _ => new(ConfirmDuplicateNotPaid: true, OverrideReason: reason, OverrideBankReference: reference),
-    };
+        using var db = NewDb();
+        var w = Seed(db, (100m, PaymentRecordStatuses.Paid), (100m, PaymentRecordStatuses.Paid));
+        await Import(db, w, null, ("W1", 100m, "RJCT", "AC04"), ("W2", 100m, "RJCT", "AC04"));
 
-    [Theory]
-    [MemberData(nameof(ExitsMissingReasonOrReference))]
-    public async Task EveryNewExit_NeedsAReasonAndABankReference(string exit, string? reason, string? reference)
+        var options = new BankConfirmationImportOptions(Exits: new[]
+        {
+            new BankLineExit(BankLineExitKinds.AllowPaidToRejected, w.R(1).Id, null, "Letter A from the bank", "BNK-A"),
+            new BankLineExit(BankLineExitKinds.ConfirmPaidDespiteRejection, null, "W2", "Statement line B", "STMT-B"),
+        });
+        var result = await Import(db, w, options, ("W1", 100m, "REJECTED", "AC04"), ("W2", 100m, "REJECTED", "AC04"));
+
+        w.R(1).Status.Should().Be(PaymentRecordStatuses.Rejected);
+        w.R(2).Status.Should().Be(PaymentRecordStatuses.Paid);
+        result.HeldForPerson.Should().BeEmpty();
+        var overrides = Json(result.Overrides);
+        overrides.Should().Contain("Letter A from the bank").And.Contain("BNK-A").And.Contain("Statement line B").And.Contain("STMT-B");
+    }
+
+    [Fact]
+    public async Task AnExitOnARecordWithNoOpenHoldOfThatKind_IsRefused()
     {
         using var db = NewDb();
         var w = Seed(db, PaymentRecordStatuses.Paid);
 
-        var (result, refusal) = await TryImport(db, w, Exit(exit, reason, reference), Csv(("W1", 100m, "RJCT", "DUPL")));
+        var (_, refusal) = await TryImport(db, w, ExitFor(BankLineExitKinds.AllowPaidToRejected, w.R(1)), Csv(("W1", 100m, "RJCT", "AC04")));
 
-        result.Should().BeNull();
         refusal!.Status.Should().Be(400);
-        Json(refusal.Payload).Should().Contain("override_reason_required");
+        Json(refusal.Payload).Should().Contain("exit_matches_no_open_hold");
         w.R(1).Status.Should().Be(PaymentRecordStatuses.Paid);
+        db.BankPaymentConfirmations.Should().BeEmpty();
     }
 
-    [Theory]
-    [InlineData("confirmPaidDespiteRejection", null, Reference)]
-    [InlineData("confirmOriginalPaymentReceived", Reason, null)]
-    [InlineData("confirmDuplicateNotPaid", " ", Reference)]
-    public async Task ImportEndpoint_RefusesANewExitWithoutReasonOrReference_With400(string exit, string? reason, string? reference)
+    [Fact]
+    public async Task AnExitNamingARecordOutsideTheBatch_IsRefused()
     {
         using var db = NewDb();
         var w = Seed(db, PaymentRecordStatuses.Paid);
-        var ctrl = Controller(db, w);
-        ctrl.ControllerContext.HttpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(Csv(("W1", 100m, "RJCT", "DUPL"))));
-        ctrl.ControllerContext.HttpContext.Request.ContentType = "text/csv";
+        await Import(db, w, "RJCT", "AC04");
 
-        var response = await ctrl.Import(w.Batch.Id,
-            confirmPaidDespiteRejection: exit == "confirmPaidDespiteRejection",
-            confirmOriginalPaymentReceived: exit == "confirmOriginalPaymentReceived",
-            confirmDuplicateNotPaid: exit == "confirmDuplicateNotPaid",
-            overrideReason: reason, overrideBankReference: reference, ct: default);
+        var (_, refusal) = await TryImport(db, w,
+            new BankConfirmationImportOptions(Exits: new[] { new BankLineExit(BankLineExitKinds.AllowPaidToRejected, Guid.NewGuid(), null, Reason, Reference) }),
+            Csv(("W1", 100m, "REJECTED", "AC04")));
 
-        Json(Assert.IsType<BadRequestObjectResult>(response).Value!).Should().Contain("override_reason_required");
-        w.R(1).Status.Should().Be(PaymentRecordStatuses.Paid);
+        refusal!.Status.Should().Be(400);
+        Json(refusal.Payload).Should().Contain("exit_matches_no_open_hold");
+    }
+
+    [Fact]
+    public async Task AnExitWhoseLineIsNotInTheFile_IsRefused()
+    {
+        using var db = NewDb();
+        var w = Seed(db, (100m, PaymentRecordStatuses.Paid), (100m, "Pending"));
+        await Import(db, w, null, ("W1", 100m, "RJCT", "AC04"));
+
+        var (_, refusal) = await TryImport(db, w, ExitFor(BankLineExitKinds.AllowPaidToRejected, w.R(1)), Csv(("W2", 100m, "PAID", null)));
+
+        refusal!.Status.Should().Be(400);
+        Json(refusal.Payload).Should().Contain("exit_line_not_in_file");
+        w.R(2).Status.Should().Be("Pending", "nothing in a refused import is applied");
     }
 
     [Theory]
-    [InlineData(true, false, true, false)]   // paid despite rejection AND paid-to-rejected
-    [InlineData(false, true, false, true)]   // original received AND duplicate not paid
-    public async Task OpposingExitsTogether_AreRefused(bool confirmPaid, bool originalReceived, bool paidToRejected, bool duplicateNotPaid)
+    [InlineData(BankLineExitKinds.AllowPaidToRejected, "PAID", null)]           // the line no longer says rejected
+    [InlineData(BankLineExitKinds.ConfirmDuplicateNotPaid, "RJCT", "AC01")]     // a DUPL exit on a line with no DUPL code
+    public async Task AnExitWhoseLineDoesNotFit_IsRefused(string kind, string word, string? reason)
     {
         using var db = NewDb();
         var w = Seed(db, PaymentRecordStatuses.Paid);
+        await Import(db, w, "RJCT", kind == BankLineExitKinds.ConfirmDuplicateNotPaid ? "DUPL" : "AC04");
 
-        var (_, refusal) = await TryImport(db, w, new BankConfirmationImportOptions(
-                AllowPaidToRejected: paidToRejected, ConfirmPaidDespiteRejection: confirmPaid,
-                ConfirmOriginalPaymentReceived: originalReceived, ConfirmDuplicateNotPaid: duplicateNotPaid,
-                OverrideReason: Reason, OverrideBankReference: Reference),
-            Csv(("W1", 100m, "RJCT", "DUPL")));
+        var (_, refusal) = await TryImport(db, w, ExitFor(kind, w.R(1)), Csv(("W1", 100m, word, reason)));
+
+        refusal!.Status.Should().Be(400);
+        Json(refusal.Payload).Should().Contain("exit_line_does_not_fit");
+        w.R(1).Status.Should().Be(PaymentRecordStatuses.Paid);
+    }
+
+    [Fact]
+    public async Task TwoExitsOnOneRecord_AreRefused()
+    {
+        using var db = NewDb();
+        var w = Seed(db, PaymentRecordStatuses.Paid);
+        await Import(db, w, "RJCT", "AC04");
+
+        var (_, refusal) = await TryImport(db, w, new BankConfirmationImportOptions(Exits: new[]
+        {
+            new BankLineExit(BankLineExitKinds.AllowPaidToRejected, w.R(1).Id, null, Reason, Reference),
+            new BankLineExit(BankLineExitKinds.ConfirmPaidDespiteRejection, null, "W1", Reason, Reference),
+        }), Csv(("W1", 100m, "REJECTED", "AC04")));
 
         refusal!.Status.Should().Be(400);
         Json(refusal.Payload).Should().Contain("opposing_exits");
@@ -678,13 +788,34 @@ public class BankConfirmationHoldsAndSettlementTests
         var w = Seed(db, PaymentRecordStatuses.Paid);
         await Import(db, w, "RJCT", "AC04");
 
-        var (_, refusal) = await TryImport(db, w,
-            new BankConfirmationImportOptions(ConfirmPaidDespiteRejection: true, OverrideReason: Reason, OverrideBankReference: Reference),
-            Csv(("W1", 100m, "RJCT", "AC04")));
+        var (_, refusal) = await TryImport(db, w, ExitFor(BankLineExitKinds.ConfirmPaidDespiteRejection, w.R(1)), Csv(("W1", 100m, "RJCT", "AC04")));
 
         refusal!.Status.Should().Be(409);
         Json(refusal.Payload).Should().Contain("exit_needs_the_line_again");
         Blockers(await Handoff(db, w)).Should().Contain("rejection_after_paid_held");
+    }
+
+    // T1: an exit never overrides the amount check.
+    [Theory]
+    [InlineData(BankLineExitKinds.AllowPaidToRejected, "Paid", "RJCT", "AC04", "REJECTED", "AC04")]
+    [InlineData(BankLineExitKinds.ConfirmPaidDespiteRejection, "Paid", "RJCT", "AC04", "REJECTED", "AC04")]
+    [InlineData(BankLineExitKinds.AllowFailedOutcomeChange, "Returned", "RJCT", "AC04", "REJECTED", "AC04")]
+    [InlineData(BankLineExitKinds.ConfirmOriginalPaymentReceived, "Pending", "RJCT", "DUPL", "REJECTED", "dupl")]
+    [InlineData(BankLineExitKinds.ConfirmDuplicateNotPaid, "Pending", "RJCT", "DUPL", "REJECTED", "dupl")]
+    public async Task AnExitWithADifferentAmount_KeepsTheAmountMismatchHold(
+        string kind, string previous, string heldWord, string heldReason, string exitWord, string exitReason)
+    {
+        using var db = NewDb();
+        var w = Seed(db, previous);
+        await Import(db, w, heldWord, heldReason);
+
+        var result = await Import(db, w, ExitFor(kind, w.R(1), reference: kind == BankLineExitKinds.AllowFailedOutcomeChange ? null : Reference),
+            ("W1", 90m, exitWord, exitReason));
+
+        w.R(1).Status.Should().Be(previous, "a different figure is held, whatever exit is asked for");
+        result.AmountMismatchesHeld.Should().ContainSingle();
+        result.Overrides.Should().BeEmpty();
+        result.HeldForPerson.Should().ContainSingle("the person-hold is still open");
     }
 
     // ── Ruling 5: the reason text never invents "no reason code" ─────────────────────────────────
@@ -862,9 +993,10 @@ public class BankConfirmationHoldsAndSettlementTests
         var w = Seed(db);
         await Import(db, w, word, "DUPL");
 
-        var result = await Import(db, w,
-            new BankConfirmationImportOptions(ConfirmOriginalPaymentReceived: true, OverrideReason: Reason, OverrideBankReference: Reference),
-            ("W1", 100m, word, "dupl"));
+        var (result, refusal) = await TryImport(db, w, ExitFor(BankLineExitKinds.ConfirmOriginalPaymentReceived, w.R(1)),
+            CsvDated("2026-08-02", ("W1", 100m, word, "dupl")));
+        refusal.Should().BeNull();
+        result = result!;
 
         w.R(1).Status.Should().Be(PaymentRecordStatuses.Paid);
         result.Coverage.PaidCount.Should().Be(1);
@@ -883,7 +1015,58 @@ public class BankConfirmationHoldsAndSettlementTests
         exitImport.GetProperty("applied").GetInt32().Should().Be(1);
         exitImport.GetProperty("held").GetInt32().Should().Be(0);
 
-        (await DashboardPayDate(db, w.TenantId)).Should().Be("2026-07-30", "a record that ends Paid through an exit has a pay date");
+        (await DashboardPayDate(db, w.TenantId)).Should().Be("2026-08-02", "with no original Paid line, the exit line's date");
+    }
+
+    // Ruling 5 of the re-check: the ORIGINAL Paid line's date wins over the duplicate line's.
+    [Fact]
+    public async Task AnExitToPaid_KeepsTheOriginalPaidLinesDate_AsThePayDate()
+    {
+        using var db = NewDb();
+        var w = Seed(db);
+        (await TryImport(db, w, new BankConfirmationImportOptions(), CsvDated("2026-07-28", ("W1", 100m, "PAID", null)))).Refusal.Should().BeNull();
+        (await TryImport(db, w, new BankConfirmationImportOptions(), CsvDated("2026-08-05", ("W1", 100m, "RJCT", "DUPL")))).Refusal.Should().BeNull();
+
+        var (_, refusal) = await TryImport(db, w, ExitFor(BankLineExitKinds.ConfirmOriginalPaymentReceived, w.R(1)),
+            CsvDated("2026-08-05", ("W1", 100m, "RJCT", "dupl")));
+
+        refusal.Should().BeNull();
+        w.R(1).Status.Should().Be(PaymentRecordStatuses.Paid);
+        (await DashboardPayDate(db, w.TenantId)).Should().Be("2026-07-28");
+    }
+
+    // ── N3: a mismatch hold closes once a later line for the record is applied ──────────────────
+
+    [Fact]
+    public async Task AnAmountMismatchHold_ClosesWhenALaterLineIsApplied()
+    {
+        using var db = NewDb();
+        var w = Seed(db);
+        await Import(db, w, null, ("W1", 90m, "PAID", null));
+        var before = await Handoff(db, w);
+        Blockers(before).Should().Contain("amount_mismatch_holdbacks");
+        before.GetProperty("payments").GetProperty("amountMismatchHoldbacks").GetInt32().Should().Be(1);
+
+        await Import(db, w, new BankConfirmationImportOptions(AcknowledgeAmountMismatch: true), ("W1", 90m, "CREDITED", null));
+
+        var after = await Handoff(db, w);
+        Blockers(after).Should().NotContain("amount_mismatch_holdbacks");
+        after.GetProperty("payments").GetProperty("amountMismatchHoldbacks").GetInt32().Should().Be(0);
+    }
+
+    // ── Amount-0 nit: a refusal with amount 0 is a refusal, not a different figure ──────────────
+
+    [Fact]
+    public async Task ARejectionWithAmountZero_IsRecordedRejected_NotHeldAsAMismatch()
+    {
+        using var db = NewDb();
+        var w = Seed(db);
+
+        var result = await Import(db, w, null, ("W1", 0m, "RJCT", "AM04"));
+
+        w.R(1).Status.Should().Be(PaymentRecordStatuses.Rejected);
+        result.AmountMismatchesHeld.Should().BeEmpty();
+        result.RejectedAmountNotPaid.Should().Be(100m);
     }
 }
 

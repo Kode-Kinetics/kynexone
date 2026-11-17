@@ -4125,6 +4125,11 @@ public partial class PayrollController : ControllerBase
                     unconfirmedCount = d4Unconfirmed.Count,
                     unconfirmedTotal = d4Unconfirmed.Sum(x => x.Amount),
                 });
+
+            // CTO ruling N4: a line held for a person (a rejection after Paid, a duplicate refusal, a returned/rejected swap)
+            // keeps the batch open, even when every record reads Paid.
+            if (await HeldBankLinesRefusalAsync(tenantId, batch.Id, "reconciled", cancellationToken) is { } heldRefusal)
+                return heldRefusal;
         }
 
         batch.WpsStatus = req.Status;
@@ -4451,6 +4456,10 @@ public partial class PayrollController : ControllerBase
             return BadRequest(new { error = "run_not_locked", message = "Only a Locked run can be settled." });
         if (batch.WpsStatus != WpsStatuses.Accepted)
             return BadRequest(new { error = "batch_not_accepted", message = $"Only an Accepted payment batch can be settled (current: {batch.WpsStatus}). Mark the WPS/bank file Accepted first." });
+
+        // CTO ruling N4: no cash journal while a line is held for a person: the bank may have refused a salary that reads Paid.
+        if (await HeldBankLinesRefusalAsync(tenantId, batch.Id, "settled", cancellationToken) is { } settleHeldRefusal)
+            return settleHeldRefusal;
 
         // Accrual must exist — cannot settle an un-accrued run.
         var accrualLines = await _db.FinanceGlEntries
@@ -5886,6 +5895,20 @@ public partial class PayrollController : ControllerBase
         return Ok(structs.Select(s => SalaryStructureAssignmentDto.Project(s, true, linesByRecord.GetValueOrDefault(s.Id))).ToList());
     }
 
+    /// <summary>CTO ruling N4: the refusal when a batch has a line held for a person; null when none is open.</summary>
+    private async Task<IActionResult?> HeldBankLinesRefusalAsync(Guid tenantId, Guid batchId, string action, CancellationToken ct)
+    {
+        var held = await Infrastructure.Finance.BankOutcomeLedger.OpenHoldsAsync(_db, tenantId, batchId, ct);
+        if (held.Count == 0) return null;
+        return UnprocessableEntity(new
+        {
+            error = "bank_lines_held_for_person",
+            message = $"This batch cannot be {action} while {held.Count} bank line(s) wait for a person to decide. Resolve each with "
+                    + "its exit on the bank-confirmation import first.",
+            heldForPerson = held.Select(Infrastructure.Finance.BankOutcomeLedger.View).ToList(),
+        });
+    }
+
     [HttpGet("payment-batches")]
     [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListPaymentBatches([FromQuery] Guid? runId, CancellationToken cancellationToken)
@@ -5951,6 +5974,12 @@ public partial class PayrollController : ControllerBase
             : await _db.PayrollPaymentRecords.AsNoTracking()
                 .Where(r => r.TenantId == tenantId && d4BatchIds.Contains(r.PaymentBatchId))
                 .ToListAsync(cancellationToken);
+        // One read for every batch's bank lines: the open holds for a person count against "presents clean" (N4).
+        var d4Confirmations = d4BatchIds.Count == 0
+            ? new List<BankPaymentConfirmation>()
+            : await _db.BankPaymentConfirmations.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && d4BatchIds.Contains(c.PaymentBatchId))
+                .ToListAsync(cancellationToken);
 
         return Ok(batches.Select(b =>
         {
@@ -5975,8 +6004,9 @@ public partial class PayrollController : ControllerBase
                 unresolvedRejections = new { count = cov.RejectedCount, total = cov.RejectedTotal },
                 unconfirmedPayments = new { count = cov.UnconfirmedCount, total = cov.UnconfirmedTotal },
                 confirmationCoverage = cov.ConfirmationCoverage,
-                presentsCleanButIsNot = b.WpsStatus is WpsStatuses.Paid or WpsStatuses.Reconciled
-                                        && (cov.FailedCount > 0 || cov.UnconfirmedCount > 0),
+                presentsCleanButIsNot = Infrastructure.Finance.BankOutcomeLedger.PresentsCleanButIsNot(b.WpsStatus, cov,
+                    Infrastructure.Finance.BankOutcomeLedger.UnresolvedHolds(
+                        d4Records.Where(r => r.PaymentBatchId == b.Id), d4Confirmations.Where(c => c.PaymentBatchId == b.Id)).Count),
                 acceptanceEvidenceCount = evidence.Count,
                 latestEvidenceId = latestEvidence?.EvidenceId,
                 effectiveWpsStatus = effective,
