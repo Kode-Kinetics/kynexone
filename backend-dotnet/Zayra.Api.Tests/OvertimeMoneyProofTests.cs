@@ -45,7 +45,7 @@ public class OvertimeMoneyProofTests
         .Set("gosi.saudi_employee_rate", 0.09m).Set("gosi.saudi_employer_rate", 0.09m).Set("gosi.saned_rate", 0.0075m)
         .Set("gosi.expat_occupational_hazard_rate", 0.02m).Set("gosi.covered_wage_ceiling_sar", 45_000m)
         .Set("ot.standard_multiplier", 1.5m).Set("ot.restday_multiplier", 2.0m).Set("ot.holiday_multiplier", 2.0m)
-        .Set("ot.standard_monthly_hours", 240m)
+        .Set("ot.standard_monthly_hours", 240m).Set("ot.hourly_base", "wage")   // KSA Art. 107: the hour is the WAGE hour
         .Set("lop.monthly_day_divisor", 30m).Set("lop.standard_work_minutes_per_day", 480m);
 
     private static PayrollController Payroll(ZayraDbContext db, Guid tenantId, Guid userId)
