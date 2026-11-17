@@ -62,16 +62,26 @@ public sealed partial class GovernmentRatchetTests
             "The published specification page the ANB export format cites as its source; shown to users, never requested.",
     };
 
+    /// <summary>
+    /// The ONE file that may hold its own HttpClient (CTO decision, wave 2 plan section 11): the bank payroll client. It builds that
+    /// client only around the guarded handler (the bank handler factory starts from the foundation's guarded socket factory, as
+    /// GovernmentHttp.CreateHandler does) and refuses a handler that follows redirects. May only shrink; never add a second file.
+    /// </summary>
+    private const string OwnHttpClientAllowed = "Infrastructure/Payroll/SaudiBankExports/Api/AnbPayrollApiClient.cs";
+    private const string BankHandlerFactoryFile = "Infrastructure/Payroll/SaudiBankExports/Api/AnbHttpHandlerFactory.cs";
+
     [Fact]
     public void A_GovernmentHttp_IsTheOnlyWayToABody()
     {
         var offenders = new List<string>();
         var allowedSeen = new HashSet<string>(StringComparer.Ordinal);
         var scanned = 0;
+        string? ownClientCode = null;
         foreach (var (relative, code) in Source())
         {
             if (relative == GovernmentHttpFile) continue;
-            if (IsGovernmentFolder(relative))
+            if (relative == OwnHttpClientAllowed) ownClientCode = code;
+            else if (IsGovernmentFolder(relative))
             {
                 scanned++;
                 foreach (Match m in RawHttpCall().Matches(code))
@@ -89,6 +99,17 @@ public sealed partial class GovernmentRatchetTests
         offenders.Should().BeEmpty("a request to a government or bank body goes through GovernmentHttp.ExchangeAsync: allow-listed "
             + "base URL per environment, the live gate first, one send, no retry.\n  " + string.Join("\n  ", offenders));
         allowedSeen.Should().BeEquivalentTo(HostMentionsAllowed.Keys, "an allowance for a file that no longer needs it must be removed");
+        // The one own-HttpClient file: still present (else remove the allowance), one client only, built around the injected handler
+        // after the redirect refusal, and that handler's factory starts from the guarded socket factory with redirects off.
+        ownClientCode.Should().NotBeNull("an allowance for a file that no longer exists must be removed");
+        Regex.Matches(ownClientCode!, @"\bnew\s+HttpClient\s*\(").Should().ContainSingle("the bank client builds exactly one HttpClient");
+        Regex.IsMatch(ownClientCode!, @"\bnew\s+HttpClient\s*\(\s*handler\s*,").Should().BeTrue("around the injected guarded handler only");
+        ownClientCode!.IndexOf("FollowsRedirects(handler)", StringComparison.Ordinal).Should()
+            .BeInRange(0, ownClientCode.IndexOf("new HttpClient(", StringComparison.Ordinal), "a redirect-following handler is refused first");
+        Regex.IsMatch(ownClientCode, @"\bCreateClient\s*\(").Should().BeFalse("no other client is made there");
+        var factory = Source().Single(f => f.Relative == BankHandlerFactoryFile).Code;
+        factory.Should().MatchRegex(@"(?:SsrfGuard\.CreateGuardedClientHandler|GovernmentHttp\.CreateHandler)\s*\(\s*\)", "the bank handler starts from the guarded factory");
+        factory.Should().Contain("AllowAutoRedirect = false");
         // The bank client as it is written on its own branch would be caught here at integration.
         var sibling = "var client = new HttpClient(handler); using var resp = await client.SendAsync(req, ct);";
         (IsGovernmentFolder("Infrastructure/Payroll/SaudiBankExports/Api/AnbPayrollApiClient.cs") && RawHttpCall().IsMatch(sibling)).Should().BeTrue();
