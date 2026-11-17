@@ -272,6 +272,8 @@ export function BankFileGuide({ payOut, loading = false, confirmation = '', conf
         busy={action.busy}
         aria-describedby={disabled && reason ? nextId : undefined}
         data-testid="bank-guide-primary"
+        // An off primary must look off (the reason sits beside it); the shared button only changes the cursor.
+        className="disabled:opacity-50"
       >
         {action.busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
         {action.label}

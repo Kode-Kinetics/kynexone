@@ -267,6 +267,8 @@ for (const locale of LOCALES) {
       await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'check', { timeout: 90_000 });
       await expect(page.locator('input[name="molEstablishmentId"]')).toHaveCount(0);
       await expect(page.getByText(/Custom bank salary-file templates|قوالب ملفات الرواتب/)).toHaveCount(0);
+      // The bank-file panel has arrived (it names the bank): the More menu now carries its entries and keeps its state.
+      await expect(page.getByTestId('bank-file-facts')).toContainText(say(locale, 'Arab National Bank (ANB)'), { timeout: 60_000 });
       await page.getByTestId('bank-more').click();
       await page.getByRole('menuitem', { name: say(locale, 'Bank setup') }).click();
       await expect(page.getByRole('dialog').locator('input[name="molEstablishmentId"]')).toBeVisible();
@@ -299,11 +301,24 @@ test.describe('the reviews\' rules', () => {
     await page.getByTestId('bank-guide-primary').click();
     await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'create');
     await expect(page.getByTestId('bank-guide-primary')).toBeDisabled();
+    // An off primary looks off.
+    await expect(page.getByTestId('bank-guide-primary')).toHaveCSS('opacity', '0.5');
     await expect(page.getByTestId('bank-guide-primary-reason')).toHaveText('The file total differs from the approved run by SAR 100.00');
     // One stage source: the strip, the run bar's chip and the run picker say the same as the blocked button.
     await expect(page.locator('[data-step-strip="bank-file"] [data-step="create"]')).toHaveAttribute('data-state', 'blocked');
     await expect(page.getByTestId('bank-guide-chip')).toHaveAttribute('data-chip', 'attention');
     await expect(page.locator('#pipeline-run-picker option:checked')).toHaveText(/— Needs a fix$/);
+  });
+
+  test('the credit date helper names public holidays and gives no day counts', async ({ page }) => {
+    await boot(page, { locale: 'en', url, routes: bankHandler(), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-guide-primary')).toBeEnabled({ timeout: 90_000 });
+    await page.getByTestId('bank-guide-primary').click();
+    await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'create');
+    const body = page.getByTestId('bank-step-body-create');
+    await expect(body).toContainText('Check public holidays with your bank.');
+    expect(await body.innerText()).not.toMatch(/\d+\s+(working\s+|banking\s+)?days?\b/i);
+    expect(await body.innerText()).not.toMatch(/cut-?off/i);
   });
 
   test('Arabic: step 5 is تأكيد البنك everywhere, and the English file names stand on their own LTR line', async ({ page }) => {

@@ -5013,7 +5013,8 @@ export function PayrollPage() {
       {/* The Payroll sections: a sticky grouped column beside the section from 1280px; below that a "{group} › {section}" button opens
           the same list (inline from 640px, a bottom sheet on a phone). The app menu folds to icons inside Payroll to make the room. */}
       <div className="xl:grid xl:grid-cols-[208px_minmax(0,1fr)] xl:items-start xl:gap-6">
-        <div ref={tabsAnchor} data-testid="payroll-tabs-anchor" className="mb-3 min-w-0 xl:mb-0">
+        {/* The grid item is what sticks (a sticky child of a wrapper of its own height never moves); it scrolls inside when taller than the screen. */}
+        <div ref={tabsAnchor} data-testid="payroll-tabs-anchor" className="mb-3 min-w-0 xl:sticky xl:top-32 xl:mb-0 xl:max-h-[calc(100vh-9rem)] xl:self-start xl:overflow-y-auto">
           <button
             ref={navToggle}
             type="button"
@@ -5043,7 +5044,7 @@ export function PayrollPage() {
             headingId={PAYROLL_SECTION_HEADING_ID}
             classPrefix="payroll"
             testId="payroll-section-nav"
-            stickyClass="xl:sticky xl:top-32"
+            stickyClass=""
             itemIdPrefix="payroll-tab-"
           />
         </div>
