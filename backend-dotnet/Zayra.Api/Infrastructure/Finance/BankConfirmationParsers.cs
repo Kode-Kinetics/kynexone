@@ -19,11 +19,14 @@ public sealed record BankConfirmationRow(
     DateOnly? ValueDate);
 
 /// <summary>A row that could not be parsed. Never dropped: it is returned to the caller.</summary>
-public sealed record BankConfirmationParseError(int RowNumber, string Error, string Detail);
+/// <summary><see cref="DetailAr"/> is an optional Arabic rendering of <see cref="Detail"/> (null for parsers that only speak English).</summary>
+public sealed record BankConfirmationParseError(int RowNumber, string Error, string Detail, string? DetailAr = null);
 
+/// <summary><see cref="ImportKey"/> is an optional identity the import remembers for an accepted file (null for parsers that have none).</summary>
 public sealed record BankConfirmationParseResult(
     IReadOnlyList<BankConfirmationRow> Rows,
-    IReadOnlyList<BankConfirmationParseError> Errors);
+    IReadOnlyList<BankConfirmationParseError> Errors,
+    string? ImportKey = null);
 
 /// <summary>
 /// Pluggable bank/WPS response reader. Register an implementation in DI and it becomes selectable by

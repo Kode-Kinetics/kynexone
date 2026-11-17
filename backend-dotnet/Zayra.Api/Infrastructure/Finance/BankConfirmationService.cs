@@ -153,7 +153,9 @@ public sealed class BankConfirmationService
                 runId = batch.PayrollRunId,
             }));
 
-        var hash = Sha256(content);
+        // A parser that reads the file's meaning hashes its canonical form, so a byte-level tweak (line endings, blank lines,
+        // tag order) of the same file is still recognised as the same file. Other parsers hash the raw text, as before.
+        var hash = Sha256(parser is IContextualBankConfirmationParser canonical ? canonical.CanonicalContent(content) : content);
 
         // IDEMPOTENCY — probed TENANT-WIDE, not per batch. One bank file often covers several batches, and a
         // per-batch probe would let the same file be uploaded to each and applied every time.
@@ -193,7 +195,11 @@ public sealed class BankConfirmationService
                 }));
         }
 
-        var parse = parser.Parse(content);
+        // A parser that needs the batch (the establishment, each employee's government ID) asks for it; every other
+        // parser is called exactly as before.
+        var parse = parser is IContextualBankConfirmationParser contextual
+            ? contextual.Parse(content, await BankConfirmationBatchContextLoader.LoadAsync(_db, tenantId, batch, run, ct))
+            : parser.Parse(content);
         var result = new BankConfirmationImportResult
         {
             ImportBatchId = Guid.NewGuid(),
@@ -205,7 +211,10 @@ public sealed class BankConfirmationService
             RowsParsed = parse.Rows.Count,
         };
         foreach (var e in parse.Errors)
-            result.ParseErrors.Add(new { row = e.RowNumber, error = e.Error, detail = e.Detail });
+            // The Arabic text is a separate field, present only for parsers that supply it; the existing shape is unchanged.
+            result.ParseErrors.Add(e.DetailAr is null
+                ? new { row = e.RowNumber, error = e.Error, detail = e.Detail }
+                : new { row = e.RowNumber, error = e.Error, detail = e.Detail, detailAr = e.DetailAr });
 
         if (parse.Rows.Count == 0)
             return (null, new JournalExportRefusal(422, new
@@ -418,7 +427,7 @@ public sealed class BankConfirmationService
                 Action = "payroll.bank_confirmation.imported",
                 UserId = actorId,
                 // Seq / PreviousHash / EntryHash are stamped by the ZayraDbContext sealer on save — never here.
-                MetadataJson = JsonSerializer.Serialize(new
+                MetadataJson = JsonSerializer.Serialize(WithImportKey(new
                 {
                     userId = actorId?.ToString(),
                     data = new
@@ -441,10 +450,19 @@ public sealed class BankConfirmationService
                         returnReversalAllowed = options.AllowReturnReversal,
                         returnReversalReason = options.ReturnReversalReason,
                     },
-                }),
+                }, parse.ImportKey)),
             });
 
         return (result, null);
+    }
+
+    /// <summary>The audit metadata, plus the accepted file's remembered key when its parser supplied one. Unchanged otherwise.</summary>
+    private static object WithImportKey(object metadata, string? importKey)
+    {
+        if (importKey is null) return metadata;
+        var node = JsonSerializer.SerializeToNode(metadata)!.AsObject();
+        node["fileRefKey"] = importKey;
+        return node;
     }
 
     private Task<List<PayrollPaymentRecord>> LoadRecordsAsync(Guid tenantId, Guid batchId, CancellationToken ct) =>

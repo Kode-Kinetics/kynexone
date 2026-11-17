@@ -555,10 +555,9 @@ builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFor
     Zayra.Api.Infrastructure.Finance.ZohoBooksJournalFormatter>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
     Zayra.Api.Infrastructure.Finance.QuickBooksOnlineJournalFormatter>();
-builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmationParser,
-    Zayra.Api.Infrastructure.Finance.GenericCsvBankConfirmationParser>();
-builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmationParser,
-    Zayra.Api.Infrastructure.Finance.WpsAckBankConfirmationParser>();
+// Generic CSV and WPS acknowledgement readers; the bank-returned-file reader only when Payroll:WpsReturnedFileParser:Enabled
+// is true (and then only when an import explicitly selects format=wps-returned-file).
+Zayra.Api.Infrastructure.Finance.BankConfirmationParserRegistration.AddBankConfirmationParsers(builder.Services, builder.Configuration);
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.JournalExportService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.BankConfirmationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.PeriodHandoffReconciler>();
