@@ -7,12 +7,15 @@ namespace Zayra.Api.Infrastructure.Finance;
 /// <summary>Bank lines recorded but deliberately NOT applied, because a person must decide (CTO rulings B2 and 4).</summary>
 public static class BankOutcomeHolds
 {
-    /// <summary>The bank said Paid, then said it refused the instruction. Exit: AllowPaidToRejected + reason + bank reference.</summary>
+    /// <summary>The bank said Paid, then said it refused the instruction. Exits: allow_paid_to_rejected or
+    /// confirm_paid_despite_rejection, naming the record, with a reason and the bank's reference.</summary>
     public const string PaidThenRejected = "paid_then_rejected_held";
-    /// <summary>Returned (money came back) and Rejected (money never left) swapped. Exit: AllowFailedOutcomeChange + reason.</summary>
+    /// <summary>Returned (money came back) and Rejected (money never left) swapped. Exit: allow_failed_outcome_change, naming
+    /// the record, with a reason.</summary>
     public const string FailedOutcomeChanged = "failed_outcome_changed_held";
     /// <summary>Reason code DUPL, whatever the outcome word: the original payment may well have reached the employee. Exits:
-    /// ConfirmOriginalPaymentReceived or ConfirmDuplicateNotPaid, each with a reason and the bank's reference; nothing else.</summary>
+    /// confirm_original_payment_received or confirm_duplicate_not_paid, naming the record, each with a reason and the bank's
+    /// reference; nothing else.</summary>
     public const string DuplicateRejection = "duplicate_rejection_held";
 
     public static readonly IReadOnlyList<string> ForAPerson = new[] { PaidThenRejected, FailedOutcomeChanged, DuplicateRejection };
@@ -41,12 +44,8 @@ public static class BankOutcomeHolds
         _ => "bank_outcome_change_held",
     };
 
-    /// <summary>The import-option exits. Their names go into the audit metadata.</summary>
-    public const string PaidToRejectedOverride = "paid_to_rejected";
-    public const string FailedOutcomeOverride = "failed_outcome_override";
-    public const string ConfirmPaidDespiteRejectionOverride = "confirm_paid_despite_rejection";
-    public const string ConfirmOriginalPaymentReceivedOverride = "confirm_original_payment_received";
-    public const string ConfirmDuplicateNotPaidOverride = "confirm_duplicate_not_paid";
+    /// <summary>A line held because the bank's amount differs from the record's.</summary>
+    public const string AmountMismatch = "amount_mismatch_held";
 }
 
 /// <summary>An open hold on one payment record, as the history and the period handoff show it.</summary>
@@ -94,21 +93,51 @@ public static class BankOutcomeLedger
     }
 
     /// <summary>
-    /// Rejected records whose batch was settled before the rejection was imported. Where no applied rejection row is found
-    /// for a Rejected record in a settled batch, it is counted: the conservative side for cash.
+    /// Rejected records in a batch whose net settlement journal is live (CTO ruling N1). Settlement is refused while any
+    /// record is Returned or Rejected, so a Rejected record in a settled batch was rejected after the journal credited
+    /// Cash/Bank for it, whatever the timestamps say (an import racing the settle, or a rejection decided later by an exit).
     /// </summary>
     public static IReadOnlyList<PayrollPaymentRecord> RejectedAfterSettlement(
-        IEnumerable<PayrollPaymentRecord> records, IEnumerable<BankPaymentConfirmation> confirmations,
-        IReadOnlyDictionary<Guid, DateTime> settledAt)
+        IEnumerable<PayrollPaymentRecord> records, IReadOnlyDictionary<Guid, DateTime> settledAt) =>
+        records.Where(r => IsRejected(r) && settledAt.ContainsKey(r.PaymentBatchId)).ToList();
+
+    /// <summary>The row that made the record Rejected: an applied rejection, or a person's confirm_duplicate_not_paid.</summary>
+    public static BankPaymentConfirmation? RejectionDecision(Guid paymentRecordId, IEnumerable<BankPaymentConfirmation> confirmations) =>
+        confirmations
+            .Where(c => c.PaymentRecordId == paymentRecordId
+                        && ((c.Applied && c.Outcome == BankConfirmationOutcomes.Rejected)
+                            || c.HoldReason == BankOutcomeHolds.DuplicateNotPaidConfirmed))
+            .OrderByDescending(c => c.ImportedAtUtc).ThenByDescending(c => c.CreatedAtUtc).FirstOrDefault();
+
+    /// <summary>
+    /// Amount-mismatch holds still open (CTO ruling N3): a hold closes once a later row for the same record was applied
+    /// (for example with acknowledgeAmountMismatch) or records a person's decision.
+    /// </summary>
+    public static IReadOnlyList<BankPaymentConfirmation> OpenAmountMismatchHolds(IEnumerable<BankPaymentConfirmation> confirmations)
     {
-        var rejectedAt = confirmations
-            .Where(c => c.Applied && c.Outcome == BankConfirmationOutcomes.Rejected)
-            .GroupBy(c => c.PaymentRecordId)
-            .ToDictionary(g => g.Key, g => g.Max(c => c.ImportedAtUtc));
-        return records
-            .Where(r => IsRejected(r) && settledAt.TryGetValue(r.PaymentBatchId, out var settled)
-                        && (!rejectedAt.TryGetValue(r.Id, out var at) || at >= settled))
+        var all = confirmations.ToList();
+        return all.Where(h => !h.Applied && h.HoldReason == BankOutcomeHolds.AmountMismatch
+                              && !all.Any(c => c.PaymentRecordId == h.PaymentRecordId && c.ImportedAtUtc > h.ImportedAtUtc
+                                               && (c.Applied || BankOutcomeHolds.IsPersonDecision(c.HoldReason))))
             .ToList();
+    }
+
+    /// <summary>
+    /// The one rule for "this batch reads Paid but is not clean" (CTO ruling N4), shared by the batch history, the batch list
+    /// and the period handoff: money returned or rejected, a record the bank has not confirmed, or a line held for a person.
+    /// </summary>
+    public static bool PresentsCleanButIsNot(string? wpsStatus, BatchPaymentCoverage coverage, int openHolds) =>
+        wpsStatus is WpsStatuses.Paid or WpsStatuses.Reconciled
+        && (coverage.FailedCount > 0 || coverage.UnconfirmedCount > 0 || openHolds > 0);
+
+    /// <summary>The open holds for a person on one batch, read fresh: the settle and Reconciled gates refuse while any is open.</summary>
+    public static async Task<IReadOnlyList<UnresolvedBankHold>> OpenHoldsAsync(ZayraDbContext db, Guid tenantId, Guid batchId, CancellationToken ct)
+    {
+        var records = await db.PayrollPaymentRecords.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.PaymentBatchId == batchId).ToListAsync(ct);
+        var confirmations = await db.BankPaymentConfirmations.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.PaymentBatchId == batchId).ToListAsync(ct);
+        return UnresolvedHolds(records, confirmations);
     }
 
     /// <summary>

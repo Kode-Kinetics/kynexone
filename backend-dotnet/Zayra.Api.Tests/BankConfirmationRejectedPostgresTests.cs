@@ -95,4 +95,75 @@ public sealed class BankConfirmationRejectedPostgresTests(PostgresFixture fixtur
             (await read.PayrollPaymentRecords.AsNoTracking().SingleAsync(r => r.Id == recordId)).Status.Should().Be(PaymentRecordStatuses.Rejected);
         }
     }
+
+    /// <summary>A rejection held after Paid, read back as an open hold on PostgreSQL, then resolved by a reasoned exit that
+    /// names the record: the record goes Rejected, the hold closes, and the exit row is stored as the person's decision.</summary>
+    [Fact]
+    public async Task AHoldAfterPaid_AndItsExit_RoundTripOnPostgres()
+    {
+        Guid tenant, batchId, recordId;
+        await using (var seed = fixture.CreateDb())
+        {
+            tenant = await PostgresFixture.SeedMinimalTenant(seed);
+            var company = new Company
+            {
+                TenantId = tenant, LegalNameEn = "Held Line Co", CountryCode = "SAU", Jurisdiction = "KSA-mainland",
+                RegistrationNumber = $"HL-{Guid.NewGuid():N}", DefaultCurrency = "SAR", IsActive = true,
+                CreatedAtUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            };
+            seed.Companies.Add(company);
+            await seed.SaveChangesAsync();
+            var run = new PayrollRun { TenantId = tenant, CompanyId = company.Id, Year = 2026, Month = 7, Status = "Locked" };
+            var batch = new PayrollPaymentBatch
+            {
+                TenantId = tenant, PayrollRunId = run.Id, BatchNumber = $"PB-{Guid.NewGuid():N}"[..20], Currency = "SAR", TotalAmount = 100m,
+            };
+            var record = new PayrollPaymentRecord
+            {
+                TenantId = tenant, PaymentBatchId = batch.Id, EmployeeId = 1, Amount = 100m, Status = PaymentRecordStatuses.Paid,
+                Iban = "SA0380000000608010167519", WpsReference = "W1",
+            };
+            seed.AddRange(run, batch, record);
+            await seed.SaveChangesAsync();
+            batchId = batch.Id;
+            recordId = record.Id;
+        }
+
+        await using (var db = fixture.CreateDb())
+        {
+            var service = new BankConfirmationService(db, new IBankConfirmationParser[] { new GenericCsvBankConfirmationParser() });
+            var (held, refusal) = await service.ImportAsync(tenant, batchId, "status.csv",
+                "wpsReference,amount,valueDate,status,reasonCode\nW1,100,2026-07-30,RJCT,AC04\n",
+                "generic-csv", new BankConfirmationImportOptions(), Guid.NewGuid(), "Payroll Officer", default);
+            refusal.Should().BeNull();
+            await db.SaveChangesAsync();
+            held!.HeldForPerson.Should().ContainSingle();
+        }
+
+        await using (var db = fixture.CreateDb())
+        {
+            var service = new BankConfirmationService(db, new IBankConfirmationParser[] { new GenericCsvBankConfirmationParser() });
+            var exit = new BankConfirmationImportOptions(Exits: new[]
+            {
+                new BankLineExit(BankLineExitKinds.AllowPaidToRejected, recordId, null, "Bank letter: the credit was refused", "BNK-PG-1"),
+            });
+            var (applied, refusal) = await service.ImportAsync(tenant, batchId, "letter.csv",
+                "wpsReference,amount,valueDate,status,reasonCode\nW1,100,2026-07-31,REJECTED,AC04\n",
+                "generic-csv", exit, Guid.NewGuid(), "Payroll Officer", default);
+            refusal.Should().BeNull();
+            await db.SaveChangesAsync();
+            applied!.HeldForPerson.Should().BeEmpty();
+            applied.Overrides.Should().ContainSingle();
+        }
+
+        await using (var read = fixture.CreateDb())
+        {
+            (await read.PayrollPaymentRecords.AsNoTracking().SingleAsync(r => r.Id == recordId)).Status.Should().Be(PaymentRecordStatuses.Rejected);
+            var rows = await read.BankPaymentConfirmations.AsNoTracking().Where(c => c.PaymentRecordId == recordId)
+                .OrderBy(c => c.ImportedAtUtc).ToListAsync();
+            rows.Select(c => (c.Applied, c.HoldReason)).Should().Equal((false, BankOutcomeHolds.PaidThenRejected), (true, (string?)null));
+            var records = await read.PayrollPaymentRecords.AsNoTracking().Where(r => r.PaymentBatchId == batchId).ToListAsync();
+            BankOutcomeLedger.UnresolvedHolds(records, rows).Should().BeEmpty();
+        }
+    }
 }

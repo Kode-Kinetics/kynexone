@@ -232,7 +232,7 @@ public sealed class PeriodHandoffReconciler
         if (overall.UnconfirmedCount > 0) blockers.Add("payments_not_confirmed_by_bank");
 
         var settledAt = await BankOutcomeLedger.SettledAtAsync(_db, tenantId, batches, ct);
-        var rejectedAfterSettlement = BankOutcomeLedger.RejectedAfterSettlement(records, confirmations, settledAt);
+        var rejectedAfterSettlement = BankOutcomeLedger.RejectedAfterSettlement(records, settledAt);
         var rejectedAfterSettlementTotal = rejectedAfterSettlement.Sum(r => r.Amount);
         var glCorrectionTotal = overall.ReturnedTotal + rejectedAfterSettlementTotal;
         if (glCorrectionTotal > 0m) blockers.Add("gl_correction_awaiting");
@@ -243,7 +243,8 @@ public sealed class PeriodHandoffReconciler
         foreach (var hold in heldForPerson) blockers.Add(BankOutcomeHolds.BlockerFor(hold.HoldReason));
         if (overall.ReconciliationDelta != 0m) blockers.Add("payment_coverage_delta");
 
-        var heldMismatches = confirmations.Count(c => !c.Applied && c.HoldReason == "amount_mismatch_held");
+        // Only OPEN mismatch holds: one closes once a later line for the record was applied or decided (CTO ruling N3).
+        var heldMismatches = BankOutcomeLedger.OpenAmountMismatchHolds(confirmations).Count;
         if (heldMismatches > 0) blockers.Add("amount_mismatch_holdbacks");
 
         var returnsDetail = records.Where(r => string.Equals(r.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase)).Select(r =>
@@ -270,8 +271,8 @@ public sealed class PeriodHandoffReconciler
                     coverage = cov,
                     // A batch reading Paid with returns or unconfirmed records open is exactly the state
                     // this pod exists to make visible.
-                    presentsCleanButIsNot = b.WpsStatus is WpsStatuses.Paid or WpsStatuses.Reconciled
-                                            && (cov.FailedCount > 0 || cov.UnconfirmedCount > 0),
+                    presentsCleanButIsNot = BankOutcomeLedger.PresentsCleanButIsNot(
+                        b.WpsStatus, cov, heldForPerson.Count(h => own.Any(r => r.Id == h.PaymentRecordId))),
                 };
             }).ToList(),
             coverage = overall,
@@ -296,9 +297,9 @@ public sealed class PeriodHandoffReconciler
             .Sum(e => e.Amount), scale);
 
         var rejectedAfterSettlementIds = rejectedAfterSettlement.Select(r => r.Id).ToHashSet();
-        var rejectionDates = confirmations
-            .Where(c => rejectedAfterSettlementIds.Contains(c.PaymentRecordId) && c.Applied && c.Outcome == BankConfirmationOutcomes.Rejected)
-            .Select(c => c.ValueDate);
+        // Dated from the row that decided the rejection, including a person's confirm_duplicate_not_paid (N1).
+        var rejectionDates = rejectedAfterSettlementIds
+            .Select(id => BankOutcomeLedger.RejectionDecision(id, confirmations)?.ValueDate);
         var returnPeriod = returnsDetail.Select(r => r.valueDate).Concat(rejectionDates)
             .Select(d => d.HasValue ? $"{d.Value.Year}-{d.Value.Month:D2}" : nowPeriod)
             .OrderByDescending(p => p, StringComparer.Ordinal).FirstOrDefault() ?? nowPeriod;
