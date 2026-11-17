@@ -61,7 +61,10 @@ public class WpsReturnedFileRefusalTests
             ("no_tagged_lines", new("no_tagged_lines", "hello\nworld\n")),
             ("file_empty", new("file_empty", "")),
             ("header_tag_missing", new("header_tag_missing", Build(omit: new[] { "DEST-ID" }))),
-            ("duplicate_mol_id", new("duplicate_mol_id", WpsReturnedFileOracle.Build(Rows3.Append(Rows3[0] with { Iban = WpsReturnedFileOracle.SaIban(80, 999_999_999_999L) }).ToList()))),
+            ("duplicate_mol_id", new("duplicate_mol_id",
+                // four lines against three records: a batch total large enough that file_total_exceeds_batch cannot mask this guard
+                WpsReturnedFileOracle.Build(Rows3.Append(Rows3[0] with { Iban = WpsReturnedFileOracle.SaIban(80, 999_999_999_999L) }).ToList()),
+                BatchTotal: 1_000_000m)),
             ("duplicate_iban", new("duplicate_iban", WpsReturnedFileOracle.Build(new[] { Rows3[0], Rows3[1], Rows3[2] with { Iban = Rows3[0].Iban } }))),
             ("net_identity_failed", new("net_identity_failed",
                 // only the FIRST line's net is off by 1,00; the header total allows for it, so nothing else is wrong with the file
@@ -74,6 +77,7 @@ public class WpsReturnedFileRefusalTests
             ("too_many_findings", new("too_many_findings", string.Concat(Enumerable.Repeat("[MOL-ID]\t\n", 400)) + "[DEST-ID]\tX\n")),
             ("file_date_missing", new("file_date_missing", Build(omit: new[] { "32A-VAL" }))),
             ("file_date_before_batch", new("file_date_before_batch", Build(h => h with { ValueDate = "20250101" }))),
+            ("file_date_after_batch_window", new("file_date_after_batch_window", Build(h => h with { ValueDate = "20261027" }))),
             ("file_total_exceeds_batch", new("file_total_exceeds_batch", Build(), BatchTotal: Rows3.Sum(r => r.Net) - 1m)),
             ("file_ref_already_imported", new("file_ref_already_imported", Build(), ImportedRef: true)),
             ("no_line_matches_batch", new("no_line_matches_batch", Build(), ExpectedRows: other, ParserLevel: true)),
@@ -186,17 +190,5 @@ public class WpsReturnedFileRefusalTests
         Canon(WpsReturnedFileOracle.Build(rows.Take(3).ToList())).Should().NotBe(baseline);
         Canon(WpsReturnedFileOracle.Build(rows.Select((r, i) => i == 0 ? r with { Name = "Changed" } : r).ToList())).Should().NotBe(baseline);
         Canon(WpsReturnedFileOracle.Build(rows, new WpsReturnedFileOracle.Header(FileRef: "OTHERREF"))).Should().NotBe(baseline);
-    }
-
-    // ── stored text ──────────────────────────────────────────────────────────
-
-    [Fact]
-    public void Bidi_zero_width_and_formula_characters_are_removed_from_the_stored_reference_and_status()
-    {
-        var rows = WpsReturnedFileOracle.Rows(1).Select(r => r with { TrnRef = "\u202E=cmd|\u200Bref", Status = "\u2066PA\u200BID\u2069" }).ToList();
-        var r = WpsReturnedFileValidator.Read(WpsReturnedFileOracle.Build(rows), new WpsReturnedFileExpectation(Est));
-
-        r.Rows[0].TrnRef.Should().Be("cmd|ref");
-        r.Rows[0].TrnStatus.Should().Be("PAID");
     }
 }

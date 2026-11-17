@@ -493,10 +493,10 @@ public class WpsReturnedFileValidatorTests
     public void Exactly_these_unverified_rules_refuse_and_every_other_unverified_rule_only_warns()
     {
         WpsReturnedFileValidator.FailClosedUnverified.Should().Equal(
-            "control_character", "duplicate_tag", "file_date_before_batch", "file_date_missing", "file_ref_already_imported",
+            "control_character", "duplicate_tag", "file_date_after_batch_window", "file_date_before_batch", "file_date_missing", "file_ref_already_imported",
             "file_refused_account_mismatch", "file_rejected", "file_too_large", "file_total_exceeds_batch", "header_after_rows",
             "header_tag_duplicated", "header_total_mismatch", "header_total_unverifiable", "line_too_long", "mixed_line",
-            "no_line_matches_batch", "status_too_long", "stray_value", "too_many_findings", "too_many_rows", "trn_ref_too_long");
+            "no_line_matches_batch", "status_too_long", "status_unsafe_characters", "stray_value", "too_many_findings", "too_many_rows", "trn_ref_too_long");
         foreach (var rule in WpsReturnedFileValidator.Rules.Where(r => r.Basis == WpsRuleBasis.Unverified))
             rule.Severity.Should().Be(WpsReturnedFileValidator.FailClosedUnverified.Contains(rule.Code) ? WpsFindingSeverity.Error : WpsFindingSeverity.Warning);
     }

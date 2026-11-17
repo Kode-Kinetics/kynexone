@@ -13,9 +13,12 @@ public enum WpsRuleBasis { VerifiedFromRepoFact, Unverified }
 
 public enum WpsFindingSeverity { Error, Warning }
 
-/// <summary>One thing the reader found. <see cref="Line"/> is null for a property of the whole file. English and Arabic.</summary>
+/// <summary>
+/// One thing the reader found. <see cref="Line"/> is null for a property of the whole file. English and Arabic. A warning is
+/// listed once per code: <see cref="Line"/> is its first line and <see cref="Count"/> how many times it occurred.
+/// </summary>
 public sealed record WpsReturnedFileFinding(
-    string Code, WpsFindingSeverity Severity, WpsRuleBasis Basis, int? Line, string Message, string MessageAr);
+    string Code, WpsFindingSeverity Severity, WpsRuleBasis Basis, int? Line, string Message, string MessageAr, int Count = 1);
 
 /// <summary>One entry of the rule catalogue: what is checked, whether the repo proves it, and where.</summary>
 public sealed record WpsReturnedFileRule(string Code, WpsRuleBasis Basis, string Source, WpsFindingSeverity Severity);
@@ -23,8 +26,9 @@ public sealed record WpsReturnedFileRule(string Code, WpsRuleBasis Basis, string
 /// <summary>
 /// What the company expects of the file. A null expectation means "do not check the establishment".
 /// <para>With <see cref="BindToBatch"/> the file must also belong to THIS payment batch: its date must not precede the
-/// batch, its total cannot exceed the batch's, and its FILE-REF (scoped by <see cref="FileRefScope"/>, the company) must
-/// not be one already imported (<see cref="ImportedFileRefKeys"/>).</para>
+/// batch nor be later than <see cref="WpsReturnedFileValidator.MaxDaysAfterBatch"/> days after it, its total cannot exceed the
+/// batch's, and its FILE-REF (scoped by <see cref="FileRefScope"/>, the company) must not be one already imported for another
+/// batch (<see cref="ImportedFileRefKeys"/>).</para>
 /// </summary>
 public sealed record WpsReturnedFileExpectation(
     string? MolEstablishmentId,
@@ -93,6 +97,11 @@ public static class WpsReturnedFileValidator
     public const int MaxLineChars = 4096;
     public const int MaxRows = 20_000;
     public const int MaxFindings = 200;
+    /// <summary>
+    /// The latest a file may be dated after its batch was created. Shorter than a monthly cycle, so this month's file can never
+    /// still fit last month's batch; long enough for the bank's return (about five working days) and a follow-up status file.
+    /// </summary>
+    public const int MaxDaysAfterBatch = 20;
 
     public const int MaxFileReferenceLength = KsaWageFileRules.MaxFileReferenceLength;
     public const int MaxNameLength = KsaWageFileRules.MaxNameLineLength;
@@ -113,8 +122,8 @@ public static class WpsReturnedFileValidator
             "The tab and tag layout of the file is assumed from the tag names the repository cites and has not been confirmed against a real bank file.",
             "تنسيق الملف (علامات التبويب والوسوم) مفترض من أسماء الوسوم الواردة في المستودع ولم يتم التأكد منه على ملف بنك حقيقي."),
         ["row_status"] = new(U, "TRN-STATUS is named only in " + Note + "; its words decide the payment state",
-            "The per-line status field [TRN-STATUS] is assumed, not confirmed against a real bank file. Only a few explicit words are read as paid, pending or returned; any other word confirms nothing.",
-            "حقل حالة السطر [TRN-STATUS] مفترض وغير مؤكد على ملف بنك حقيقي. تُقرأ كلمات صريحة محددة فقط على أنها مدفوع أو قيد المعالجة أو مرتجع، وأي كلمة أخرى لا تؤكد شيئاً."),
+            "The per-line status field [TRN-STATUS] is assumed, not confirmed against a real bank file. Only a few explicit words are read as paid, pending, returned or rejected by the bank; any other word confirms nothing.",
+            "حقل حالة السطر [TRN-STATUS] مفترض وغير مؤكد على ملف بنك حقيقي. تُقرأ كلمات صريحة محددة فقط على أنها مدفوع أو قيد المعالجة أو مرتجع أو مرفوض من البنك، وأي كلمة أخرى لا تؤكد شيئاً."),
         ["file_empty"] = new(V, Rules_ + " NoRows", "The file is empty.", "الملف فارغ."),
         ["file_too_large"] = new(U, "Our own input bound; not from the specification",
             "The file is larger than this product reads (2 MB). Nothing was applied.", "حجم الملف أكبر مما يقرؤه هذا المنتج (2 ميغابايت). لم يُطبَّق أي شيء."),
@@ -161,12 +170,15 @@ public static class WpsReturnedFileValidator
         ["file_reference_charset"] = new(U, Rules_ + " restricts OUR outbound reference; the bank chose this one",
             "The file reference [FILE-REF] differs from the format this product generates (upper-case letters and digits only). This is a warning only because the bank chose it.",
             "مرجع الملف [FILE-REF] يختلف عن الصيغة التي ينتجها هذا المنتج (أحرف كبيرة وأرقام فقط). هذا تحذير فقط لأن البنك هو من اختاره."),
-        ["file_ref_already_imported"] = new(U, "Own replay guard: a bank file reference is used once per company",
-            "This file reference [FILE-REF] was already imported for this company. A bank file reference is used once. If the bank re-issued the file, ask for a new reference. Nothing was applied.",
-            "مرجع الملف [FILE-REF] سبق استيراده لهذه الشركة. يُستخدم مرجع ملف البنك مرة واحدة. إذا أعاد البنك إصدار الملف فاطلب مرجعاً جديداً. لم يُطبَّق أي شيء."),
+        ["file_ref_already_imported"] = new(U, "Own replay guard: a bank file reference belongs to one payment batch of the company",
+            "This file reference [FILE-REF] was already imported for another payment batch of this company, so this file cannot belong to this batch. If the bank re-issued the file, ask for a new reference. Nothing was applied.",
+            "مرجع الملف [FILE-REF] سبق استيراده لدفعة رواتب أخرى لهذه الشركة، لذلك لا يمكن أن يخص هذا الملف هذه الدفعة. إذا أعاد البنك إصدار الملف فاطلب مرجعاً جديداً. لم يُطبَّق أي شيء."),
         ["file_date_missing"] = new(U, "Own batch-binding guard; the date format itself is unverified",
             "The file has no readable date ([32A-VAL] or [D-DATE], YYYYMMDD), so it cannot be tied to this payment batch. Nothing was applied.",
             "ليس في الملف تاريخ مقروء ([32A-VAL] أو [D-DATE] بصيغة YYYYMMDD)، لذلك لا يمكن ربطه بدفعة الرواتب هذه. لم يُطبَّق أي شيء."),
+        ["file_date_after_batch_window"] = new(U, "Own batch-binding guard (upper bound: " + "batch creation + MaxDaysAfterBatch days)",
+            "The file is dated more than 20 days after this payment batch was created, so it cannot belong to it (it may be a later month's file). Nothing was applied.",
+            "تاريخ الملف بعد أكثر من 20 يوماً من إنشاء دفعة الرواتب هذه، لذلك لا يمكن أن يخصها (قد يكون ملف شهر لاحق). لم يُطبَّق أي شيء."),
         ["file_date_before_batch"] = new(U, "Own batch-binding guard",
             "The file is dated before this payment batch was created, so it cannot belong to it (it may be an older file). Nothing was applied.",
             "تاريخ الملف سابق لإنشاء دفعة الرواتب هذه، لذلك لا يمكن أن يخصها (قد يكون ملفاً أقدم). لم يُطبَّق أي شيء."),
@@ -271,6 +283,9 @@ public static class WpsReturnedFileValidator
         ["trn_ref_too_long"] = new(U, "TRN-REF is named only in " + Note + "; our column holds 140",
             "The transaction reference [TRN-REF] is longer than 140 characters. The line was not used.",
             "مرجع العملية [TRN-REF] أطول من 140 حرفاً. لم يتم استخدام هذا السطر."),
+        ["status_unsafe_characters"] = new(U, "Own safety rule: a status is classified exactly as written (CTO gate 8.2: only an unambiguous word)",
+            "The status [TRN-STATUS] contains a hidden, look-alike or formula character, so it cannot be read as written. The line was not used.",
+            "تحتوي الحالة [TRN-STATUS] على حرف مخفي أو مشابه أو حرف صيغة، لذلك لا يمكن قراءتها كما كُتبت. لم يتم استخدام هذا السطر."),
         ["status_too_long"] = new(U, "TRN-STATUS is named only in " + Note + "; our column holds 64",
             "The status [TRN-STATUS] is longer than 64 characters. The line was not used.",
             "الحالة [TRN-STATUS] أطول من 64 حرفاً. لم يتم استخدام هذا السطر."),
@@ -342,13 +357,27 @@ public static class WpsReturnedFileValidator
         var findings = new List<WpsReturnedFileFinding>();
         var fileBlocked = false;
         var stopped = false;
+        var errorCount = 0;
+        // A warning is listed once per code with a count, so warnings never use up the fault budget (a whole-number amount on
+        // every line, a long signature block). Only errors count toward MaxFindings.
+        var warningAt = new Dictionary<string, int>(StringComparer.Ordinal);
+        var warningCount = new Dictionary<string, int>(StringComparer.Ordinal);
 
         void Add(string code, WpsFindingSeverity requested, int? line, bool fileLevel, params object[] args)
         {
             // The catalogue decides warn or refuse, so a caller cannot soften a rule.
             var sev = WarningOnly.Contains(code) ? WpsFindingSeverity.Warning : WpsFindingSeverity.Error;
             if (stopped) return;
-            if (findings.Count >= MaxFindings)
+            if (sev == WpsFindingSeverity.Warning)
+            {
+                if (warningCount.TryGetValue(code, out var seen)) { warningCount[code] = seen + 1; return; }
+                warningCount[code] = 1;
+                warningAt[code] = findings.Count;
+                var (wen, war) = MessageFor(code, args);
+                findings.Add(new WpsReturnedFileFinding(code, sev, Catalogue[code].Basis, line, wen, war));
+                return;
+            }
+            if (errorCount >= MaxFindings)
             {
                 // Too many to list: one summary, then stop reading. Nothing is applied.
                 var (sen, sar) = MessageFor("too_many_findings");
@@ -359,13 +388,21 @@ public static class WpsReturnedFileValidator
             }
             var (en, ar) = MessageFor(code, args);
             findings.Add(new WpsReturnedFileFinding(code, sev, Catalogue[code].Basis, line, en, ar));
-            if (sev == WpsFindingSeverity.Error && fileLevel) fileBlocked = true;
+            errorCount++;
+            if (fileLevel) fileBlocked = true;
+        }
+
+        IReadOnlyList<WpsReturnedFileFinding> Counted()
+        {
+            foreach (var (code, at) in warningAt)
+                if (warningCount[code] > 1) findings[at] = findings[at] with { Count = warningCount[code] };
+            return findings;
         }
 
         WpsReturnedFileReadResult Refused(string code)
         {
             Add(code, WpsFindingSeverity.Error, null, true);
-            return new WpsReturnedFileReadResult { Findings = findings, HasFileLevelError = true };
+            return new WpsReturnedFileReadResult { Findings = Counted(), HasFileLevelError = true };
         }
 
         if (string.IsNullOrEmpty(content)) return Refused("file_empty");
@@ -440,7 +477,7 @@ public static class WpsReturnedFileValidator
             }
         }
 
-        if (stopped) return new WpsReturnedFileReadResult { Findings = findings, HasFileLevelError = true };
+        if (stopped) return new WpsReturnedFileReadResult { Findings = Counted(), HasFileLevelError = true };
         if (taggedLines == 0) return Refused("no_tagged_lines");
 
         var header = ReadHeader(headerValues, headerLine, expected, Add);
@@ -473,6 +510,11 @@ public static class WpsReturnedFileValidator
             if (fileDate is null) Add("file_date_missing", WpsFindingSeverity.Error, null, true);
             else if (expected.BatchCreatedOn is { } created && fileDate.Value < created.AddDays(-1))
                 Add("file_date_before_batch", WpsFindingSeverity.Error, null, true);
+            // Upper bound: no date the file carries may be later than the window after the batch, so a later month's file can
+            // never mark an older batch that is still pending.
+            if (expected.BatchCreatedOn is { } since
+                && new[] { header.ValueDate, header.FileDate }.Any(d => d is { } day && day > since.AddDays(MaxDaysAfterBatch)))
+                Add("file_date_after_batch_window", WpsFindingSeverity.Error, null, true);
             if (expected.BatchTotal is { } batchTotal && header.DeclaredTotal is { } fileTotal && fileTotal > batchTotal)
                 Add("file_total_exceeds_batch", WpsFindingSeverity.Error, null, true);
         }
@@ -485,13 +527,13 @@ public static class WpsReturnedFileValidator
         }
         if (rows.Any(r => r.TrnStatus is not null)) Add("row_status", WpsFindingSeverity.Warning, null, false);
 
-        if (stopped) return new WpsReturnedFileReadResult { Findings = findings, HasFileLevelError = true };
+        if (stopped) return new WpsReturnedFileReadResult { Findings = Counted(), HasFileLevelError = true };
 
         return new WpsReturnedFileReadResult
         {
             FileRefKey = fileRefKey,
             Header = header,
-            Findings = findings,
+            Findings = Counted(),
             HasFileLevelError = fileBlocked,
             Rows = rows.Select(r => new WpsReturnedFileRow(
                 r.Line, r.MolId, r.Iban, r.Name, r.Net, r.Basic, r.Housing, r.Other, r.Deductions, r.TrnRef, r.TrnStatus,
@@ -633,7 +675,10 @@ public static class WpsReturnedFileValidator
         return string.Equals(x.Replace("-", string.Empty), y.Replace("-", string.Empty), StringComparison.Ordinal);
     }
 
-    /// <summary>Removes format, line/paragraph-separator and control characters (bidi, zero-width) and leading formula characters from text we STORE.</summary>
+    /// <summary>
+    /// Removes format, line/paragraph-separator and control characters (bidi, zero-width) and leading formula characters from text
+    /// we STORE and never classify (the transaction reference). Never used on the status: that is read as written.
+    /// </summary>
     internal static string? CleanStored(string? value)
     {
         if (string.IsNullOrEmpty(value)) return null;
@@ -745,9 +790,12 @@ public static class WpsReturnedFileValidator
         var rawRef = Get("TRN-REF");
         if (rawRef is { Length: > 140 }) Block(rb, "trn_ref_too_long", lineNo, add);
         rb.TrnRef = CleanStored(rawRef);
+        // The status is kept and classified EXACTLY as written. A hidden, look-alike or formula character refuses the row: it is
+        // never stripped and then classified (PA<zero-width>ID or =PAID must not read as paid).
         var rawStatus = Get("TRN-STATUS");
         if (rawStatus is { Length: > 64 }) Block(rb, "status_too_long", lineNo, add);
-        rb.TrnStatus = CleanStored(rawStatus);
+        else if (!WpsReturnedFileStatus.IsPlain(rawStatus)) Block(rb, "status_unsafe_characters", lineNo, add);
+        rb.TrnStatus = string.IsNullOrWhiteSpace(rawStatus) || !WpsReturnedFileStatus.IsPlain(rawStatus) ? null : rawStatus;
         var trnDate = Get("TRN-DATE");
         if (!string.IsNullOrEmpty(trnDate))
         {
