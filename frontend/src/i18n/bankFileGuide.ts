@@ -280,10 +280,11 @@ const ar: Record<string, string> = {
   'Run net {net} − paid outside the file {outside} = file {file}': 'صافي المسير {net} − المدفوع خارج الملف {outside} = الملف {file}',
   'See who has approved this run and what is waiting.': 'اطّلع على من اعتمد هذا المسير وما الذي ينتظر.',
   'Settle only payments the bank confirmed. Settling posts the net-pay settlement to the ledger and needs the payment settlement permission.': 'سوِّ فقط المدفوعات التي أكّدها البنك. تنشر التسوية قيد تسوية صافي الأجور في الدفتر وتتطلب صلاحية تسوية المدفوعات.',
-  'The bank reports salaries to WPS (Mudad). KynexOne does not send anything to Mudad.': 'يُبلغ البنك عن الرواتب إلى نظام حماية الأجور (مدد). لا يرسل KynexOne أي شيء إلى مدد.',
   'The file total differs from the approved run by {amount}': 'إجمالي الملف يختلف عن المسير المعتمد بفارق {amount}',
   'The file total differs from the approved run.': 'إجمالي الملف يختلف عن المسير المعتمد.',
   'WPS bank file': 'ملف بنكي لحماية الأجور',
+  'Your bank reports the salaries to WPS (Mudad). KynexOne does not send anything to Mudad.': 'يُبلغ بنكك عن الرواتب إلى نظام حماية الأجور (مدد). لا يرسل KynexOne أي شيء إلى مدد.',
+  'Your bank produces the signed WPS file. Upload it in Mudad yourself within the legal window. KynexOne does not send anything to Mudad.': 'يُعدّ بنكك ملف حماية الأجور الموقّع. ارفعه بنفسك في منصة مدد خلال المهلة النظامية. لا يرسل KynexOne أي شيء إلى مدد.',
   'We suggested the next working day. Past days, Fridays and Saturdays can’t be chosen. Check public holidays with your bank.': 'اقترحنا أقرب يوم عمل. لا يمكن اختيار يوم مضى ولا الجمعة أو السبت. تحقق من العطل الرسمية مع بنكك.',
   '{count} employees · {amount} · credit date {date} · file reference {ref}. Record this only after the bank has the file.': '{count} موظفًا · {amount} · تاريخ الإيداع {date} · الرقم المرجعي للملف {ref}. سجّل ذلك فقط بعد أن يتسلّم البنك الملف.',
 };

@@ -1279,7 +1279,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
     liveRef: resultRef,
     overlays,
     data: {
-      bankName, formatName, accountTail, company: ctx?.companyName ?? null, ready: true,
+      bankName, formatName, accountTail, company: ctx?.companyName ?? null, ready: true, autoWps: savedSettings ? savedSettings.autoWpsUpload : null,
       file: artifact ? { reference: artifact.batchReference, paymentDate: (artifact.paymentDate ?? '').slice(0, 10), employeeCount: artifact.employeeCount, totalAmount: artifact.totalAmount, files: artifact.files } : null,
     },
     menu: {

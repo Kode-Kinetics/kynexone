@@ -69,6 +69,8 @@ export interface BankPanelData {
   formatName?: string | null;
   accountTail?: string | null;
   company?: string | null;
+  /** The employer setup asks the bank to upload the WPS file to Mudad (auto-WPS); null when not known. */
+  autoWps?: boolean | null;
   file?: { reference: string; paymentDate: string; employeeCount: number; totalAmount: number; files: { name: string; sha256: string }[] } | null;
   /** The bank-file panel is mounted and ready (setup and file known). */
   ready?: boolean;

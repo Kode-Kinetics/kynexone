@@ -3442,7 +3442,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
       </div>
     );
   };
-  const responseAside = (
+  const responseAside = (data: BankPanelData | null | undefined) => (
     <div className="space-y-3">
       <p className="text-body font-semibold text-fg">{t('What happens next')}</p>
       <ol className="space-y-3">
@@ -3457,7 +3457,10 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
           </li>
         ))}
       </ol>
-      <p className="border-t border-line pt-3 text-meta">{t('The bank reports salaries to WPS (Mudad). KynexOne does not send anything to Mudad.')}</p>
+      {/* Auto-WPS is an employer choice: with it on the bank reports to Mudad; otherwise someone must upload the bank's WPS file. */}
+      <p className="border-t border-line pt-3 text-meta" data-testid="bank-mudad-route">{data?.autoWps === true
+        ? t('Your bank reports the salaries to WPS (Mudad). KynexOne does not send anything to Mudad.')
+        : t('Your bank produces the signed WPS file. Upload it in Mudad yourself within the legal window. KynexOne does not send anything to Mudad.')}</p>
     </div>
   );
   const responsePurpose = (data: BankPanelData | null | undefined) => {
@@ -3503,7 +3506,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
     panelData.current = panel.data ?? panelData.current;
     panelMenu.current = panel.menu ?? null;
     const data = panel.data ?? panelData.current;
-    const response = { purpose: responsePurpose(data), body: responseBody(data), aside: responseAside };
+    const response = { purpose: responsePurpose(data), body: responseBody(data), aside: responseAside(data) };
     return (
       <div className="space-y-3">
         {header(panel.menu)}

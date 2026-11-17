@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { translate } from '../src/i18n/translations';
 import { boot, HANDLED, type Handler, type Locale } from './demo-polish.fixture';
-import { BATCH, BATCH_ID, RECORDS, RUN_ID, bankHandler, type Opts } from './bank-wps.fixture';
+import { BATCH, BATCH_ID, RECORDS, RUN_ID, SETTINGS, bankHandler, type Opts } from './bank-wps.fixture';
 
 /**
  * Payroll → Bank / WPS Files: one stage for the whole page (lib/payOut.ts). Every API request is intercepted: this proves the UI contract,
@@ -364,7 +364,7 @@ test.describe('the reviews\' rules', () => {
     await expect(returned.getByRole('button', { name: 'Open Payment Tracking' })).toBeVisible();
     const step = page.getByTestId('bank-step-body-response');
     await expect(step).toContainText('Settle only payments the bank confirmed.');
-    await expect(step).toContainText('The bank reports salaries to WPS (Mudad). KynexOne does not send anything to Mudad.');
+    await expect(step).toContainText('Your bank produces the signed WPS file. Upload it in Mudad yourself within the legal window. KynexOne does not send anything to Mudad.');
     // Recorded as submitted is not a confirmation: step 4's done mark is not green.
     await expect(page.locator('[data-step-strip="bank-file"] [data-step="send"] [data-testid="bank-step-reason-send"]')).not.toHaveClass(/text-success-fg/);
     const banner = page.getByTestId('bank-submitted-banner');
@@ -516,6 +516,24 @@ for (const locale of LOCALES) {
     });
   }
 }
+
+test.describe('fix batch 2: the flow', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  for (const locale of LOCALES) {
+    test(`B: step 5 names the Mudad route by the employer's auto-WPS setting (${locale})`, async ({ page }) => {
+      await boot(page, { locale, url, routes: bankHandler({ batches: [SUBMITTED], existingExport: FILE, records: withStatus(0, 0) }), waitMs: 2500, stages: 'default' });
+      const step = page.getByTestId('bank-step-body-response');
+      await expect(step).toContainText(say(locale, 'Your bank produces the signed WPS file. Upload it in Mudad yourself within the legal window. KynexOne does not send anything to Mudad.'), { timeout: 90_000 });
+      await expect(step).not.toContainText(say(locale, 'Your bank reports the salaries to WPS (Mudad). KynexOne does not send anything to Mudad.'));
+    });
+    test(`B: with auto-WPS on, the bank reports to Mudad (${locale})`, async ({ page }) => {
+      await boot(page, { locale, url, routes: bankHandler({ batches: [SUBMITTED], existingExport: FILE, records: withStatus(0, 0), settings: { ...SETTINGS, autoWpsUpload: true, nationalUnifiedNo: '7012345678' } }), waitMs: 2500, stages: 'default' });
+      await expect(page.getByTestId('bank-step-body-response')).toContainText(say(locale, 'Your bank reports the salaries to WPS (Mudad). KynexOne does not send anything to Mudad.'), { timeout: 90_000 });
+    });
+  }
+
+});
 
 test.describe('Payroll Runs on a locked run', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
