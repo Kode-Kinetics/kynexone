@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { liveSession, secondsUntilExpiry, TOKEN_MARGIN_SECONDS, type TenantSession } from '../e2e/helpers';
+import { liveSession, secondsUntilExpiry, TOKEN_MARGIN_SECONDS, type TenantSession } from '../e2e/sessionReuse';
 
 /**
  * The e2e helpers reuse the session minted at setup only while its access token has more than the margin left; then the
