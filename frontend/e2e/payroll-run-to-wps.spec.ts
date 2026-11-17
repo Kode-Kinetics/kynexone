@@ -94,19 +94,21 @@ async function openAs(
   return page;
 }
 
-/** Land on the payroll module and prove it rendered before touching anything. */
+/** Land on the payroll module and prove it rendered before touching anything (the run bar and the section nav are the shell). */
 async function gotoPayroll(page: Page): Promise<void> {
   await page.goto('/payroll', { waitUntil: 'domcontentloaded' });
-  await expect(content(page).getByRole('heading', { name: 'Payroll Management' })).toBeVisible({
-    timeout: 30_000,
-  });
+  await expect(content(page).locator('#pipeline-run-picker')).toBeVisible({ timeout: 30_000 });
+  await expect(content(page).getByTestId('payroll-section-nav')).toBeAttached({ timeout: 30_000 });
 }
 
-/** Select the semantic payroll tab and verify React committed the new panel. */
+/** Open a Payroll section from the section nav (links; a folded switcher below 1280px) and verify React committed it. */
 async function openTab(page: Page, label: string): Promise<void> {
-  const tab = content(page).getByRole('tab', { name: label, exact: true });
-  await tab.click();
-  await expect(tab).toHaveAttribute('aria-selected', 'true');
+  const nav = content(page).getByTestId('payroll-section-nav');
+  const link = nav.getByRole('link', { name: label, exact: true });
+  if (!(await link.isVisible())) await content(page).getByTestId('payroll-section-toggle').click();
+  await link.click();
+  await expect(nav.getByRole('link', { name: label, exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(content(page).getByRole('heading', { level: 1, name: label, exact: true })).toBeVisible();
 }
 
 /**
@@ -120,10 +122,11 @@ const periodText = (period: string): RegExp => {
   return new RegExp(`\\b${mon}[a-z]* ${year}(?!\\d)`);
 };
 
-async function selectRun(page: Page, ariaLabel: string, period: string): Promise<string> {
-  const picker = content(page).locator(`select[aria-label="${ariaLabel}"]`);
+async function selectRun(page: Page, period: string): Promise<string> {
+  // One run picker for the whole module: the run bar's. Every section works on the run chosen there.
+  const picker = content(page).locator('#pipeline-run-picker');
   const option = picker.locator('option', { hasText: periodText(period) });
-  await expect(option, `run picker "${ariaLabel}" must offer exactly one ${period} run`).toHaveCount(1);
+  await expect(option, `the run bar's picker must offer exactly one ${period} run`).toHaveCount(1);
   const runId = await option.getAttribute('value');
   expect(runId, `the ${period} option must carry a run id`).toMatch(
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
@@ -284,7 +287,7 @@ test.describe('Payroll — run to WPS file', () => {
         expect(renderedSlips, 'a processed run must render one salary slip per employee').toBeGreaterThan(0);
 
         await openTab(maker, 'Approvals');
-        runId = await selectRun(maker, 'Select payroll run to approve', period);
+        runId = await selectRun(maker, period);
 
         const summary = approvalCard(maker).getByText(/\d+ employees\s*·\s*Gross/);
         await expect(summary, 'the approvals card must state the run size and its totals').toBeVisible();
@@ -397,7 +400,7 @@ test.describe('Payroll — run to WPS file', () => {
       await test.step('3. the finance approver signs off and the run reaches Approved', async () => {
         await gotoPayroll(finance);
         await openTab(finance, 'Approvals');
-        const financeRunId = await selectRun(finance, 'Select payroll run to approve', period);
+        const financeRunId = await selectRun(finance, period);
         expect(financeRunId, 'both personas must be acting on the same run').toBe(runId);
 
         await expect(approvalCard(finance).getByText('Pending finance review', { exact: true })).toBeVisible();
@@ -434,7 +437,7 @@ test.describe('Payroll — run to WPS file', () => {
       await test.step('6a. Create Payment Batch is disabled before the run is locked', async () => {
         await gotoPayroll(admin);
         await openTab(admin, 'Bank / WPS Files');
-        expect(await selectRun(admin, 'Select payroll run', period)).toBe(runId);
+        expect(await selectRun(admin, period)).toBe(runId);
 
         const createBatch = content(admin).getByRole('button', { name: 'Create Payment Batch' });
         await expect(createBatch, 'the Bank/WPS tab must offer the batch control').toBeVisible();
@@ -443,7 +446,7 @@ test.describe('Payroll — run to WPS file', () => {
           'a payment batch must not be creatable before the run is locked',
         ).toBeDisabled();
         await expect(
-          content(admin).getByText(/A payment batch can only be created once the run is/),
+          content(admin).getByText(/a payment batch can only be created once the run is/i),
           'the operator must be told why the control is disabled',
         ).toBeVisible();
         await expect(
@@ -488,7 +491,7 @@ test.describe('Payroll — run to WPS file', () => {
       await test.step('5. payslips are generated one per employee, each with a payslip number', async () => {
         await gotoPayroll(maker);
         await openTab(maker, 'Payslips');
-        expect(await selectRun(maker, 'Select payroll run', period)).toBe(runId);
+        expect(await selectRun(maker, period)).toBe(runId);
 
         await content(maker).getByRole('button', { name: 'Generate Payslips' }).click();
 
@@ -544,13 +547,13 @@ test.describe('Payroll — run to WPS file', () => {
       await test.step('6b. Create Payment Batch is enabled after the lock and the batch totals the run', async () => {
         await gotoPayroll(admin);
         await openTab(admin, 'Bank / WPS Files');
-        expect(await selectRun(admin, 'Select payroll run', period)).toBe(runId);
+        expect(await selectRun(admin, period)).toBe(runId);
 
         const createBatch = content(admin).getByRole('button', { name: 'Create Payment Batch' });
         await expect(createBatch, 'locking the run must enable payment batch creation').toBeEnabled();
         // NEGATIVE, paired with the enabled control above: the blocking notice is gone.
         await expect(
-          content(admin).getByText(/A payment batch can only be created once the run is/),
+          content(admin).getByText(/a payment batch can only be created once the run is/i),
           'the lock warning must disappear once the run is locked',
         ).toHaveCount(0);
 
@@ -647,7 +650,7 @@ test.describe('Payroll — run to WPS file', () => {
         // Back to the browser: the operator's own view must now show the filed batch.
         await gotoPayroll(admin);
         await openTab(admin, 'Bank / WPS Files');
-        expect(await selectRun(admin, 'Select payroll run', period)).toBe(runId);
+        expect(await selectRun(admin, period)).toBe(runId);
 
         const filedCard = batchCard(admin, batchNumber);
         await expect(filedCard).toBeVisible({ timeout: 30_000 });
