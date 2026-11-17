@@ -100,7 +100,8 @@ const noteText = (t: T, step: PayOutStep): string => {
     case 'waiting': return t('Waiting for the bank');
     case 'needs_fix': return t('Needs a fix');
     case 'rejected': return t('Rejected by the bank');
-    case 'todo': return t('To do');
+    // Not "To do": its Arabic elsewhere is المطلوب ("required"), which misreads a step not reached yet.
+    case 'todo': return t('Not started');
     case 'waits_setup': return t('Waits for the bank setup.');
   }
 };

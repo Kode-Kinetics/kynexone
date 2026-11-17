@@ -57,6 +57,8 @@ async function expectStage(page: Page, w: Want) {
 async function expectInView(page: Page) {
   await page.evaluate(() => window.scrollTo(0, 0));
   const vh = page.viewportSize()!.height;
+  // Read boxes only once the step is on screen (a re-render between steps can detach it for a frame).
+  await expect(page.locator('[data-step-panel] [data-step-heading]')).toBeVisible();
   const heading = await page.locator('[data-step-panel] [data-step-heading]').boundingBox();
   // The standing "recorded as submitted" warning sits above the step by ruling; the heading may move down by its height.
   const banner = page.getByTestId('bank-submitted-banner');
@@ -370,6 +372,7 @@ test.describe('the reviews\' rules', () => {
     const banner = page.getByTestId('bank-submitted-banner');
     await expect(banner).toContainText('ANB-55821-0924');
     await expect(banner).toContainText('Uploading this file again can pay employees twice.');
+    await expect(page.locator('[data-step-panel]')).toBeVisible();
     const bannerBox = (await banner.boundingBox())!;
     const panelBox = (await page.locator('[data-step-panel]').boundingBox())!;
     expect(bannerBox.y).toBeLessThan(panelBox.y);
@@ -589,6 +592,9 @@ test.describe('fix batch 2: the flow', () => {
   for (const locale of LOCALES) {
     test(`F and G: cash is "still to pay", and the unconfirmed format names its next step (${locale})`, async ({ page }) => {
       await boot(page, { locale, url, routes: bankHandler(), waitMs: 2500, stages: 'default' });
+      // A step not reached yet reads "Not started" (in Arabic لم يبدأ, never المطلوب, "required").
+      await expect(page.getByTestId('bank-step-reason-send')).toHaveText(say(locale, 'Not started'), { timeout: 90_000 });
+      if (locale === 'ar') await expect(page.getByTestId('bank-step-reason-send')).toHaveText('لم يبدأ');
       const check = page.getByTestId('bank-step-body-check');
       await expect(check).toContainText(say(locale, 'Not in the bank file: to be paid by cash or cheque'), { timeout: 90_000 });
       if (locale === 'en') await expect(check).not.toContainText('Paid in cash or by cheque');
@@ -714,11 +720,9 @@ for (const locale of LOCALES) {
       const bar = page.locator('[data-action-bar]');
       expect(await bar.evaluate(el => getComputedStyle(el).position)).toBe('fixed');
       await expect(page.getByTestId('bank-guide-primary')).toBeInViewport();
+      // On a phone the floating assistant button would sit on the step's content or its action bar: it is hidden on this screen.
       const fab = page.locator('[data-assistant-launcher]');
-      if (await fab.count()) {
-        const f = (await fab.boundingBox())!; const b = (await bar.boundingBox())!;
-        expect(f.y + f.height, 'the assistant button sits above the action bar').toBeLessThanOrEqual(b.y);
-      }
+      if (await fab.count()) await expect(fab).toBeHidden();
       await page.getByTestId('payroll-section-toggle').click();
       const sheet = page.getByRole('dialog', { name: say(locale, 'Payroll sections') });
       await expect(sheet).toBeVisible();
