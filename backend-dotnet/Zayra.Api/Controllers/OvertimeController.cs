@@ -426,6 +426,16 @@ public class OvertimeController : ControllerBase
         if (req.OvertimeTypeId.HasValue && !await _db.OvertimeTypes.AnyAsync(x => x.TenantId == tenantId && x.Id == req.OvertimeTypeId && x.IsActive, ct))
             return BadRequest(new { message = "Overtime type not found or inactive." });
         var rawMinutes = (int)Math.Round((req.EndTimeUtc - req.StartTimeUtc).TotalMinutes);
+        // Everything from here to the insert runs under the employee's overtime-entry lock, in one transaction: the overlap
+        // rule (shared with detect-from-attendance) and the monthly cap are decided on what is committed, never on a read a
+        // concurrent door is about to invalidate.
+        return await OvertimeEntryGuard.RunAsync(_db, tenantId, new[] { req.EmployeeId },
+            () => CreateRequestLockedAsync(tenantId, employee, policy, req, rawMinutes, ct), ct);
+    }
+
+    private async Task<ActionResult<OvertimeRequest>> CreateRequestLockedAsync(
+        Guid tenantId, Employee employee, OvertimePolicy policy, OvertimeRequestCreate req, int rawMinutes, CancellationToken ct)
+    {
         // The policy's rounding rule and all three quantity limits, from the SHARED resolver the
         // attendance door now calls too. Both doors used to spell this out separately and only one
         // of them actually did it — see OvertimePolicyLimits for what that cost.
@@ -438,9 +448,12 @@ public class OvertimeController : ControllerBase
         // OVT-03: after the policy's own refusals (so no client sees a new message ahead of an old one).
         var dateError = await ValidateWorkDateAsync(tenantId, employee.Id, req, ct);
         if (dateError is not null) return BadRequest(new { message = dateError });
-        if (await _db.OvertimeRequests.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId
-                && x.Status != "Rejected" && req.StartTimeUtc < x.EndTimeUtc && req.EndTimeUtc > x.StartTimeUtc, ct))
-            return Conflict(new { message = "This overtime request overlaps an existing request." });
+        // The one overlap rule every overtime door shares (OvertimeEntryGuard): a live request overlapping this window, or
+        // an attendance-detected request for the same day, already records this work.
+        var conflict = await OvertimeEntryGuard.FindConflictAsync(_db, tenantId, req.EmployeeId, req.WorkDate,
+            req.StartTimeUtc, req.EndTimeUtc, wholeDay: false, ct);
+        if (conflict != OvertimeEntryGuard.ConflictKind.None)
+            return Conflict(OvertimeEntryGuard.Refusal(conflict));
         if (limits.Limit == OvertimeLimitKind.AboveMonthlyCap)
             return BadRequest(new { message = OvertimePolicyLimits.RefusalMessage(limits.Limit, policy) });
         var minutes = limits.PayableMinutes;
@@ -571,57 +584,69 @@ public class OvertimeController : ControllerBase
         // very batch is adding — otherwise a month's worth of days each see an empty cap and the
         // batch walks straight past it one day at a time.
         var monthToDate = new Dictionary<(int EmployeeId, int Year, int Month), int>();
-        foreach (var record in daily)
+        // Under the overtime-entry lock of every employee in range (ascending id, the guard's lock order), in one transaction
+        // with the inserts: a manual request filed while detection runs is either committed first and seen here, or waits.
+        return await OvertimeEntryGuard.RunAsync(_db, tenantId, rangeEmployeeIds, async () =>
         {
-            var exists = await _db.OvertimeRequests.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == record.EmployeeId && x.WorkDate == record.WorkDate && x.Source == "Attendance", ct);
-            if (exists) continue;
-            // No active policy applies to this employee: there is nothing to price or limit the overtime under, so none is raised.
-            var policy = await PolicyForAsync(record.EmployeeId);
-            if (policy is null) continue;
-
-            var monthKey = (record.EmployeeId, record.WorkDate.Year, record.WorkDate.Month);
-            if (!monthToDate.TryGetValue(monthKey, out var consumed))
+            foreach (var record in daily)
             {
-                consumed = await MonthToDateMinutesAsync(tenantId, record.EmployeeId, record.WorkDate, ct);
-                monthToDate[monthKey] = consumed;
+                // A day already detected once is never raised again, whatever became of that request (HR may have rejected it).
+                var exists = await _db.OvertimeRequests.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == record.EmployeeId && x.WorkDate == record.WorkDate && x.Source == OvertimeEntryGuard.AttendanceSource, ct);
+                if (exists) continue;
+                // The shared overlap rule: a live request of ANY source already on this day (a request keyed by hand, say)
+                // records this work, so detecting it as well would pay the same hours twice.
+                if (await OvertimeEntryGuard.FindConflictAsync(_db, tenantId, record.EmployeeId, record.WorkDate,
+                        record.LastOutUtc?.AddMinutes(-record.OvertimeMinutes) ?? DateTime.UtcNow, record.LastOutUtc ?? DateTime.UtcNow,
+                        wholeDay: true, ct) != OvertimeEntryGuard.ConflictKind.None)
+                    continue;
+                // No active policy applies to this employee: there is nothing to price or limit the overtime under, so none is raised.
+                var policy = await PolicyForAsync(record.EmployeeId);
+                if (policy is null) continue;
+
+                var monthKey = (record.EmployeeId, record.WorkDate.Year, record.WorkDate.Month);
+                if (!monthToDate.TryGetValue(monthKey, out var consumed))
+                {
+                    consumed = await MonthToDateMinutesAsync(tenantId, record.EmployeeId, record.WorkDate, ct);
+                    monthToDate[monthKey] = consumed;
+                }
+
+                var limits = OvertimePolicyLimits.Apply(record.OvertimeMinutes, policy, consumed);
+
+                if (limits.HasExcess)
+                {
+                    var raised = await RaiseOvertimeLimitExceptionAsync(tenantId, record, policy, limits, ct);
+                    if (raised is not null) exceptions.Add(raised);
+                }
+                if (!limits.IsPayable) continue;
+
+                monthToDate[monthKey] = consumed + limits.PayableMinutes;
+                var request = new OvertimeRequest
+                {
+                    TenantId = tenantId,
+                    EmployeeId = record.EmployeeId,
+                    EmployeeName = record.EmployeeName,
+                    OvertimePolicyId = policy.Id,
+                    WorkDate = record.WorkDate,
+                    // The window is the PAYABLE minutes ending at the last punch out, not the measured
+                    // ones: a request whose times span more than it claims to pay is its own defect.
+                    StartTimeUtc = record.LastOutUtc?.AddMinutes(-limits.PayableMinutes) ?? DateTime.UtcNow,
+                    EndTimeUtc = record.LastOutUtc ?? DateTime.UtcNow,
+                    RequestedMinutes = limits.PayableMinutes,
+                    Source = "Attendance",
+                    Reason = limits.HasExcess
+                        ? $"Auto-detected from processed attendance; capped by policy '{policy.Name}' "
+                          + $"({limits.RoundedMinutes} min detected, {limits.ExcessMinutes} min not payable)"
+                        : "Auto-detected from processed attendance",
+                    Status = "PendingManager",
+                    AttendanceDailyRecordId = record.Id,
+                    CreatedBy = GetUserId()
+                };
+                _db.OvertimeRequests.Add(request);
+                created.Add(request);
             }
-
-            var limits = OvertimePolicyLimits.Apply(record.OvertimeMinutes, policy, consumed);
-
-            if (limits.HasExcess)
-            {
-                var raised = await RaiseOvertimeLimitExceptionAsync(tenantId, record, policy, limits, ct);
-                if (raised is not null) exceptions.Add(raised);
-            }
-            if (!limits.IsPayable) continue;
-
-            monthToDate[monthKey] = consumed + limits.PayableMinutes;
-            var request = new OvertimeRequest
-            {
-                TenantId = tenantId,
-                EmployeeId = record.EmployeeId,
-                EmployeeName = record.EmployeeName,
-                OvertimePolicyId = policy.Id,
-                WorkDate = record.WorkDate,
-                // The window is the PAYABLE minutes ending at the last punch out, not the measured
-                // ones: a request whose times span more than it claims to pay is its own defect.
-                StartTimeUtc = record.LastOutUtc?.AddMinutes(-limits.PayableMinutes) ?? DateTime.UtcNow,
-                EndTimeUtc = record.LastOutUtc ?? DateTime.UtcNow,
-                RequestedMinutes = limits.PayableMinutes,
-                Source = "Attendance",
-                Reason = limits.HasExcess
-                    ? $"Auto-detected from processed attendance; capped by policy '{policy.Name}' "
-                      + $"({limits.RoundedMinutes} min detected, {limits.ExcessMinutes} min not payable)"
-                    : "Auto-detected from processed attendance",
-                Status = "PendingManager",
-                AttendanceDailyRecordId = record.Id,
-                CreatedBy = GetUserId()
-            };
-            _db.OvertimeRequests.Add(request);
-            created.Add(request);
-        }
-        await _db.SaveChangesAsync(ct);
-        return Ok(new DetectOvertimeResult(created, exceptions));
+            await _db.SaveChangesAsync(ct);
+            return (ActionResult<DetectOvertimeResult>)Ok(new DetectOvertimeResult(created, exceptions));
+        }, ct);
     }
 
     /// <summary>
