@@ -48,6 +48,18 @@ test('a feature-flagged tab shows only while its flag is on, and a section never
   expect(visibleEssPages(surveys, (k) => k === 'engagement').map((p) => p.path)).toEqual(['/ess/surveys']);
 });
 
+test('a Benefits-by-grade (release_a) employee sees My package, not the legacy My Benefits tab', () => {
+  const benefits = ESS_SECTIONS.find((s) => s.id === 'benefits')!;
+  const pay = ESS_SECTIONS.find((s) => s.id === 'pay')!;
+  const releaseA = (k: string) => k === 'release_a';
+  expect(visibleEssPages(benefits, () => false).map((p) => p.path)).toEqual(['/ess/benefits']);
+  expect(visibleEssPages(benefits, releaseA)).toEqual([]);
+  expect(visibleEssPages(pay, releaseA).map((p) => p.path)).toContain('/ess/package');
+  const allowed = () => ({ allowed: true });
+  expect(essPageAllowed('/ess/benefits', releaseA, [], allowed)).toBe(false);
+  expect(essPageAllowed('/ess/benefits', () => false, [], allowed)).toBe(true);
+});
+
 test('every section, tab, page name and hint is translated into Arabic', () => {
   for (const s of ESS_SECTIONS) {
     expect(ARABIC.test(translate('ar', s.label)), s.label).toBe(true);
@@ -70,5 +82,5 @@ test('Exit and re-entry (a Saudi Jawazat visa) is offered only to users with a c
   expect(essPageAllowed('/ess/jawazat', on, ['OM', 'SA'], allowed)).toBe(true);
   expect(essPageAllowed('/ess/jawazat', on, ['OM'], allowed)).toBe(false);
   // A module switched off hides the page whatever the country.
-  expect(essPageAllowed('/ess/benefits', on, ['SA'], () => ({ allowed: false }))).toBe(false);
+  expect(essPageAllowed('/ess/benefits', (k) => k !== 'release_a', ['SA'], () => ({ allowed: false }))).toBe(false);
 });
