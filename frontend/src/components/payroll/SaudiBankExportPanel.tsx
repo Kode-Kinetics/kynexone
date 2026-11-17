@@ -583,8 +583,8 @@ type ActionError = { message: string; issues?: SaudiBankExportIssue[] } | null;
 
 export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onProgress, suggestedReference, renderGuide, batch = null, recordsCount = null, onOpenRecords }: {
   batchId: string; employeeIds?: number[]; employeeLabels?: Record<number, string>;
-  /** The open payment batch (its exclusions: the employees paid outside the file). */
-  batch?: PayrollPaymentBatch | null;
+  /** The open payment batch (its exclusions: the employees paid outside the file; whether its bank file exists). */
+  batch?: (PayrollPaymentBatch & { bankFileGenerated?: boolean }) | null;
   /** How many payment records the batch has, when loaded. */
   recordsCount?: number | null;
   /** Opens the payment records drawer (the tab owns it). */
@@ -737,9 +737,10 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   const setupComplete = !!savedSettings && savedSettingsValid && !savedFormatUnsupported && formats.length > 0;
   const progressSetup: NonNullable<BankFlowProgress['setup']> = setupComplete ? 'complete' : 'incomplete';
   useEffect(() => {
-    // Still loading: the step flow keeps saying it is checking. A failed load or a non-Saudi batch changes nothing it can act on.
+    // Still loading: the step flow keeps saying it is checking. A failed load or a non-Saudi batch changes nothing it can act on, except
+    // a download of the file that already exists (it is still offered, see the load-failure render below).
     if (load.status === 'loading') { onProgress?.({ gate: 'checking', validation: 'none', generated: false }); return; }
-    if (load.status !== 'ready' || !isSaudi) { onProgress?.({ gate: 'ready', validation: 'none', generated: false }); return; }
+    if (load.status !== 'ready' || !isSaudi) { onProgress?.({ gate: 'ready', validation: 'none', generated: false, downloaded }); return; }
     onProgress?.({ gate: 'ready', validation: progressValidation, generated: progressGenerated, setup: progressSetup, createRefused: progressCreateRefused, downloaded, checked: validation?.result.employeeCount });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load.status, isSaudi, progressValidation, progressGenerated, progressSetup, progressCreateRefused, downloaded, validation?.result.employeeCount]);
@@ -919,18 +920,35 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   };
 
   const inStep = (body: React.ReactNode) => <>{renderGuide({ panels: { check: { body } } })}</>;
+  // Loading and load failures go in the guide's stage-independent slot (under the step's heading, whatever the step): a batch whose file
+  // exists opens on "Send to bank" before these details arrive, and a failure shown only in step 2 would leave that step empty.
+  const fileOnRecord = !!batch?.bankFileGenerated;
+  const recoverDownload = () => {
+    const startedFor = batchId;
+    void runAction('download', async (signal) => {
+      const file = await saudiBankExportsApi.download(batchId, { signal });
+      if (activeBatchRef.current !== startedFor) return;
+      saveBlob(file);
+      setDownloaded(true);
+    }, c.genericError);
+  };
   if (load.status === 'loading') {
-    return inStep(<div className="flex items-center gap-2 text-body-sm text-fg-muted" role="status" aria-busy="true"><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> {c.loading}</div>);
+    return <>{renderGuide({ live: <div className="flex items-center gap-2 text-body-sm text-fg-muted" role="status" aria-busy="true"><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> {c.loading}</div> })}</>;
   }
   if (load.status === 'error') {
-    return inStep(
-      <div className="space-y-3">
-        <Alert tone="error"><span role="alert">{load.message}</span></Alert>
-        <button type="button" className="btn-secondary btn-sm" onClick={() => setReloadToken((n) => n + 1)}>
-          <RefreshCw className="h-4 w-4" aria-hidden="true" /> {c.retry}
-        </button>
-      </div>,
-    );
+    return <>{renderGuide({
+      live: (
+        <div className="space-y-3" data-testid="bank-load-failed">
+          <Alert tone="error"><span role="alert">{load.message}</span></Alert>
+          {actionError && <Alert tone="error"><span role="alert">{actionError.message}</span></Alert>}
+          <button type="button" className="btn-secondary btn-sm" onClick={() => setReloadToken((n) => n + 1)}>
+            <RefreshCw className="h-4 w-4" aria-hidden="true" /> {c.retry}
+          </button>
+        </div>
+      ),
+      // The file already exists: it can be downloaded without these details (the download needs only the batch).
+      ...(fileOnRecord ? { actions: { download: { label: busy === 'download' ? t('Downloading…') : t('Download bank file'), onClick: recoverDownload, disabled: busy !== null && busy !== 'download', busy: busy === 'download' } } } : {}),
+    })}</>;
   }
   if (ctx && !isSaudi) return inStep(<Alert tone="info">{c.notSaudi(ctx.countryCode)}</Alert>);
 

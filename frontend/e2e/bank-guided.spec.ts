@@ -521,6 +521,37 @@ for (const locale of LOCALES) {
   }
 }
 
+// ── Review: an existing file is always recoverable when the bank-file details fail to load ──────────────
+
+for (const locale of LOCALES) {
+  test.describe(`a generated batch whose details fail to load (${locale})`, () => {
+    test.use({ viewport: { width: 1440, height: 900 } });
+    for (const failing of ['context', 'formats', 'settings'] as const) {
+      test(`the ${failing} request fails: the error and Retry show at the send step, the download stays offered, and Retry recovers`, async ({ page }) => {
+        let failed = false;
+        const paths = { context: `${bp}/batches/${BATCH_ID}/context`, formats: `${bp}/formats`, settings: `${bp}/companies/c1/settings` };
+        const extra: Handler = (path, _s, method, route) => {
+          if (method === 'GET' && path === paths[failing] && !failed) { failed = true; void route.fulfill({ status: 500, json: { message: 'The bank export service is unavailable.' } }); return HANDLED; }
+          return undefined;
+        };
+        await boot(page, { locale, url, routes: bankHandler({ batches: [GENERATED], existingExport: FILE, extra }), waitMs: 2500, stages: 'default' });
+        await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'send', { timeout: 90_000 });
+        const live = page.getByTestId('bank-guide-live');
+        await expect(live.getByRole('alert')).toContainText('The bank export service is unavailable.', { timeout: 60_000 });
+        const retry = live.getByRole('button', { name: locale === 'ar' ? 'إعادة المحاولة' : 'Retry' });
+        await expect(retry).toBeVisible();
+        // The file exists, so it can still be downloaded.
+        await expect(page.getByTestId('bank-guide-primary')).toHaveText(say(locale, 'Download bank file'));
+        await expect(page.getByTestId('bank-guide-primary')).toBeEnabled();
+        await retry.click();
+        await expect(live.getByRole('alert')).toHaveCount(0, { timeout: 30_000 });
+        await expect(page.locator('#bank-wps-generated-export')).toContainText('header.csv');
+        await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'send');
+      });
+    }
+  });
+}
+
 test.describe('fix batch 2: the flow', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
