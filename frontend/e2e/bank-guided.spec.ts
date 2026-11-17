@@ -355,6 +355,15 @@ test.describe('the reviews\' rules', () => {
     await expect(page.getByTestId('bank-batch-overlap').first()).toContainText('also pays this run');
   });
 
+  test('step 1 opened read-only names the payment method as people say it', async ({ page }) => {
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [{ ...BATCH, paymentMethod: 'BankTransfer' }] }), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'check', { timeout: 90_000 });
+    await page.locator('[data-step-strip="bank-file"] [data-step="batch"] button').click();
+    const view = page.getByTestId('bank-step-body-batch');
+    await expect(view).toContainText('Bank transfer');
+    await expect(view).not.toContainText('BankTransfer');
+  });
+
   test('a blocker shows no raw code; its Fix is locked to that employee; a fix sent for approval says so', async ({ page }) => {
     const extra: Handler = (path, _s, method, route) => {
       if (path === '/api/employees/203' && method === 'GET') return { id: 203, employeeCode: 'EVT2-0004', fullName: 'Nora Alharbi', wpsBankDetails: '' };

@@ -3343,7 +3343,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
     <div className="space-y-3">
       <dl className="grid grid-cols-2 gap-3 text-body-sm">
         <div><dt className="text-fg-muted">{t('Payment batch')}</dt><dd className="font-mono font-semibold text-fg"><bdi>{selectedBatch.batchNumber}</bdi></dd></div>
-        <div><dt className="text-fg-muted">{t('Payment method')}</dt><dd className="font-medium text-fg">{selectedBatch.paymentMethod}</dd></div>
+        <div><dt className="text-fg-muted">{t('Payment method')}</dt><dd className="font-medium text-fg">{paymentMethodLabel(t, selectedBatch.paymentMethod)}</dd></div>
         <div><dt className="text-fg-muted">{t('Amount')}</dt><dd className="font-medium tabular-nums text-fg"><bdi dir="ltr">{fmtAmt(selectedBatch.totalAmount, selectedBatch.currency)}</bdi></dd></div>
         <div><dt className="text-fg-muted">{t('Run status')}</dt><dd className="font-medium text-fg"><EnumLabel enum="PayrollRunStatus" value={selectedRun?.status} /></dd></div>
       </dl>
