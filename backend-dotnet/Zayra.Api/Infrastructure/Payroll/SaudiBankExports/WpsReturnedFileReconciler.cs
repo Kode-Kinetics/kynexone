@@ -30,9 +30,10 @@ public static class WpsReconciliationClass
 }
 
 /// <summary>
-/// The status words THIS reader accepts for a line. Deliberately stricter than the shared
-/// <c>BankOutcomeVocabulary</c> (which is untouched): no single letters, no "OK"/"YES", and ISO ACSP ("settlement in process")
-/// is pending, never paid. The per-line status tag itself is unverified (see the rule catalogue), so anything not listed
+/// The status words THIS reader accepts for a line. Its Paid and Returned words are the same as the shared
+/// <c>BankOutcomeVocabulary</c>'s; its Pending list is narrower (ISO ACWC, "accepted with change", is in no list here, so it confirms
+/// nothing and the line is held), and "COMPLETE" and "ACCEPTED" are read as accepted-only. No single letters, no "OK"/"YES", and ISO
+/// ACSP ("settlement in process") is pending, never paid. The per-line status tag itself is unverified (see the rule catalogue), so anything not listed
 /// here confirms nothing. Paid or Returned only on an unambiguous bank word; "success"/"completed"/"executed" words mean the bank
 /// accepted the file, not that the credit is confirmed, so they are informational and change nothing.
 /// </summary>
