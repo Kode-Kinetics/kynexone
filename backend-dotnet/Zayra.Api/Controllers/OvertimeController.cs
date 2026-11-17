@@ -403,9 +403,22 @@ public class OvertimeController : ControllerBase
         // (overtime.write). Data scope alone used to decide, so an ess.read-only login (an HR Assistant, an
         // Auditor) could file overtime for itself, and an org-scoped login for anyone, with no write key.
         var forSelf = scope.CallerEmployeeId == req.EmployeeId;
-        if (!(User.HasPermission("overtime.write") || (forSelf && User.HasPermission("ess.write")))) return Forbid();
+        // A line manager files for a member of their OWN team with overtime.file_for_team: the team is the caller's data
+        // scope (checked above), so the key never reaches anyone an organisation-wide scope would; and only while the
+        // employing company allows it (overtime_manager_files_for_team, default on).
+        var asTeamManager = !forSelf && !User.HasPermission("overtime.write") && User.HasPermission("overtime.file_for_team")
+            && !scope.IsUnrestricted && scope.CanAccessEmployee(req.EmployeeId);
+        if (!(User.HasPermission("overtime.write") || (forSelf && User.HasPermission("ess.write")) || asTeamManager)) return Forbid();
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.EmployeeId && !x.IsDeleted, ct);
         if (employee is null) return BadRequest(new { message = "Employee not found." });
+        var companyRules = await OvertimeCompanyRulesAsync(tenantId, employee.CompanyId, employee.Id, ct);
+        if (asTeamManager && !companyRules.OvertimeManagerFilesForTeam)
+            return StatusCode(403, new
+            {
+                code = "overtime_team_filing_off",
+                message = "This company does not let line managers file overtime for their team. Ask HR to file it, or ask the employee to file it in Self-Service.",
+                messageAr = "لا تسمح هذه الشركة للمديرين المباشرين بتقديم العمل الإضافي عن فرقهم. اطلب من الموارد البشرية تقديمه، أو اطلب من الموظف تقديمه من الخدمة الذاتية.",
+            });
         if (req.EndTimeUtc <= req.StartTimeUtc) return BadRequest(new { message = "End time must be after start time." });
         if (string.IsNullOrWhiteSpace(req.Reason)) return BadRequest(new { message = "A reason is required." });
         // The policy is decided HERE, from the employee, because payroll pays under the policy stored on the request.
@@ -430,11 +443,12 @@ public class OvertimeController : ControllerBase
         // rule (shared with detect-from-attendance) and the monthly cap are decided on what is committed, never on a read a
         // concurrent door is about to invalidate.
         return await OvertimeEntryGuard.RunAsync(_db, tenantId, new[] { req.EmployeeId },
-            () => CreateRequestLockedAsync(tenantId, employee, policy, req, rawMinutes, ct), ct);
+            () => CreateRequestLockedAsync(tenantId, employee, policy, req, rawMinutes, companyRules, ct), ct);
     }
 
     private async Task<ActionResult<OvertimeRequest>> CreateRequestLockedAsync(
-        Guid tenantId, Employee employee, OvertimePolicy policy, OvertimeRequestCreate req, int rawMinutes, CancellationToken ct)
+        Guid tenantId, Employee employee, OvertimePolicy policy, OvertimeRequestCreate req, int rawMinutes,
+        CompanyPayrollRuleSet companyRules, CancellationToken ct)
     {
         // The policy's rounding rule and all three quantity limits, from the SHARED resolver the
         // attendance door now calls too. Both doors used to spell this out separately and only one
@@ -472,13 +486,45 @@ public class OvertimeController : ControllerBase
             // detect-from-attendance (which de-duplicates on it), so a caller-supplied value was a forgery hook.
             Source = "Manual",
             Reason = req.Reason ?? string.Empty,
-            Status = "PendingManager",
+            // The policy's "Requires Manager Approval" decides whether the line-manager step exists at all.
+            Status = FirstStep(policy),
             CreatedBy = GetUserId()
         };
         _db.OvertimeRequests.Add(request);
         await SaveAudit("overtime.request.created", "OvertimeRequest", request.Id.ToString(), ct);
+        if (companyRules.OvertimeAutoApprove)
+            await TryAutoApproveAsync(tenantId, request, companyRules, ct);
         await _db.SaveChangesAsync(ct);
         return Created($"/api/overtime/requests/{request.Id}", request);
+    }
+
+    /// <summary>The step a new request starts at: the line manager's, unless the policy says no manager approval is needed.</summary>
+    private static string FirstStep(OvertimePolicy policy) => policy.RequiresApproval ? "PendingManager" : "PendingHR";
+
+    /// <summary>
+    /// overtime_auto_approve: the company approves overtime the moment it is filed. Exactly what a final approval writes (the
+    /// calculation, the payroll impact, an approval row marked Auto, the budget consumption), never anything more. The work
+    /// date was already checked against locked periods, so there is no late approval to settle. A company in budget mode
+    /// Block that this request would take over budget is NOT auto-approved: the request keeps its normal approval step.
+    /// </summary>
+    private async Task TryAutoApproveAsync(Guid tenantId, OvertimeRequest request, CompanyPayrollRuleSet companyRules, CancellationToken ct)
+    {
+        var calc = await Calculate(request, ct, request.RequestedMinutes);
+        var budget = await OvertimeBudgetLedger.ForUpdateAsync(_db, tenantId, request.EmployeeId, request.WorkDate, ct);
+        if (OvertimeBudgetLedger.Blocks(companyRules.OvertimeBudgetMode, budget, calc.Amount)) return;
+        request.Status = "Approved";
+        request.ApprovedMinutes = request.RequestedMinutes;
+        request.DecidedAtUtc = DateTime.UtcNow;
+        _db.OvertimeApprovals.Add(NewOvertimeApproval(tenantId, request.Id, "Auto", "Approved", "Approved automatically (company overtime setting)."));
+        _db.OvertimeCalculations.Add(calc);
+        _db.OvertimePayrollImpacts.Add(new OvertimePayrollImpact
+        {
+            TenantId = tenantId, OvertimeRequestId = request.Id, EmployeeId = request.EmployeeId,
+            Minutes = calc.ApprovedMinutes, Amount = calc.Amount, ApprovedMultiplier = calc.Multiplier,
+        });
+        OvertimeBudgetLedger.Consume(budget, calc.Amount);
+        await SaveAudit("overtime.request.auto_approved", "OvertimeRequest", request.Id.ToString(), ct,
+            new { setting = PayrollRuleKeys.OvertimeAutoApprove, approvedMinutes = calc.ApprovedMinutes, amount = calc.Amount });
     }
 
     private const int DefaultMaxLookbackDays = 60;
@@ -640,7 +686,7 @@ public class OvertimeController : ControllerBase
                         ? $"Auto-detected from processed attendance; capped by policy '{policy.Name}' "
                           + $"({limits.RoundedMinutes} min detected, {limits.ExcessMinutes} min not payable)"
                         : "Auto-detected from processed attendance",
-                    Status = "PendingManager",
+                    Status = FirstStep(policy),
                     AttendanceDailyRecordId = record.Id,
                     CreatedBy = GetUserId()
                 };
@@ -730,6 +776,12 @@ public class OvertimeController : ControllerBase
         if (request.Status == "PendingManager" && isManager && !isAdmin && !isHR
             && !await IsCurrentUserResolvedApproverAsync(tenantId, request.EmployeeId, "Overtime", ct))
             return Forbid();
+        var companyRules = await OvertimeCompanyRulesAsync(tenantId, request.CompanyId, request.EmployeeId, ct);
+        // overtime_hr_approves_manager_step (default on): an HR Manager may take the line-manager step. It only ever
+        // forwards to step 2, where CallerDecidedStageOneAsync keeps the same person from also giving the final approval.
+        var hrTakesStepOne = isHR && !isAdmin && request.Status == "PendingManager";
+        if (hrTakesStepOne && !companyRules.OvertimeHrApprovesManagerStep)
+            return BadRequest(HrStepOneOff());
 
         // Admin bypasses all steps; HR Manager finalises from PendingHR
         if (isAdmin || (isHR && request.Status == "PendingHR"))
@@ -740,10 +792,16 @@ public class OvertimeController : ControllerBase
             var approvedMinutes = req.ApprovedMinutes > 0 ? req.ApprovedMinutes : request.RequestedMinutes;
             if (approvedMinutes <= 0 || approvedMinutes > request.RequestedMinutes)
                 return BadRequest(new { message = "Approved minutes must be positive and cannot exceed requested minutes." });
-            // OVT-04: a work date whose payroll period has already closed is settled per overtime.late_approval_mode.
+            // OVT-04: a work date whose payroll period has already closed is settled per the company's
+            // overtime_late_approval_mode, else the account-wide overtime.late_approval_mode.
             // Decided BEFORE anything is mutated, so a refusal leaves the request exactly as it was.
-            var (lateRefusal, backPayRun) = await ResolveLateApprovalAsync(tenantId, request, req.Notes, ct);
+            var (lateRefusal, backPayRun) = await ResolveLateApprovalAsync(tenantId, request, req.Notes, companyRules.OvertimeLateApprovalMode, ct);
             if (lateRefusal is not null) return lateRefusal;
+            // Priced BEFORE anything is mutated too, so a budget refusal leaves the request exactly as it was.
+            var calc = await Calculate(request, ct, approvedMinutes);
+            var budgetPreview = await OvertimeBudgetLedger.FindAsync(_db, tenantId, request.EmployeeId, request.WorkDate, ct);
+            if (OvertimeBudgetLedger.Blocks(companyRules.OvertimeBudgetMode, budgetPreview, calc.Amount))
+                return Conflict(OvertimeBudgetLedger.Refusal(budgetPreview!, calc.Amount));
 
             _db.OvertimeApprovals.Add(NewOvertimeApproval(
                 tenantId, request.Id, "Final", "Approved", req.Notes));
@@ -751,7 +809,6 @@ public class OvertimeController : ControllerBase
             request.DecisionVersion++;
             request.ApprovedMinutes = approvedMinutes;
             request.DecidedAtUtc = DateTime.UtcNow;
-            var calc = await Calculate(request, ct);
             _db.OvertimeCalculations.Add(calc);
             if (backPayRun is not null)
             {
@@ -806,13 +863,22 @@ public class OvertimeController : ControllerBase
                 ApprovedMultiplier = calc.Multiplier,
             });
             await SaveAudit("overtime.request.approved", "OvertimeRequest", request.Id.ToString(), ct);
-            if (!await TrySaveDecisionAsync(ct))
+            // The approved amount is consumed from the department's monthly overtime budget in the same transaction as the
+            // decision (the budget row locked, so two approvals cannot both spend its last riyal), whatever the mode.
+            var (saved, budgetRefusal, budgetWarning) = await SaveDecisionWithBudgetAsync(tenantId, request, companyRules.OvertimeBudgetMode, calc.Amount, ct);
+            if (budgetRefusal is not null) return Conflict(budgetRefusal);
+            if (!saved)
                 return Conflict(new { message = "This overtime request was decided concurrently." });
-            return Ok(calc);
+            if (budgetWarning is null) return Ok(calc);
+            return Ok(new
+            {
+                calc.Id, calc.TenantId, calc.OvertimeRequestId, calc.EmployeeId, calc.ApprovedMinutes, calc.HourlyRate, calc.Multiplier,
+                calc.Amount, calc.Currency, calc.CalculationJson, calc.CreatedAtUtc, budgetWarning,
+            });
         }
 
-        // Manager/Supervisor advances PendingManager → PendingHR (no calculation yet)
-        if (isManager && request.Status == "PendingManager")
+        // Manager/Supervisor (or HR, when the company allows it) advances PendingManager → PendingHR (no calculation yet)
+        if ((isManager || hrTakesStepOne) && request.Status == "PendingManager")
         {
             _db.OvertimeApprovals.Add(NewOvertimeApproval(
                 tenantId, request.Id, "Manager", "Approved", req.Notes));
@@ -851,6 +917,9 @@ public class OvertimeController : ControllerBase
             return Forbid();
         if (request.Status == "PendingHR" && !isAdmin && !isHR)
             return Forbid();
+        if (isHR && !isAdmin && request.Status == "PendingManager"
+            && !(await OvertimeCompanyRulesAsync(tenantId, request.CompanyId, request.EmployeeId, ct)).OvertimeHrApprovesManagerStep)
+            return BadRequest(HrStepOneOff());
         var approvalLevel = request.Status == "PendingManager" ? "Manager" : "Final";
         request.Status = "Rejected";
         request.DecisionVersion++;
@@ -1036,9 +1105,11 @@ public class OvertimeController : ControllerBase
         });
     }
 
-    private async Task<OvertimeCalculation> Calculate(OvertimeRequest request, CancellationToken ct)
+    private async Task<OvertimeCalculation> Calculate(OvertimeRequest request, CancellationToken ct, int? approvedMinutes = null)
     {
         var tenantId = request.TenantId;
+        // The minutes being approved: priced before the request is changed, so a refusal can leave it untouched.
+        var minutesApproved = approvedMinutes ?? request.ApprovedMinutes;
         var policy = request.OvertimePolicyId.HasValue
             ? await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.OvertimePolicyId && !x.IsDeleted, ct)
             : await OvertimePolicyDefault.Order(_db.OvertimePolicies.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted)).FirstOrDefaultAsync(ct);
@@ -1111,7 +1182,7 @@ public class OvertimeController : ControllerBase
         // (Math.Round(ApprovedMinutes / 60m, 2), which this line used to do) quantised every
         // overtime request to 0.6-minute steps and underpaid 50 approved minutes as 0.83 h.
         // Minutes are the input; the division by 60 happens once, here, inside the money expression.
-        var amount = Math.Round(request.ApprovedMinutes / 60m * hourRate.HourPay, 2);
+        var amount = Math.Round(minutesApproved / 60m * hourRate.HourPay, 2);
         var currency = !string.IsNullOrWhiteSpace(salary?.Currency) ? salary.Currency : await _db.ResolveTenantCurrencyAsync(tenantId, ct);
         var calculationJson =
             $"{{\"dayCategory\":\"{dayCategory}\",\"basis\":\"{policy.HourlyRateBasis}\"," +
@@ -1130,7 +1201,7 @@ public class OvertimeController : ControllerBase
             TenantId = tenantId,
             OvertimeRequestId = request.Id,
             EmployeeId = request.EmployeeId,
-            ApprovedMinutes = request.ApprovedMinutes,
+            ApprovedMinutes = minutesApproved,
             // The Art. 107 base hourly rate — the first term of the hour's pay. The full
             // arithmetic (including the basic-hourly uplift base) is in CalculationJson, because
             // hours × HourlyRate × Multiplier is not the shape of an Art. 107 overtime hour.
@@ -1234,7 +1305,7 @@ public class OvertimeController : ControllerBase
     /// to carry into, returns that run.
     /// </summary>
     private async Task<(ActionResult? Refusal, PayrollRun? CarryRun)> ResolveLateApprovalAsync(
-        Guid tenantId, OvertimeRequest request, string? reason, CancellationToken ct)
+        Guid tenantId, OvertimeRequest request, string? reason, string? companyMode, CancellationToken ct)
     {
         if (!await AttendancePayrollLock.IsLockedAsync(_db, tenantId, request.EmployeeId, request.WorkDate, ct))
             return (null, null);
@@ -1246,7 +1317,8 @@ public class OvertimeController : ControllerBase
         var nextOpen = new { year = next.Year, month = next.Month, label = $"{next.Year}-{next.Month:00}" };
         var closed = $"{request.WorkDate.Year}-{request.WorkDate.Month:00}";
 
-        var mode = await _policy.GetEnumAsync(tenantId, PolicyRegistry.OvertimeLateApprovalMode, ct);
+        // The employing company's own choice (Setup > Payroll rules), else the account-wide policy (default Refuse).
+        var mode = companyMode ?? await _policy.GetEnumAsync(tenantId, PolicyRegistry.OvertimeLateApprovalMode, ct);
         if (!string.Equals(mode, "BackPay", StringComparison.Ordinal))
             return (Conflict(new
             {
@@ -1306,6 +1378,56 @@ public class OvertimeController : ControllerBase
                 runId = run.Id,
             }), null);
         return (null, run);
+    }
+
+    /// <summary>The employing company's overtime settings (Setup > Payroll rules), the company resolved as payroll resolves it.</summary>
+    private async Task<CompanyPayrollRuleSet> OvertimeCompanyRulesAsync(Guid tenantId, Guid? companyId, int employeeId, CancellationToken ct)
+    {
+        var stamped = companyId ?? await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.Id == employeeId).Select(e => e.CompanyId).FirstOrDefaultAsync(ct);
+        var effective = await CompanyPayrollRules.EffectiveCompanyIdAsync(_db, tenantId, stamped, ct);
+        return await CompanyPayrollRules.ResolveAsync(_db, tenantId, effective, ct);
+    }
+
+    private static object HrStepOneOff() => new
+    {
+        code = "overtime_hr_step_one_off",
+        message = "This company has the line manager approve the first step. HR gives the final approval once the manager has forwarded it.",
+        messageAr = "في هذه الشركة يعتمد المدير المباشر الخطوة الأولى. تمنح الموارد البشرية الاعتماد النهائي بعد أن يحيله المدير.",
+    };
+
+    /// <summary>
+    /// Saves a final approval and consumes its amount from the department's monthly overtime budget, in one transaction with the
+    /// budget row locked (FOR UPDATE): the Block check is repeated on the locked row, so two approvals racing for the last of a
+    /// budget cannot both pass. With no budget row for the department and month it is the plain decision save.
+    /// </summary>
+    private async Task<(bool Saved, object? Refusal, object? Warning)> SaveDecisionWithBudgetAsync(
+        Guid tenantId, OvertimeRequest request, string budgetMode, decimal amount, CancellationToken ct)
+    {
+        async Task<(bool, object?, object?)> Body()
+        {
+            var budget = await OvertimeBudgetLedger.ForUpdateAsync(_db, tenantId, request.EmployeeId, request.WorkDate, ct);
+            if (OvertimeBudgetLedger.Blocks(budgetMode, budget, amount)) return (false, OvertimeBudgetLedger.Refusal(budget!, amount), null);
+            var warning = budgetMode == OvertimeBudgetModes.Warn && OvertimeBudgetLedger.Exceeds(budget, amount) ? OvertimeBudgetLedger.Warning(budget!, amount) : null;
+            OvertimeBudgetLedger.Consume(budget, amount);
+            if (warning is not null)
+                await SaveAudit("overtime.budget.exceeded", "OvertimeRequest", request.Id.ToString(), ct,
+                    new { budgetId = budget!.Id, budget.BudgetAmount, consumedAfter = budget.ConsumedAmount, amount });
+            return (await TrySaveDecisionAsync(ct), null, warning);
+        }
+        if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null) return await Body();
+        var strategy = _db.Database.CreateExecutionStrategy();
+        var attempt = 0;
+        return await strategy.ExecuteAsync(async () =>
+        {
+            // The decision is already staged on the context; a retried attempt could not tell what it had consumed.
+            if (attempt++ > 0)
+                throw new InvalidOperationException("The overtime approval failed on a transient database error and was not retried. Try again.");
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            var result = await Body();
+            if (result.Item1) await tx.CommitAsync(ct); else await tx.RollbackAsync(ct);
+            return result;
+        });
     }
 
     private async Task<bool> TrySaveDecisionAsync(CancellationToken ct)

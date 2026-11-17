@@ -1856,8 +1856,10 @@ public partial class PayrollController : ControllerBase
         // Load OT/attendance data so Rules 10+11 fire correctly on /validate too.
         var valPeriodStart = new DateOnly(run.Year, run.Month, 1);
         var valPeriodEnd   = valPeriodStart.AddMonths(1).AddDays(-1);
-        var valLateOvertimeMode = await (_policySettings ?? new Infrastructure.Policy.PolicySettingsService(_db))
-            .GetEnumAsync(tenantId, Infrastructure.Policy.PolicyRegistry.OvertimeLateApprovalMode, cancellationToken);
+        // The company's own overtime_late_approval_mode first, else the account-wide policy, exactly as Process resolves it.
+        var valLateOvertimeMode = (await Infrastructure.Payroll.CompanyPayrollRules.ResolveAsync(_db, tenantId, company.Id, cancellationToken, valPeriodStart)).OvertimeLateApprovalMode
+            ?? await (_policySettings ?? new Infrastructure.Policy.PolicySettingsService(_db))
+                .GetEnumAsync(tenantId, Infrastructure.Policy.PolicyRegistry.OvertimeLateApprovalMode, cancellationToken);
         var valOtRequestIds = await _db.OvertimeRequests.AsNoTracking()
             .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployeesForValidation && r.CompanyId == null)) && r.WorkDate >= valPeriodStart && r.WorkDate <= valPeriodEnd)
             .Select(r => r.Id)

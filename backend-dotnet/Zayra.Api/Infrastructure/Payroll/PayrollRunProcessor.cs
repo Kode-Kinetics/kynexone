@@ -1299,8 +1299,11 @@ public sealed class PayrollRunProcessor
         // OVT-04 / rule 11b: with overtime.late_approval_mode = BackPay, this run pays approved overtime from an EARLIER period whose own
         // run already consumed that month, as an "Overtime Back Pay" adjustment line. The matching impacts are marked Processed below,
         // in this same transaction, so no later run (or rule 11b) can pay or flag them again. Refuse mode stages nothing.
-        var lateOvertimeMode = await new Zayra.Api.Infrastructure.Policy.PolicySettingsService(_db).GetEnumAsync(
-            tenantId, Zayra.Api.Infrastructure.Policy.PolicyRegistry.OvertimeLateApprovalMode, cancellationToken);
+        // The company's own overtime_late_approval_mode (Setup > Payroll rules) first, else the account-wide policy: the same
+        // order the overtime approval uses, so approval and the run never disagree about a company's late overtime.
+        var lateOvertimeMode = companyPayrollRules.OvertimeLateApprovalMode
+            ?? await new Zayra.Api.Infrastructure.Policy.PolicySettingsService(_db).GetEnumAsync(
+                tenantId, Zayra.Api.Infrastructure.Policy.PolicyRegistry.OvertimeLateApprovalMode, cancellationToken);
         var lateOvertime = await OvertimeLateSettlement.StageAsync(_db, run,
             await PriorPeriodOvertimeFinder.FindSettleableAsync(_db, tenantId, company.Id, employeeIdsForRun, periodStart,
                 cancellationToken, lateOvertimeMode, includesRecurringPay, id),
