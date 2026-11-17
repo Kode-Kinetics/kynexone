@@ -131,7 +131,7 @@ public class WpsReturnedFileImportPathTests
         new WpsAckBankConfirmationParser().Key.Should().Be("wps-ack");
         var p = new WpsReturnedFileBankConfirmationParser();
         p.Key.Should().Be(Key);
-        p.Disclaimer.Should().Contain("UNVERIFIED").And.Contain("bank");
+        p.Disclaimer.Should().ContainEquivalentOf("unverified").And.Contain("bank");   // wording: no capitals (package F5)
         p.Disclaimer.Should().NotContainAny("WPS compliant", "Mudad certified");
     }
 

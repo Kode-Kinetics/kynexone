@@ -24,7 +24,7 @@ public static class WpsReconciliationClass
     public const string AccountMissing = "account_missing";
     public const string UnknownEmployee = "unknown_employee";
     public const string MissingFromFile = "missing_from_file";
-    /// <summary>The bank refused the instruction: "Not paid: rejected by bank". The money never left.</summary>
+    /// <summary>The bank refused the instruction: "Not paid: rejected by bank". The bank statement shows whether any money moved.</summary>
     public const string Rejected = "rejected";
     /// <summary>The money left and came back.</summary>
     public const string Returned = "returned";
@@ -87,6 +87,10 @@ public static class WpsReturnedFileStatus
         var token = (raw ?? string.Empty).Trim(' ').Replace(' ', '_');
         return token.Length == 0 ? null : token;
     }
+
+    /// <summary>True for ISO ACSC/ACCC: the bank's own settlement is complete, which does not by itself prove the employee was credited.</summary>
+    public static bool IsSettledByBank(string? status) =>
+        Token(status) is { } t && BankOutcomeVocabulary.Read(t).Reason == BankOutcomeReasons.SettledByBank;
 
     /// <summary>True for a word that means "the bank accepted the file" without confirming the credit.</summary>
     public static bool IsAcceptedOnly(string? status) => Token(status) is { } t && AcceptedOnly.Contains(t);
@@ -238,8 +242,8 @@ public static class WpsReturnedFileReconciler
                 var label = BankOutcomeLabels.NotPaidRejectedByBank;
                 var noReason = BankStatusReasonCatalogue.Describe(null);
                 lines.Add(Line(WpsReconciliationClass.Rejected, null,
-                    $"{label.English}. The bank reported this line as {statusRaw}. {noReason.English}. Check the bank statement to confirm no money left before paying this salary again.",
-                    $"{label.Arabic}. أفاد البنك بأن حالة هذا السطر {Iso(statusRaw)}. {noReason.Arabic}. راجع كشف حساب البنك للتأكد من عدم تحويل أي مبلغ قبل صرف هذا الراتب مرة أخرى."));
+                    $"{label.English}. The bank reported this line as {statusRaw}. {noReason.English}. Check the bank statement to confirm no money left. If none did, this salary is still owed to the employee: pay it through a supplementary payment run after correcting any bank detail.",
+                    $"{label.Arabic}. أفاد البنك بأن حالة هذا السطر {Iso(statusRaw)}. {noReason.Arabic}. راجع كشف حساب البنك للتأكد من عدم خروج أي مبلغ. فإن لم يخرج مبلغ فالراتب ما زال مستحقًا للموظف: ادفعه عبر مسير دفع إضافي بعد تصحيح أي بيان بنكي."));
             }
             else if (outcome == BankConfirmationOutcomes.Returned)
             {
@@ -253,8 +257,12 @@ public static class WpsReturnedFileReconciler
             {
                 var lower = net < e.Amount;
                 lines.Add(Line(WpsReconciliationClass.AmountMismatch, null,
-                    $"The amount in the file is {(lower ? "lower" : "higher")} than the payroll run amount for this employee. It is held until someone reviews the difference.",
-                    $"المبلغ في الملف {(lower ? "أقل" : "أكبر")} من مبلغ مسير الرواتب لهذا الموظف. يبقى معلقاً حتى تتم مراجعة الفرق."));
+                    lower
+                        ? "The amount in the file is lower than the payroll run amount for this employee. The employee may have received less than they are owed; the difference may still be owed. It is held until someone reviews it."
+                        : "The amount in the file is higher than the payroll run amount for this employee. The employee may have been overpaid. Do not recover it from pay until Finance and HR decide how. It is held until someone reviews it.",
+                    lower
+                        ? "المبلغ في الملف أقل من مبلغ مسير الرواتب لهذا الموظف. قد يكون الموظف استلم أقل من مستحقه وقد يبقى الفرق مستحقًا له. يبقى السطر معلقًا حتى تتم مراجعة الفرق."
+                        : "المبلغ في الملف أكبر من مبلغ مسير الرواتب لهذا الموظف. قد يكون الموظف استلم أكثر من مستحقه. لا تسترد الفرق من الراتب قبل أن تقرر الإدارة المالية والموارد البشرية الآلية. يبقى السطر معلقًا حتى تتم مراجعة الفرق."));
             }
             else if (WpsReturnedFileStatus.IsAcceptedOnly(row.TrnStatus))
             {
@@ -276,17 +284,24 @@ public static class WpsReturnedFileReconciler
                     $"The file gives the status {statusRaw}, which is not a status we recognise. Nothing was applied for this employee: it needs to be mapped explicitly.",
                     $"يعطي الملف الحالة {Iso(statusRaw)} وهي غير معروفة لدينا. لم يُطبَّق أي شيء لهذا الموظف: يلزم ربطها يدوياً."));
             }
+            else if (outcome == BankConfirmationOutcomes.Paid && WpsReturnedFileStatus.IsSettledByBank(row.TrnStatus))
+            {
+                // ISO ACSC/ACCC: the bank's settlement ran. That is not proof the employee was credited (CTO ruling 8.4.4).
+                lines.Add(Line(WpsReconciliationClass.MatchedPaid, null,
+                    "Matches the payroll run (same employee, account and amount). The bank reports this payment as settled by the bank. That does not by itself prove the employee received it: confirm on the bank statement.",
+                    "مطابق لمسير الرواتب (الموظف والحساب والمبلغ متطابقة). أفاد البنك بأن الدفعة تمت تسويتها لدى البنك، وهذا وحده لا يثبت وصول المبلغ إلى الموظف: تأكد من كشف حساب البنك."));
+            }
             else if (outcome == BankConfirmationOutcomes.Paid)
             {
                 lines.Add(Line(WpsReconciliationClass.MatchedPaid, null,
                     "Matches the payroll run (same employee, account and amount) and the bank reports it paid.",
-                    "مطابق لمسير الرواتب (الموظف والحساب والمبلغ نفسها) ويفيد البنك بأنه دُفع."));
+                    "مطابق لمسير الرواتب (الموظف والحساب والمبلغ متطابقة) ويفيد البنك بأنه دُفع."));
             }
             else if (outcome == BankConfirmationOutcomes.Pending)
             {
                 lines.Add(Line(WpsReconciliationClass.MatchedPending, null,
                     "Matches the payroll run (same employee, account and amount) and the bank reports it still being processed.",
-                    "مطابق لمسير الرواتب (الموظف والحساب والمبلغ نفسها) ويفيد البنك بأنه قيد المعالجة."));
+                    "مطابق لمسير الرواتب (الموظف والحساب والمبلغ متطابقة) ويفيد البنك بأنه قيد المعالجة."));
             }
             else
             {

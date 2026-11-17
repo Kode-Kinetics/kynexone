@@ -81,14 +81,18 @@ public static class BankConfirmationParserRegistration
 public sealed class WpsReturnedFileBankConfirmationParser : IContextualBankConfirmationParser
 {
     public string Key => "wps-returned-file";
-    public string DisplayName => "Bank-returned WPS file (TAB-delimited, read-only)";
+    public string DisplayName => "Bank-returned payroll file (read-only)";
     public string Disclaimer =>
-        "UNVERIFIED LAYOUT. Reads the file your BANK produced and signed; it never changes or re-signs it, it does not verify the "
+        "Unverified layout. Reads the file your BANK produced and signed; it never changes or re-signs it, it does not verify the "
       + "bank's signature, and it is not a wage-protection submission or a Mudad acceptance. The tab and [TAG] layout and the per-line "
       + "status field are assumed from field names the product already cites and have not been confirmed against a real bank file. "
       + "A file is refused as a whole if its establishment, date, total or FILE-REF do not fit this payment batch, or if any account "
       + "differs from the payroll record. Lines are matched to payment records by government ID, account and amount. No payment "
       + "status is applied to any record until the status column has been verified against a real bank file and switched on.";
+    public string? DisclaimerAr =>
+        "تنسيق غير مؤكد. يقرأ هذا الخيار الملف الذي أنتجه بنكك ووقّعه، ولا يغيّره ولا يعيد توقيعه ولا يتحقق من توقيع البنك، وهو ليس تقديمًا إلى نظام "
+      + "حماية الأجور ولا قبولًا من مدد. لم يُتحقق بعد من تنسيق الملف ولا من حقل حالة السطر على ملف بنك حقيقي، ولن تُطبَّق أي حالة دفع على أي "
+      + "سجل قبل التحقق منه وتفعيله.";
 
     private const int MaxErrors = 200;
     private readonly bool _statusColumnVerified;
