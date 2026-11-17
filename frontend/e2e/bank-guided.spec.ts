@@ -609,7 +609,46 @@ test.describe('fix batch 2: the flow', () => {
     await expect(bic).toHaveValue('');
   });
 
+  test('I: the facts strip shows the whole bank name, and the gate tells organisation from company name', async ({ page }) => {
+    await boot(page, { locale: 'en', url, routes: bankHandler({ settings: { ...SETTINGS, organizationName: '' } }), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-setup-gate')).toBeVisible({ timeout: 90_000 });
+    await expect(page.getByTestId('bank-setup-gate')).toContainText('Establishment ID (Ministry of HR)');
+    await expect(page.getByTestId('bank-setup-gate')).toContainText('Organisation name: the employer as your bank registered the account. Company name: the name printed in the bank file.');
+    const bank = page.getByTestId('bank-file-facts').locator('dd:visible', { hasText: 'Arab National Bank (ANB)' });
+    expect(await bank.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    // Nothing in the strip is cut short, at 1440 or 1366.
+    for (const width of [1440, 1366]) {
+      await page.setViewportSize({ width, height: 900 });
+      const cut = await page.getByTestId('bank-file-facts').evaluate(el => Array.from(el.querySelectorAll<HTMLElement>('dd, dt'))
+        .filter(e => e.offsetParent !== null && e.scrollWidth > e.clientWidth + 1).map(e => e.textContent));
+      expect(cut, `cut at ${width}`).toEqual([]);
+    }
+  });
 });
+
+for (const locale of LOCALES) {
+  test.describe(`I and J: Validation and Approvals use the run bar's run (${locale})`, () => {
+    test('validation and approvals have no second run picker, and say where to choose a run', async ({ page }) => {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await boot(page, { locale, url: `/payroll?tab=validation&run=${RUN_ID}`, routes: bankHandler(), waitMs: 2500, stages: 'default' });
+      await expect(page.getByRole('button', { name: say(locale, 'Run Validation') })).toBeVisible({ timeout: 90_000 });
+      await expect(page.locator('#validation-run')).toHaveCount(0);
+      await page.goto(`/payroll?tab=approvals&run=${RUN_ID}`);
+      await expect(page.getByTestId('payroll-section-panel')).toBeVisible({ timeout: 90_000 });
+      await expect(page.locator('#approvals-run')).toHaveCount(0);
+      await page.locator('#pipeline-run-picker').selectOption('');
+      await expect(page.getByTestId('payroll-section-panel')).toContainText(say(locale, 'Choose a payroll run in the run bar above.'));
+    });
+    test('at 390 "Run Validation" stays on one line', async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await boot(page, { locale, url: `/payroll?tab=validation&run=${RUN_ID}`, routes: bankHandler(), waitMs: 2500, stages: 'default' });
+      const run = page.getByRole('button', { name: say(locale, 'Run Validation') });
+      await expect(run).toBeVisible({ timeout: 90_000 });
+      expect((await run.boundingBox())!.height).toBeLessThanOrEqual(48);
+      expect(await run.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    });
+  });
+}
 
 test.describe('Payroll Runs on a locked run', () => {
   test.use({ viewport: { width: 1440, height: 900 } });

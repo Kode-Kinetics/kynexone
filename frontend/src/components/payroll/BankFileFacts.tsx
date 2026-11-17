@@ -51,17 +51,19 @@ export function BankFileFacts({ batch, run, employeesInFile, bankName, accountTa
   const matches = difference !== null && Math.abs(difference) < 0.005;
   const two = (n: number) => fx.number(n, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-  const cell = 'min-w-0 px-4 py-2.5';
+  const cell = 'min-w-0 px-3 py-2.5';
   const label = 'flex h-4 min-w-0 items-center gap-1 whitespace-nowrap text-meta text-fg-muted';
-  const value = 'mt-0.5 truncate text-body font-semibold text-fg tabular-nums';
-  const sub = 'mt-0.5 truncate text-meta text-fg-muted';
+  // Nothing in the strip is cut short: a figure or a name the officer checks wraps when the screen is too narrow, never ends in "…".
+  const value = 'mt-0.5 text-body font-semibold text-fg tabular-nums';
+  const sub = 'mt-0.5 text-meta text-fg-muted';
 
+  // Each column is as wide as its content (from lg); the free space is shared out.
   const strip = (
-    <dl className={`grid grid-cols-2 divide-line sm:grid-cols-3 lg:divide-x rtl:lg:divide-x-reverse ${company ? 'lg:grid-cols-6' : 'lg:grid-cols-5'}`}>
+    <dl className={`grid grid-cols-2 divide-line sm:grid-cols-3 lg:divide-x rtl:lg:divide-x-reverse ${company ? 'lg:grid-cols-[repeat(6,auto)]' : 'lg:grid-cols-[repeat(5,auto)]'}`}>
       {company && (
         <div className={cell}>
           <dt className={label}>{t('Company')}</dt>
-          <dd className="mt-0.5 truncate text-body font-semibold text-fg" title={company}><bdi>{company}</bdi></dd>
+          <dd className="mt-0.5 text-body font-semibold text-fg"><bdi>{company}</bdi></dd>
         </div>
       )}
       <div className={cell}>
@@ -98,7 +100,8 @@ export function BankFileFacts({ batch, run, employeesInFile, bankName, accountTa
       {(bankName || accountTail) && (
         <div className={cell}>
           <dt className={label}>{t('Bank')}</dt>
-          <dd className="mt-0.5 truncate text-body font-semibold text-fg" title={bankName ?? undefined}>{bankName ?? '—'}</dd>
+          {/* The bank's name wraps rather than being cut short: it is what the officer checks before sending. */}
+          <dd className="mt-0.5 text-body font-semibold leading-snug text-fg [overflow-wrap:anywhere]">{bankName ?? '—'}</dd>
           {accountTail && <dd className={sub}>{t('Account {tail}', { tail: '' })}<bdi dir="ltr" className="font-mono">{accountTail}</bdi></dd>}
         </div>
       )}

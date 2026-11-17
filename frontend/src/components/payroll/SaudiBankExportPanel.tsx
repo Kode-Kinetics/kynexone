@@ -964,7 +964,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
     { key: 'format', label: t('Bank and file format'), detail: formatName ?? '', saved: !!savedSettings?.formatId && !savedFormatUnsupported && has('formatId') },
     { key: 'mol', label: t('Establishment ID (Ministry of HR)'), detail: c.molHelp, saved: has('molEstablishmentId') },
     { key: 'account', label: t('Employer account'), detail: savedIsCustom ? cc.debitHelp : c.mainAccountHelp, saved: savedIsCustom ? has('debitAccountIban') : has('mainAccountNumber') },
-    { key: 'org', label: t('Organisation name and address'), detail: '', saved: savedIsCustom || has('organizationName', 'organizationAddress1', 'organizationAddress2', 'organizationAddress3', 'companyName', 'narrative', 'batchType') },
+    { key: 'org', label: t('Organisation name and address'), detail: t('Organisation name: the employer as your bank registered the account. Company name: the name printed in the bank file.'), saved: savedIsCustom || has('organizationName', 'organizationAddress1', 'organizationAddress2', 'organizationAddress3', 'companyName', 'narrative', 'batchType') },
   ];
   const savedCount = checklist.filter((i) => i.saved).length;
   const setupBody = (

@@ -282,10 +282,12 @@ const ar: Record<string, string> = {
   'The file total differs from the approved run by {amount}': 'إجمالي الملف يختلف عن المسير المعتمد بفارق {amount}',
   'The file total differs from the approved run.': 'إجمالي الملف يختلف عن المسير المعتمد.',
   'WPS bank file': 'ملف بنكي لحماية الأجور',
+  'Choose a payroll run in the run bar above.': 'اختر مسير رواتب من شريط المسير أعلاه.',
   'Your bank reports the salaries to WPS (Mudad). KynexOne does not send anything to Mudad.': 'يُبلغ بنكك عن الرواتب إلى نظام حماية الأجور (مدد). لا يرسل KynexOne أي شيء إلى مدد.',
   'Your bank produces the signed WPS file. Upload it in Mudad yourself within the legal window. KynexOne does not send anything to Mudad.': 'يُعدّ بنكك ملف حماية الأجور الموقّع. ارفعه بنفسك في منصة مدد خلال المهلة النظامية. لا يرسل KynexOne أي شيء إلى مدد.',
   'Not in the bank file: to be paid by cash or cheque': 'خارج ملف البنك: يُدفع نقدًا أو بشيك',
   'Send your bank a test file before the first live run.': 'أرسل إلى بنكك ملفًا تجريبيًا قبل أول مسير فعلي.',
+  'Organisation name: the employer as your bank registered the account. Company name: the name printed in the bank file.': 'اسم المنظمة: صاحب العمل كما سجّله البنك على الحساب. اسم الشركة: الاسم الذي يُطبع في ملف البنك.',
   'We suggested the next working day. Past days, Fridays and Saturdays can’t be chosen. Check public holidays with your bank.': 'اقترحنا أقرب يوم عمل. لا يمكن اختيار يوم مضى ولا الجمعة أو السبت. تحقق من العطل الرسمية مع بنكك.',
   '{count} employees · {amount} · credit date {date} · file reference {ref}. Record this only after the bank has the file.': '{count} موظفًا · {amount} · تاريخ الإيداع {date} · الرقم المرجعي للملف {ref}. سجّل ذلك فقط بعد أن يتسلّم البنك الملف.',
 };

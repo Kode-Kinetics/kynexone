@@ -447,7 +447,7 @@ test('a journal that fails to load is an error with Retry, never an empty journa
 
 test('Approve: uncosted Optional lines need an acknowledgement, and only an affirmed count is sent', async ({ page }) => {
   const state = await boot(page, { uncosted: true }, 'approvals');
-  await page.getByLabel('Select payroll run to approve').selectOption('run-proc');
+  await page.locator('#pipeline-run-picker').selectOption('run-proc');
   const ack = tid(page, 'cc-approve-uncosted-ack');
   await expect(ack).toContainText('6 employees post lines on Optional accounts without a cost centre');
   const approve = page.getByRole('button', { name: 'Approve — Final' });
@@ -461,7 +461,7 @@ test('Approve: uncosted Optional lines need an acknowledgement, and only an affi
 
 test('Approve: nothing uncosted means no acknowledgement and no count', async ({ page }) => {
   const state = await boot(page, {}, 'approvals');
-  await page.getByLabel('Select payroll run to approve').selectOption('run-proc');
+  await page.locator('#pipeline-run-picker').selectOption('run-proc');
   await expect(page.getByRole('button', { name: 'Approve — Final' })).toBeEnabled();
   await expect(tid(page, 'cc-approve-uncosted-ack')).toHaveCount(0);
   await page.getByRole('button', { name: 'Approve — Final' }).click();

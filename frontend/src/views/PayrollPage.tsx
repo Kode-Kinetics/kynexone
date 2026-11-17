@@ -1887,15 +1887,16 @@ const GOSI_BELOW_MINIMUM_WAGE = 'GOSI_BELOW_MINIMUM_CONTRIBUTORY_WAGE';
  */
 function useSharedRun(selectedRunId: string | undefined, onRunChange?: (id: string | null) => void): [string, (id: string) => void] {
   const [runId, setLocal] = useState(selectedRunId ?? '');
-  useEffect(() => { if (selectedRunId) setLocal(selectedRunId); }, [selectedRunId]);
+  // The run bar is the source of truth: clearing it there clears it here too.
+  useEffect(() => { setLocal(selectedRunId ?? ''); }, [selectedRunId]);
   const setRunId = React.useCallback((id: string) => { setLocal(id); onRunChange?.(id || null); }, [onRunChange]);
   return [runId, setRunId];
 }
 
 function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string; onRunChange?: (id: string | null) => void }) {
   const t = useT();
-  const [runId, setRunId] = useSharedRun(selectedRunId, onRunChange);
-  const [runs, setRuns] = useState<PayrollRun[]>([]);
+  // The run bar's run (no picker in this section).
+  const [runId] = useSharedRun(selectedRunId, onRunChange);
   const [results, setResults] = useState<PayrollValidationResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -1903,7 +1904,6 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
   const [overriding, setOverriding] = useState<PayrollValidationResult | null>(null);
   const names = useRunEmployeeLabels(runId);
 
-  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
   useEffect(() => {
     if (!runId) { setResults([]); setError(''); return; }
@@ -1949,16 +1949,14 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <label htmlFor="validation-run" className="shrink-0 text-body-sm font-medium text-fg-muted">{t('Payroll run')}</label>
-        <select id="validation-run" aria-label={t('Select payroll run')} className="select flex-1 max-w-xs" value={runId} onChange={e => setRunId(e.target.value)}>
-          <option value="">{t('Select a payroll run…')}</option>
-          <RunSelectOptions runs={runs} />
-        </select>
-        <button type="button" className={btn.primary} onClick={validate} disabled={!runId || loading}>
-          {loading ? t('Validating…') : t('Run Validation')}
-        </button>
-      </div>
+      {/* The run is the run bar's (shared by every Payroll section): no second picker here. */}
+      {runId ? (
+        <div className="flex items-center gap-3">
+          <button type="button" className={`${btn.primary} whitespace-nowrap max-sm:min-h-11 max-sm:w-full max-sm:justify-center`} onClick={validate} disabled={loading}>
+            {loading ? t('Validating…') : t('Run Validation')}
+          </button>
+        </div>
+      ) : <NoRunChosen />}
 
       {error && <div className="rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">{error}</div>}
 
@@ -2316,7 +2314,8 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
   const monthLabel = useMonthLabel();
   const [reconNotice, setReconNotice] = useState('');
   const [runs, setRuns] = useState<PayrollRun[]>([]);
-  const [runId, setRunId] = useSharedRun(selectedRunId, onRunChange);
+  // The run bar's run (no picker in this section).
+  const [runId] = useSharedRun(selectedRunId, onRunChange);
   const [approvals, setApprovals] = useState<PayrollApproval[]>([]);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
@@ -2494,19 +2493,15 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
           ) : (
             <div key={i} className={`rounded-lg px-2 py-1 text-xs font-medium ${step.color}`}>
               {step.label}
-              {step.badge && <span className="ms-1 opacity-60">({step.badge})</span>}
+              {/* The role in the pill's own colour (at 60% opacity it measured about 2.5:1; the label itself passes 4.8:1). */}
+              {step.badge && <span className="ms-1 font-normal">({step.badge})</span>}
             </div>
           ))}
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
-        <label htmlFor="approvals-run" className="shrink-0 text-body-sm font-medium text-fg-muted">{t('Payroll run')}</label>
-        <select id="approvals-run" aria-label={t('Select payroll run to approve')} className="select flex-1 max-w-xs" value={runId} onChange={e => setRunId(e.target.value)}>
-          <option value="">{t('Select run…')}</option>
-          <RunSelectOptions runs={runs} />
-        </select>
-      </div>
+      {/* The run is the run bar's (shared by every Payroll section): no second picker here. */}
+      {!runId && <NoRunChosen />}
 
       {selectedRun && (
         <div className="surface p-5 space-y-4">
@@ -3620,6 +3615,16 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
               batch={batchRow} recordsCount={recordsState.status === 'ready' ? records.length : null} onOpenRecords={() => setRecordsOpen(true)} />
           : guide({})
       )}
+    </div>
+  );
+}
+
+/** A section that works on the run bar's run, with none chosen: where to choose one. */
+function NoRunChosen() {
+  const t = useT();
+  return (
+    <div className="surface p-5 text-body text-fg-muted" data-testid="payroll-no-run">
+      {t('Choose a payroll run in the run bar above.')}
     </div>
   );
 }
