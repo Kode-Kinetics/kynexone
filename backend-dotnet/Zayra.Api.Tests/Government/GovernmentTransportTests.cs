@@ -139,4 +139,21 @@ public sealed class GovernmentTransportTests
         adapter.Environments.Should().Equal("sandbox");
         (await db.QiwaSyncLogs.IgnoreQueryFilters().SingleAsync(l => l.Id == logId)).Status.Should().Be(QiwaSyncLogStatuses.Success);
     }
+
+    [Fact]
+    public async Task ALiveQiwaAdapter_IsNeverAsked_WithoutTheTenantsConsent_EvenWithEverythingElseOpen()
+    {
+        var protection = DataProtectionProvider.Create("ZayraGovTransportTests");
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        var (_, logId) = await GovernmentReviewRegressionTests.SeedQiwaAsync(db, protection);
+        var config = Config((QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true"), (QiwaLiveAdapterPolicy.PartnerAgreementKey, "AGR-SYNTHETIC"),
+            (GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Qiwa), "LEGAL-SYNTHETIC-1"));
+        var adapter = new LiveDouble();
+
+        await new QiwaSyncWorker(new GovernmentReviewRegressionTests.SingleDbScopeFactory(db), adapter, new QiwaOAuthTokenCache(), protection,
+            NullLogger<QiwaSyncWorker>.Instance, configuration: config).ProcessOnceAsync(CancellationToken.None);
+
+        adapter.Environments.Should().BeEmpty("agreement, switch, clearance and a credential are not enough: the tenant's consent record is G2");
+        (await db.QiwaSyncLogs.IgnoreQueryFilters().SingleAsync(l => l.Id == logId)).Status.Should().Be(QiwaSyncLogStatuses.DeadLetter);
+    }
 }
