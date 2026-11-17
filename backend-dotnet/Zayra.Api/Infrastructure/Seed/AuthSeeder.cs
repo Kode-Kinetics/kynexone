@@ -255,7 +255,10 @@ public class AuthSeeder : IAuthSeeder
             "finance.gl.read", "finance.gl.manage", "finance.gl.export", "finance.gl.drivers.manage",
             "payroll.rates.read", "payroll.rates.manage",
             // M2: prepares the bank file and nothing else. It confirms nothing and moves no cash: no WPS status, no settle, no remit.
-            "payroll.payment_batch.manage"
+            "payroll.payment_batch.manage",
+            // Company Finance confirms monthly cash allowances (payroll.approve); the list waiting for Finance is on Benefits by grade. Read only:
+            // entitlements.manage (edit, publish, add, remove) stays with HR.
+            "entitlements.read"
         }), 4, true, cancellationToken);
 
         // Level 5 — HR Officer: HR operations specialist
@@ -305,7 +308,9 @@ public class AuthSeeder : IAuthSeeder
             // both prepares the bank file and pays it.
             "payroll.wps_status.update", "payroll.payment.settle", "payroll.remit.manage",
             // CMP: the default final step of a merit worksheet (HR Manager → Finance Approver) and the cycle approver.
-            "compensation.read", "compensation.approve"
+            "compensation.read", "compensation.approve",
+            // Company Finance confirms monthly cash allowances (payroll.approve); the list waiting for Finance is on Benefits by grade. Read only.
+            "entitlements.read"
         }), 8, true, cancellationToken);
 
         // Level 9 — Compliance Officer: compliance and contracts
