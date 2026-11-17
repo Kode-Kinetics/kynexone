@@ -58,7 +58,7 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
         var permissionSignature = BuildSignature(permissions);
         var roleSignature = BuildSignature(roles);
         var normalizedQuery = NormalizeQuery(request.Query);
-        var cacheKey = BuildCacheKey(caller.TenantId, governance.Intent, governance.Module, request.EmployeeId, normalizedQuery, roleSignature, permissionSignature, caller.CompanyScopeSignature);
+        var cacheKey = BuildCacheKey(caller.TenantId, governance.Intent, governance.Module, request.EmployeeId, normalizedQuery, roleSignature, permissionSignature, caller.CompanyScopeSignature, BuildEmployeeScopeSignature(caller.ScopeEmployeeIds));
         var cacheLookup = new AiCacheKey(
             caller.TenantId,
             cacheKey,
@@ -279,7 +279,13 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
         return cleaned.Length == 0 ? string.Empty : string.Join('|', cleaned);
     }
 
-    private string BuildCacheKey(Guid tenantId, string intent, string module, int? employeeId, string normalizedQuery, string roleSignature, string permissionSignature, string companyScopeSignature)
+    /// <summary>"all" for an unrestricted caller; otherwise a digest of the sorted employee ids the caller may see.</summary>
+    private string BuildEmployeeScopeSignature(IReadOnlyList<int>? scopeEmployeeIds) =>
+        scopeEmployeeIds is null
+            ? "all"
+            : "team:" + _redaction.Hash(string.Join(',', scopeEmployeeIds.Distinct().OrderBy(id => id)));
+
+    private string BuildCacheKey(Guid tenantId, string intent, string module, int? employeeId, string normalizedQuery, string roleSignature, string permissionSignature, string companyScopeSignature, string employeeScopeSignature)
     {
         return _redaction.Hash(string.Join("::", new[]
         {
@@ -293,6 +299,10 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
             // global query filters; without this segment a company switch served the previous
             // company's answer. See AiUserContext.CompanyScopeSignature.
             companyScopeSignature,
+            // The employee dimension. BuildContextAsync restricts every employee-specific query to
+            // caller.ScopeEmployeeIds, so two callers with the same roles and permissions but a
+            // different team must not share an answer.
+            employeeScopeSignature,
             normalizedQuery
         }));
     }

@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Models;
 
 using Zayra.Api.Infrastructure.Authorization;
@@ -216,6 +217,11 @@ public class GoalsController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(goal.EmployeeId))
             return NotFound(); // out of scope reads as a wrong id (ScopedRecordLookup's rule)
+        // The subject never decides: nobody approves their own goal, whatever their role or scope.
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, goal.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal(
+                "This goal is yours. Someone else has to approve it.",
+                "هذا الهدف هدفك. يجب أن يعتمده شخص آخر."));
         // The same rule as the manager review (ReviewsController.SubmitManagerReview): the caller must be one of
         // the employee's resolved KPI approvers (their direct or second-level manager), unless they hold the
         // rating approver tier or an organisation-wide scope. This used to be skipped for the role NAMES Admin
