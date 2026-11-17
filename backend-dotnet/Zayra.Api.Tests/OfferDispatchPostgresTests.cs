@@ -131,6 +131,23 @@ public sealed class OfferDispatchPostgresTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task WithNoWorkspaceRelay_TheOfferIsHeldNotIssued_ItIsTriedOnceAndTheWorkerNeverPicksItUpAgain()
+    {
+        var seed=await Frozen(); email.Outcome="NotConfigured"; await using var db=fixture.CreateDb(); var service=Service(db);
+        var queued=await service.QueueAsync(seed.Actor,seed.OfferId,Request());
+        for (var sweep=0; sweep<3; sweep++) await service.ProcessAsync(seed.Actor,seed.OfferId,queued.Id);
+
+        email.Calls.Should().Be(1, "no retry on a relay that does not exist");
+        var offer=await db.OfferLetters.AsNoTracking().SingleAsync(x=>x.Id==seed.OfferId);
+        offer.Status.Should().Be("Draft", "an unsent offer is not issued");
+        offer.CommunicationOutcome.Should().Be("NotConfigured", "the held state the screens label as 'Mail not configured - offer not issued'");
+        // The worker's discovery (Queued, or a Sending lease that expired) finds nothing: there is no spam on later sweeps.
+        var now=DateTime.UtcNow;
+        (await db.OfferDispatches.AsNoTracking().CountAsync(d=>d.OfferId==seed.OfferId && (d.Outcome=="Queued" || (d.Outcome=="Sending" && d.LeaseUntilUtc<=now)))).Should().Be(0);
+        (await db.JobApplications.AsNoTracking().SingleAsync(a=>a.Id==seed.ApplicationId)).OfferReservationId.Should().BeNull("the held offer can be sent once a relay is configured");
+    }
+
+    [Fact]
     public async Task FrozenRecipientAndPdfAreUsedAfterCandidateChanges()
     {
         var seed=await Frozen(); await using var db=fixture.CreateDb(); var service=Service(db);

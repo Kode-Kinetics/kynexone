@@ -25,7 +25,8 @@ public sealed record OfferActor(Guid TenantId, Guid? CompanyId, Guid UserId, str
 public sealed record OfferEmailRequest(long ExpectedVersion, string IdempotencyKey, string Subject, string Message,
     string ReviewedSenderFingerprint, string? ResendReason = null, bool ConfirmResend = false);
 public sealed record OfferMailReadiness(bool Configured, string Mode, string Source, string? FromAddress,
-    string? FromName, bool CanManageSettings, string? BlockedReason, string ConfigurationFingerprint, bool RecipientRestricted);
+    string? FromName, bool CanManageSettings, string? BlockedReason, string ConfigurationFingerprint, bool RecipientRestricted,
+    string? BlockedReasonAr = null);
 [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OfferReconciliationAction>))]
 public enum OfferReconciliationAction { ApplyRetainedRelayEvidence, RecordConfirmedExternalSending, AuthorizeRiskAcknowledgedResend }
 public sealed record OfferDispatchCancelRequest(long ExpectedVersion, string Reason);
