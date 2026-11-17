@@ -559,6 +559,8 @@ builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFor
 // is true (and then only when an import explicitly selects format=wps-returned-file).
 Zayra.Api.Infrastructure.Finance.BankConfirmationParserRegistration.AddBankConfirmationParsers(builder.Services, builder.Configuration);
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.JournalExportService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.IReturnedFileClaim>(sp =>
+    new Zayra.Api.Infrastructure.Finance.ReturnedFileClaim(sp.GetRequiredService<Zayra.Api.Infrastructure.Government.IGovernmentExchangeRecorder>()));
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.BankConfirmationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.PeriodHandoffReconciler>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.OpeningBalanceBackfillService>();

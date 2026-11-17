@@ -97,7 +97,8 @@ public class BankConfirmationsController : ControllerBase
             tid.Value, batchId, fileName!, content!, format, options, this.GetUserId(), UserName(), ct);
         if (refusal is not null) return StatusCode(refusal.Status, refusal.Payload);
 
-        if (!dryRun && !result!.Duplicate) await _db.SaveChangesAsync(ct);
+        // Saved through the service so the returned-file claim lands (or is released when the save fails).
+        if (!dryRun && !result!.Duplicate) await _service.SaveAsync(result, ct);
 
         return Ok(Project(result!));
     }

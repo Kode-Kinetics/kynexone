@@ -2,6 +2,8 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Zayra.Api.Infrastructure.Government;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Zayra.Api.Data;
@@ -25,11 +27,18 @@ public class WpsReturnedFileImportPathTests
     internal static ZayraDbContext NewDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
+    /// <summary>The returned-file claim over the same in-memory store as <paramref name="db"/> (its ledger writes use fresh contexts).</summary>
+    internal static IReturnedFileClaim ClaimFor(ZayraDbContext db)
+    {
+        var options = (DbContextOptions<ZayraDbContext>)db.GetService<IDbContextOptions>();
+        return new ReturnedFileClaim(new GovernmentExchangeRecorder(() => new ZayraDbContext(options)));
+    }
+
     private static BankConfirmationService Service(ZayraDbContext db) =>
         new(db, new IBankConfirmationParser[]
         {
             new GenericCsvBankConfirmationParser(), new WpsAckBankConfirmationParser(), new WpsReturnedFileBankConfirmationParser(statusColumnVerified: true),
-        });
+        }, ClaimFor(db));
 
     internal sealed record Seeded(Guid TenantId, Guid BatchId, IReadOnlyList<SynthRow> Rows, IReadOnlyList<PayrollPaymentRecord> Records, Company Company);
 

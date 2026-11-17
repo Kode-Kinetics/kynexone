@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Government;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Finance;
@@ -126,6 +127,10 @@ public sealed class BankConfirmationImportResult
     /// of <see cref="ReturnedAmountAwaitingGlCorrection"/>.</summary>
     public decimal RejectedAmountNotPaid { get; set; }
 
+    /// <summary>The returned-file claim this import holds, settled by <see cref="BankConfirmationService.SaveAsync"/>. Never serialised.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ReturnedFileClaimTicket? ReturnedFileClaim { get; internal set; }
+
     /// <summary>Of <see cref="RejectedAmountNotPaid"/>: rejections imported AFTER the batch's settlement journal. That journal
     /// credited Cash/Bank for them, so they need the same GL correction as returned money (CTO ruling C1). Reported, never
     /// posted. Zero while the batch is not settled.</summary>
@@ -159,11 +164,44 @@ public sealed class BankConfirmationService
 {
     private readonly ZayraDbContext _db;
     private readonly IReadOnlyList<IBankConfirmationParser> _parsers;
+    private readonly IReturnedFileClaim? _claim;
 
-    public BankConfirmationService(ZayraDbContext db, IEnumerable<IBankConfirmationParser> parsers)
+    /// <param name="claim">Claims a file whose parser names an import key (the bank-returned WPS file) in the government exchange
+    /// ledger before anything is applied. Without it such a file is refused; every other parser never needs it.</param>
+    public BankConfirmationService(ZayraDbContext db, IEnumerable<IBankConfirmationParser> parsers, IReturnedFileClaim? claim = null)
     {
         _db = db;
         _parsers = parsers.ToList();
+        _claim = claim;
+    }
+
+    /// <summary>
+    /// Saves an import and settles its returned-file claim: Recorded when the save succeeds; Failed when it throws, so the same file
+    /// can be imported again (the exception is rethrown). Callers save an import through this, never with a bare SaveChanges.
+    /// </summary>
+    public async Task SaveAsync(BankConfirmationImportResult result, CancellationToken ct)
+    {
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch
+        {
+            if (result.ReturnedFileClaim is { } released && _claim is not null)
+            {
+                // If the release itself fails the claim stays Attempted and is passed over after ReturnedFileClaim.StaleAfter.
+                try { await _claim.SettleAsync(released, saved: false, CancellationToken.None); }
+                catch (Exception releaseError) when (releaseError is GovernmentExchangeConflictException or DbUpdateException or KeyNotFoundException) { }
+            }
+            throw;
+        }
+        if (result.ReturnedFileClaim is { } landed && _claim is not null)
+        {
+            // The import is saved. A ledger failure here leaves the claim Attempted: the file's own confirmations (the hash probe)
+            // still refuse a replay, and nothing is applied twice.
+            try { await _claim.SettleAsync(landed, saved: true, ct); }
+            catch (Exception settleError) when (settleError is GovernmentExchangeConflictException or DbUpdateException or KeyNotFoundException) { }
+        }
     }
 
     public IReadOnlyList<IBankConfirmationParser> Parsers => _parsers;
@@ -373,6 +411,22 @@ public sealed class BankConfirmationService
         var codeById = employeeCodes.ToDictionary(e => e.Id, e => e.EmployeeCode ?? string.Empty);
         var (exitFor, exitRefusal) = ResolveExits(options, records, priorConfirmations, toApply, codeById);
         if (exitRefusal is not null) return (null, exitRefusal);
+
+        // ── 2c. Claim the file before anything is applied (returned-file parser only) ──────────────
+        // The claim is written in the ledger's own unit of work and committed before this import applies anything, so a concurrent
+        // import sees it and exactly one wins (unique ledger key). It is never written inside a caller's open transaction: a rollback
+        // there could erase the claim of an import that another request already lost to, so an open transaction is refused here.
+        if (!options.DryRun && parse.ImportKey is { } importKey)
+        {
+            if (_claim is null)
+                throw new InvalidOperationException("returned_file_claim_missing: this format must claim the file in the exchange ledger before applying it.");
+            if (_db.Database.CurrentTransaction is not null)
+                throw new InvalidOperationException("returned_file_claim_in_transaction: the claim must be committed on its own; import outside a transaction.");
+            var claim = await _claim.ClaimAsync(new ReturnedFileClaimRequest(tenantId, run?.CompanyId, paymentBatchId, importKey, hash, actorId), ct);
+            if (!claim.Claimed)
+                return (null, new JournalExportRefusal(409, new { error = claim.RefusalCode, message = claim.Message }));
+            result.ReturnedFileClaim = new ReturnedFileClaimTicket(tenantId, claim.ClaimId!.Value, actorId);
+        }
 
         // ── 3. Apply ───────────────────────────────────────────────────────────────────────────────
         var nowUtc = DateTime.UtcNow;

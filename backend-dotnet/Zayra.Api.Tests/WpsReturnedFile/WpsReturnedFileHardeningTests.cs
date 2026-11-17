@@ -195,7 +195,7 @@ public class WpsReturnedFileHardeningTests
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
         var services = new ServiceCollection();
         services.AddBankConfirmationParsers(configuration);
-        return new BankConfirmationService(db, services.BuildServiceProvider().GetServices<IBankConfirmationParser>());
+        return new BankConfirmationService(db, services.BuildServiceProvider().GetServices<IBankConfirmationParser>(), ClaimFor(db));
     }
 
     [Fact]

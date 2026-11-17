@@ -3,6 +3,7 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Finance;
+using Zayra.Api.Infrastructure.Government;
 using Zayra.Api.Models;
 using static Zayra.Api.Tests.WpsReturnedFile.WpsReturnedFileImportPathTests;
 
@@ -97,16 +98,17 @@ public sealed class WpsReturnedFileImportPostgresTests(PostgresFixture fixture)
         return company.Id;
     }
 
-    private static BankConfirmationService Service(ZayraDbContext db) =>
-        new(db, new IBankConfirmationParser[] { new WpsReturnedFileBankConfirmationParser(statusColumnVerified: true) });
+    private BankConfirmationService Service(ZayraDbContext db) =>
+        new(db, new IBankConfirmationParser[] { new WpsReturnedFileBankConfirmationParser(statusColumnVerified: true) },
+            new ReturnedFileClaim(new GovernmentExchangeRecorder(fixture.CreateDb)));
 
-    private static async Task<(BankConfirmationImportResult? Result, JournalExportRefusal? Refusal)> ImportAndSave(
-        PostgresFixture fixture, PgSeeded s, string content)
+    private async Task<(BankConfirmationImportResult? Result, JournalExportRefusal? Refusal)> ImportAndSave(PgSeeded s, string content)
     {
         await using var db = fixture.CreateDb();
-        var outcome = await Service(db).ImportAsync(s.TenantId, s.BatchId, "returned.txt", content, "wps-returned-file",
+        var service = Service(db);
+        var outcome = await service.ImportAsync(s.TenantId, s.BatchId, "returned.txt", content, "wps-returned-file",
             new BankConfirmationImportOptions(), Guid.NewGuid(), "Payroll Officer", default);
-        if (outcome.Result is { Duplicate: false }) await db.SaveChangesAsync();
+        if (outcome.Result is { Duplicate: false }) await service.SaveAsync(outcome.Result, default);
         return outcome;
     }
 
@@ -125,17 +127,17 @@ public sealed class WpsReturnedFileImportPostgresTests(PostgresFixture fixture)
         }
 
         // 1. The bank's first file for batch A: still pending. It runs on Postgres and remembers the reference.
-        var (first, firstRefusal) = await ImportAndSave(fixture, a, WpsReturnedFileOracle.Build(a.Rows.Select(r => r with { Status = "PENDING" }).ToList()));
+        var (first, firstRefusal) = await ImportAndSave(a, WpsReturnedFileOracle.Build(a.Rows.Select(r => r with { Status = "PENDING" }).ToList()));
         firstRefusal.Should().BeNull();
         first!.PendingReported.Should().Be(3);
 
         // 2. Its later status file: same reference, same batch, now paid.
-        var (second, secondRefusal) = await ImportAndSave(fixture, a, WpsReturnedFileOracle.Build(a.Rows.Select(r => r with { Status = "PAID" }).ToList()));
+        var (second, secondRefusal) = await ImportAndSave(a, WpsReturnedFileOracle.Build(a.Rows.Select(r => r with { Status = "PAID" }).ToList()));
         secondRefusal.Should().BeNull();
         second!.PaidApplied.Should().Be(3);
 
         // 3. The same reference on another batch of the company: refused, nothing applied.
-        var (third, thirdRefusal) = await ImportAndSave(fixture, b, WpsReturnedFileOracle.Build(b.Rows.Select(r => r with { Status = "PAID" }).ToList()));
+        var (third, thirdRefusal) = await ImportAndSave(b, WpsReturnedFileOracle.Build(b.Rows.Select(r => r with { Status = "PAID" }).ToList()));
         third.Should().BeNull();
         JsonSerializer.Serialize(thirdRefusal!.Payload).Should().Contain("file_ref_already_imported");
 
