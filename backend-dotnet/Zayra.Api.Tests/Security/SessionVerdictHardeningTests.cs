@@ -310,9 +310,10 @@ public sealed class SessionVerdictHardeningTests
         var timeout = new TaskCanceledException("timed out", new TimeoutException());
         var adapter = Adapter(timeout);
 
-        var push = await adapter.PushEmployeeAsync("t", "production", Payload, Guid.NewGuid(), CancellationToken.None);
-        var status = await adapter.GetEmployeeStatusAsync("t", "production", "7-1", "1", CancellationToken.None);
-        var token = await adapter.AcquireAccessTokenAsync("id", "secret", "production", CancellationToken.None);
+        var decision = Zayra.Api.Tests.Government.GovernmentHttpTests.QiwaDecision("production");
+        var push = await adapter.PushEmployeeAsync(decision, "t", Payload, Guid.NewGuid(), CancellationToken.None);
+        var status = await adapter.GetEmployeeStatusAsync(decision, "t", "7-1", "1", CancellationToken.None);
+        var token = await adapter.AcquireAccessTokenAsync(decision, "id", "secret", CancellationToken.None);
 
         push.Success.Should().BeFalse();
         push.ErrorCode.Should().Be("NETWORK_ERROR");
@@ -327,7 +328,7 @@ public sealed class SessionVerdictHardeningTests
         cts.Cancel();
         var adapter = Adapter(new TaskCanceledException("cancelled", null, cts.Token));
 
-        var act = () => adapter.PushEmployeeAsync("t", "production", Payload, Guid.NewGuid(), cts.Token);
+        var act = () => adapter.PushEmployeeAsync(Zayra.Api.Tests.Government.GovernmentHttpTests.QiwaDecision("production"), "t", Payload, Guid.NewGuid(), cts.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
     }

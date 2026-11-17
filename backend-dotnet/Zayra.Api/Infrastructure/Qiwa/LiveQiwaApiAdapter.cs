@@ -11,10 +11,11 @@ namespace Zayra.Api.Infrastructure.Qiwa;
 /// constructed when QIWA_USE_LIVE_ADAPTER=true AND a Qiwa partner agreement is recorded
 /// (see <see cref="QiwaLiveAdapterPolicy"/>); otherwise construction throws.
 ///
-/// <para>Every request goes through <see cref="GovernmentHttp"/>, to the allow-listed host of the tenant's ENVIRONMENT
-/// (security R8). The production host is the one this adapter always used; a sandbox host must be configured by the
-/// operator (<c>Government:Qiwa:BaseUrls:sandbox</c>) and may not be the production host. With none configured a sandbox
-/// call sends nothing. A call that names no environment sends nothing either.</para>
+/// <para>Every request goes through <see cref="GovernmentHttp"/> under a live-write decision the caller got from
+/// <see cref="QiwaLiveAdapterPolicy.DecideLiveWrite"/> for one tenant (agreement, the tenant's consent record, a credential,
+/// the operator switch, and the legal clearance), to the allow-listed host of that decision's ENVIRONMENT (security R8). The
+/// production host is the one this adapter always used; a sandbox host must be configured by the operator
+/// (<c>Government:Qiwa:BaseUrls:sandbox</c>) and may not be the production host. A call without a decision sends nothing.</para>
 ///
 /// OAuth2 (client_credentials): POST {base}/auth/realms/organizations/protocol/openid-connect/token
 /// Employee sync: POST {base}/api/v1/establishments/{establishmentId}/employees
@@ -27,7 +28,6 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
     private const string TokenPath = "/auth/realms/organizations/protocol/openid-connect/token";
 
     private readonly GovernmentHttp _http;
-    private readonly GovernmentLiveDecision _decision;
     private readonly ILogger<LiveQiwaApiAdapter> _log;
 
     public LiveQiwaApiAdapter(IHttpClientFactory httpFactory, ILogger<LiveQiwaApiAdapter> log,
@@ -39,8 +39,6 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
         if (!QiwaLiveAdapterPolicy.HasPartnerAgreement(configuration))
             throw new InvalidOperationException(QiwaLiveAdapterPolicy.RefusedMessage);
         _http = new GovernmentHttp(httpFactory, configuration);
-        // The composition root registers this adapter only once the process switch is on, so the deployment gate is open here.
-        _decision = QiwaLiveAdapterPolicy.DeploymentDecision(liveRequested: true, hasPartnerAgreement: true);
         _log = log;
     }
 
@@ -49,9 +47,17 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
     /// <summary>The one adapter in the system that really talks to Qiwa.</summary>
     public bool IsLiveIntegration => true;
 
-    public async Task<string?> AcquireAccessTokenAsync(string clientId, string clientSecret, string environment, CancellationToken ct)
+    /// <summary>Refused: without a decision for one tenant there is no gate to check, so nothing is sent.</summary>
+    public Task<string?> AcquireAccessTokenAsync(string clientId, string clientSecret, string environment, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        return Task.FromResult<string?>(null);
+    }
+
+    public async Task<string?> AcquireAccessTokenAsync(GovernmentLiveDecision decision, string clientId, string clientSecret, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (decision.Environment is not { } environment) return null;
         if (string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
         {
             _log.LogWarning("Live Qiwa token request skipped — missing client credentials.");
@@ -67,7 +73,7 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
 
         try
         {
-            using var resp = await _http.ExchangeAsync(_decision, environment, HttpMethod.Post, TokenPath, form, null, ct);
+            using var resp = await _http.ExchangeAsync(decision, environment, HttpMethod.Post, TokenPath, form, null, ct);
             var body = await resp.Content.ReadAsStringAsync(ct);
             if (!resp.IsSuccessStatusCode)
             {
@@ -116,22 +122,24 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
         return "unparsed";
     }
 
-    /// <summary>Refused: the caller did not say which environment, so there is no host it may go to.</summary>
+    /// <summary>Refused: without a decision for one tenant and environment there is no gate to check, so nothing is sent.</summary>
     public Task<QiwaApiResult> PushEmployeeAsync(string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         return Task.FromResult(EnvironmentRequired());
     }
 
-    /// <summary>Refused: the caller did not say which environment, so there is no host it may go to.</summary>
+    /// <summary>Refused: without a decision for one tenant and environment there is no gate to check, so nothing is sent.</summary>
     public Task<QiwaApiResult> GetEmployeeStatusAsync(string accessToken, string establishmentId, string employeeIdNumber, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         return Task.FromResult(EnvironmentRequired());
     }
 
-    public async Task<QiwaApiResult> PushEmployeeAsync(string accessToken, string environment, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)
+    public async Task<QiwaApiResult> PushEmployeeAsync(GovernmentLiveDecision decision, string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        if (decision.Environment is not { } environment) return EnvironmentRequired();
         var json = JsonSerializer.Serialize(new
         {
             employee_code      = payload.EmployeeCode,
@@ -146,7 +154,7 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
 
         try
         {
-            using var resp = await _http.ExchangeAsync(_decision, environment, HttpMethod.Post,
+            using var resp = await _http.ExchangeAsync(decision, environment, HttpMethod.Post,
                 $"/api/v1/establishments/{Uri.EscapeDataString(payload.EstablishmentId)}/employees",
                 new StringContent(json, Encoding.UTF8, "application/json"),
                 req =>
@@ -178,11 +186,13 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
         }
     }
 
-    public async Task<QiwaApiResult> GetEmployeeStatusAsync(string accessToken, string environment, string establishmentId, string employeeIdNumber, CancellationToken ct)
+    public async Task<QiwaApiResult> GetEmployeeStatusAsync(GovernmentLiveDecision decision, string accessToken, string establishmentId, string employeeIdNumber, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        if (decision.Environment is not { } environment) return EnvironmentRequired();
         try
         {
-            using var resp = await _http.ExchangeAsync(_decision, environment, HttpMethod.Get,
+            using var resp = await _http.ExchangeAsync(decision, environment, HttpMethod.Get,
                 $"/api/v1/establishments/{Uri.EscapeDataString(establishmentId)}/employees/{Uri.EscapeDataString(employeeIdNumber)}",
                 null, req => req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken), ct);
             var body = await resp.Content.ReadAsStringAsync(ct);
@@ -207,5 +217,5 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
     }
 
     private static QiwaApiResult EnvironmentRequired() => new(false, EnvironmentRequiredCode,
-        "This Qiwa call did not say which environment (sandbox or production) it is for, so nothing was sent.", null);
+        "This Qiwa call carried no live decision for a tenant and environment, so nothing was sent.", null);
 }

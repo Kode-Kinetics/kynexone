@@ -34,13 +34,17 @@ public interface IQiwaApiAdapter : IGovernmentAdapter
     Task<string?> AcquireAccessTokenAsync(string clientId, string clientSecret, string environment, CancellationToken ct);
 
     /// <summary>
-    /// The push for a tenant's configured environment (sandbox | production). The live adapter sends it to that environment's
-    /// allow-listed host only (security R8). Adapters that never leave the process ignore the environment.
+    /// The token grant under a live-write decision from <see cref="QiwaLiveAdapterPolicy"/> (it carries the tenant's environment).
+    /// The live adapter sends only through that decision; adapters that never leave the process ignore it.
     /// </summary>
-    Task<QiwaApiResult> PushEmployeeAsync(string accessToken, string environment, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)
+    Task<string?> AcquireAccessTokenAsync(GovernmentLiveDecision decision, string clientId, string clientSecret, CancellationToken ct)
+        => AcquireAccessTokenAsync(clientId, clientSecret, decision.Environment ?? GovernmentEnvironments.Sandbox, ct);
+
+    /// <summary>The employee push under a live-write decision. See <see cref="AcquireAccessTokenAsync(GovernmentLiveDecision, string, string, CancellationToken)"/>.</summary>
+    Task<QiwaApiResult> PushEmployeeAsync(GovernmentLiveDecision decision, string accessToken, QiwaEmployeePayload payload, Guid idempotencyKey, CancellationToken ct)
         => PushEmployeeAsync(accessToken, payload, idempotencyKey, ct);
 
-    /// <summary>The status lookup for a tenant's configured environment. See <see cref="PushEmployeeAsync(string, string, QiwaEmployeePayload, Guid, CancellationToken)"/>.</summary>
-    Task<QiwaApiResult> GetEmployeeStatusAsync(string accessToken, string environment, string establishmentId, string employeeIdNumber, CancellationToken ct)
+    /// <summary>The status lookup under a decision for the tenant's environment.</summary>
+    Task<QiwaApiResult> GetEmployeeStatusAsync(GovernmentLiveDecision decision, string accessToken, string establishmentId, string employeeIdNumber, CancellationToken ct)
         => GetEmployeeStatusAsync(accessToken, establishmentId, employeeIdNumber, ct);
 }

@@ -47,19 +47,36 @@ public static class QiwaLiveAdapterPolicy
         !string.IsNullOrWhiteSpace(config?[PartnerAgreementKey]);
 
     /// <summary>
-    /// Not asked for: the simulator. Asked for: whatever the government live gate's deployment half says (G1 the recorded
-    /// partner agreement, G4 the operator switch, which for Qiwa is <see cref="LiveSwitchEnvVar"/>).
+    /// Which adapter this process registers. Not asked for: the simulator (today's default, unchanged). Asked for: the live
+    /// adapter only with a recorded partner agreement, else the refusing one. Whether a live call may then be made for a
+    /// tenant is <see cref="DecideLiveWrite"/>.
     /// </summary>
     public static Mode Decide(bool liveRequested, bool hasPartnerAgreement) =>
-        !liveRequested ? Mode.Sandbox : DeploymentDecision(liveRequested, hasPartnerAgreement).IsOpen ? Mode.Live : Mode.RefusedLive;
+        !liveRequested ? Mode.Sandbox : hasPartnerAgreement ? Mode.Live : Mode.RefusedLive;
 
     /// <summary>
-    /// The Qiwa process decision expressed through <see cref="GovernmentLivePolicy"/>. Its tenant half (G2, G3) is not part of
-    /// the process decision: the sync worker checks the tenant's qiwa_integration flag and credential per tenant.
+    /// The real four-part gate for a live Qiwa call for one tenant, plus the legal clearance every live write needs: G1 the
+    /// recorded agreement (<see cref="PartnerAgreementKey"/>), G2 the tenant's consent record (opt-in <c>gov_qiwa_api</c>, same
+    /// rules as every other body), G3 a usable credential, G4 the live switch AND <c>Government:Qiwa:Enabled</c>. Read per call,
+    /// so the operator switch needs no restart.
     /// </summary>
-    public static GovernmentLiveDecision DeploymentDecision(bool liveRequested, bool hasPartnerAgreement) =>
-        GovernmentLivePolicy.Decide(GovernmentBodies.Qiwa,
-            new GovernmentLiveGates(PartnerAgreement: hasPartnerAgreement, TenantConsent: true, Credential: true, OperatorEnabled: liveRequested));
+    public static GovernmentLiveDecision DecideLiveWrite(IConfiguration? config, bool tenantConsent, bool credential, string environment) =>
+        GovernmentLivePolicy.DecideLiveWrite(config, GovernmentBodies.Qiwa,
+            new GovernmentLiveGates(
+                PartnerAgreement: HasPartnerAgreement(config),
+                TenantConsent: tenantConsent,
+                Credential: credential,
+                OperatorEnabled: LiveRequested(config) && GovernmentLivePolicy.OperatorEnabled(config, GovernmentBodies.Qiwa)),
+            environment);
+
+    /// <summary>G2 for Qiwa: the qiwa_integration module is not switched off AND the gov_qiwa_api consent record is on file.</summary>
+    public static async Task<bool> HasTenantConsentAsync(Zayra.Api.Data.ZayraDbContext db, Guid tenantId, CancellationToken ct)
+    {
+        // SYSTEM CONTEXT: callers (the sync worker) run without a request tenant; the TenantId predicate pins the read.
+        var moduleOff = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.AnyAsync(
+            db.TenantFeatureFlags, f => f.TenantId == tenantId && f.FeatureKey == FeatureKeys.QiwaIntegration && !f.IsEnabled, ct);
+        return !moduleOff && await GovernmentOptIn.HasConsentAsync(db, tenantId, GovernmentBodies.Qiwa, ct);
+    }
 
     public static Mode Decide(IConfiguration? config) => Decide(LiveRequested(config), HasPartnerAgreement(config));
 

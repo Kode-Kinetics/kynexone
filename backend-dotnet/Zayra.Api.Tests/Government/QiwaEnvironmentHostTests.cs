@@ -36,7 +36,7 @@ public sealed class QiwaEnvironmentHostTests
             new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
             { [QiwaLiveAdapterPolicy.PartnerAgreementKey] = "synthetic-agreement" }).Build());
 
-        await adapter.AcquireAccessTokenAsync("synthetic-id", "synthetic-credential", "sandbox", CancellationToken.None);
+        await adapter.AcquireAccessTokenAsync(GovernmentHttpTests.QiwaDecision("sandbox"), "synthetic-id", "synthetic-credential", CancellationToken.None);
 
         handler.Uris.Should().NotContain(u => u.Host == "api.qiwa.tech");
         handler.Uris.Should().BeEmpty("no sandbox host is configured, so a sandbox call must send nothing");
