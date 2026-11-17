@@ -46,10 +46,13 @@ public interface IBankConfirmationParser
 /// </summary>
 public static class BankOutcomeVocabulary
 {
+    // Not Paid, deliberately: ISO 20022 ACSP ("AcceptedSettlementInProcess") means settlement has NOT
+    // completed, so it is Pending below. "P", "Y" and "OK" are absent altogether: a one-letter or "OK"
+    // status does not say the money settled, so a file using them must be mapped explicitly.
     private static readonly HashSet<string> PaidTokens = new(StringComparer.OrdinalIgnoreCase)
     {
-        "PAID", "P", "ACSC", "ACSP", "ACCC", "SETTLED", "SETTLE", "SUCCESS", "SUCCESSFUL", "SUCCEEDED",
-        "CREDITED", "CREDIT", "COMPLETED", "COMPLETE", "EXECUTED", "OK", "Y", "YES", "TRANSFERRED",
+        "PAID", "ACSC", "ACCC", "SETTLED", "SETTLE", "SUCCESS", "SUCCESSFUL", "SUCCEEDED",
+        "CREDITED", "CREDIT", "COMPLETED", "COMPLETE", "EXECUTED", "YES", "TRANSFERRED",
     };
 
     private static readonly HashSet<string> ReturnedTokens = new(StringComparer.OrdinalIgnoreCase)
@@ -60,7 +63,7 @@ public static class BankOutcomeVocabulary
 
     private static readonly HashSet<string> PendingTokens = new(StringComparer.OrdinalIgnoreCase)
     {
-        "PDNG", "PENDING", "ACCP", "ACTC", "ACWC", "RCVD", "RECEIVED", "INPROGRESS", "IN_PROGRESS",
+        "PDNG", "PENDING", "ACCP", "ACSP", "ACTC", "ACWC", "RCVD", "RECEIVED", "INPROGRESS", "IN_PROGRESS",
         "PROCESSING", "SUBMITTED", "QUEUED", "AWAITING",
     };
 
