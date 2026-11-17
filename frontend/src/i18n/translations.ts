@@ -37,6 +37,7 @@ import { approvalChanges } from './approvalChanges';
 import { compensation } from './compensation';
 import { learning } from './learning';
 import { succession } from './succession';
+import { appraisalsUi } from './appraisalsUi';
 import { glEosb } from './glEosb';
 import { glLeaveProvision } from './glLeaveProvision';
 import { belowMinimum } from './belowMinimum';
@@ -1717,6 +1718,8 @@ const en: Dict = {
   ...learning.en,
   // SUC — succession and career development (./succession).
   ...succession.en,
+  // Appraisal screens: scorecard picker, own review and appeal, probation, PIP check-ins, 360 (./appraisalsUi).
+  ...appraisalsUi.en,
   // Demo polish B: statuses, offer events and sentences still English under Arabic — see ./polishB.
   ...polishB.en,
   // Status tail: Loans and Compliance screens and raw status words — see ./statusTail.
@@ -3320,6 +3323,7 @@ const ar: Dict = {
   ...learning.ar,
   // SUC — succession and career development (./succession).
   ...succession.ar,
+  ...appraisalsUi.ar,
   ...polishB.ar,
   ...statusTail.ar,
 };
