@@ -380,9 +380,10 @@ public sealed class BankConfirmationService
                         outcome = row.Outcome,
                     });
                 }
-                else if (!string.Equals(StatusFor(row.Outcome), to, StringComparison.Ordinal))
+                else
                 {
-                    // The bank's word is not what the person confirmed: the word is kept as evidence, not applied.
+                    // Always recorded as the person's exit, never as an applied bank line, even when the bank's word happens to
+                    // agree: only these two resolution rows clear a DUPL hold (CTO ruling: "when in doubt, hold").
                     apply = false;
                     hold = options.ConfirmOriginalPaymentReceived
                         ? BankOutcomeHolds.DuplicateOriginalReceivedConfirmed

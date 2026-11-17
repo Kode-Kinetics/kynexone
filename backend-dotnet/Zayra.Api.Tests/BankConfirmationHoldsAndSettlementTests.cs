@@ -529,6 +529,7 @@ public class BankConfirmationHoldsAndSettlementTests
     [InlineData("RJCT", "Pending")]
     [InlineData("FAILED", "Paid")]
     [InlineData("RETURNED", "Returned")]
+    [InlineData("PAID", "Pending")]   // the bank's word agrees with the person: still recorded as the exit
     public async Task Duplicate_ConfirmOriginalPaymentReceived_MakesItPaid_ClearsTheHold(string word, string previous)
     {
         using var db = NewDb();
@@ -570,6 +571,27 @@ public class BankConfirmationHoldsAndSettlementTests
         Json(result.Overrides).Should().Contain("confirm_duplicate_not_paid").And.Contain("\"to\":\"Rejected\"");
         var blockers = Blockers(await Handoff(db, w));
         blockers.Should().NotContain("duplicate_rejection_held").And.Contain("unpaid_rejected_payments");
+    }
+
+    // CTO ruling: "when in doubt, hold". A DUPL hold clears ONLY through its two explicit exits, never through a later
+    // bank line that happens to apply.
+    [Theory]
+    [InlineData("Pending", "PAID")]
+    [InlineData("Pending", "RJCT")]
+    [InlineData("Paid", "RETURNED")]
+    public async Task DuplicateHold_IsNotClearedByALaterAppliedBankLine(string previous, string laterWord)
+    {
+        using var db = NewDb();
+        var w = Seed(db, previous);
+        await Import(db, w, "RJCT", "DUPL");
+
+        var later = await Import(db, w, laterWord);
+
+        db.BankPaymentConfirmations.OrderBy(c => c.ImportedAtUtc).Last().Applied.Should().BeTrue("the later line itself applies");
+        later.HeldForPerson.Should().ContainSingle();
+        Json(later.HeldForPerson).Should().Contain("duplicate_rejection_held");
+        Blockers(await Handoff(db, w)).Should().Contain("duplicate_rejection_held");
+        Json((await History(db, w)).GetProperty("heldForPerson")).Should().Contain("duplicate_rejection_held");
     }
 
     public static readonly TheoryData<string, string?, string?> ExitsMissingReasonOrReference = new()

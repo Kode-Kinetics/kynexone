@@ -11,7 +11,8 @@ public static class BankOutcomeHolds
     public const string PaidThenRejected = "paid_then_rejected_held";
     /// <summary>Returned (money came back) and Rejected (money never left) swapped. Exit: AllowFailedOutcomeChange + reason.</summary>
     public const string FailedOutcomeChanged = "failed_outcome_changed_held";
-    /// <summary>Reason code DUPL, whatever the outcome word: the original payment may well have reached the employee.</summary>
+    /// <summary>Reason code DUPL, whatever the outcome word: the original payment may well have reached the employee. Exits:
+    /// ConfirmOriginalPaymentReceived or ConfirmDuplicateNotPaid, each with a reason and the bank's reference; nothing else.</summary>
     public const string DuplicateRejection = "duplicate_rejection_held";
 
     public static readonly IReadOnlyList<string> ForAPerson = new[] { PaidThenRejected, FailedOutcomeChanged, DuplicateRejection };
@@ -107,9 +108,15 @@ public static class BankOutcomeLedger
     }
 
     /// <summary>
-    /// Holds a person has not resolved. A hold is open while it is the latest word on the record among applied rows and
-    /// person-holds (an informational Pending line resolves nothing). A rejection held after Paid stays open while the record
-    /// is still Paid and no later rejection was applied: a later file that merely says PAID again does not clear it.
+    /// Holds a person has not resolved ("when in doubt, hold").
+    /// <list type="bullet">
+    /// <item>A rejection held after Paid stays open while the record is still Paid and neither allowPaidToRejected nor
+    /// confirmPaidDespiteRejection was used: a later file that merely says PAID again does not clear it.</item>
+    /// <item>A DUPL hold clears ONLY through confirmOriginalPaymentReceived or confirmDuplicateNotPaid, never through a
+    /// later bank line that happens to apply.</item>
+    /// <item>A Returned/Rejected swap hold stays open while it is the latest applied-or-held word on the record (the record
+    /// stays failed and blocks anyway); an informational Pending line resolves nothing.</item>
+    /// </list>
     /// </summary>
     public static IReadOnlyList<UnresolvedBankHold> UnresolvedHolds(
         IEnumerable<PayrollPaymentRecord> records, IEnumerable<BankPaymentConfirmation> confirmations)
@@ -133,8 +140,14 @@ public static class BankOutcomeLedger
                                   && ((c.Applied && c.Outcome == BankConfirmationOutcomes.Rejected)
                                       || c.HoldReason == BankOutcomeHolds.PaidConfirmedDespiteRejection)))
                 hold = paidThenRejected;
-            else if (rows[^1] is { Applied: false } latest && latest.HoldReason != BankOutcomeHolds.PaidThenRejected
-                     && BankOutcomeHolds.ForAPerson.Contains(latest.HoldReason!))
+            else if (rows.LastOrDefault(c => c.HoldReason == BankOutcomeHolds.DuplicateRejection) is { } duplicate
+                     // A DUPL hold clears ONLY through its two explicit exits, never through a later bank line that happens
+                     // to apply (CTO ruling: "when in doubt, hold").
+                     && !rows.Any(c => c.ImportedAtUtc >= duplicate.ImportedAtUtc && c != duplicate
+                                       && (c.HoldReason == BankOutcomeHolds.DuplicateOriginalReceivedConfirmed
+                                           || c.HoldReason == BankOutcomeHolds.DuplicateNotPaidConfirmed)))
+                hold = duplicate;
+            else if (rows[^1] is { Applied: false } latest && latest.HoldReason == BankOutcomeHolds.FailedOutcomeChanged)
                 hold = latest;
             if (hold is not null)
                 open.Add(new UnresolvedBankHold(r.Id, r.EmployeeId, r.Amount, r.Status ?? string.Empty, hold.HoldReason!,
