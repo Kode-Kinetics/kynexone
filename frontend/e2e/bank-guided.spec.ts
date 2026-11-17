@@ -864,6 +864,70 @@ test.describe('mockup-matching screenshots', () => {
     await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'response', { timeout: 90_000 });
     await snap(page, 'mockup-4-waiting-en-1440');
   });
+  // States no screenshot had shown yet (fix batch 2, K).
+  test('k1: step 3 blocked by a tie-out difference', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    // The check answers for this batch's own total (the file would hold 129,338.90, 100.00 short of the run).
+    const short: Handler = (path, _s, method) => (path === `${bp}/batches/${BATCH_ID}/validate` && method === 'POST'
+      ? { canExport: true, errors: [], warnings: [], employeeCount: 9, totalAmount: 129338.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' } : undefined);
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [{ ...B1, totalAmount: 129338.9 }], extra: short }), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-guide-primary')).toBeEnabled({ timeout: 90_000 });
+    await page.getByTestId('bank-guide-primary').click();
+    await expect(page.getByTestId('bank-guide-primary-reason')).toContainText('differs from the approved run');
+    await snap(page, 'k1-step3-blocked-tie-en-1440');
+  });
+  test('k2: step 5 buckets that do not add up to the file', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const off = withStatus(6, 1).map((r, i) => (i === 8 ? { ...r, amount: r.amount - 50 } : r));
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [SUBMITTED], existingExport: FILE, records: off }), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-response-mismatch')).toBeVisible({ timeout: 90_000 });
+    await page.getByTestId('bank-response-tracker').evaluate(el => el.scrollIntoView({ block: 'end' }));
+    await snap(page, 'k2-bucket-mismatch-en-1440');
+  });
+  test('k3: the employees in the file, expanded', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [B1] }), waitMs: 2500, stages: 'default' });
+    const list = page.getByTestId('bank-employees-in-file');
+    await expect(list).toBeVisible({ timeout: 90_000 });
+    await list.locator('summary').click();
+    await list.evaluate(el => el.scrollIntoView({ block: 'end' }));
+    await snap(page, 'k3-employees-in-file-expanded-en-1440');
+  });
+  test('k4: the returned payment with the bank\'s reason', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await boot(page, { locale: 'en', url, routes: bankHandler({ batches: [SUBMITTED], existingExport: FILE, records: SUB_RETURNED }), waitMs: 2500, stages: 'default' });
+    const card = page.getByTestId('bank-returned-lines');
+    await expect(card).toBeVisible({ timeout: 90_000 });
+    await card.evaluate(el => el.scrollIntoView({ block: 'end' }));
+    await snap(page, 'k4-returned-with-reason-en-1440');
+  });
+  test('k5: a fix sent for approval, on its row', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const extra: Handler = (path, _s, method, route) => {
+      if (path === '/api/employees/203' && method === 'GET') return { id: 203, employeeCode: 'EVT2-0004', fullName: 'Nora Alharbi', wpsBankDetails: '' };
+      if (path === '/api/employees/203' && method === 'PUT') { void route.fulfill({ status: 202, json: { approvalRequestId: 'abcdef1234' } }); return HANDLED; }
+      return undefined;
+    };
+    await boot(page, { locale: 'en', url, routes: bankHandler({ validation: BLOCKER, extra }), waitMs: 2500, stages: 'default' });
+    await expect(page.getByTestId('bank-guide-primary')).toBeEnabled({ timeout: 90_000 });
+    await page.getByTestId('bank-guide-primary').click();
+    await page.getByTestId('bank-blocker-fix').click();
+    const drawer = page.getByRole('dialog');
+    for (const [i, v] of ['ARNBSARI', 'Riyadh', 'Olaya', 'Building 10'].entries()) await drawer.locator('input[dir="ltr"]').nth(i).fill(v);
+    await drawer.locator('form button[type="submit"]').click();
+    await expect(drawer).toContainText('Submitted for separate approval', { timeout: 15_000 });
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('bank-fix-pending')).toBeVisible();
+    await snap(page, 'k5-fix-sent-for-approval-en-1440');
+  });
+  for (const [w, h] of [[1366, 768], [390, 844]] as const) {
+    test(`k6: Arabic run bar and step 2 at ${w}`, async ({ page }) => {
+      await page.setViewportSize({ width: w, height: h });
+      await boot(page, { locale: 'ar', url, routes: bankHandler({ batches: [B1] }), waitMs: 2500, stages: 'default' });
+      await expect(page.getByTestId('bank-guide')).toHaveAttribute('data-stage', 'check', { timeout: 90_000 });
+      await snap(page, `k6-runbar-step2-ar-${w}`);
+    });
+  }
   for (const tab of ['runs', 'validation', 'approvals']) {
     for (const [locale, w, h] of [['en', 1440, 900], ['ar', 1440, 900], ['en', 390, 844]] as const) {
       test(`shell: ${tab} (${locale} ${w})`, async ({ page }) => {
