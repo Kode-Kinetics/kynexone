@@ -114,6 +114,40 @@ public class AnbValueDateTests
         }
     }
 
+    // Package F5 (officer wording only): the refusal says what to choose, and the Arabic travels with the English.
+    [Fact]
+    public void TheWeekendRefusal_TellsTheOfficerWhichDayToChoose_InBothLanguages()
+    {
+        var error = Generate(new DateOnly(2026, 11, 20)).Errors.Single(e => e.Code == AnbConnectCsvGenerator.ValueDateWeekend);
+
+        error.Message.Should().Be("The credit value date 2026-11-20 falls on the Saudi bank weekend (Friday or Saturday). Choose a working day, Sunday to Thursday. "
+            + "If the salary is due on a weekend or holiday, choose the last working day before it so the salary is not paid late.");
+        error.MessageAr.Should().Contain("2026-11-20").And.Contain("اختر يوم عمل من الأحد إلى الخميس").And.Contain("حتى لا يتأخر دفع الراتب");
+    }
+
+    [Fact]
+    public void EveryValueDateIssue_CarriesItsArabicText_NextToTheEnglish()
+    {
+        var past = Generate(new DateOnly(2026, 11, 16));
+        var weekend = Generate(new DateOnly(2026, 11, 21));
+        var holiday = Generate(new DateOnly(2026, 11, 26), new FixedCalendar(SaudiBankHolidayAnswer.BankHoliday));
+        var warned = Generate(new DateOnly(2026, 11, 26));
+
+        foreach (var issue in past.Errors.Concat(weekend.Errors).Concat(holiday.Errors))
+            issue.MessageAr.Should().MatchRegex("[\u0600-\u06FF]", issue.Code);
+        foreach (var warning in warned.Warnings.Where(w => w.Code == AnbConnectCsvGenerator.ValueDateCheckBankHolidays))
+            warning.MessageAr.Should().MatchRegex("[\u0600-\u06FF]", warning.Code);
+        past.Errors.Single(e => e.Code == AnbConnectCsvGenerator.ValueDateInPast).MessageAr.Should().Contain("2026-11-16").And.Contain("2026-11-17");
+    }
+
+    [Fact]
+    public void TheHolidayWarningArabic_SaysTheCalendarIsNotSetUp_NotThatItWasNotCounted()
+    {
+        var text = AnbConnectCsvGenerator.ValueDateTexts[AnbConnectCsvGenerator.ValueDateCheckBankHolidays];
+
+        text.Arabic.Should().Contain("لم يُضبط تقويم لعطل البنوك السعودية").And.NotContain("لم يُعدّ");
+    }
+
     [Fact]
     public void WithoutRules_TheGeneratorRefusesToRun()
     {

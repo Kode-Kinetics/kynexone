@@ -122,13 +122,13 @@ public static class AnbConnectCsvGenerator
     /// <summary>Warning: no bank-holiday calendar source exists yet, so a person must check the date.</summary>
     public const string ValueDateCheckBankHolidays = "value_date_check_bank_holidays";
 
-    /// <summary>Plain English and Arabic for the value-date codes. The English is the message sent today; the Arabic is
-    /// here for the screen to show by code. {0} is the value date, {1} today's Riyadh date (both yyyy-MM-dd).</summary>
+    /// <summary>Plain English and Arabic for the value-date codes. Both are sent with every issue (message and messageAr).
+    /// {0} is the value date, {1} today's Riyadh date (both yyyy-MM-dd).</summary>
     public static readonly IReadOnlyDictionary<string, BankText> ValueDateTexts = new Dictionary<string, BankText>(StringComparer.Ordinal)
     {
         [ValueDateWeekend] = new(
-            "The credit value date {0} falls on the Saudi bank weekend (Friday or Saturday). Choose a working day, Sunday to Thursday.",
-            "تاريخ قيمة الإيداع {0} يقع في عطلة نهاية الأسبوع لدى البنوك السعودية (الجمعة أو السبت). اختر يوم عمل من الأحد إلى الخميس."),
+            "The credit value date {0} falls on the Saudi bank weekend (Friday or Saturday). Choose a working day, Sunday to Thursday. If the salary is due on a weekend or holiday, choose the last working day before it so the salary is not paid late.",
+            "تاريخ قيمة الإيداع {0} يقع في عطلة نهاية الأسبوع لدى البنوك السعودية (الجمعة أو السبت). اختر يوم عمل من الأحد إلى الخميس. وإذا كان الراتب مستحقًا في عطلة أسبوعية أو رسمية فاختر آخر يوم عمل قبله حتى لا يتأخر دفع الراتب."),
         [ValueDateInPast] = new(
             "The credit value date {0} is before today ({1}, Riyadh time). Choose today or a later working day.",
             "تاريخ قيمة الإيداع {0} سابق لتاريخ اليوم ({1} بتوقيت الرياض). اختر تاريخ اليوم أو يوم عمل لاحقًا."),
@@ -137,7 +137,7 @@ public static class AnbConnectCsvGenerator
             "تاريخ قيمة الإيداع {0} يوافق عطلة رسمية لدى البنوك السعودية. اختر يوم عمل."),
         [ValueDateCheckBankHolidays] = new(
             "Check bank holidays: no Saudi bank holiday calendar is set up, so the credit value date was not checked against bank holidays. Confirm with your bank that it is a banking day.",
-            "تحقّق من العطل الرسمية: لم يُعدّ تقويم لعطل البنوك السعودية، لذلك لم يُتحقّق من تاريخ قيمة الإيداع مقابل العطل. تأكّد من البنك أنه يوم عمل مصرفي."),
+            "تحقّق من العطل الرسمية: لم يُضبط تقويم لعطل البنوك السعودية، لذلك لم يُتحقّق من تاريخ قيمة الإيداع مقابل العطل. تأكّد من البنك أنه يوم عمل مصرفي."),
     };
 
     public const int MaxPaymentCount = 999_999;
@@ -221,14 +221,16 @@ public static class AnbConnectCsvGenerator
     private static void CheckValueDate(DateOnly date, AnbValueDateRules rules, List<SaudiBankExportIssueDto> errors,
         List<SaudiBankExportWarningDto> warnings)
     {
-        string Text(string code) => string.Format(CultureInfo.InvariantCulture, ValueDateTexts[code].English,
+        string Text(string code, bool arabic) => string.Format(CultureInfo.InvariantCulture,
+            arabic ? ValueDateTexts[code].Arabic : ValueDateTexts[code].English,
             date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             rules.TodayInRiyadh.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+        SaudiBankExportIssueDto Issue(string code) => new(code, Text(code, false), null, "paymentDate", Text(code, true));
 
         if (date < rules.TodayInRiyadh)
-            errors.Add(new(ValueDateInPast, Text(ValueDateInPast), null, "paymentDate"));
+            errors.Add(Issue(ValueDateInPast));
         if (date.DayOfWeek is DayOfWeek.Friday or DayOfWeek.Saturday)
-            errors.Add(new(ValueDateWeekend, Text(ValueDateWeekend), null, "paymentDate"));
+            errors.Add(Issue(ValueDateWeekend));
 
         // Fail closed: only a calendar that positively says "banking day" removes the warning.
         switch (rules.Holidays.Check(date))
@@ -236,10 +238,10 @@ public static class AnbConnectCsvGenerator
             case SaudiBankHolidayAnswer.BankingDay:
                 break;
             case SaudiBankHolidayAnswer.BankHoliday:
-                errors.Add(new(ValueDateBankHoliday, Text(ValueDateBankHoliday), null, "paymentDate"));
+                errors.Add(Issue(ValueDateBankHoliday));
                 break;
             default:
-                warnings.Add(new(ValueDateCheckBankHolidays, Text(ValueDateCheckBankHolidays)));
+                warnings.Add(new(ValueDateCheckBankHolidays, Text(ValueDateCheckBankHolidays, false), Text(ValueDateCheckBankHolidays, true)));
                 break;
         }
     }
