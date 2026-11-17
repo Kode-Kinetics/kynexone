@@ -592,13 +592,12 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.FieldEncryption.DataProtecti
 // recorded (Qiwa:PartnerAgreementReference). The switch alone registers the refusing adapter: no
 // network call, 501 on every Qiwa write, never "Filed with Qiwa". See QiwaLiveAdapterPolicy.
 builder.Services.AddSingleton<QiwaOAuthTokenCache>();
-// One named client per government or bank body, used only through GovernmentHttp, which picks the base URL from the
-// per-environment allow-list (no BaseAddress here, so nothing can fall back to the production host: security R8).
-// RemoveAllLoggers: the Qiwa status lookup puts the employee's national ID / iqama number in the URL path, and
-// IHttpClientFactory's default handler logs every request URI at Information. Failures are logged by the adapter.
-foreach (var governmentBody in Zayra.Api.Infrastructure.Government.GovernmentBodies.All)
-    builder.Services.AddHttpClient(Zayra.Api.Infrastructure.Government.GovernmentHttp.ClientName(governmentBody))
-        .ConfigureHttpClient(c => c.Timeout = Zayra.Api.Infrastructure.Government.GovernmentHttp.DefaultTimeout).RemoveAllLoggers();
+// One guarded named client per government or bank body, used only through GovernmentHttp, which picks the base URL from the
+// per-environment allow-list (no BaseAddress, so nothing can fall back to the production host: security R8). The primary
+// handler never follows a redirect, uses no proxy or cookies and refuses internal addresses at connect time. RemoveAllLoggers:
+// the Qiwa status lookup puts the employee's national ID / iqama number in the URL path, and IHttpClientFactory's default
+// handler logs every request URI at Information. Failures are logged by the adapter.
+Zayra.Api.Infrastructure.Government.GovernmentHttp.AddGovernmentHttpClients(builder.Services);
 switch (QiwaLiveAdapterPolicy.Decide(builder.Configuration))
 {
     case QiwaLiveAdapterPolicy.Mode.Live:
@@ -617,7 +616,8 @@ builder.Services.AddHostedService<QiwaSyncWorker>();
 
 // Government and bank integration foundation: all OFF. The live gate (GovernmentLivePolicy) needs a recorded agreement per
 // body, the tenant's consent opt-in, a stored credential and the operator switch; the credential store refuses everything
-// until field encryption is on with a configured KEK. Muqeem, GOSI and Takamol have placeholder providers only.
+// until field encryption is on with a configured KEK, and production credentials until Government:Credentials:AcceptLiveCredentials
+// is true. Muqeem, GOSI and Takamol have placeholder providers only.
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.DisabledMuqeemProvider>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.DisabledGosiProvider>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.DisabledTakamolProvider>();
@@ -628,7 +628,10 @@ builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.IGovernmentPro
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.IGovernmentProvider>(sp => sp.GetRequiredService<Zayra.Api.Infrastructure.Government.DisabledGosiProvider>());
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.IGovernmentProvider>(sp => sp.GetRequiredService<Zayra.Api.Infrastructure.Government.DisabledTakamolProvider>());
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Government.Credentials.GovernmentCredentialStore>();
-builder.Services.AddScoped<Zayra.Api.Infrastructure.Government.IGovernmentExchangeRecorder, Zayra.Api.Infrastructure.Government.GovernmentExchangeRecorder>();
+// The ledger writes in its own unit of work (a child scope); inside the request's open transaction, under a savepoint.
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Government.IGovernmentExchangeRecorder>(sp =>
+    new Zayra.Api.Infrastructure.Government.GovernmentExchangeRecorder(sp.GetRequiredService<IServiceScopeFactory>(),
+        sp.GetRequiredService<Zayra.Api.Data.ZayraDbContext>(), sp.GetRequiredService<IAuditService>()));
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Government.GovernmentCapabilitiesService>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Operations.WorkerHeartbeatReporter>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Reports.ReportScheduleWorker>();

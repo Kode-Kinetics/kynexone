@@ -94,9 +94,11 @@ public class SensitiveValueInMessagesTests
     {
         // GET /establishments/{id}/employees/{nationalIdOrIqama}: IHttpClientFactory's default logging handler
         // writes that URI to the app log at Information. The named client must opt out. Every government body's client
-        // (Qiwa included) is registered in one loop, and that registration opts out of request logging.
+        // (Qiwa included) is registered by GovernmentHttp.AddGovernmentHttpClients, which opts out of request logging.
         var program = File.ReadAllText(Path.Combine(SourceScan.ResolveApiRoot(), "Program.cs"));
-        program.Should().MatchRegex(@"foreach \(var governmentBody in Zayra\.Api\.Infrastructure\.Government\.GovernmentBodies\.All\)\s*builder\.Services\.AddHttpClient\(Zayra\.Api\.Infrastructure\.Government\.GovernmentHttp\.ClientName\(governmentBody\)\)[^;]*\.RemoveAllLoggers\(\)\s*;");
+        program.Should().Contain("Zayra.Api.Infrastructure.Government.GovernmentHttp.AddGovernmentHttpClients(builder.Services);");
+        var registration = File.ReadAllText(Path.Combine(SourceScan.ResolveApiRoot(), "Infrastructure", "Government", "GovernmentHttp.cs"));
+        registration.Should().MatchRegex(@"services\.AddHttpClient\(ClientName\(body\)\)\s*\.ConfigurePrimaryHttpMessageHandler\(CreateHandler\)[\s\S]*?\.RemoveAllLoggers\(\)\s*;");
         Zayra.Api.Infrastructure.Government.GovernmentBodies.All.Should().Contain(Zayra.Api.Infrastructure.Government.GovernmentBodies.Qiwa);
     }
 

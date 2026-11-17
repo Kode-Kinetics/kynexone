@@ -22,11 +22,28 @@ public sealed partial class GovernmentRatchetTests
     private static IEnumerable<(string Relative, string Code)> Source() =>
         SourceScan.Files(SourceScan.ResolveApiRoot(), "*.cs").Where(f => !f.Relative.StartsWith("Migrations/", StringComparison.Ordinal));
 
-    /// <summary>The folders whose code talks, or will talk, to a government or bank body.</summary>
-    private static bool IsGovernmentFolder(string relative) =>
-        relative.StartsWith("Infrastructure/Government/", StringComparison.Ordinal)
-        || relative.StartsWith("Infrastructure/Qiwa/", StringComparison.Ordinal)
-        || relative.StartsWith("Infrastructure/Jawazat/", StringComparison.Ordinal);
+    /// <summary>
+    /// The folders whose code talks, or will talk, to a government or bank body: the government and Qiwa/Jawazat folders, and the
+    /// bank API client and channel folders (<c>Infrastructure/Payroll/SaudiBankExports/Api</c> and <c>.../Channels</c>), which do not
+    /// exist on this branch yet: the classifier names them so the bank client is caught the day it merges.
+    /// </summary>
+    internal static readonly string[] GovernmentFolders =
+    [
+        "Infrastructure/Government/", "Infrastructure/Qiwa/", "Infrastructure/Jawazat/",
+        "Infrastructure/Payroll/SaudiBankExports/Api/", "Infrastructure/Payroll/SaudiBankExports/Channels/",
+    ];
+
+    internal static bool IsGovernmentFolder(string relative) =>
+        GovernmentFolders.Any(folder => relative.StartsWith(folder, StringComparison.Ordinal));
+
+    [Theory]
+    [InlineData("Infrastructure/Payroll/SaudiBankExports/Api/AnbPayrollApiClient.cs", true)]
+    [InlineData("Infrastructure/Payroll/SaudiBankExports/Channels/BankPayrollChannel.cs", true)]
+    [InlineData("Infrastructure/Government/Credentials/GovernmentCredentialStore.cs", true)]
+    [InlineData("Infrastructure/Qiwa/LiveQiwaApiAdapter.cs", true)]
+    [InlineData("Infrastructure/Payroll/SaudiBankExports/SaudiBankExportService.cs", false)]
+    public void TheGovernmentFolders_IncludeTheBankClientFolders(string relative, bool expected) =>
+        IsGovernmentFolder(relative).Should().Be(expected);
 
     private const string GovernmentHttpFile = "Infrastructure/Government/GovernmentHttp.cs";
 
@@ -72,17 +89,40 @@ public sealed partial class GovernmentRatchetTests
         offenders.Should().BeEmpty("a request to a government or bank body goes through GovernmentHttp.ExchangeAsync: allow-listed "
             + "base URL per environment, the live gate first, one send, no retry.\n  " + string.Join("\n  ", offenders));
         allowedSeen.Should().BeEquivalentTo(HostMentionsAllowed.Keys, "an allowance for a file that no longer needs it must be removed");
+        // The bank client as it is written on its own branch would be caught here at integration.
+        var sibling = "var client = new HttpClient(handler); using var resp = await client.SendAsync(req, ct);";
+        (IsGovernmentFolder("Infrastructure/Payroll/SaudiBankExports/Api/AnbPayrollApiClient.cs") && RawHttpCall().IsMatch(sibling)).Should().BeTrue();
+        // And the registration uses the guarded handler.
+        Source().Single(f => f.Relative == GovernmentHttpFile).Code.Should().Contain(".ConfigurePrimaryHttpMessageHandler(CreateHandler)");
         RawHttpCall().IsMatch("var c = _factory.CreateClient(\"qiwa\"); await c.PostAsync(path, form, ct);").Should().BeTrue();
         RawHttpCall().IsMatch("await store.IsUsableAsync(t, null, body, env, ct);").Should().BeFalse();
     }
 
     // ── (b) no "synced", "connected" or "accepted" outside a live path ───────────────────────────────
 
-    [GeneratedRegex(@"(?:(?<![=!<>])=(?!=)|\?)\s*(?<state>QiwaSyncStatuses\.Synced|QiwaSyncLogStatuses\.Success|QiwaConnectionStatuses\.Connected|GovernmentExchangeStates\.(?:Accepted|Validated|InProgress|Completed))\b")]
+    [GeneratedRegex(@"(?:(?<![=!<>])=(?!=)|\?|:)\s*(?<state>QiwaSyncStatuses\.Synced|QiwaSyncLogStatuses\.Success|QiwaConnectionStatuses\.Connected|GovernmentExchangeStates\.(?:Accepted|Initiated|Validated|InProgress|Completed|Rejected))\b")]
     private static partial Regex LiveClaimWrite();
 
-    [GeneratedRegex(@"\blive\b|IsLiveIntegration|\bIsLive\b")]
-    private static partial Regex LiveCondition();
+    /// <summary>
+    /// A claim is guarded only when it is the TRUE branch of a ternary whose condition is the adapter's live flag
+    /// (<c>x.IsLiveIntegration</c>, <c>IsLive</c>) or a local assigned from it in the same file. The word "live" nearby is not a
+    /// guard (comments are stripped before this runs, and a string or an unrelated name proves nothing).
+    /// </summary>
+    internal static List<string> UnguardedLiveClaims(string code)
+    {
+        var liveLocals = Regex.Matches(code, @"\bvar\s+(?<name>\w+)\s*=\s*[\w.?]*\b(?:IsLiveIntegration|IsLive)\b\s*;")
+            .Select(m => m.Groups["name"].Value).ToHashSet(StringComparer.Ordinal);
+        var offences = new List<string>();
+        foreach (Match m in LiveClaimWrite().Matches(code))
+        {
+            var before = code[..m.Groups["state"].Index].TrimEnd();
+            var condition = Regex.Match(before, @"(?<cond>[\w.?!]+)\s*\?$");
+            var guarded = before.EndsWith('?') && condition.Success
+                && (Regex.IsMatch(condition.Groups["cond"].Value, @"\b(?:IsLiveIntegration|IsLive)$") || liveLocals.Contains(condition.Groups["cond"].Value));
+            if (!guarded) offences.Add($"{SourceScan.LineOf(code, m.Index)}: {m.Groups["state"].Value}");
+        }
+        return offences;
+    }
 
     [Fact]
     public void B_NothingClaimsSyncedOrAccepted_OutsideALivePath()
@@ -90,19 +130,26 @@ public sealed partial class GovernmentRatchetTests
         var offenders = new List<string>();
         var guarded = 0;
         foreach (var (relative, code) in Source())
-            foreach (Match m in LiveClaimWrite().Matches(code))
-            {
-                var window = code[Math.Max(0, m.Index - 160)..m.Index];
-                if (LiveCondition().IsMatch(window)) { guarded++; continue; }
-                offenders.Add($"{relative}:{SourceScan.LineOf(code, m.Index)}: {m.Groups["state"].Value}");
-            }
+        {
+            if (relative is "Infrastructure/Government/GovernmentExchangeRecorder.cs") continue; // writes only what the caller asked, under RequireHonestState
+            var claims = LiveClaimWrite().Matches(code).Count;
+            var unguarded = UnguardedLiveClaims(code);
+            guarded += claims - unguarded.Count;
+            offenders.AddRange(unguarded.Select(o => $"{relative}:{o}"));
+        }
 
         guarded.Should().BeGreaterThan(0, "the Qiwa worker's live-only writes must be seen, or this guard is inert");
-        offenders.Should().BeEmpty("only a live adapter may make a synced, connected or accepted claim; write it under a condition on "
-            + "the adapter's IsLiveIntegration (or record the attempt through GovernmentExchangeRecorder, which enforces it).\n  "
+        offenders.Should().BeEmpty("only a live adapter may make a synced, connected or accepted claim; write it as the true branch of a "
+            + "condition on the adapter's IsLiveIntegration (or record the attempt through GovernmentExchangeRecorder, which enforces it).\n  "
             + string.Join("\n  ", offenders));
-        LiveClaimWrite().IsMatch("employee.QiwaSyncStatus = QiwaSyncStatuses.Synced;").Should().BeTrue();
-        LiveClaimWrite().IsMatch("if (x.Status == QiwaSyncLogStatuses.Success)").Should().BeFalse();
+
+        UnguardedLiveClaims("var live = _adapter.IsLiveIntegration; employee.QiwaSyncStatus = live ? QiwaSyncStatuses.Synced : QiwaSyncStatuses.Simulated;")
+            .Should().BeEmpty();
+        UnguardedLiveClaims("var deliver = true; /* live */ employee.QiwaSyncStatus = deliver ? QiwaSyncStatuses.Synced : QiwaSyncStatuses.Simulated;")
+            .Should().ContainSingle("a condition that is not the live flag is no guard");
+        UnguardedLiveClaims("var label = \"live\"; employee.QiwaSyncStatus = QiwaSyncStatuses.Synced;").Should().ContainSingle();
+        UnguardedLiveClaims("log.Status = live ? QiwaSyncLogStatuses.Simulated : QiwaSyncLogStatuses.Success;").Should().ContainSingle("the FALSE branch is not live");
+        UnguardedLiveClaims("if (x.Status == QiwaSyncLogStatuses.Success) {}").Should().BeEmpty();
     }
 
     // ── (c) no response type exposes a secret ──────────────────────────────────────────────────────────
@@ -130,6 +177,13 @@ public sealed partial class GovernmentRatchetTests
 
         var controllers = Source().Where(f => f.Relative.StartsWith("Controllers/", StringComparison.Ordinal)).ToList();
         controllers.Should().HaveCountGreaterThan(50);
+        // A request that carries a secret prints none of it (a logged action argument cannot leak it).
+        var secretRequests = Api.GetTypes().Where(t => t.Name.StartsWith("Government", StringComparison.Ordinal) && t.Name.EndsWith("Request", StringComparison.Ordinal)
+            && t.GetProperties().Any(p => SecretShapedName().IsMatch(p.Name))).ToList();
+        secretRequests.Should().Contain(typeof(Zayra.Api.Controllers.GovernmentCredentialSaveRequest));
+        foreach (var type in secretRequests)
+            type.GetMethod(nameof(ToString), Type.EmptyTypes)!.DeclaringType.Should().Be(type, $"{type.Name} must override ToString to withhold its secret");
+
         controllers.Where(f => f.Code.Contains("UnsealedGovernmentCredential", StringComparison.Ordinal) || f.Code.Contains(".Ciphertext", StringComparison.Ordinal)
                 || Regex.IsMatch(f.Code, @"\bOpenAsync\s*\(") && f.Code.Contains("GovernmentCredentialStore", StringComparison.Ordinal))
             .Select(f => f.Relative).Should().BeEmpty("no controller may open a government credential or touch its ciphertext");
@@ -137,7 +191,7 @@ public sealed partial class GovernmentRatchetTests
 
     // ── (d) the ledger is written only by the recorder, and only with a staged audit ──────────────────
 
-    [GeneratedRegex(@"GovernmentExchanges\s*\.\s*(?:Add|AddRange|Update|UpdateRange|Remove|RemoveRange|Attach|ExecuteUpdate\w*|ExecuteDelete\w*)\b|Set\s*<\s*GovernmentExchange\s*>|government_exchanges")]
+    [GeneratedRegex(@"GovernmentExchanges\s*\.\s*(?:Add|AddRange|Update|UpdateRange|Remove|RemoveRange|Attach|ExecuteUpdate\w*|ExecuteDelete\w*)\b|Set\s*<\s*GovernmentExchange\s*>|government_exchanges|new\s+GovernmentExchange\s*[({]|\.(?:Add|AddAsync|AddRange|Update|Attach|Remove|Entry)\s*\(\s*(?:\(\s*GovernmentExchange\s*\)|\w*[Ee]xchange\w*\s*[),])")]
     private static partial Regex LedgerWrite();
 
     [Fact]
@@ -149,6 +203,10 @@ public sealed partial class GovernmentRatchetTests
             .SelectMany(f => LedgerWrite().Matches(f.Code).Select(m => $"{f.Relative}:{SourceScan.LineOf(f.Code, m.Index)}: {m.Value}"))
             .ToList();
         offenders.Should().BeEmpty("government_exchanges is written only through IGovernmentExchangeRecorder.\n  " + string.Join("\n  ", offenders));
+        foreach (var sample in new[] { "db.Add(new GovernmentExchange { State = x });", "db.Update(exchange);", "db.Entry(exchange).State = EntityState.Modified;",
+                     "db.Set<GovernmentExchange>().Add(row);", "db.GovernmentExchanges.ExecuteUpdateAsync(s => s);" })
+            LedgerWrite().IsMatch(sample).Should().BeTrue(sample);
+        LedgerWrite().IsMatch("var rows = await db.GovernmentExchanges.AsNoTracking().ToListAsync(ct);").Should().BeFalse();
 
         var code = Source().Single(f => f.Relative == recorder).Code;
         LedgerWrite().IsMatch(code).Should().BeTrue("the recorder is the writer");
@@ -188,7 +246,8 @@ public sealed partial class GovernmentRatchetTests
     public void E_GovernmentLogCalls_CarryNoPersonalDataSecretOrPayload()
     {
         var offenders = Source()
-            .Where(f => f.Relative.StartsWith("Infrastructure/Government/", StringComparison.Ordinal))
+            .Where(f => IsGovernmentFolder(f.Relative) && !f.Relative.StartsWith("Infrastructure/Qiwa/", StringComparison.Ordinal)
+                && !f.Relative.StartsWith("Infrastructure/Jawazat/", StringComparison.Ordinal))
             .SelectMany(f => GovernmentLogOffences(f.Code).Select(o => $"{f.Relative}:{o}"))
             .ToList();
         offenders.Should().BeEmpty("log the exchange id, body and status code only; an exception message or payload can carry an IBAN or ID.\n  "
@@ -265,5 +324,46 @@ public sealed partial class GovernmentRatchetTests
         holders.Should().BeEmpty("no built-in role is given government credentials; the tenant decides who, deliberately");
         AuthSeeder.AdminWithheldPermissions.Should().Contain(key);
         PrivilegedMfaPolicy.PrivilegedPermissions.Should().Contain(key);
+    }
+
+    // ── (i) decisions are made only by the policy; every write goes through the write-checked path ─────────
+
+    [GeneratedRegex(@"new\s+GovernmentLiveDecision\s*\(")]
+    private static partial Regex DecisionConstruction();
+
+    [GeneratedRegex(@"HttpMethod\.(?:Post|Put|Delete|Patch)\b|new\s+HttpMethod\s*\(")]
+    private static partial Regex WriteMethod();
+
+    /// <summary>Write-method uses that are not an argument of an <c>ExchangeAsync(</c> call (GovernmentHttp refuses those without a write decision).</summary>
+    internal static List<string> WritesOutsideTheCheckedPath(string code)
+    {
+        var offences = new List<string>();
+        foreach (Match m in WriteMethod().Matches(code))
+        {
+            var start = Math.Max(0, m.Index - 400);
+            var window = code[start..m.Index];
+            var call = window.LastIndexOf("ExchangeAsync(", StringComparison.Ordinal);
+            if (call < 0 || window[call..].Contains(';')) offences.Add($"{SourceScan.LineOf(code, m.Index)}: {m.Value}");
+        }
+        return offences;
+    }
+
+    [Fact]
+    public void I_OnlyThePolicyMakesDecisions_AndEveryGovernmentWriteGoesThroughTheWriteCheck()
+    {
+        var made = Source().Where(f => f.Relative != "Infrastructure/Government/GovernmentLivePolicy.cs")
+            .SelectMany(f => DecisionConstruction().Matches(f.Code).Select(m => $"{f.Relative}:{SourceScan.LineOf(f.Code, m.Index)}")).ToList();
+        made.Should().BeEmpty("a GovernmentLiveDecision is made only by GovernmentLivePolicy (its constructor is internal for that reason)");
+
+        var writes = Source().Where(f => IsGovernmentFolder(f.Relative) && f.Relative != GovernmentHttpFile)
+            .SelectMany(f => WritesOutsideTheCheckedPath(f.Code).Select(o => $"{f.Relative}:{o}")).ToList();
+        writes.Should().BeEmpty("every POST, PUT, PATCH or DELETE to a body goes through GovernmentHttp.ExchangeAsync, which refuses it without "
+            + "a live-write decision (four gates plus the legal clearance).\n  " + string.Join("\n  ", writes));
+        var http = Source().Single(f => f.Relative == GovernmentHttpFile).Code;
+        http.Should().Contain("!IsRead(method) && !decision.AllowsWrites", "the transport itself refuses a write without the write grade");
+
+        WritesOutsideTheCheckedPath("using var resp = await _http.ExchangeAsync(decision, env, HttpMethod.Post, \"/x\", body, null, ct);").Should().BeEmpty();
+        WritesOutsideTheCheckedPath("var req = new HttpRequestMessage(HttpMethod.Post, uri); await client.SendAsync(req);").Should().ContainSingle();
+        WritesOutsideTheCheckedPath("await _http.ExchangeAsync(d, e, HttpMethod.Get, \"/x\", null, null, ct); var m = HttpMethod.Delete;").Should().ContainSingle();
     }
 }

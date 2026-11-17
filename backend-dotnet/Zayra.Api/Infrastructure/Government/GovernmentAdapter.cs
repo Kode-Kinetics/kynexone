@@ -16,14 +16,20 @@ public static class GovernmentBodies
 
     public static bool IsKnown(string? body) => body is not null && All.Contains(body, StringComparer.Ordinal);
 
-    /// <summary>The configuration section name of a body (<c>Government:Gosi:...</c>).</summary>
+    /// <summary>True for a bank (its configuration lives under <c>Government:Banks:{BankId}</c>).</summary>
+    public static bool IsBank(string body) => body.StartsWith("bank_", StringComparison.Ordinal);
+
+    /// <summary>
+    /// The configuration section of a body: <c>Government:Gosi:...</c> for a government body, and ONE tree for every bank,
+    /// <c>Government:Banks:{BankId}:...</c> (<c>Government:Banks:Anb</c>), which the bank clients read too.
+    /// </summary>
     public static string Section(string body) => body switch
     {
         Qiwa => "Qiwa",
         Gosi => "Gosi",
         Muqeem => "Muqeem",
         Takamol => "Takamol",
-        BankAnb => "BankAnb",
+        BankAnb => "Banks:Anb",
         _ => throw new ArgumentOutOfRangeException(nameof(body), body, "Unknown government body."),
     };
 }

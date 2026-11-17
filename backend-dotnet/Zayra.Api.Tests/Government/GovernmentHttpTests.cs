@@ -16,6 +16,9 @@ public sealed class GovernmentHttpTests
 {
     private const string QiwaProductionHost = "api.qiwa.tech";
     private static readonly GovernmentLiveDecision Open = GovernmentLivePolicy.Decide(GovernmentBodies.Gosi, new GovernmentLiveGates(true, true, true, true));
+    private static readonly GovernmentLiveDecision OpenWrite = GovernmentLivePolicy.DecideLiveWrite(
+        Config((GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Gosi), "LEGAL-SYNTHETIC-1")), GovernmentBodies.Gosi,
+        new GovernmentLiveGates(true, true, true, true), "sandbox");
 
     [Fact]
     public void BaseUrl_ComesFromTheAllowList_PerEnvironment_AndAnUnlistedEnvironmentIsRefused()
@@ -73,7 +76,7 @@ public sealed class GovernmentHttpTests
         var factory = new SingleHandlerFactory(handler);
         var http = new GovernmentHttp(factory, Config((GovernmentHttp.BaseUrlKey(GovernmentBodies.Gosi, "sandbox"), "https://gosi-sandbox.example.test")));
 
-        using var response = await http.ExchangeAsync(Open, "sandbox", HttpMethod.Post, "/submit", new StringContent("{}"), null, default);
+        using var response = await http.ExchangeAsync(OpenWrite, "sandbox", HttpMethod.Post, "/submit", new StringContent("{}"), null, default);
 
         response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
         handler.Calls.Should().Be(1);
@@ -104,6 +107,12 @@ public sealed class GovernmentHttpTests
         new(new SingleHandlerFactory(handler, new Uri("https://" + QiwaProductionHost)), NullLogger<LiveQiwaApiAdapter>.Instance,
             Config([(QiwaLiveAdapterPolicy.PartnerAgreementKey, "synthetic-agreement"), .. extra]));
 
+    /// <summary>An open live-write decision for one tenant's Qiwa environment (agreement, switch, clearance, consent, credential).</summary>
+    internal static GovernmentLiveDecision QiwaDecision(string environment) => QiwaLiveAdapterPolicy.DecideLiveWrite(
+        Config((QiwaLiveAdapterPolicy.PartnerAgreementKey, "synthetic-agreement"), (QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true"),
+            (GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Qiwa), "LEGAL-SYNTHETIC-1")),
+        tenantConsent: true, credential: true, environment);
+
     private static readonly QiwaEmployeePayload Payload = new("E", "1", "NationalId", "SA", "Saudi", "1", "7-1", "W", "C");
 
     [Fact]
@@ -112,9 +121,9 @@ public sealed class GovernmentHttpTests
         var handler = new CountingHandler();
         var adapter = QiwaAdapter(handler);
 
-        var token = await adapter.AcquireAccessTokenAsync("synthetic-id", "synthetic-credential", "sandbox", default);
-        var push = await adapter.PushEmployeeAsync("synthetic-token", "sandbox", Payload, Guid.NewGuid(), default);
-        var status = await adapter.GetEmployeeStatusAsync("synthetic-token", "sandbox", "7-1", "1", default);
+        var token = await adapter.AcquireAccessTokenAsync(QiwaDecision("sandbox"), "synthetic-id", "synthetic-credential", default);
+        var push = await adapter.PushEmployeeAsync(QiwaDecision("sandbox"), "synthetic-token", Payload, Guid.NewGuid(), default);
+        var status = await adapter.GetEmployeeStatusAsync(QiwaDecision("sandbox"), "synthetic-token", "7-1", "1", default);
 
         token.Should().BeNull();
         push.Success.Should().BeFalse();
@@ -129,7 +138,7 @@ public sealed class GovernmentHttpTests
         var handler = new CountingHandler();
         var adapter = QiwaAdapter(handler, (GovernmentHttp.BaseUrlKey(GovernmentBodies.Qiwa, "sandbox"), "https://qiwa-sandbox.example.test"));
 
-        await adapter.PushEmployeeAsync("synthetic-token", "sandbox", Payload, Guid.NewGuid(), default);
+        await adapter.PushEmployeeAsync(QiwaDecision("sandbox"), "synthetic-token", Payload, Guid.NewGuid(), default);
 
         handler.Uris.Should().ContainSingle().Which.Host.Should().Be("qiwa-sandbox.example.test");
     }
@@ -140,13 +149,13 @@ public sealed class GovernmentHttpTests
         var handler = new CountingHandler();
         var adapter = QiwaAdapter(handler);
 
-        await adapter.PushEmployeeAsync("synthetic-token", "production", Payload, Guid.NewGuid(), default);
+        await adapter.PushEmployeeAsync(QiwaDecision("production"), "synthetic-token", Payload, Guid.NewGuid(), default);
 
         handler.Uris.Should().ContainSingle().Which.Should().Be(new Uri("https://api.qiwa.tech/api/v1/establishments/7-1/employees"));
     }
 
     [Fact]
-    public async Task Qiwa_ACallWithoutAnEnvironment_SendsNothing()
+    public async Task Qiwa_ACallWithoutADecision_SendsNothing()
     {
         var handler = new CountingHandler();
         var adapter = QiwaAdapter(handler);
@@ -156,6 +165,11 @@ public sealed class GovernmentHttpTests
 
         push.ErrorCode.Should().Be(LiveQiwaApiAdapter.EnvironmentRequiredCode);
         status.ErrorCode.Should().Be(LiveQiwaApiAdapter.EnvironmentRequiredCode);
+        (await adapter.AcquireAccessTokenAsync("synthetic-id", "synthetic-credential", "production", default)).Should().BeNull();
+        // A closed decision (no consent) sends nothing either, even to the production host.
+        var closed = QiwaLiveAdapterPolicy.DecideLiveWrite(Config((QiwaLiveAdapterPolicy.PartnerAgreementKey, "a"), (QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true")),
+            tenantConsent: false, credential: true, "production");
+        (await adapter.PushEmployeeAsync(closed, "synthetic-token", Payload, Guid.NewGuid(), default)).Success.Should().BeFalse();
         handler.Calls.Should().Be(0);
     }
 }
