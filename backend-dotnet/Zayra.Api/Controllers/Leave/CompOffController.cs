@@ -5,6 +5,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Leave;
@@ -93,22 +94,30 @@ public class CompOffController : ControllerBase
         if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId.Value, this.GetUserId(), req.EmployeeId, ct))
             return BadRequest(SubjectDecisionBar.Refusal("You cannot create a comp-off credit for yourself. Ask HR or your manager to record it."));
 
-        var credit = new CompOffCredit
+        // One outcome per piece of work: a day already on a live overtime request is paid (or payable) in cash, so it cannot
+        // also earn a day off here. Checked and inserted under the employee's overtime-entry lock, the same lock the overtime
+        // doors hold, so an overtime request and a credit for the same day cannot both slip in.
+        return await OvertimeEntryGuard.RunAsync(_db, tenantId.Value, new[] { req.EmployeeId }, async () =>
         {
-            TenantId = tenantId.Value,
-            EmployeeId = req.EmployeeId,
-            EmployeeName = employee.FullName,
-            WorkedDate = req.WorkedDate,
-            WorkType = workType,
-            HoursWorked = req.HoursWorked,
-            DaysEarned = req.DaysEarned,
-            ExpiryDate = req.ExpiryDate,
-            Status = "Pending"
-        };
+            if (await OvertimeEntryGuard.OvertimeRecordedOnAsync(_db, tenantId.Value, req.EmployeeId, req.WorkedDate, ct))
+                return (IActionResult)Conflict(OvertimeEntryGuard.CompOffRefusal());
+            var credit = new CompOffCredit
+            {
+                TenantId = tenantId.Value,
+                EmployeeId = req.EmployeeId,
+                EmployeeName = employee.FullName,
+                WorkedDate = req.WorkedDate,
+                WorkType = workType,
+                HoursWorked = req.HoursWorked,
+                DaysEarned = req.DaysEarned,
+                ExpiryDate = req.ExpiryDate,
+                Status = "Pending"
+            };
 
-        _db.CompOffCredits.Add(credit);
-        await _db.SaveChangesAsync(ct);
-        return Created($"/api/leave/compoff/{credit.Id}", credit);
+            _db.CompOffCredits.Add(credit);
+            await _db.SaveChangesAsync(ct);
+            return Created($"/api/leave/compoff/{credit.Id}", credit);
+        }, ct);
     }
 
     [HttpPost("{id:guid}/approve")]
@@ -128,6 +137,12 @@ public class CompOffController : ControllerBase
             return BadRequest(new { message = "Only pending comp-off requests can be approved." });
         if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId.Value, this.GetUserId(), credit.EmployeeId, ct))
             return BadRequest(SubjectDecisionBar.Refusal("You cannot approve your own comp-off credit. Another approver must decide it."));
+        // A credit the Overtime module minted by converting a request is that request's one outcome. Any other credit (the
+        // rest-day credit attendance raises, one keyed by hand) for a day already on a live overtime request would be a day
+        // off on top of the cash.
+        if (credit.OvertimeCompOffConversionId is null
+            && await OvertimeEntryGuard.OvertimeRecordedOnAsync(_db, tenantId.Value, credit.EmployeeId, credit.WorkedDate, ct))
+            return Conflict(OvertimeEntryGuard.CompOffRefusal());
 
         credit.Status = "Approved";
         credit.ManagerApprovalNotes = req.Notes ?? string.Empty;

@@ -5,16 +5,20 @@ namespace Zayra.Api.Infrastructure.Payroll;
 
 /// <summary>
 /// ONE rule for every door that records worked overtime against an employee: the manual request (web, Self-Service and
-/// mobile all post to it) and detect-from-attendance. The same hours may be recorded once.
+/// mobile all post to it), detect-from-attendance, and the leave module's manual comp-off credit. The same hours may be
+/// recorded once, and they have one outcome: cash through payroll OR a compensatory day, never both.
 ///
 /// <para>The doors used to check different things. The manual door refused a window overlapping a live request; the
 /// attendance door only skipped a day that already had an ATTENDANCE-sourced request, so hours keyed by hand and then
-/// detected from the punches became two requests that could both be approved and paid.</para>
+/// detected from the punches became two requests that could both be approved and paid. The comp-off door checked
+/// nothing, so a credit for a day already paid as overtime was a day off on top of the cash.</para>
 ///
 /// <para><b>What conflicts.</b> A live overtime request (any status other than <see cref="ClosedRequestStatuses"/>, so
 /// pending, approved, paid or converted) of the same employee whose time window overlaps; or, on the same work date,
 /// any live request when either side came from attendance, because an attendance-detected request stands for the day's
-/// whole measured overtime, not just the window it is stamped with.</para>
+/// whole measured overtime, not just the window it is stamped with. A live comp-off credit for the same worked date that
+/// is not itself the product of an overtime conversion (the rest-day credit attendance raises, or one keyed by hand)
+/// also conflicts: that day is already compensated in time off.</para>
 ///
 /// <para><b>Atomicity.</b> The check and the insert run inside one transaction holding
 /// <c>pg_advisory_xact_lock(overtime-entry:{tenant}:{employee})</c>. Two doors racing for the same employee serialise;
@@ -28,11 +32,14 @@ public static class OvertimeEntryGuard
     /// <summary>Overtime request statuses that no longer stand for payable or approvable work.</summary>
     public static readonly string[] ClosedRequestStatuses = { "Rejected", "Cancelled", "Withdrawn" };
 
+    /// <summary>Comp-off credit statuses that no longer stand for a day off owed or taken.</summary>
+    public static readonly string[] ClosedCreditStatuses = { "Cancelled", "Rejected" };
+
     public const string AttendanceSource = "Attendance";
 
     public static string LockKey(Guid tenantId, int employeeId) => $"overtime-entry:{tenantId:N}:{employeeId}";
 
-    public enum ConflictKind { None, OvertimeRequest }
+    public enum ConflictKind { None, OvertimeRequest, CompOffCredit }
 
     /// <summary>
     /// Whether recording these hours would record work that is already recorded (see the class remarks).
@@ -46,15 +53,40 @@ public static class OvertimeEntryGuard
             x.TenantId == tenantId && x.EmployeeId == employeeId && !ClosedRequestStatuses.Contains(x.Status)
             && ((startUtc < x.EndTimeUtc && endUtc > x.StartTimeUtc)
                 || (x.WorkDate == workDate && (wholeDay || x.Source == AttendanceSource))), ct);
-        return requestConflict ? ConflictKind.OvertimeRequest : ConflictKind.None;
+        if (requestConflict) return ConflictKind.OvertimeRequest;
+        var creditConflict = await db.CompOffCredits.AsNoTracking().AnyAsync(x =>
+            x.TenantId == tenantId && x.EmployeeId == employeeId && x.WorkedDate == workDate
+            && x.OvertimeCompOffConversionId == null && !ClosedCreditStatuses.Contains(x.Status), ct);
+        return creditConflict ? ConflictKind.CompOffCredit : ConflictKind.None;
     }
 
+    /// <summary>The comp-off door's side of the rule: a live overtime request already records work on that date.</summary>
+    public static Task<bool> OvertimeRecordedOnAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly workDate, CancellationToken ct) =>
+        db.OvertimeRequests.AsNoTracking().AnyAsync(x =>
+            x.TenantId == tenantId && x.EmployeeId == employeeId && x.WorkDate == workDate
+            && !ClosedRequestStatuses.Contains(x.Status), ct);
+
     /// <summary>The refusal every overtime door returns for a conflict, in English and Arabic.</summary>
-    public static object Refusal(ConflictKind kind) => new
+    public static object Refusal(ConflictKind kind) => kind == ConflictKind.CompOffCredit
+        ? new
+        {
+            code = "overtime_day_already_compensated",
+            message = "This work date already has a compensatory day off recorded for this employee. The same work cannot also be paid as overtime.",
+            messageAr = "يوجد بالفعل يوم تعويضي مسجل لهذا الموظف عن تاريخ العمل هذا. لا يمكن صرف العمل نفسه كعمل إضافي أيضا.",
+        }
+        : new
+        {
+            code = "overtime_overlaps_existing",
+            message = "This overtime request overlaps an existing request.",
+            messageAr = "طلب العمل الإضافي هذا يتداخل مع طلب قائم.",
+        };
+
+    /// <summary>The comp-off door's refusal when overtime is already recorded for the date.</summary>
+    public static object CompOffRefusal() => new
     {
-        code = "overtime_overlaps_existing",
-        message = "This overtime request overlaps an existing request.",
-        messageAr = "طلب العمل الإضافي هذا يتداخل مع طلب قائم.",
+        code = "overtime_already_recorded_for_date",
+        message = "Overtime is already recorded for this employee on this work date. Convert that overtime to comp-off from the Overtime module instead, so the same work is never both paid and given as time off.",
+        messageAr = "يوجد عمل إضافي مسجل لهذا الموظف في تاريخ العمل هذا. حوّل ذلك العمل الإضافي إلى يوم تعويضي من وحدة العمل الإضافي بدلا من ذلك، حتى لا يُصرف العمل نفسه نقدا ويُمنح إجازة معا.",
     };
 
     /// <summary>
