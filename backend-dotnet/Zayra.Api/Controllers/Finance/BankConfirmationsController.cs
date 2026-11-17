@@ -133,7 +133,9 @@ public class BankConfirmationsController : ControllerBase
             // A batch whose WPS status reads Paid/Reconciled while money came back or is unaccounted for.
             presentsCleanButIsNot = batch.WpsStatus is WpsStatuses.Paid or WpsStatuses.Reconciled
                                     && (coverage.FailedCount > 0 || coverage.UnconfirmedCount > 0),
-            returnedAmountAwaitingGlCorrection = coverage.FailedTotal,
+            // Only money that left and came back. A rejection never left, so it is reported on its own.
+            returnedAmountAwaitingGlCorrection = coverage.ReturnedTotal,
+            rejectedAmountNotPaid = coverage.RejectedTotal,
             imports = confirmations.GroupBy(c => c.ImportBatchId).Select(g => new
             {
                 importBatchId = g.Key,
@@ -219,7 +221,8 @@ public class BankConfirmationsController : ControllerBase
     {
         r.ImportBatchId, r.PaymentBatchId, r.SourceFileName, r.SourceFileHash, r.ParserKey,
         r.Duplicate, r.DryRun, r.RowsParsed,
-        applied = new { paid = r.PaidApplied, returned = r.ReturnedApplied, unchanged = r.Unchanged },
+        applied = new { paid = r.PaidApplied, returned = r.ReturnedApplied, rejected = r.RejectedApplied, unchanged = r.Unchanged },
+        settledByBank = r.SettledByBank,
         pendingReported = r.PendingReported,
         collapsedDuplicateRows = r.CollapsedDuplicateRows,
         r.ParseErrors,
@@ -231,6 +234,8 @@ public class BankConfirmationsController : ControllerBase
         lateReturns = r.LateReturns,
         skippedCancelled = r.SkippedCancelled,
         returns = r.Returns,
+        // The bank refused these lines: "Not paid: rejected by bank". Never part of the returns or the GL correction.
+        rejections = r.Rejections,
         // Records the file did not mention. This is what stops the batch reading "fully paid".
         unconfirmed = r.Unconfirmed,
         r.Coverage,
@@ -241,6 +246,12 @@ public class BankConfirmationsController : ControllerBase
             note = "REPORTED, NOT POSTED. This pod never writes a GL entry: the B1 net settlement credited "
                  + "Cash/Bank for the whole batch, so the ledger overstates cash outflow by this amount until "
                  + "the correction is posted into the return's period.",
+        },
+        rejectedAmountNotPaid = new
+        {
+            amount = r.RejectedAmountNotPaid,
+            note = "Not paid: the bank rejected these lines, so no money left for them and they are not part of the GL "
+                 + "correction above. The salaries are still owed.",
         },
     };
 

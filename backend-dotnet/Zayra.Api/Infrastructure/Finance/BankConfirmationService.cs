@@ -62,6 +62,12 @@ public sealed class BankConfirmationImportResult
     public int AcceptedCreditNotConfirmed { get; set; }
     public int Unchanged { get; set; }
     public int CollapsedDuplicateRows { get; set; }
+    /// <summary>Records moved to Rejected: the bank refused the instruction, so the money never left.</summary>
+    public int RejectedApplied { get; set; }
+    /// <summary>Of the applied Paid lines: those the bank gave as ISO ACSC/ACCC ("Settled by bank").</summary>
+    public int SettledByBank { get; set; }
+    /// <summary>Records the bank rejected ("Not paid: rejected by bank"). Listed apart from <see cref="Returns"/>.</summary>
+    public List<object> Rejections { get; } = new();
 
     public BatchPaymentCoverage Coverage { get; set; } =
         new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
@@ -69,6 +75,10 @@ public sealed class BankConfirmationImportResult
     /// <summary>The money the GL still shows as having left the bank but which the bank returned.
     /// A REPORT, never a posting — see BankConfirmationService's GL seam note.</summary>
     public decimal ReturnedAmountAwaitingGlCorrection { get; set; }
+
+    /// <summary>Money the bank refused to send. Still owed to the employees, but no cash left for it, so it is NOT part
+    /// of <see cref="ReturnedAmountAwaitingGlCorrection"/>.</summary>
+    public decimal RejectedAmountNotPaid { get; set; }
 }
 
 /// <summary>
@@ -182,7 +192,8 @@ public sealed class BankConfirmationService
                     RowsParsed = prior.Count(p => p.PaymentBatchId == paymentBatchId),
                     Coverage = Coverage(rows),
                 };
-                already.ReturnedAmountAwaitingGlCorrection = already.Coverage.FailedTotal;
+                already.ReturnedAmountAwaitingGlCorrection = already.Coverage.ReturnedTotal;
+                already.RejectedAmountNotPaid = already.Coverage.RejectedTotal;
                 return (already, null);
             }
             if (!options.AllowCrossBatchReimport)
@@ -332,13 +343,45 @@ public sealed class BankConfirmationService
             else if (PaymentRecordStatuses.IsFailed(previous) && row.Outcome == BankConfirmationOutcomes.Paid
                      && !options.AllowReturnReversal)
             {
+                // The same rule for Rejected as for Returned: Paid after either needs an explicit, reasoned reversal.
                 apply = false;
                 hold = "return_reversal_refused";
                 result.Refused.Add(new
                 {
                     paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
                     from = previous, to = row.Outcome, reason = "return_reversal_not_permitted",
-                    message = "Re-marking a returned payment as paid requires allowReturnReversal=true and a reason.",
+                    message = "Re-marking a returned or rejected payment as paid requires allowReturnReversal=true and a reason.",
+                });
+            }
+            else if (string.Equals(previous, PaymentRecordStatuses.Paid, StringComparison.OrdinalIgnoreCase)
+                     && row.Outcome == BankConfirmationOutcomes.Rejected)
+            {
+                // The bank already said Paid and now says it refused the instruction. Applying it would hide money the
+                // ledger shows as sent (a rejection is never in the returned-money GL correction); ignoring it could
+                // hide an unpaid salary. A contradiction: held for a person.
+                apply = false;
+                hold = "paid_then_rejected_held";
+                result.Refused.Add(new
+                {
+                    paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
+                    from = previous, to = row.Outcome, reason = hold,
+                    message = "The bank confirmed this payment as paid and now reports it rejected. Nothing was changed: "
+                            + "check with the bank whether the money left, then record what it confirms.",
+                });
+            }
+            else if (PaymentRecordStatuses.IsFailed(previous) && row.Outcome is BankConfirmationOutcomes.Returned or BankConfirmationOutcomes.Rejected
+                     && !string.Equals(previous, row.Outcome, StringComparison.OrdinalIgnoreCase))
+            {
+                // Returned (money came back) and Rejected (money never left) differ in what the GL must correct. A file
+                // that swaps one for the other is held for a person, never applied silently.
+                apply = false;
+                hold = "failed_outcome_changed_held";
+                result.Refused.Add(new
+                {
+                    paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
+                    from = previous, to = row.Outcome, reason = hold,
+                    message = "The bank earlier reported this payment as " + previous + " and now as " + row.Outcome
+                            + ". Nothing was changed: check with the bank which is right.",
                 });
             }
 
@@ -354,15 +397,23 @@ public sealed class BankConfirmationService
                 });
             }
 
-            var target = row.Outcome == BankConfirmationOutcomes.Paid
-                ? PaymentRecordStatuses.Paid
-                : PaymentRecordStatuses.Returned;
+            // Each terminal outcome sets its own payment status; a rejection is never written as Returned.
+            var target = row.Outcome switch
+            {
+                BankConfirmationOutcomes.Paid => PaymentRecordStatuses.Paid,
+                BankConfirmationOutcomes.Returned => PaymentRecordStatuses.Returned,
+                BankConfirmationOutcomes.Rejected => PaymentRecordStatuses.Rejected,
+                _ => null,
+            };
 
-            if (apply)
+            if (apply && target is not null)
             {
                 if (string.Equals(previous, target, StringComparison.OrdinalIgnoreCase)) result.Unchanged++;
                 else if (target == PaymentRecordStatuses.Paid) result.PaidApplied++;
+                else if (target == PaymentRecordStatuses.Rejected) result.RejectedApplied++;
                 else result.ReturnedApplied++;
+                if (target == PaymentRecordStatuses.Paid && row.OutcomeReason == BankOutcomeReasons.SettledByBank)
+                    result.SettledByBank++;
 
                 if (!options.DryRun) record.Status = target;
             }
@@ -405,22 +456,13 @@ public sealed class BankConfirmationService
             result.Unconfirmed.Add(new { paymentRecordId = r.Id, employeeId = r.EmployeeId, amount = r.Amount, status = r.Status });
 
         result.Coverage = Coverage(records);
-        result.ReturnedAmountAwaitingGlCorrection = result.Coverage.FailedTotal;
-        foreach (var r in records.Where(r => PaymentRecordStatuses.IsFailed(r.Status)))
-        {
-            var latest = !options.DryRun
-                ? _db.ChangeTracker.Entries<BankPaymentConfirmation>()
-                     .Select(e => e.Entity)
-                     .Where(c => c.PaymentRecordId == r.Id && c.Outcome == BankConfirmationOutcomes.Returned)
-                     .OrderByDescending(c => c.ImportedAtUtc).FirstOrDefault()
-                : null;
-            result.Returns.Add(new
-            {
-                paymentRecordId = r.Id, employeeId = r.EmployeeId, amount = r.Amount, status = r.Status,
-                reasonCode = latest?.ReasonCode, reasonText = latest?.ReasonText,
-                bankReference = latest?.BankReference, valueDate = latest?.ValueDate,
-            });
-        }
+        // Only money that LEFT and came back awaits a GL correction. A rejection never left: it is reported apart.
+        result.ReturnedAmountAwaitingGlCorrection = result.Coverage.ReturnedTotal;
+        result.RejectedAmountNotPaid = result.Coverage.RejectedTotal;
+        foreach (var r in records.Where(r => string.Equals(r.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase)))
+            result.Returns.Add(FailedLine(r, BankConfirmationOutcomes.Returned, BankOutcomeLabels.ReturnedMoneyCameBack, options.DryRun));
+        foreach (var r in records.Where(r => string.Equals(r.Status, PaymentRecordStatuses.Rejected, StringComparison.OrdinalIgnoreCase)))
+            result.Rejections.Add(FailedLine(r, BankConfirmationOutcomes.Rejected, BankOutcomeLabels.NotPaidRejectedByBank, options.DryRun));
 
         if (!options.DryRun)
             _db.PayrollAuditLogs.Add(new PayrollAuditLog
@@ -442,7 +484,9 @@ public sealed class BankConfirmationService
                         parser = parser.Key,
                         rowsParsed = result.RowsParsed,
                         paid = result.PaidApplied,
+                        settledByBank = result.SettledByBank,
                         returned = result.ReturnedApplied,
+                        rejected = result.RejectedApplied,
                         pending = result.PendingReported,
                         acceptedCreditNotConfirmed = result.AcceptedCreditNotConfirmed,
                         unmatched = result.Unmatched.Count,
@@ -459,6 +503,27 @@ public sealed class BankConfirmationService
             });
 
         return (result, null);
+    }
+
+    /// <summary>One returned or rejected record, with the bank's latest word on it from this import, its label and the
+    /// plain EN/AR text for the bank's reason code (<see cref="BankStatusReasonCatalogue"/>).</summary>
+    private object FailedLine(PayrollPaymentRecord r, string outcome, BankText label, bool dryRun)
+    {
+        var latest = !dryRun
+            ? _db.ChangeTracker.Entries<BankPaymentConfirmation>()
+                 .Select(e => e.Entity)
+                 .Where(c => c.PaymentRecordId == r.Id && c.Outcome == outcome)
+                 .OrderByDescending(c => c.ImportedAtUtc).FirstOrDefault()
+            : null;
+        var reason = BankStatusReasonCatalogue.Describe(latest?.ReasonCode);
+        return new
+        {
+            paymentRecordId = r.Id, employeeId = r.EmployeeId, amount = r.Amount, status = r.Status,
+            label = new { en = label.English, ar = label.Arabic },
+            reasonCode = latest?.ReasonCode, reasonText = latest?.ReasonText,
+            reasonDescription = new { en = reason.English, ar = reason.Arabic, known = reason.IsKnown },
+            bankReference = latest?.BankReference, valueDate = latest?.ValueDate,
+        };
     }
 
     /// <summary>The audit metadata, plus the accepted file's remembered key when its parser supplied one. Unchanged otherwise.</summary>
