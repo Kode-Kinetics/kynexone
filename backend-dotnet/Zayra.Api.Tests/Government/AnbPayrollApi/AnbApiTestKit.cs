@@ -61,6 +61,9 @@ internal static class AnbApiTestKit
 
     // ── Synthetic batch through the REAL generator, at real size ─────────────────────────────────
 
+    /// <summary>"Today" in Riyadh for the generator's value-date checks; the synthetic value date is the Thursday after.</summary>
+    public static readonly DateOnly Today = new(2026, 11, 17);
+
     public sealed record Batch(BankArtifactFile Header, BankArtifactFile Body, IReadOnlyList<AnbPaymentInput> Rows,
         IReadOnlyList<BankSubmittedLine> Submitted, decimal Total);
 
@@ -98,9 +101,9 @@ internal static class AnbApiTestKit
         }
         var total = rows.Sum(r => r.SalaryAmount);
         var header = new AnbHeaderInput("2026111601", "PAYROLL", "7001234567", "0108061198800026",
-            new DateOnly(2026, 11, 27), "Test Establishment Co", "Riyadh", "Olaya", "KSA", "Payroll Nov 2026",
+            new DateOnly(2026, 11, 26), "Test Establishment Co", "Riyadh", "Olaya", "KSA", "Payroll Nov 2026",
             "Test Establishment", autoWps, autoWps ? "7001234567" : null);
-        var gen = AnbConnectCsvGenerator.Generate(header, rows, total);
+        var gen = AnbConnectCsvGenerator.Generate(header, rows, total, AnbValueDateRules.WithoutHolidayCalendar(Today));
         if (!gen.Ok) throw new InvalidOperationException("synthetic batch invalid: " + string.Join(";", gen.Errors.Select(e => e.Code)));
         var h = gen.Files![0];
         var b = gen.Files![1];
