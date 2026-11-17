@@ -143,6 +143,14 @@ const runCard = (page: Page, period: string): Locator =>
 const approvalCard = (page: Page): Locator =>
   content(page).locator('div.surface').filter({ hasText: /^Payroll Run —/ }).first();
 
+/**
+ * A Bank/WPS-tab payment batch card. The run is created for the whole group (no company chosen), so its batch is not a
+ * Saudi company's and the tab shows the batch list, its records and "Generate WPS/SIF" (the guided bank-file flow is for
+ * a batch whose run belongs to a Saudi company; the API's isSaudi). Steps 6a/1 still see the guided step 1 (no batch yet).
+ */
+const batchCard = (page: Page, number: string): Locator =>
+  content(page).locator('[role="button"]').filter({ hasText: number }).first();
+
 test.describe('Payroll — run to WPS file', () => {
   test('run → maker approval → finance approval → lock → payslips → payment batch → WPS/SIF', async ({
     browser,
@@ -581,21 +589,19 @@ test.describe('Payroll — run to WPS file', () => {
         ).toBeCloseTo(netTotal, 2);
         expect(batch.currency, 'the batch must be denominated in the tenant currency').toBe(currency);
 
-        // IntelliFlow's company is Saudi, so the batch opens in the guided bank-file flow: its facts strip names the batch and
-        // the amount, and the run bar says no bank file exists yet (the batch is a Draft).
-        const facts = content(admin).getByTestId('bank-file-facts');
-        await expect(facts, 'the new batch must open in the Bank / WPS flow').toContainText(batchNumber, { timeout: 30_000 });
-        await expect(content(admin).getByTestId('bank-guide-chip'), 'a new batch has no bank file yet').toHaveAttribute('data-chip', /^(no_file|setup|attention)$/);
+        const card = batchCard(admin, batchNumber);
+        await expect(card, 'the new batch must render in the Payment Batches list').toBeVisible({
+          timeout: 30_000,
+        });
+        await expect(card).toContainText('Draft');
         await expect(
-          facts,
-          "the batch must show the run's net-pay total as the amount to disburse",
+          card,
+          "the batch card must show the run's net-pay total as the amount to disburse",
         ).toContainText(`${currency} ${netRendered}`);
 
         // The per-employee payment records are what the bank is actually asked to pay. They must
-        // reconcile to the same net total, one line per employee. (More › Payment records opens them.)
-        await content(admin).getByTestId('bank-more').click();
-        await admin.getByRole('menuitem', { name: 'Payment records' }).click();
-        const recordRows = admin.getByTestId('bank-records-scroll').locator('tbody tr');
+        // reconcile to the same net total, one line per employee.
+        const recordRows = content(admin).locator('table tbody tr');
         await expect(recordRows.first()).toBeVisible({ timeout: 30_000 });
         await expect(
           recordRows,
@@ -621,13 +627,13 @@ test.describe('Payroll — run to WPS file', () => {
         //
         // Asserting the UI path rather than an API call with the acknowledgement flag is the point:
         // this is the button a payroll officer actually presses.
-        // A Saudi batch's screen is the guided bank-file flow, which no longer offers this wage-file (register) button; the
-        // file is made through the same endpoint the button called, with the admin's own session. What this step exists
-        // for, the file total against the run's net pay, is unchanged.
-        const adminToken = await apiLogin(request, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
-        const exported = await request.post(`/api/payroll/payment-batches/${batchId}/wps-file`, {
-          headers: { Authorization: `Bearer ${adminToken}` },
-        });
+        const uiAttempt = admin.waitForResponse(
+          (r) =>
+            r.url().includes(`/api/payroll/payment-batches/${batchId}/wps-file`) &&
+            r.request().method() === 'POST',
+        );
+        await batchCard(admin, batchNumber).getByRole('button', { name: 'Generate WPS/SIF' }).click();
+        const exported = await uiAttempt;
         expect(
           exported.status(),
           "the operator's own Generate WPS/SIF must complete — a 422 here means an ACTIVE employee "
@@ -655,21 +661,22 @@ test.describe('Payroll — run to WPS file', () => {
         await openTab(admin, 'Bank / WPS Files');
         expect(await selectRun(admin, period)).toBe(runId);
 
-        const filedFacts = content(admin).getByTestId('bank-file-facts');
-        await expect(filedFacts).toContainText(batchNumber, { timeout: 30_000 });
+        const filedCard = batchCard(admin, batchNumber);
+        await expect(filedCard).toBeVisible({ timeout: 30_000 });
+        // The card badge shows the wage-file (WPS) status once one exists, so a filed batch
+        // reads "Generated"; older builds showed the batch status "File generated".
         await expect(
-          filedFacts,
+          filedCard,
+          'a batch with a generated wage file must read as Generated',
+        ).toContainText(/(File generated|Generated)(?![a-z])/);
+        await expect(
+          filedCard,
           "the filed batch must still show the run's net-pay total",
         ).toContainText(`${currency} ${netRendered}`);
-        // For a Saudi batch the wage file above is the INTERNAL register, never the bank file: the screen must not claim a
-        // bank file exists (the guided flow still asks for one), and nowhere offers the old register button.
+        // NEGATIVE, paired with the two positives above: a filed batch offers no re-generate.
         await expect(
-          content(admin).getByTestId('bank-guide-chip'),
-          'the register must not read as the bank file',
-        ).toHaveAttribute('data-chip', /^(no_file|setup|attention)$/);
-        await expect(
-          content(admin).getByRole('button', { name: 'Generate WPS/SIF' }),
-          'the Saudi bank-file flow does not offer the register button',
+          filedCard.getByRole('button', { name: 'Generate WPS/SIF' }),
+          'a batch that already has a wage file must not offer to generate another',
         ).toHaveCount(0);
 
         // Guard that everything above ran against a populated module rather than a shell that
