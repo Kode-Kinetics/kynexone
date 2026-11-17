@@ -105,12 +105,12 @@ public sealed class GovernmentCapabilitiesService(
     /// </summary>
     public async Task<GovernmentLiveDecision> DecideAsync(Guid tenantId, Guid? companyId, string body, string environment, CancellationToken ct) =>
         GovernmentLivePolicy.Decide(configuration, body, await GovernmentOptIn.HasConsentAsync(db, tenantId, body, ct),
-            await credentials.IsUsableAsync(tenantId, companyId, body, environment, ct), environment);
+            await credentials.IsOnFileAsync(tenantId, companyId, body, environment, ct), environment);
 
     /// <summary>The WRITE decision for one body, company and environment: the four gates and the body's legal clearance.</summary>
     public async Task<GovernmentLiveDecision> DecideLiveWriteAsync(Guid tenantId, Guid? companyId, string body, string environment, CancellationToken ct) =>
         GovernmentLivePolicy.DecideLiveWrite(configuration, body, await GovernmentOptIn.HasConsentAsync(db, tenantId, body, ct),
-            await credentials.IsUsableAsync(tenantId, companyId, body, environment, ct), environment);
+            await credentials.IsOnFileAsync(tenantId, companyId, body, environment, ct), environment);
 
     /// <summary>
     /// Qiwa keeps its own switches (QIWA_USE_LIVE_ADAPTER, Qiwa:PartnerAgreementReference, its own credential table) and now needs

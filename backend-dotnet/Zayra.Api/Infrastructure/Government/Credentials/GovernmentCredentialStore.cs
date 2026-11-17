@@ -259,6 +259,20 @@ public sealed class GovernmentCredentialStore(
         catch (FieldEncryptionUnavailableException) { return false; }
     }
 
+    /// <summary>
+    /// Whether a credential is on file for one environment WITHOUT opening it (final gate P3-7): the row the transport would use
+    /// (the company's own, else the tenant-wide one) exists, is not revoked, has not expired and holds a sealed secret. For screens
+    /// that only say whether a credential is present; a transport still opens it with <see cref="OpenAsync"/> and fails closed then.
+    /// </summary>
+    public async Task<bool> IsOnFileAsync(Guid tenantId, Guid? companyId, string body, string environment, CancellationToken ct)
+    {
+        if (!IsAvailable || (environment == GovernmentEnvironments.Production && !AcceptsLiveCredentials)) return false;
+        var row = companyId is not null ? await Find(tenantId, companyId, body, environment).AsNoTracking().SingleOrDefaultAsync(ct) : null;
+        row ??= await Find(tenantId, null, body, environment).AsNoTracking().SingleOrDefaultAsync(ct);
+        return row is not null && row.TenantId == tenantId && row.RevokedAtUtc is null && !IsExpired(row, DateTime.UtcNow)
+               && row.Ciphertext.Length >= FieldEnvelope.MinLength;
+    }
+
     /// <summary>The largest envelope a <see cref="MaxSecretLength"/> secret can produce (UTF-8, up to 4 bytes a character).</summary>
     private const int MaxEnvelopeLength = FieldEnvelope.MinLength + MaxSecretLength * 4;
 

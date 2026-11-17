@@ -83,7 +83,11 @@ public sealed partial class AnbPayrollApiClient
 
     private sealed record Prepared(
         BankChannelScope Scope, Endpoint Endpoint, AnbClientCredential Credential, string Token, byte[] Header, byte[] Body,
-        string HeaderSha, string BodySha, List<(string Name, string Value)> Headers, IReadOnlyList<string> Redact);
+        string HeaderSha, string BodySha, List<(string Name, string Value)> Headers, IReadOnlyList<string> Redact)
+    {
+        /// <summary>Never prints the token, the credential or the files (the generated record ToString would).</summary>
+        public override string ToString() => "Prepared(token withheld)";
+    }
 
     public async Task<BankSubmitOutcome> SubmitAsync(AnbSubmitRequest request, CancellationToken ct)
     {

@@ -111,7 +111,7 @@ public sealed record BankSubmittedLine(string EmployeeId, string AccountNumber, 
 public sealed record BankBatchBinding(
     IReadOnlyList<BankSubmittedLine> Lines, decimal ExpectedTotal, DateTimeOffset IntentAtUtc, string? ProfileId = null)
 {
-    public override string ToString() => $"BankBatchBinding({Lines.Count} lines, total={ExpectedTotal}, intent={IntentAtUtc:O})";
+    public override string ToString() => $"BankBatchBinding({Lines.Count} lines, intent={IntentAtUtc:O})";
 }
 
 public enum BankPayrollPhase { Accepted, Initiated, Validated, InProgress, Completed, Failed, Rejected }
