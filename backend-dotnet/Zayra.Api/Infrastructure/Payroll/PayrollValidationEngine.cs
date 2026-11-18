@@ -32,11 +32,11 @@ public static class PayrollValidationEngine
     public const string NationalityUnrecognised = "NATIONALITY_UNRECOGNISED";
 
     /// <summary>
-    /// Warning, never a block: a recurring-run employee nets exactly zero because this month's unpaid leave took the whole wage,
-    /// and the loan or advance instalment they owe, with nothing left to fund it, was carried forward (not written off). Raised
-    /// only when gross − deductions is exactly the zero net (nothing hidden by the clamp at zero), the month's own unpaid-leave
-    /// deduction is the whole of the employee's deductions, and an instalment was deferred. Any other zero net keeps the
-    /// non-overridable ZERO_NET_WITH_GROSS Error.
+    /// Warning, never a block (but acknowledged by count at Approve): a recurring-run employee nets exactly zero because this
+    /// month's unpaid leave took the whole earned wage (the per-slice cap stops it taking more). Any loan or advance instalment
+    /// due, with nothing left to fund it, is carried forward, never written off. Raised only when gross − deductions is exactly
+    /// the zero net (nothing hidden by the clamp at zero) and the month's own unpaid-leave deduction is the whole of the
+    /// employee's deductions. Any other zero net keeps the non-overridable ZERO_NET_WITH_GROSS Error.
     /// </summary>
     public const string ZeroNetUnpaidLeave = "ZERO_NET_UNPAID_LEAVE";
 
@@ -304,20 +304,22 @@ public static class PayrollValidationEngine
                     "GET /api/payroll/receivables. A zero-net employee has no payable line: exclude them from the " +
                     "WPS file (WpsSifValidator blocks a non-positive net by design).",
                     slip.EmployeeId);
-            // ── A full month of unpaid leave with an instalment carried forward: explained, so a Warning ─────────────
+            // ── A full month of unpaid leave: explained, so a Warning ──────────────────────────────────────────────────────
             // Same shape as the recovery carve-out above, and just as narrow: the arithmetic is exact (nothing swallowed by
-            // the clamp), the month's own unpaid-leave deduction IS every employee deduction on the slip, and a loan or
-            // advance instalment was deferred because nothing was left to fund it. The leave was approved as unpaid, the debt
-            // is carried forward (never written off), and nothing is owed to the bank: the person is left out of the bank
-            // file at batch creation. Anything else that reads zero keeps the Error below.
+            // the clamp) and the month's own unpaid-leave deduction IS every employee deduction on the slip. The per-slice cap
+            // means unpaid leave never takes more than the wage earned, so a full unpaid month legitimately earns nothing; the
+            // Error below was for deductions EXCEEDING the wage, which this is not. Any instalment due was carried forward
+            // (never written off), and nothing is owed to the bank: the person is left out of the bank file at batch creation.
+            // Anything else that reads zero keeps the Error below.
             else if (paysRecurring && slip.NetSalary == 0m && slip.GrossSalary > 0m
                      && slip.GrossSalary - slip.Deductions == slip.NetSalary
-                     && ctx.DebtDeferredEmployeeIds.Contains(slip.EmployeeId)
                      && UnpaidLeaveIsTheWholeDeduction(ctx, slip))
                 Warn(ZeroNetUnpaidLeave,
-                    $"Employee {slip.EmployeeCode} nets zero: unpaid leave took the whole wage ({slip.GrossSalary:N2}) this month, " +
-                    "and the loan or advance instalment due was carried forward to the next run, not written off. Nothing is " +
-                    "paid to them, so they are left out of the bank file. Check the leave, then approve.",
+                    $"Employee {slip.EmployeeCode} nets zero: unpaid leave took the whole wage ({slip.GrossSalary:N2}) this month" +
+                    (ctx.DebtDeferredEmployeeIds.Contains(slip.EmployeeId)
+                        ? ", and the loan or advance instalment due was carried forward to the next run, not written off. "
+                        : ". ") +
+                    "Nothing is paid to them, so they are left out of the bank file. Check the leave, then acknowledge it when approving.",
                     slip.EmployeeId);
             else if (slip.NetSalary == 0m && slip.GrossSalary > 0m)
                 Err("ZERO_NET_WITH_GROSS",

@@ -488,9 +488,9 @@ for (const locale of LOCALES) {
 
 for (const locale of LOCALES) {
   test.describe(`Zero-net warning in the validation panel (${locale})`, () => {
-    const ZERO_NET = 'ZERO_NET_UNPAID_LEAVE_DEBT_DEFERRED';
-    const summary = '{count} employee(s) net zero this month: unpaid leave took the whole wage, and the loan or advance instalment they owe was carried forward to the next run, not written off. Nothing is paid to them, so they are left out of the bank file. This is a warning, not a block: check the leave, then approve the run.';
-    const row = 'Net pay is zero: unpaid leave took the whole wage this month. The loan or advance instalment is carried forward to the next run, not written off.';
+    const ZERO_NET = 'ZERO_NET_UNPAID_LEAVE';
+    const summary = '{count} employee(s) net zero this month: unpaid leave took the whole wage. Any loan or advance instalment they owe is carried forward to the next run, not written off. Nothing is paid to them, so they are left out of the bank file. This is a warning, not a block: check the leave, then acknowledge it when approving.';
+    const row = 'Net pay is zero: unpaid leave took the whole wage this month. Any loan or advance instalment is carried forward to the next run, not written off.';
 
     test('the warning is explained in the panel, as a warning and not as something that must be fixed', async ({ page }) => {
       const population = { runId: RUN_ID, runType: 'Regular', includesRecurringPay: true, populationMode: 'All', eligibleCount: 1, includedCount: 1, excludedCount: 0, notEligibleCount: 0,

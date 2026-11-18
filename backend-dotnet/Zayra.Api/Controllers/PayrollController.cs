@@ -2240,6 +2240,27 @@ public partial class PayrollController : ControllerBase
                 acknowledged    = req.ExpectedPayWarningCount,
             });
 
+        // ── Zero net from unpaid leave: acknowledged the same way, and sealed into the approval's audit entry ─────────────
+        // ZERO_NET_UNPAID_LEAVE is a Warning (it does not block), but the approver states how many such employees they
+        // reviewed, exactly like a cash count, and who acknowledged it and when is the approval audit row below.
+        var zeroNetEmployees = (await _db.PayrollValidationResults.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.EmployeeId != null
+                     && x.Code == Infrastructure.Payroll.PayrollValidationEngine.ZeroNetUnpaidLeave)
+            .Select(x => x.EmployeeId!.Value).Distinct().ToListAsync(cancellationToken)).OrderBy(x => x).ToList();
+        if (zeroNetEmployees.Count > 0 && req.ExpectedZeroNetCount != zeroNetEmployees.Count)
+            return Conflict(new
+            {
+                error        = "zero_net_not_acknowledged",
+                message      = $"{zeroNetEmployees.Count} employee(s) on this run net zero because unpaid leave took the whole wage, so they " +
+                               "are paid nothing this month. Review the ZERO_NET_UNPAID_LEAVE warnings and re-submit with " +
+                               $"expectedZeroNetCount={zeroNetEmployees.Count} to acknowledge.",
+                messageAr    = $"{zeroNetEmployees.Count} من الموظفين في هذا المسير صافي أجرهم صفر لأن الإجازة غير المدفوعة استغرقت الأجر كاملًا، فلا يُصرف لهم شيء هذا الشهر. " +
+                               $"راجع تنبيهات ZERO_NET_UNPAID_LEAVE ثم أعد الإرسال مع expectedZeroNetCount={zeroNetEmployees.Count} للإقرار.",
+                zeroNetCount = zeroNetEmployees.Count,
+                employees    = zeroNetEmployees,
+                acknowledged = req.ExpectedZeroNetCount,
+            });
+
         // ── POD-B3: OVERRIDDEN compliance errors must be acknowledged the same way ────────────────────
         // Restating overrides in a response body is not a control — nobody reads a body they did not ask
         // for. A cash-count match is: the approver must state the number of blocking errors that were
@@ -2341,7 +2362,8 @@ public partial class PayrollController : ControllerBase
                     new { level = "Finance", reason = reconGate.Reason, processVersion = run.ProcessVersion }, cancellationToken);
             // The acknowledged cash/cheque list is sealed here; Lock refuses to freeze any other list.
             await PayrollAudit("payroll.run.approved", "PayrollRun", id.ToString(),
-                new { notes = req.Notes, level = "Finance", paidOutsideBankFile = outsideBankEmployees, policyRelaxation = relaxation }, cancellationToken);
+                new { notes = req.Notes, level = "Finance", paidOutsideBankFile = outsideBankEmployees, policyRelaxation = relaxation,
+                      zeroNetAcknowledged = zeroNetEmployees.Count, zeroNetEmployees }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             onFinanceApproved(run);
             return Ok(run);
@@ -2356,7 +2378,8 @@ public partial class PayrollController : ControllerBase
             if (reconGate.Waived)
                 await PayrollAudit("payroll.recon.approved_without_signoff", "PayrollRun", id.ToString(),
                     new { level = "Payroll", reason = reconGate.Reason, processVersion = run.ProcessVersion }, cancellationToken);
-            await PayrollAudit("payroll.run.payroll_approved", "PayrollRun", id.ToString(), new { notes = req.Notes }, cancellationToken);
+            await PayrollAudit("payroll.run.payroll_approved", "PayrollRun", id.ToString(),
+                new { notes = req.Notes, zeroNetAcknowledged = zeroNetEmployees.Count, zeroNetEmployees }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             return Ok(run);
         }
@@ -3333,8 +3356,16 @@ public partial class PayrollController : ControllerBase
         // disagreeing, permanently, with nothing reporting it. The Payslip ROW is kept (its number and
         // template version are its identity, and DownloadSlipPdf links to it); only its components are
         // rebuilt from the current lines.
-        var existingPayslips = await _db.Payslips
-            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken);
+        //
+        // A month's payslips belong to the company that paid it (the run's), never to whatever company the employee is in
+        // today: a new row is stamped with the run's company, so the company write guard checks the locker against the run's
+        // company and an employee moved to a sister company since cannot roll the whole Lock back. Existing rows are read
+        // across the tenant by run id, so a row the caller's company filter would hide is refreshed, never inserted twice.
+        var runCompanyId = await _db.PayrollRuns.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.Id == id).Select(r => r.CompanyId).FirstOrDefaultAsync(cancellationToken);
+        var existingPayslips = await Infrastructure.Data.ScopedBypass.TenantWide(_db.Payslips, tenantId,
+                "A run's payslip rows are matched by run id across the tenant, so a row of an employee since moved to a sister company is refreshed, not duplicated; the run's own company scope was checked by the caller.")
+            .Where(x => x.PayrollRunId == id).ToListAsync(cancellationToken);
 
         var refreshed = 0;
         var published = 0;
@@ -3343,7 +3374,7 @@ public partial class PayrollController : ControllerBase
             var payslip = existingPayslips.FirstOrDefault(x => x.EmployeeId == slip.EmployeeId);
             if (payslip is null)
             {
-                payslip = new Payslip { TenantId = tenantId, PayrollRunId = id, EmployeeId = slip.EmployeeId, PayslipNumber = $"PS-{slip.EmployeeCode}-{DateTime.UtcNow:yyyyMMddHHmmss}", PayslipTemplateId = defaultTemplate };
+                payslip = new Payslip { TenantId = tenantId, CompanyId = runCompanyId, PayrollRunId = id, EmployeeId = slip.EmployeeId, PayslipNumber = $"PS-{slip.EmployeeCode}-{DateTime.UtcNow:yyyyMMddHHmmss}", PayslipTemplateId = defaultTemplate };
                 _db.Payslips.Add(payslip);
             }
             else
@@ -3558,7 +3589,10 @@ public partial class PayrollController : ControllerBase
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (run is null) return NotFound();
 
-        var slips    = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == id).ToListAsync(cancellationToken);
+        // A zero net has no payable line: the payment batch and the wage file leave it out (PaymentBatchExclusions), so the
+        // pre-check does too, instead of reporting an INVALID_NET_SALARY the file will never contain.
+        var slips    = (await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == id).ToListAsync(cancellationToken))
+            .Where(x => x.NetSalary != 0m).ToList();
         var profiles = await _db.EmployeePayrollProfiles.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(cancellationToken);
         var empIds   = slips.Select(s => s.EmployeeId).Distinct().ToList();
         var employees = await _db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && empIds.Contains(e.Id)).ToListAsync(cancellationToken);

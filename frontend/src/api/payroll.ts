@@ -889,7 +889,7 @@ export const payrollApi = {
   // cash count, so a client that silently echoes the server's number back would be no control.
   approveRun: (
     id: string,
-    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null; expectedOutsideBankCount?: number | null; expectedUncostedCount?: number | null; expectedPayWarningCount?: number | null } = {},
+    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null; expectedOutsideBankCount?: number | null; expectedUncostedCount?: number | null; expectedPayWarningCount?: number | null; expectedZeroNetCount?: number | null } = {},
   ) =>
     client
       .post<PayrollRun>(`/api/payroll/runs/${id}/approve`, {
@@ -899,6 +899,8 @@ export const payrollApi = {
         expectedOutsideBankCount: body.expectedOutsideBankCount ?? null,
         // People paid with a warning (no last working day, "On leave" with no leave, deleted but owed).
         expectedPayWarningCount: body.expectedPayWarningCount ?? null,
+        // People who net zero because unpaid leave took the whole wage (ZERO_NET_UNPAID_LEAVE).
+        expectedZeroNetCount: body.expectedZeroNetCount ?? null,
         // S-048: the uncosted-Optional count the approver affirmed (costing on only).
         expectedUncostedCount: body.expectedUncostedCount ?? null,
       })
