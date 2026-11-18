@@ -135,6 +135,26 @@ public sealed class GovernmentLedgerStateMachineTests
     }
 
     [Fact]
+    public async Task AnotherTenant_CannotResolveThisTenantsUnknownOutcome_AndTheRowIsLeftAlone()
+    {
+        var (recorder, db) = GovernmentExchangeRecorderTests.Create();
+        await using var _ = db;
+        var owner = Guid.NewGuid();
+        var id = (await recorder.BeginAsync(Intent(owner, "key-1"), default)).Exchange.Id;
+        await recorder.UpdateAsync(owner, id, To(owner, GovernmentExchangeStates.Unknown), default);
+
+        var intruder = Guid.NewGuid();
+        foreach (var (resolution, bankId) in new[] { (GovernmentExchangeResolutions.BankDoesNot, (string?)null), (GovernmentExchangeResolutions.BankHasIt, "ANB-1") })
+        {
+            var act = () => recorder.ResolveUnknownAsync(intruder, id, resolution, bankId, "not my tenant", Ctx(intruder, Guid.NewGuid()), default);
+            await act.Should().ThrowAsync<KeyNotFoundException>("an exchange id from another tenant does not exist for this one");
+        }
+
+        var row = await db.GovernmentExchanges.AsNoTracking().SingleAsync(x => x.Id == id);
+        (row.State, row.ResolvedByUserId, row.Resolution, row.ExternalReference).Should().Be((GovernmentExchangeStates.Unknown, (Guid?)null, (string?)null, (string?)null));
+    }
+
+    [Fact]
     public async Task TheSealedAuditRow_CarriesTheMoneyFields_AndTheStateBefore()
     {
         var (recorder, db) = GovernmentExchangeRecorderTests.Create();
