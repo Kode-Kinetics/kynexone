@@ -118,6 +118,9 @@ public sealed class GovernmentHttp
         handler.ConnectTimeout = TimeSpan.FromSeconds(15);
         return handler;
     }
+        // E7: no trace context leaves for a government or bank host. The runtime would otherwise add traceparent / tracestate / baggage
+        // from the caller's current activity, tying a body's access log to our request (and its ids) for anyone who can read both.
+        handler.ActivityHeadersPropagator = null;
 
     /// <summary>True when any handler in the chain would follow a redirect (unknown handler types are trusted not to).</summary>
     public static bool FollowsRedirects(HttpMessageHandler? handler)
@@ -148,6 +151,9 @@ public sealed class GovernmentHttp
                 })
                 .RemoveAllLoggers();
         return services;
+                // E7: nothing that adds telemetry sits on a government client (the Sentry handler adds sentry-trace and baggage headers and
+                // records a span named by the URL, which holds ID numbers). The handlers other registrations add are cleared.
+                .ConfigureAdditionalHttpMessageHandlers((handlers, _) => handlers.Clear())
     }
 
     /// <summary>The allow-listed base URL for a body in an environment, or a refusal.</summary>
