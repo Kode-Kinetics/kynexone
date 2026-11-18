@@ -661,21 +661,14 @@ test.describe('Payroll — run to WPS file', () => {
         await openTab(admin, 'Bank / WPS Files');
         expect(await selectRun(admin, period)).toBe(runId);
 
-        const filedCard = batchCard(admin, batchNumber);
-        await expect(filedCard).toBeVisible({ timeout: 30_000 });
-        // The card badge shows the wage-file (WPS) status once one exists, so a filed batch
-        // reads "Generated"; older builds showed the batch status "File generated".
+        // Reopened, the run's batch is open in the guided Bank / WPS flow: its facts strip names the batch and the amount, and
+        // that flow no longer offers the old register button (the file above was made with the list's own button before the reload).
+        const facts = content(admin).getByTestId('bank-file-facts');
+        await expect(facts, 'the reopened Bank / WPS flow must name the batch').toContainText(batchNumber, { timeout: 30_000 });
+        await expect(facts, "the batch must still show the run's net-pay total").toContainText(netRendered);
+        // NEGATIVE, paired with the two positives above: a batch that already has a wage file offers no re-generate.
         await expect(
-          filedCard,
-          'a batch with a generated wage file must read as Generated',
-        ).toContainText(/(File generated|Generated)(?![a-z])/);
-        await expect(
-          filedCard,
-          "the filed batch must still show the run's net-pay total",
-        ).toContainText(`${currency} ${netRendered}`);
-        // NEGATIVE, paired with the two positives above: a filed batch offers no re-generate.
-        await expect(
-          filedCard.getByRole('button', { name: 'Generate WPS/SIF' }),
+          content(admin).getByRole('button', { name: 'Generate WPS/SIF' }),
           'a batch that already has a wage file must not offer to generate another',
         ).toHaveCount(0);
 
