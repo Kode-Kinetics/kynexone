@@ -349,13 +349,13 @@ export function payOutLabel(t: Translate, p: PayOut): string {
 }
 
 export type BankResponseBucketKey = 'paid' | 'returned' | 'rejected' | 'waiting';
-export interface BankResponseBucket { key: BankResponseBucketKey; tone: 'bg-success' | 'bg-danger' | 'bg-line-strong'; label: string; amount: number }
+export interface BankResponseBucket { key: BankResponseBucketKey; tone: 'bg-success' | 'bg-warning' | 'bg-danger' | 'bg-line-strong'; label: string; amount: number }
 
 /** The bank-response list and bar of the Payroll page: each bucket with its words and money. A rejection reads "not paid", never "returned". */
 export function bankResponseBuckets(t: Translate, split: PayOutSplit): BankResponseBucket[] {
   const rows: BankResponseBucket[] = [
     { key: 'paid', tone: 'bg-success', label: t('{count} confirmed paid', { count: split.paid }), amount: split.paidAmount },
-    { key: 'returned', tone: 'bg-danger', label: t('{count} returned', { count: split.returned }), amount: split.returnedAmount },
+    { key: 'returned', tone: 'bg-warning', label: t('{count} returned', { count: split.returned }), amount: split.returnedAmount },
   ];
   if (split.rejected > 0) rows.push({ key: 'rejected', tone: 'bg-danger', label: t('{count} not paid: rejected by the bank', { count: split.rejected }), amount: split.rejectedAmount });
   rows.push({ key: 'waiting', tone: 'bg-line-strong', label: t('{count} waiting', { count: split.waiting }), amount: split.waitingAmount });

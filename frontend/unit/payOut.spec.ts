@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   bankResponseBuckets, confirmedResponsePurpose, derivePayOut, payOutLabel, payOutNeedsFile, rejectedFilePurpose, payOutStageState, payOutTone, splitFromRecords,
   type PayOut, type PayOutInput, type PayOutNextKind, type PayOutStage, type PayOutStatus,
@@ -362,5 +364,22 @@ test.describe('the bank-response bar and chip tell a rejection from a return (W6
     const fileRejected = derivePayOut({ run: RUN, batches: [sub('Rejected', { wpsRejectionReason: 'Invalid MOL establishment id' })], can: ALL });
     expect(fileRejected.status).toBe('rejected');
     expect(payOutTone(fileRejected)).toBe('danger');
+  });
+
+  test('bar buckets carry distinct tones: returned is warning, rejected is danger, no two buckets share a tone', () => {
+    const rows = bankResponseBuckets(identity, splitFromRecords(mixed));
+    const tone = (k: string) => rows.find(r => r.key === k)!.tone;
+    expect(tone('paid')).toBe('bg-success');
+    expect(tone('returned')).toBe('bg-warning');
+    expect(tone('rejected')).toBe('bg-danger');
+    expect(tone('waiting')).toBe('bg-line-strong');
+    expect(new Set(rows.map(r => r.tone)).size).toBe(rows.length);
+  });
+
+  test('the Payroll page draws the bar and the legend dots from the same buckets, with a gap between segments', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '../src/views/PayrollPage.tsx'), 'utf8');
+    expect(src).not.toMatch(/\['returned', 'bg-danger'/);
+    expect(src).not.toMatch(/\['rejected', 'bg-danger'/);
+    expect(src).toMatch(/role="progressbar"[^>]*className="[^"]*\bgap-px\b/);
   });
 });
