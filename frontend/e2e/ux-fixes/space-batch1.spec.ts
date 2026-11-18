@@ -8,7 +8,7 @@ import { ALL_PERMISSIONS, boot, type ApiMocks, type Persona } from '../setup-con
  * in English and Arabic, and the page never scrolls sideways. Every API call is intercepted; nothing is read or written.
  *
  *   /pay-approvals       the queue shows at least six packages without scrolling (it showed three)
- *   /loans               the loans table starts above y=340 (it started at 464 under the totals band and the flow banner)
+ *   /loans               the loans table starts above y=340 (it started at 464 under the totals band and the flow banner) and shows four rows (three before)
  *   /saudi-compliance    the Action Center starts above y=330 and the module cards are in view (Refresh had a row of its own)
  *   /gosi-filing         the tie-out verdict starts above y=400
  *   /payroll             the Dashboard's KPI band starts above y=430 (it started at 670 under the run list and the readiness panel)
@@ -123,7 +123,11 @@ for (const locale of LOCALES) {
         await expect(page.locator('main table tbody tr').first()).toBeVisible({ timeout: 60_000 });
         await shot(page, 'loans', locale);
         expect(await topOf(page, 'main table'), 'loans table top').toBeLessThanOrEqual(340);
+        const rowsInView = await page.locator('main table tbody tr').evaluateAll((rows, h) => rows.filter(r => r.getBoundingClientRect().bottom <= h).length, viewport.height);
+        expect(rowsInView, 'loan rows fully in view').toBeGreaterThanOrEqual(4);
         expect(await noSideways(page)).toBeLessThanOrEqual(0);
+        const scroller = await page.locator('main table').first().evaluate(t => { const p = t.parentElement!; return p.scrollWidth - p.clientWidth; });
+        expect(scroller, 'the loans table scrolls sideways by (px)').toBeLessThanOrEqual(0);
       });
 
       test('/saudi-compliance: the Action Center starts in the first screenful and the module cards are in view', async ({ page }) => {
