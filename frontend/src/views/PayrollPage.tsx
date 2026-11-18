@@ -66,7 +66,7 @@ import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
 import { BankFileGuide, useBankHandOver, type BankPanelData, type GuideSlots } from '../components/payroll/BankFileGuide';
 import { BankFileFacts, tieOut } from '../components/payroll/BankFileFacts';
 import { RecordSubmittedDialog } from '../components/payroll/RecordSubmittedDialog';
-import { derivePayOut, pickPayOutBatch, type PayOutStepKey } from '../lib/payOut';
+import { bankResponseBuckets, confirmedResponsePurpose, derivePayOut, pickPayOutBatch, rejectedFilePurpose, type PayOutStepKey } from '../lib/payOut';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Modal as SideDrawer } from '../components/Modal';
 import { suggestedBatchReference, type BankFlowProgress } from '../lib/bankFileSteps';
@@ -3420,11 +3420,9 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
         {total !== undefined && answered !== undefined && (
           <div className="rounded-xl border border-line p-4" data-testid="bank-response-tracker">
             <p className="text-body font-semibold text-fg">{t('The bank has answered for {answered} of {total} payments', { answered, total })}</p>
-            {/* One segment per bucket, sized by its money: green only for what the bank confirmed, red for returned, grey for waiting. */}
-            <div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={answered} aria-label={t('Bank response')} className="mt-3 flex h-2 overflow-hidden rounded-full bg-line" data-essential-motion="">
-              {split && split.totalAmount > 0 ? ([
-                ['paid', 'bg-success', split.paidAmount], ['returned', 'bg-danger', split.returnedAmount], ['waiting', 'bg-line-strong', split.waitingAmount],
-              ] as const).map(([key, tone, amount]) => amount > 0 && (
+            {/* One segment per bucket, sized by its money: green only for what the bank confirmed, amber for returned, red for rejected, grey for waiting. */}
+            <div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={answered} aria-label={t('Bank response')} className="mt-3 flex h-2 gap-px overflow-hidden rounded-full bg-line" data-essential-motion="">
+              {split && split.totalAmount > 0 ? bankResponseBuckets(t, split).map(({ key, tone, amount }) => amount > 0 && (
                 <div key={key} data-bucket={key} className={`h-full ${tone} transition-[width] duration-base ease-standard`} style={{ width: `${(amount / split.totalAmount) * 100}%` }} data-essential-motion="" />
               )) : (
                 <div data-bucket="answered" className="h-full bg-primary transition-[width] duration-base ease-standard" style={{ width: `${pct}%` }} data-essential-motion="" />
@@ -3434,11 +3432,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
               <>
                 {/* Each bucket with its money; together they must be the money in the file. */}
                 <dl className="mt-3 space-y-1.5 text-body-sm" data-testid="bank-response-buckets">
-                  {([
-                    ['bg-success', t('{count} confirmed paid', { count: split.paid }), split.paidAmount],
-                    ['bg-danger', t('{count} returned', { count: split.returned }), split.returnedAmount],
-                    ['bg-line-strong', t('{count} waiting', { count: split.waiting }), split.waitingAmount],
-                  ] as const).map(([dot, label, amount]) => (
+                  {bankResponseBuckets(t, split).map(({ tone: dot, label, amount }) => (
                     <div key={label} className="flex items-center justify-between gap-3">
                       <dt className="inline-flex items-center gap-1.5 text-fg"><span aria-hidden="true" className={`h-2.5 w-2.5 rounded ${dot}`} />{label}</dt>
                       <dd className="tabular-nums text-fg"><bdi dir="ltr">{fmtAmt(amount, cur)}</bdi></dd>
@@ -3447,7 +3441,9 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
                 </dl>
                 {fileAmount !== null && (
                   <p className="mt-2 border-t border-line pt-2 text-body-sm text-fg-muted" data-testid="bank-response-tie">
-                    {t('Confirmed + Returned + Waiting = {amount} (file)', { amount: fmtAmt(split.totalAmount, cur) })}
+                    {split.rejected > 0
+                      ? t('Confirmed + Returned + Not paid + Waiting = {amount} (file)', { amount: fmtAmt(split.totalAmount, cur) })
+                      : t('Confirmed + Returned + Waiting = {amount} (file)', { amount: fmtAmt(split.totalAmount, cur) })}
                   </p>
                 )}
                 {gap !== null && Math.abs(gap) >= 0.005 && (
@@ -3476,7 +3472,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
                 </li>
               ))}
             </ul>
-            <p className="mt-2 text-meta text-fg-muted">{t('Paying again creates a new payment batch with a new file reference. Never upload this file again.')}</p>
+            <p className="mt-2 text-meta text-fg-muted">{t('Pay them in a new payment batch linked to the original batch. It gets a new file reference; never upload this file again.')}</p>
             {onNavigate && <button type="button" className="mt-2 text-body-sm font-medium text-primary underline-offset-2 hover:underline" onClick={() => onNavigate('payment-tracking')}>{t('Open Payment Tracking')}</button>}
           </div>
         )}
@@ -3507,7 +3503,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
       <ol className="space-y-3">
         {[
           [t('The bank pays and answers for each payment'), null],
-          [t('Record the bank’s response'), t('Record the bank’s response in Payment Tracking: confirmed, returned or rejected. Paying again creates a new payment batch with a new file reference. Never upload this file again.')],
+          [t('Record the bank’s response'), t('Record the bank’s response in Payment Tracking: confirmed, returned or rejected. Pay them in a new payment batch linked to the original batch. It gets a new file reference; never upload this file again.')],
           [t('Finance settles the payments'), t('Settle only payments the bank confirmed. Settling posts the net-pay settlement to the ledger and needs the payment settlement permission.')],
         ].map(([title, body], i) => (
           <li key={i} className="flex gap-3">
@@ -3524,8 +3520,8 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
   );
   const responsePurpose = (data: BankPanelData | null | undefined) => {
     switch (payOut.status) {
-      case 'rejected': return batchRow?.wpsRejectionReason ? t('The bank rejected this file: {reason}. No one in it was paid.', { reason: batchRow.wpsRejectionReason }) : t('The bank rejected this file. No one in it was paid.');
-      case 'confirmed': return (payOut.returned ?? 0) > 0 ? t('The bank answered every payment. Pay the returned ones again from Payment Tracking.') : t('The bank confirmed every payment.');
+      case 'rejected': return rejectedFilePurpose(t, batchRow?.wpsRejectionReason);
+      case 'confirmed': return confirmedResponsePurpose(t, payOut);
       case 'settled': return t('Paid and settled.');
       default: return data?.bankName
         ? t('Submitted to {bank} — waiting for the bank’s confirmation. Record what the bank confirms or returns in Payment Tracking.', { bank: data.bankName })

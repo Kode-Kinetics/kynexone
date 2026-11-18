@@ -44,7 +44,9 @@ export type PayOutReason =
   | 'validation_blocked' | 'stale' | 'create_refused'
   | 'no_permission_setup' | 'no_permission_wps' | 'submit_not_allowed' | 'rejected_ask_admin'
   /** The batch total is not the run's net pay minus what is paid outside the file (Finance rule: the file is never created). */
-  | 'tie_mismatch';
+  | 'tie_mismatch'
+  /** The API refuses to settle a batch with any returned or rejected payment (422 payment_records_rejected). */
+  | 'payments_not_paid';
 
 export interface PayOutStep { key: PayOutStepKey; state: PayOutStepState; note: PayOutStepNote; reason?: PayOutReason }
 
@@ -55,9 +57,10 @@ export type PayOutNextKind =
 export interface PayOutNext { kind: PayOutNextKind; disabled: boolean; reason?: PayOutReason }
 
 export interface PayOutSplit {
-  paid: number; returned: number; waiting: number; total: number;
+  /** Returned: the money came back. Rejected: the bank refused the instruction, so it reads "not paid", never "returned". */
+  paid: number; returned: number; rejected: number; waiting: number; total: number;
   /** The money in each bucket; together they are the money in the file (when the records tie to it). */
-  paidAmount: number; returnedAmount: number; waitingAmount: number; totalAmount: number;
+  paidAmount: number; returnedAmount: number; rejectedAmount: number; waitingAmount: number; totalAmount: number;
 }
 
 export interface PayOut {
@@ -76,8 +79,10 @@ export interface PayOut {
   total?: number;
   /** The record-level split (only from the payment records). */
   split?: PayOutSplit;
-  /** Payments the bank returned or rejected (from the records, else the batch list's unresolved returns); absent when not reported. */
+  /** Payments the bank returned (from the records, else the batch list's unresolved returns); absent when not reported. */
   returned?: number;
+  /** Payments the bank rejected, which are not paid (from the records, else the batch list's unresolved rejections); absent when not reported. */
+  rejected?: number;
 }
 
 export interface PayOutExportFacts {
@@ -142,20 +147,21 @@ export function pickPayOutBatch(batches: PipelineBatch[] | null | undefined, ope
 
 /** Answered / waiting from the payment records (rule 3). Cancelled records are out of the batch. */
 export function splitFromRecords(records: ReadonlyArray<{ status: string; amount: number }>): PayOutSplit {
-  let paid = 0; let returned = 0; let waiting = 0; let paidAmount = 0; let returnedAmount = 0; let waitingAmount = 0;
+  let paid = 0; let returned = 0; let rejected = 0; let waiting = 0; let paidAmount = 0; let returnedAmount = 0; let rejectedAmount = 0; let waitingAmount = 0;
   for (const r of records) {
     const s = (r.status ?? '').toLowerCase();
     const amount = r.amount ?? 0;
     if (s === 'cancelled') continue;
     if (s === 'paid') { paid++; paidAmount += amount; }
-    else if (s === 'returned' || s === 'rejected') { returned++; returnedAmount += amount; }
+    else if (s === 'returned') { returned++; returnedAmount += amount; }
+    else if (s === 'rejected') { rejected++; rejectedAmount += amount; }
     else { waiting++; waitingAmount += amount; }
   }
   const cents = (n: number) => Math.round(n * 100) / 100;
   return {
-    paid, returned, waiting, total: paid + returned + waiting,
-    paidAmount: cents(paidAmount), returnedAmount: cents(returnedAmount), waitingAmount: cents(waitingAmount),
-    totalAmount: cents(paidAmount + returnedAmount + waitingAmount),
+    paid, returned, rejected, waiting, total: paid + returned + rejected + waiting,
+    paidAmount: cents(paidAmount), returnedAmount: cents(returnedAmount), rejectedAmount: cents(rejectedAmount), waitingAmount: cents(waitingAmount),
+    totalAmount: cents(paidAmount + returnedAmount + rejectedAmount + waitingAmount),
   };
 }
 
@@ -220,11 +226,14 @@ export function derivePayOut(input: PayOutInput): PayOut {
     let waiting: boolean | null;
     // Money that came back: from the records, or (run bar, picker, pipeline: no records) from the batch list.
     let returned: number | undefined;
+    let rejected: number | undefined;
     if (split && split.total > 0) {
-      answered = split.paid + split.returned; total = split.total; waiting = split.waiting > 0; returned = split.returned;
+      answered = split.paid + split.returned + split.rejected; total = split.total; waiting = split.waiting > 0; returned = split.returned; rejected = split.rejected;
     } else {
       const r = batch.unresolvedReturns?.count;
       if (typeof r === 'number') returned = r;
+      const x = batch.unresolvedRejections?.count;
+      if (typeof x === 'number') rejected = x;
       const count = batch.unconfirmedPayments?.count;
       if (typeof count === 'number') {
         waiting = count > 0;
@@ -232,13 +241,15 @@ export function derivePayOut(input: PayOutInput): PayOut {
         if (w?.total !== undefined && w.confirmed !== undefined) { answered = w.confirmed; total = w.total; }
       } else waiting = null; // an older API: the wait is said without counts
     }
-    const counts = { ...(answered !== undefined && total !== undefined ? { answered, total } : {}), ...(split ? { split } : {}), ...(returned !== undefined ? { returned } : {}) };
+    const counts = { ...(answered !== undefined && total !== undefined ? { answered, total } : {}), ...(split ? { split } : {}), ...(returned !== undefined ? { returned } : {}), ...(rejected !== undefined ? { rejected } : {}) };
     if (waiting === false) {
-      // Every payment answered. Returned ones still need paying again (Payment Tracking), and returns not reported are not known to be
+      // Every payment answered. Returned ones are still to be paid in a new payment batch (Payment Tracking), and returns not reported are not known to be
       // zero: only a batch with NO returns is "done".
-      const clean = returned === 0;
+      const clean = returned === 0 && (rejected ?? 0) === 0;
+      // Finance rule: the API refuses to settle while any payment is returned or rejected, so the button is off until they are paid in a new batch.
+      const notPaid = (returned ?? 0) + (rejected ?? 0) > 0;
       return result('confirmed', batch, [...front, clean ? step('response', 'done', 'confirmed') : step('response', 'current', 'here')],
-        can.settle ? { kind: 'settle', disabled: false } : null, false, counts);
+        can.settle ? (notPaid ? { kind: 'settle', disabled: true, reason: 'payments_not_paid' } : { kind: 'settle', disabled: false }) : null, false, counts);
     }
     return result('submitted', batch, [...front, step('response', 'current', 'waiting')], { kind: 'record_response', disabled: false }, false, counts);
   }
@@ -307,7 +318,10 @@ export function payOutTone(p: PayOut): PayOutTone {
     case 'attention': case 'rejected': return 'danger';
     case 'created': case 'downloaded': return 'neutral';
     case 'submitted': return 'info';
-    case 'confirmed': return p.returned === 0 ? 'success' : p.returned === undefined ? 'info' : 'warning';
+    case 'confirmed':
+      // A rejection is money the bank refused (danger); a return alone needs attention (warning).
+      if ((p.rejected ?? 0) > 0) return 'danger';
+      return p.returned === 0 ? 'success' : p.returned === undefined ? 'info' : 'warning';
     case 'settled': return 'success';
   }
 }
@@ -329,9 +343,50 @@ export function payOutLabel(t: Translate, p: PayOut): string {
         : t('Submitted — waiting for the bank');
     case 'rejected': return t('Rejected by the bank');
     case 'confirmed':
+      if ((p.returned ?? 0) > 0 && (p.rejected ?? 0) > 0) return t('{returned} returned and {rejected} not paid: rejected by the bank', { returned: p.returned!, rejected: p.rejected! });
+      if ((p.rejected ?? 0) > 0) return t('{count} not paid: rejected by the bank', { count: p.rejected! });
       if ((p.returned ?? 0) > 0) return t('{count} returned: needs attention', { count: p.returned! });
       if (p.returned === undefined) return t('Bank answered every payment');
       return p.total ? t('Bank confirmed {total} of {total}', { total: p.total }) : t('Bank confirmed every payment');
     case 'settled': return t('Paid — settled');
   }
 }
+
+export type BankResponseBucketKey = 'paid' | 'returned' | 'rejected' | 'waiting';
+export interface BankResponseBucket { key: BankResponseBucketKey; tone: 'bg-success' | 'bg-warning' | 'bg-danger' | 'bg-line-strong'; label: string; amount: number }
+
+/** The bank-response list and bar of the Payroll page: each bucket with its words and money. A rejection reads "not paid", never "returned". */
+export function bankResponseBuckets(t: Translate, split: PayOutSplit): BankResponseBucket[] {
+  const rows: BankResponseBucket[] = [
+    { key: 'paid', tone: 'bg-success', label: t('{count} confirmed paid', { count: split.paid }), amount: split.paidAmount },
+    { key: 'returned', tone: 'bg-warning', label: t('{count} returned', { count: split.returned }), amount: split.returnedAmount },
+  ];
+  if (split.rejected > 0) rows.push({ key: 'rejected', tone: 'bg-danger', label: t('{count} not paid: rejected by the bank', { count: split.rejected }), amount: split.rejectedAmount });
+  rows.push({ key: 'waiting', tone: 'bg-line-strong', label: t('{count} waiting', { count: split.waiting }), amount: split.waitingAmount });
+  return rows;
+}
+
+/** The line under the Response step once the bank answered every payment. */
+export function confirmedResponsePurpose(t: Translate, p: PayOut): string {
+  if ((p.rejected ?? 0) > 0) return t('The bank answered every payment. Some were rejected by the bank and not paid: check the bank statement, then pay them in a new payment batch linked to the original batch.');
+  return (p.returned ?? 0) > 0 ? t('The bank answered every payment. Pay the returned ones in a new payment batch linked to the original batch.') : t('The bank confirmed every payment.');
+}
+
+/** The line under the Response step when the bank rejected the whole file: the bank statement decides what was paid, never "no one". */
+export function rejectedFilePurpose(t: Translate, reason?: string | null): string {
+  return reason
+    ? t('The bank rejected this file: {reason}. Nothing in it is confirmed paid; check the bank statement.', { reason })
+    : t('The bank rejected this file. Nothing in it is confirmed paid; check the bank statement.');
+}
+
+/** Payments the bank returned or rejected: settle stays off until they are paid in a new payment batch. */
+export const notPaidCount = (p: PayOut): number => (p.returned ?? 0) + (p.rejected ?? 0);
+
+/** Why "Settle payments" is off: the count, and what to do first. */
+export function settleBlockedText(t: Translate, p: PayOut): string {
+  return t('Not settled: {count, plural, one {# payment was} other {# payments were}} returned or rejected by the bank. Pay {count, plural, one {it} other {them}} in a new payment batch linked to the original batch first.', { count: notPaidCount(p) });
+}
+
+/** The Next line of the Response step while returned or rejected payments are open (instead of "Finance settles after the bank confirms"). */
+export const settleBlockedNextLine = (t: Translate): string =>
+  t('Next: pay the returned or rejected payments in a new payment batch linked to the original batch. Finance settles after that.');

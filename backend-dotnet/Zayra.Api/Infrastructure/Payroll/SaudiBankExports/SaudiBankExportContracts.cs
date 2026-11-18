@@ -43,9 +43,17 @@ public sealed class SaudiBankExportBatchRequest
     public string? PaymentDate { get; set; }
 }
 
-public sealed record SaudiBankExportIssueDto(string Code, string Message, int? EmployeeId = null, string? Field = null);
+/// <summary><see cref="MessageAr"/> is the Arabic of <see cref="Message"/> where the producer has one (the credit value-date checks); omitted otherwise.</summary>
+public sealed record SaudiBankExportIssueDto(
+    string Code, string Message, int? EmployeeId = null, string? Field = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? MessageAr = null);
 
-public sealed record SaudiBankExportWarningDto(string Code, string Message);
+/// <summary><see cref="MessageAr"/> is the Arabic of <see cref="Message"/> where the producer has one; omitted otherwise.</summary>
+public sealed record SaudiBankExportWarningDto(
+    string Code, string Message,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? MessageAr = null);
 
 public sealed record SaudiBankExportFileDto(string Name, string Sha256);
 

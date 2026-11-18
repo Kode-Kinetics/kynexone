@@ -17042,6 +17042,376 @@ namespace Zayra.Api.Migrations
                     b.ToTable("gosi_contribution_rules", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.GovernmentCredential", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("BaseUrlHost")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("base_url_host");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("body");
+
+                    b.Property<byte[]>("Ciphertext")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("ciphertext");
+
+                    b.Property<string>("ClientIdentifier")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("client_identifier");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<int>("CredentialVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("credential_version");
+
+                    b.Property<int>("DekVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("dek_version");
+
+                    b.Property<string>("Environment")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("environment");
+
+                    b.Property<DateTime?>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at_utc");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("fingerprint");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("kind");
+
+                    b.Property<DateTime?>("LastUsedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_used_at_utc");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at_utc");
+
+                    b.Property<Guid?>("RevokedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("revoked_by");
+
+                    b.Property<DateTime?>("RotatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("rotated_at_utc");
+
+                    b.Property<Guid?>("RotatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotated_by");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("TokenUrlHost")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("token_url_host");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "Body", "Environment")
+                        .IsUnique()
+                        .HasDatabaseName("ux_government_credentials__tenant_body_env")
+                        .HasFilter("company_id IS NULL");
+
+                    b.HasIndex("TenantId", "CompanyId", "Body", "Environment")
+                        .IsUnique()
+                        .HasDatabaseName("ux_government_credentials__company_body_env")
+                        .HasFilter("company_id IS NOT NULL");
+
+                    b.ToTable("government_credentials", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_government_credentials__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb')");
+
+                            t.HasCheckConstraint("ck_government_credentials__ciphertext", "CASE WHEN revoked_at_utc IS NOT NULL THEN octet_length(ciphertext) = 0 WHEN octet_length(ciphertext) >= 30 THEN get_byte(ciphertext, 0) IN (1, 2) ELSE false END");
+
+                            t.HasCheckConstraint("ck_government_credentials__environment", "environment IN ('sandbox','production')");
+
+                            t.HasCheckConstraint("ck_government_credentials__kind", "kind IN ('oauth_client','api_key','private_key','certificate')");
+
+                            t.HasCheckConstraint("ck_government_credentials__revoked", "(revoked_at_utc IS NULL) = (revoked_by IS NULL)");
+
+                            t.HasCheckConstraint("ck_government_credentials__rotation", "(rotated_at_utc IS NULL) = (credential_version = 1)");
+
+                            t.HasCheckConstraint("ck_government_credentials__version", "credential_version >= 1 AND dek_version BETWEEN 1 AND 250");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.GovernmentExchange", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AccountFingerprint")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("account_fingerprint");
+
+                    b.Property<Guid?>("ActorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<string>("Adapter")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("adapter");
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<string>("ArtifactSecondarySha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("artifact_secondary_sha256");
+
+                    b.Property<string>("ArtifactSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("artifact_sha256");
+
+                    b.Property<string>("BatchReference")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("batch_reference");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("body");
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("channel");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at_utc");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("Environment")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("environment");
+
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("error_code");
+
+                    b.Property<string>("ExternalReference")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("external_reference");
+
+                    b.Property<int?>("HttpStatus")
+                        .HasColumnType("integer")
+                        .HasColumnName("http_status");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<bool>("IsLive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_live");
+
+                    b.Property<int?>("ItemCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("item_count");
+
+                    b.Property<Guid?>("JobId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("job_id");
+
+                    b.Property<DateTime?>("LastPolledAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_polled_at_utc");
+
+                    b.Property<string>("MaskedPreview")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("masked_preview");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("operation");
+
+                    b.Property<int>("PollCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("poll_count");
+
+                    b.Property<string>("RequestSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("request_sha256");
+
+                    b.Property<string>("Resolution")
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("resolution");
+
+                    b.Property<string>("ResolutionReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("resolution_reason");
+
+                    b.Property<DateTime?>("ResolvedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("resolved_at_utc");
+
+                    b.Property<Guid?>("ResolvedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("resolved_by_user_id");
+
+                    b.Property<string>("ResponseSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("response_sha256");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("state");
+
+                    b.Property<int>("StateVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("state_version");
+
+                    b.Property<string>("SubjectId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("subject_id");
+
+                    b.Property<string>("SubjectType")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("subject_type");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<decimal?>("TotalAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("total_amount");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "Body", "Environment", "ExternalReference")
+                        .IsUnique()
+                        .HasDatabaseName("ux_government_exchanges__bank_reference")
+                        .HasFilter("external_reference IS NOT NULL");
+
+                    b.HasIndex("TenantId", "Body", "Operation", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_government_exchanges__tenant_body_operation_key");
+
+                    b.HasIndex("TenantId", "Body", "Environment", "SubjectType", "SubjectId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_government_exchanges__open_batch")
+                        .HasFilter("operation = 'payroll.submit' AND subject_type = 'PaymentBatch' AND subject_id IS NOT NULL AND body <> 'bank_file' AND state IN ('SubmitIntended','Unknown','Accepted','Initiated','Validated','InProgress','Completed','Rejected','Recorded')");
+
+                    b.HasIndex("TenantId", "Body", "SubjectType", "SubjectId", "CreatedAtUtc")
+                        .HasDatabaseName("ix_government_exchanges__tenant_subject");
+
+                    b.ToTable("government_exchanges", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_government_exchanges__api_environment", "channel <> 'api' OR environment IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_government_exchanges__body", "body IN ('qiwa','gosi','muqeem','takamol','bank_anb','bank_file')");
+
+                            t.HasCheckConstraint("ck_government_exchanges__channel", "channel IN ('file_out','file_in','manual','api')");
+
+                            t.HasCheckConstraint("ck_government_exchanges__counts", "state_version >= 1 AND poll_count >= 0 AND (item_count IS NULL OR item_count >= 0)");
+
+                            t.HasCheckConstraint("ck_government_exchanges__environment", "environment IS NULL OR environment IN ('sandbox','production')");
+
+                            t.HasCheckConstraint("ck_government_exchanges__hashes", "(request_sha256 IS NULL OR request_sha256 ~ '^[0-9a-f]{64}$') AND (response_sha256 IS NULL OR response_sha256 ~ '^[0-9a-f]{64}$') AND (artifact_sha256 IS NULL OR artifact_sha256 ~ '^[0-9a-f]{64}$') AND (artifact_secondary_sha256 IS NULL OR artifact_secondary_sha256 ~ '^[0-9a-f]{64}$')");
+
+                            t.HasCheckConstraint("ck_government_exchanges__intent", "state <> 'SubmitIntended' OR (artifact_sha256 IS NOT NULL AND subject_id IS NOT NULL AND company_id IS NOT NULL AND account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL AND operation = 'payroll.submit')");
+
+                            t.HasCheckConstraint("ck_government_exchanges__live_channel", "NOT is_live OR channel = 'api'");
+
+                            t.HasCheckConstraint("ck_government_exchanges__live_states", "state NOT IN ('Accepted','Initiated','Validated','InProgress','Completed','Rejected') OR (is_live AND channel = 'api')");
+
+                            t.HasCheckConstraint("ck_government_exchanges__resolution", "(resolution IS NULL AND resolved_by_user_id IS NULL AND resolved_at_utc IS NULL) OR (resolution IN ('bank_has_it','bank_does_not') AND resolved_by_user_id IS NOT NULL AND resolved_at_utc IS NOT NULL AND resolution_reason IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_government_exchanges__second_person", "resolved_by_user_id IS NULL OR resolved_by_user_id IS DISTINCT FROM actor_user_id");
+
+                            t.HasCheckConstraint("ck_government_exchanges__state", "state IN ('Attempted','Recorded','Simulated','Refused','Failed','SubmitIntended','Accepted','RejectedStructure','Unknown','ReleasedAfterUnknown','Initiated','Validated','InProgress','Completed','Rejected')");
+
+                            t.HasCheckConstraint("ck_government_exchanges__submission", "operation <> 'payroll.submit' OR (subject_type = 'PaymentBatch' AND subject_id IS NOT NULL AND body <> 'bank_file' AND state <> 'Attempted' AND environment IS NOT NULL AND (channel = 'api' OR environment = 'production'))");
+                        });
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.Grade", b =>
                 {
                     b.Property<Guid>("Id")
@@ -31090,6 +31460,11 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "CompanyId");
 
+                    b.HasIndex("TenantId", "PaymentReference")
+                        .IsUnique()
+                        .HasDatabaseName("ux_salary_advances_payment_reference_unattributed")
+                        .HasFilter("company_id IS NULL AND payment_reference IS NOT NULL");
+
                     b.HasIndex("TenantId", "CompanyId", "PaymentReference")
                         .IsUnique()
                         .HasDatabaseName("ux_salary_advances_payment_reference")
@@ -31098,11 +31473,6 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "EmployeeId", "Status");
 
                     b.HasIndex("TenantId", "EmployeeIntId", "Status");
-
-                    b.HasIndex("TenantId", "PaymentReference")
-                        .IsUnique()
-                        .HasDatabaseName("ux_salary_advances_payment_reference_unattributed")
-                        .HasFilter("company_id IS NULL AND payment_reference IS NOT NULL");
 
                     b.ToTable("salary_advances", (string)null);
                 });
@@ -34835,6 +35205,34 @@ namespace Zayra.Api.Migrations
                     b.HasOne("Zayra.Api.Models.GlAccount", null)
                         .WithMany()
                         .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.GovernmentCredential", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("Zayra.Api.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.GovernmentExchange", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });

@@ -431,6 +431,8 @@ export interface PayrollPaymentBatch {
   unconfirmedPayments?: { count: number; total: number };
   /** Payments the bank returned or rejected that are not paid again yet (money that did NOT reach the employee). Absent from an older API. */
   unresolvedReturns?: { count: number; total: number };
+  /** Payments the bank rejected (the bank refused the instruction: not paid), counted apart from the returned ones. Absent from an older API. */
+  unresolvedRejections?: { count: number; total: number };
   /** Share (0..1) of the batch's payments the bank has spoken about: paid, returned or rejected. Absent from an older API. */
   confirmationCoverage?: number;
 }

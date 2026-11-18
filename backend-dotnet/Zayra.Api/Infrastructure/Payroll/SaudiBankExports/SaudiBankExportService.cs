@@ -4,6 +4,8 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Zayra.Api.Data;
+using Zayra.Api.Application.Attendance;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Models;
 using Zayra.Api.Infrastructure.Finance;
@@ -58,12 +60,21 @@ public sealed partial class SaudiBankExportService
 
     private readonly ZayraDbContext _db;
     private readonly ISaudiBankEmployeeAddressSource? _addresses;
+    private readonly TimeProvider _time;
 
-    public SaudiBankExportService(ZayraDbContext db, ISaudiBankEmployeeAddressSource? addresses = null)
+    /// <param name="time">The clock "today" is read from for the credit value date (Riyadh date, the tenant clock's Saudi
+    /// rule). Tests pass a fixed one.</param>
+    public SaudiBankExportService(ZayraDbContext db, ISaudiBankEmployeeAddressSource? addresses = null, TimeProvider? time = null)
     {
         _db = db;
         _addresses = addresses;
+        _time = time ?? TimeProvider.System;
     }
+
+    /// <summary>Today in Riyadh: a Saudi bank's value date is a Saudi date, whatever the tenant's own time zone
+    /// (<see cref="TenantClock"/>'s rule for Saudi tenants).</summary>
+    private DateOnly TodayInRiyadh() =>
+        TenantTimeZone.LocalDate(TenantTimeZone.FromId(TenantClock.RiyadhTimeZoneId), _time.GetUtcNow().UtcDateTime);
 
     public static string SettingsKey(Guid companyId) => $"saudi-bank-export.company.{companyId:D}";
     public static string DownloadUrl(Guid batchId) => $"/api/payroll/bank-exports/batches/{batchId:D}/download";
@@ -200,12 +211,15 @@ public sealed partial class SaudiBankExportService
             if (_db.Database.IsNpgsql())
                 await _db.PayrollRuns.AsNoTracking().TagWith(RowLockingInterceptor.ForUpdateTag)
                     .Where(r => r.TenantId == tenantId && r.Id == run0.Id).Select(r => r.Id).FirstOrDefaultAsync(ct);
-            var prepared = await PrepareAsync(tenantId, batchId, request, ct);
+            // The value-date checks (a past date, Friday or Saturday) apply only when a NEW export is generated (final gate P2-20).
+            // Asking again for an export that already exists is compared byte for byte with the frozen one; its date passing since
+            // then does not make it a different export.
+            var existing = await FindEnvelopeAsync(tenantId, batchId, ct);
+            var prepared = await PrepareAsync(tenantId, batchId, request, ct, checkValueDate: existing is null);
             if (prepared is null) return new SaudiBankExportResult<SaudiBankExportGeneratedDto>(SaudiBankExportOutcome.NotFound, null);
             if (prepared.CompanyId != companyId)
                 return new(SaudiBankExportOutcome.Conflict, null, "batch_company_changed", "The batch's legal entity changed during the request.");
 
-            var existing = await FindEnvelopeAsync(tenantId, batchId, ct);
             var existingCustom = await FindCustomExportAsync(tenantId, batchId, ct);
             if (prepared.Custom is not null)
                 return await GenerateCustomAsync(tenantId, actorId, batchId, companyId, request, prepared, existing is not null, existingCustom, ct);
@@ -352,8 +366,9 @@ public sealed partial class SaudiBankExportService
         string MolEstablishmentId, IReadOnlyList<PaymentBatchExclusion> Exclusions,
         CustomSelection? Custom = null, IReadOnlyList<string>? PreviewLines = null, string? PreviewEncoding = null, string? PreviewLineEnding = null);
 
+    /// <param name="checkValueDate">False only to compare a request with the export that already exists for the batch.</param>
     private async Task<Prepared?> PrepareAsync(Guid tenantId, Guid batchId, SaudiBankExportBatchRequest request, CancellationToken ct,
-        CustomSelection? preview = null)
+        CustomSelection? preview = null, bool checkValueDate = true)
     {
         var (batch, run) = await LoadBatchAndRunAsync(tenantId, batchId, ct);
         if (batch is null || run is null) return null;
@@ -404,7 +419,8 @@ public sealed partial class SaudiBankExportService
         if (!dateOk) errors.Add(new("payment_date_invalid", "Payment date must be YYYY-MM-DD.", null, "paymentDate"));
         else if (!isCustom && paymentDate.Year is < 2000 or > 2099)
             errors.Add(new("payment_date_unsupported", "This YYMMDD exporter supports payment dates in 2000–2099 only.", null, "paymentDate"));
-        else if (paymentDate < DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeBySystemTimeZoneId(DateTime.UtcNow, "Asia/Riyadh")))
+        else if (isCustom && paymentDate < TodayInRiyadh())
+            // The ANB file refuses a past date in the generator (value_date_in_past); a custom layout only warns.
             warnings.Add(new("payment_date_in_past", "The credit value date is in the past; the bank may reject or re-date it."));
 
         var company = await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == companyId && !c.IsDeleted, ct);
@@ -624,7 +640,12 @@ public sealed partial class SaudiBankExportService
         warnings.AddRange(ksa.Warnings);
         AnbGenerationResult generated;
         IReadOnlyList<string>? previewLines = null;
-        if (custom is null && !isCustom) generated = AnbConnectCsvGenerator.Generate(header, rows, batch.TotalAmount);
+        if (custom is null && !isCustom)
+        {
+            generated = AnbConnectCsvGenerator.Generate(header, rows, batch.TotalAmount,
+                checkValueDate ? AnbValueDateRules.WithoutHolidayCalendar(TodayInRiyadh()) : AnbValueDateRules.ForTheExistingExport);
+            warnings.AddRange(generated.Warnings);
+        }
         else if (custom is null) generated = new AnbGenerationResult(Array.Empty<SaudiBankExportIssueDto>(), null, 0, 0m);   // the template problem is already an error
         else
         {

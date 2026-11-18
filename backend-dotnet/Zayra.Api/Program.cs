@@ -555,11 +555,12 @@ builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFor
     Zayra.Api.Infrastructure.Finance.ZohoBooksJournalFormatter>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IJournalExportFormatter,
     Zayra.Api.Infrastructure.Finance.QuickBooksOnlineJournalFormatter>();
-builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmationParser,
-    Zayra.Api.Infrastructure.Finance.GenericCsvBankConfirmationParser>();
-builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmationParser,
-    Zayra.Api.Infrastructure.Finance.WpsAckBankConfirmationParser>();
+// Generic CSV and WPS acknowledgement readers; the bank-returned-file reader only when Payroll:WpsReturnedFileParser:Enabled
+// is true (and then only when an import explicitly selects format=wps-returned-file).
+Zayra.Api.Infrastructure.Finance.BankConfirmationParserRegistration.AddBankConfirmationParsers(builder.Services, builder.Configuration);
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.JournalExportService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.IReturnedFileClaim>(sp =>
+    new Zayra.Api.Infrastructure.Finance.ReturnedFileClaim(sp.GetRequiredService<Zayra.Api.Infrastructure.Government.IGovernmentExchangeRecorder>()));
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.BankConfirmationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.PeriodHandoffReconciler>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.OpeningBalanceBackfillService>();
@@ -592,9 +593,12 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.FieldEncryption.DataProtecti
 // recorded (Qiwa:PartnerAgreementReference). The switch alone registers the refusing adapter: no
 // network call, 501 on every Qiwa write, never "Filed with Qiwa". See QiwaLiveAdapterPolicy.
 builder.Services.AddSingleton<QiwaOAuthTokenCache>();
-// RemoveAllLoggers: the status lookup puts the employee's national ID / iqama number in the URL path, and
-// IHttpClientFactory's default handler logs every request URI at Information. Failures are logged by the adapter.
-builder.Services.AddHttpClient("qiwa", c => c.BaseAddress = new Uri("https://api.qiwa.tech")).ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(30)).RemoveAllLoggers();
+// One guarded named client per government or bank body, used only through GovernmentHttp, which picks the base URL from the
+// per-environment allow-list (no BaseAddress, so nothing can fall back to the production host: security R8). The primary
+// handler never follows a redirect, uses no proxy or cookies and refuses internal addresses at connect time. RemoveAllLoggers:
+// the Qiwa status lookup puts the employee's national ID / iqama number in the URL path, and IHttpClientFactory's default
+// handler logs every request URI at Information. Failures are logged by the adapter.
+Zayra.Api.Infrastructure.Government.GovernmentHttp.AddGovernmentHttpClients(builder.Services);
 switch (QiwaLiveAdapterPolicy.Decide(builder.Configuration))
 {
     case QiwaLiveAdapterPolicy.Mode.Live:
@@ -610,6 +614,26 @@ switch (QiwaLiveAdapterPolicy.Decide(builder.Configuration))
         break;
 }
 builder.Services.AddHostedService<QiwaSyncWorker>();
+
+// Government and bank integration foundation: all OFF. The live gate (GovernmentLivePolicy) needs a recorded agreement per
+// body, the tenant's consent opt-in, a stored credential and the operator switch; the credential store refuses everything
+// until field encryption is on with a configured KEK, and production credentials until Government:Credentials:AcceptLiveCredentials
+// is true. Muqeem, GOSI and Takamol have placeholder providers only.
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.DisabledMuqeemProvider>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.DisabledGosiProvider>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.DisabledTakamolProvider>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.IMuqeemProvider>(sp => sp.GetRequiredService<Zayra.Api.Infrastructure.Government.DisabledMuqeemProvider>());
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.IGosiProvider>(sp => sp.GetRequiredService<Zayra.Api.Infrastructure.Government.DisabledGosiProvider>());
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.ITakamolProvider>(sp => sp.GetRequiredService<Zayra.Api.Infrastructure.Government.DisabledTakamolProvider>());
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.IGovernmentProvider>(sp => sp.GetRequiredService<Zayra.Api.Infrastructure.Government.DisabledMuqeemProvider>());
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.IGovernmentProvider>(sp => sp.GetRequiredService<Zayra.Api.Infrastructure.Government.DisabledGosiProvider>());
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Government.IGovernmentProvider>(sp => sp.GetRequiredService<Zayra.Api.Infrastructure.Government.DisabledTakamolProvider>());
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Government.Credentials.GovernmentCredentialStore>();
+// The ledger writes in its own unit of work (a child scope); inside the request's open transaction, under a savepoint.
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Government.IGovernmentExchangeRecorder>(sp =>
+    new Zayra.Api.Infrastructure.Government.GovernmentExchangeRecorder(sp.GetRequiredService<IServiceScopeFactory>(),
+        sp.GetRequiredService<Zayra.Api.Data.ZayraDbContext>(), sp.GetRequiredService<IAuditService>()));
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Government.GovernmentCapabilitiesService>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Operations.WorkerHeartbeatReporter>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Reports.ReportScheduleWorker>();
 builder.Services.AddHostedService<AiInsightEngine>();

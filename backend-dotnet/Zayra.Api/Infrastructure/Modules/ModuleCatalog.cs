@@ -326,6 +326,8 @@ public static class ModuleCatalog
                 "/api/country-packs", "/api/statutory-rules", "/api/migrations", "/api/pricing",
                 "/api/features", "/api/admin", "/api/company-tax-policies",
                 "/api/company-compliance-profiles", "/api/finance/gl", "/api/finance/rates", "/api/finance/opening-balance-journals",
+                // Government and bank connection settings: capabilities (read by every screen) and integration credentials.
+                "/api/government",
             ],
             NavPaths = ["/setup", "/tenant-admin", "/tax-policies", "/compliance-profiles", "/opening-balances"],
         },
@@ -568,6 +570,18 @@ public static class ModuleCatalog
                 "The Saudi bank-instruction export (ANB Connect) is on for every Saudi company by default. Only the platform team can "
                 + "switch it off for a tenant, and Tenant Admin cannot. It owns no route: the bank-export endpoints read it. "
                 + "See PlatformDefaultOnFeatures.",
+            [FeatureKeys.GovQiwaApi] =
+                "Sending this tenant's data to Qiwa through the live connection is an opt-in the platform team switches on per tenant, "
+                + "and only with the customer's recorded consent. The Qiwa data check is unaffected. Tenant Admin cannot switch it. It owns no route.",
+            [FeatureKeys.GovGosiApi] =
+                "Sending this tenant's data to GOSI over an API is an opt-in the platform team switches on per tenant, and only "
+                + "with the customer's recorded consent. It is off unless enabled, and Tenant Admin cannot switch it. It owns no route.",
+            [FeatureKeys.GovMuqeem] =
+                "Sending this tenant's data to Muqeem over an API is an opt-in the platform team switches on per tenant, and only "
+                + "with the customer's recorded consent. It is off unless enabled, and Tenant Admin cannot switch it. It owns no route.",
+            [FeatureKeys.BankApiAnb] =
+                "Submitting this tenant's payroll file to ANB over its API is an opt-in the platform team switches on per tenant, "
+                + "and only with the customer's recorded consent. It is off unless enabled, and Tenant Admin cannot switch it. It owns no route.",
             ["demo_seed_version"] =
                 "Not a feature. The demo seeder stamps its version into this row; it is not a module.",
         };

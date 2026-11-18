@@ -4199,6 +4199,8 @@ public partial class PayrollController : ControllerBase
                 .Select(x => new { x.EmployeeId, x.Amount, x.Status })
                 .ToListAsync(cancellationToken);
             var d4Failed = d4Records.Where(x => PaymentRecordStatuses.IsFailed(x.Status)).ToList();
+            var d4Returned = d4Failed.Where(x => string.Equals(x.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase)).ToList();
+            var d4Rejected = d4Failed.Where(x => string.Equals(x.Status, PaymentRecordStatuses.Rejected, StringComparison.OrdinalIgnoreCase)).ToList();
             var d4Unconfirmed = d4Records
                 .Where(x => !PaymentRecordStatuses.IsConfirmed(x.Status) && !PaymentRecordStatuses.IsCancelled(x.Status))
                 .ToList();
@@ -4206,15 +4208,21 @@ public partial class PayrollController : ControllerBase
                 return UnprocessableEntity(new
                 {
                     error   = "payments_not_reconciled",
-                    message = "This batch cannot reach Reconciled while payments are returned or unconfirmed by the "
-                            + "bank. Import the bank/WPS response (POST payment-batches/{id}/bank-confirmations) and "
-                            + "resolve any returns first — reconciling now would close the month over money that "
-                            + "came back or was never confirmed.",
-                    returnedCount = d4Failed.Count,
-                    returnedTotal = d4Failed.Sum(x => x.Amount),
+                    message = Infrastructure.Finance.BankOutcomeMessages.NotReconciled(d4Returned.Count, d4Rejected.Count, d4Unconfirmed.Count),
+                    messageAr = Infrastructure.Finance.BankOutcomeMessages.NotReconciledAr(d4Returned.Count, d4Rejected.Count, d4Unconfirmed.Count),
+                    // Returned (the money came back) and rejected ("Not paid: rejected by bank") are counted apart.
+                    returnedCount = d4Returned.Count,
+                    returnedTotal = d4Returned.Sum(x => x.Amount),
+                    rejectedCount = d4Rejected.Count,
+                    rejectedTotal = d4Rejected.Sum(x => x.Amount),
                     unconfirmedCount = d4Unconfirmed.Count,
                     unconfirmedTotal = d4Unconfirmed.Sum(x => x.Amount),
                 });
+
+            // CTO ruling N4: a line held for a person (a rejection after Paid, a duplicate refusal, a returned/rejected swap)
+            // keeps the batch open, even when every record reads Paid.
+            if (await HeldBankLinesRefusalAsync(tenantId, batch.Id, Infrastructure.Finance.BankOutcomeMessages.ReconcileAction, cancellationToken) is { } heldRefusal)
+                return heldRefusal;
         }
 
         batch.WpsStatus = req.Status;
@@ -4541,6 +4549,10 @@ public partial class PayrollController : ControllerBase
             return BadRequest(new { error = "run_not_locked", message = "Only a Locked run can be settled." });
         if (batch.WpsStatus != WpsStatuses.Accepted)
             return BadRequest(new { error = "batch_not_accepted", message = $"Only an Accepted payment batch can be settled (current: {batch.WpsStatus}). Mark the WPS/bank file Accepted first." });
+
+        // CTO ruling N4: no cash journal while a line is held for a person: the bank may have refused a salary that reads Paid.
+        if (await HeldBankLinesRefusalAsync(tenantId, batch.Id, Infrastructure.Finance.BankOutcomeMessages.LedgerSettleAction, cancellationToken) is { } settleHeldRefusal)
+            return settleHeldRefusal;
 
         // Accrual must exist — cannot settle an un-accrued run.
         var accrualLines = await _db.FinanceGlEntries
@@ -5976,6 +5988,22 @@ public partial class PayrollController : ControllerBase
         return Ok(structs.Select(s => SalaryStructureAssignmentDto.Project(s, true, linesByRecord.GetValueOrDefault(s.Id))).ToList());
     }
 
+    /// <summary>CTO ruling N4: the refusal when a batch has a line held for a person; null when none is open.</summary>
+    private async Task<IActionResult?> HeldBankLinesRefusalAsync(Guid tenantId, Guid batchId, string action, CancellationToken ct)
+    {
+        var held = await Infrastructure.Finance.BankOutcomeLedger.OpenHoldsAsync(_db, tenantId, batchId, ct);
+        if (held.Count == 0) return null;
+        var (message, messageAr) = Infrastructure.Finance.BankOutcomeMessages.HeldForPerson(action, held.Count);
+        return UnprocessableEntity(new
+        {
+            error = "bank_lines_held_for_person",
+            action,
+            message,
+            messageAr,
+            heldForPerson = held.Select(Infrastructure.Finance.BankOutcomeLedger.View).ToList(),
+        });
+    }
+
     [HttpGet("payment-batches")]
     [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListPaymentBatches([FromQuery] Guid? runId, CancellationToken cancellationToken)
@@ -6041,6 +6069,12 @@ public partial class PayrollController : ControllerBase
             : await _db.PayrollPaymentRecords.AsNoTracking()
                 .Where(r => r.TenantId == tenantId && d4BatchIds.Contains(r.PaymentBatchId))
                 .ToListAsync(cancellationToken);
+        // One read for every batch's bank lines: the open holds for a person count against "presents clean" (N4).
+        var d4Confirmations = d4BatchIds.Count == 0
+            ? new List<BankPaymentConfirmation>()
+            : await _db.BankPaymentConfirmations.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && d4BatchIds.Contains(c.PaymentBatchId))
+                .ToListAsync(cancellationToken);
 
         return Ok(batches.Select(b =>
         {
@@ -6060,11 +6094,14 @@ public partial class PayrollController : ControllerBase
                 b.Id, b.TenantId, b.PayrollRunId, b.BatchNumber, b.PaymentMethod, b.TotalAmount, b.Currency,
                 b.Status, b.WpsStatus, b.WpsStatusChangedAtUtc, b.WpsSubmissionReference, b.WpsRejectionReason,
                 b.CreatedAtUtc,
-                unresolvedReturns = new { count = cov.FailedCount, total = cov.FailedTotal },
+                // Returned only: the money came back. A rejection (never left) is counted apart.
+                unresolvedReturns = new { count = cov.ReturnedCount, total = cov.ReturnedTotal },
+                unresolvedRejections = new { count = cov.RejectedCount, total = cov.RejectedTotal },
                 unconfirmedPayments = new { count = cov.UnconfirmedCount, total = cov.UnconfirmedTotal },
                 confirmationCoverage = cov.ConfirmationCoverage,
-                presentsCleanButIsNot = b.WpsStatus is WpsStatuses.Paid or WpsStatuses.Reconciled
-                                        && (cov.FailedCount > 0 || cov.UnconfirmedCount > 0),
+                presentsCleanButIsNot = Infrastructure.Finance.BankOutcomeLedger.PresentsCleanButIsNot(b.WpsStatus, cov,
+                    Infrastructure.Finance.BankOutcomeLedger.BlockingHolds(
+                        d4Records.Where(r => r.PaymentBatchId == b.Id), d4Confirmations.Where(c => c.PaymentBatchId == b.Id)).Count),
                 acceptanceEvidenceCount = evidence.Count,
                 latestEvidenceId = latestEvidence?.EvidenceId,
                 effectiveWpsStatus = effective,
@@ -6137,7 +6174,9 @@ public partial class PayrollController : ControllerBase
                 r.Status,
                 r.WpsReference,
                 Iban = canSeeIban ? r.Iban : Infrastructure.Payroll.SifFileGenerator.MaskIban(r.Iban),
-                isReturned = PaymentRecordStatuses.IsFailed(r.Status),
+                // Returned = the money came back; Rejected = "Not paid: rejected by bank", it never left.
+                isReturned = string.Equals(r.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase),
+                isRejected = string.Equals(r.Status, PaymentRecordStatuses.Rejected, StringComparison.OrdinalIgnoreCase),
                 bankConfirmed = PaymentRecordStatuses.IsConfirmed(r.Status),
                 returnReasonCode = latest is null || latest.Outcome != BankConfirmationOutcomes.Returned ? null : latest.ReasonCode,
                 returnReasonText = latest is null || latest.Outcome != BankConfirmationOutcomes.Returned ? null : latest.ReasonText,
@@ -7990,28 +8029,9 @@ public partial class PayrollController : ControllerBase
     /// establishments. Other countries, and KSA without bank-file settings: the legal entity's own GCC
     /// compliance row, else the tenant-wide row. Null when none is recorded — the caller refuses.
     /// </summary>
-    private async Task<(string? Id, Infrastructure.Payroll.SaudiBankExports.SaudiBankExportIssueDto? Conflict)> ResolveWpsEstablishmentIdAsync(
-        Guid tenantId, Guid? companyId, bool isKsa, CancellationToken ct)
-    {
-        var rows = await _db.GCCComplianceSettings.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.IsActive && (x.CompanyId == null || x.CompanyId == companyId))
-            .Select(x => new { x.CompanyId, x.WpsAgentId })
-            .ToListAsync(ct);
-        var ownAgentId = rows.FirstOrDefault(x => companyId != null && x.CompanyId == companyId && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId;
-        var tenantAgentId = rows.FirstOrDefault(x => x.CompanyId == null && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId;
-        // Decision 10: the company's own MOL establishment number is the authority when it is recorded.
-        var companyValue = companyId is Guid id
-            ? await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == id).Select(c => c.WpsEmployerId).FirstOrDefaultAsync(ct)
-            : null;
-        // A recorded company number is checked only against ids recorded for THIS company. The tenant-wide row is a
-        // fallback for companies with no number of their own: in a group every legal entity has its own establishment,
-        // so the workspace default must not refuse a sister company's file.
-        var agentId = string.IsNullOrWhiteSpace(companyValue) ? ownAgentId ?? tenantAgentId : ownAgentId;
-        string? mol = null;
-        if (isKsa && companyId is Guid c)
-            mol = (await new Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService(_db).GetSettingsAsync(tenantId, c, ct)).MolEstablishmentId;
-        return Infrastructure.Payroll.SaudiBankExports.WpsEstablishmentAuthority.Resolve(companyValue, mol, agentId, isKsa && companyId is not null);
-    }
+    private Task<(string? Id, Infrastructure.Payroll.SaudiBankExports.SaudiBankExportIssueDto? Conflict)> ResolveWpsEstablishmentIdAsync(
+        Guid tenantId, Guid? companyId, bool isKsa, CancellationToken ct) =>
+        Infrastructure.Payroll.SaudiBankExports.WpsEstablishmentResolver.ResolveAsync(_db, tenantId, companyId, isKsa, ct);
 
     /// <summary>Null when the id is usable. KSA applies the [MOL-ESTBID] rule; every country refuses a
     /// missing or all-zero id.</summary>

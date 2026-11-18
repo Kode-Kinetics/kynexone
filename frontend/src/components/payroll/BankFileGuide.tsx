@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type Ref } from 'react';
 import { CheckCircle2, Eye, Loader2 } from 'lucide-react';
 import { useT } from '../../hooks/useT';
-import { PAY_OUT_STEPS, type PayOut, type PayOutNextKind, type PayOutReason, type PayOutStage, type PayOutStep, type PayOutStepKey } from '../../lib/payOut';
+import { PAY_OUT_STEPS, notPaidCount, settleBlockedNextLine, settleBlockedText, type PayOut, type PayOutNextKind, type PayOutReason, type PayOutStage, type PayOutStep, type PayOutStepKey } from '../../lib/payOut';
 import { PAYMENT_ACTION_DENIED } from '../../lib/payrollPaymentAccess';
 import { ActionBar } from '../ui/ActionBar';
 import { Button } from '../ui/Button';
@@ -107,7 +107,7 @@ const noteText = (t: T, step: PayOutStep): string => {
 };
 
 /** Why a step or the primary cannot move: a sentence that also says what to do. */
-export const payOutReasonText = (t: T, reason: PayOutReason): string => {
+export const payOutReasonText = (t: T, reason: PayOutReason, p: PayOut): string => {
   switch (reason) {
     case 'run_not_locked': return t('Lock the run first: a payment batch can only be created once the run is Locked.');
     case 'no_permission_create': return t(PAYMENT_ACTION_DENIED.create);
@@ -124,6 +124,7 @@ export const payOutReasonText = (t: T, reason: PayOutReason): string => {
     case 'submit_not_allowed': return t('This batch can’t be recorded as submitted from its current status.');
     case 'rejected_ask_admin': return t('Ask your payroll administrator.');
     case 'tie_mismatch': return t('The file total differs from the approved run.');
+    case 'payments_not_paid': return settleBlockedText(t, p);
   }
 };
 
@@ -143,7 +144,9 @@ function nextLine(t: T, p: PayOut): string | null {
         : t('Next: File details — choose the salary credit date and create the file.');
     case 'create': return t('Next: Send to bank — download the file and hand it to your bank.');
     case 'send': return p.status === 'downloaded' ? t('Next: Bank response — the bank confirms each payment.') : t('Next: Record it as submitted once the bank has it.');
-    case 'response': return p.status === 'rejected' ? t('Next: Check employees again on the corrected batch.') : t('Next: Finance settles the payments after the bank confirms.');
+    case 'response':
+      if (p.status === 'rejected') return t('Next: Check employees again on the corrected batch.');
+      return p.status === 'confirmed' && notPaidCount(p) > 0 ? settleBlockedNextLine(t) : t('Next: Finance settles the payments after the bank confirms.');
     case 'finished': return p.status === 'confirmed' && !p.next ? t('Finance settles the payments next.') : null;
   }
 }
@@ -235,7 +238,7 @@ export function BankFileGuide({ payOut, loading = false, confirmation = '', conf
   const disabled = !!payOut.next?.disabled || !!action?.disabled;
   // The tie-out reason carries its amount (the tab formats it in the batch's currency); every other reason is the stage's own sentence.
   const reason = payOut.next?.reason === 'tie_mismatch' && action?.reason ? action.reason
-    : payOut.next?.reason ? payOutReasonText(t, payOut.next.reason) : action?.reason ?? null;
+    : payOut.next?.reason ? payOutReasonText(t, payOut.next.reason, payOut) : action?.reason ?? null;
   const next = viewingStep ? null : panel?.next ?? nextLine(t, payOut);
   const nextName = stage === 'batch' || stage === 'setup' ? stepName(t, 'check') : stage === 'check' ? stepName(t, 'create') : stage === 'create' ? stepName(t, 'send') : stage === 'send' && payOut.status === 'downloaded' ? stepName(t, 'response') : null;
 
