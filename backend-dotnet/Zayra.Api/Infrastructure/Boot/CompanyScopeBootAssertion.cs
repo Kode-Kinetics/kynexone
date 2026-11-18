@@ -46,6 +46,11 @@ public static class CompanyScopeBootAssertion
         ["PayrollRuleChangeRequest"] = "Company configuration child (a pending change to one company's payroll rules): non-nullable Guid CompanyId. " +
                                        "It is decided by payroll approvers, whose company scope is checked by CompanyPayrollRulesController " +
                                        "(CanSeeCompanyAsync, group-level or the company named in the caller's scope) before any read or write. ITenantOwned applies.",
+        ["PerformanceCycle"] = "Enrolment target, not ownership: CompanyId (and DepartmentId) name WHO a launched cycle enrols " +
+            "(PerformanceService.EnrollEmployeesAsync); null = the whole tenant, launchable only with a single company. " +
+            "Cycle rows carry no employee data; every review, enrolment, calibration and analytics read is cut to the caller's " +
+            "employee scope (IDataScopeService), and launch/advance/close stay group-level (CyclesController.RequireGroupScopeAsync). " +
+            "A company filter here would also change which cycles the merit and talent joins see. ITenantOwned applies.",
         ["Branch"] = "Org-structure child: non-nullable Guid CompanyId (a branch cannot exist " +
                      "outside a company); visibility follows its parent Company, and the " +
                      "nullable-CompanyId interface contract cannot apply.",
