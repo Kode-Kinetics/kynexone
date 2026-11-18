@@ -620,13 +620,18 @@ public sealed class BankConfirmationService
                 // Partial credit is real. Overwriting the record's amount-bearing status on a different
                 // figure would silently restate what the employee received.
                 apply = false;
-                hold = "amount_mismatch_held";
+                // A rejection after Paid is the stronger contradiction: it keeps its own hold (and its way out) even when the
+                // amount also differs, so a later PAID line cannot close it (final gate Fable P1-1).
+                var rejectionAfterPaid = string.Equals(previous, PaymentRecordStatuses.Paid, StringComparison.OrdinalIgnoreCase)
+                                         && row.Outcome == BankConfirmationOutcomes.Rejected;
+                hold = rejectionAfterPaid ? BankOutcomeHolds.PaidThenRejected : BankOutcomeHolds.AmountMismatch;
                 result.AmountMismatchesHeld.Add(new
                 {
                     paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
                     recordAmount = record.Amount, confirmedAmount, delta = confirmedAmount - record.Amount,
                     outcome = row.Outcome,
                 });
+                if (rejectionAfterPaid) result.Refused.Add(PaidThenRejectedRefusal(record, row, previous));
             }
             else if (PaymentRecordStatuses.IsFailed(previous) && row.Outcome == BankConfirmationOutcomes.Paid
                      && !options.AllowReturnReversal)
@@ -675,19 +680,7 @@ public sealed class BankConfirmationService
                 // hide an unpaid salary. A contradiction: held for a person.
                 apply = false;
                 hold = BankOutcomeHolds.PaidThenRejected;
-                result.Refused.Add(new
-                {
-                    paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
-                    from = previous, to = row.Outcome, reason = hold,
-                    message = "The bank confirmed this salary as paid and now reports it rejected. Nothing was changed. Check the bank "
-                            + "statement. If the money reached the employee, record 'paid confirmed' with the statement reference. If it "
-                            + "did not, record 'not paid' with a reason and the reference: the salary is then still owed and must be paid again.",
-                    messageAr = "أكّد البنك دفع هذا الراتب ثم أفاد برفضه. لم يتغير شيء. راجع كشف حساب البنك. إذا وصل المبلغ إلى الموظف "
-                              + "فسجّل «تأكيد الدفع» مع مرجع الكشف. وإذا لم يصل فسجّل «لم يُدفع» مع السبب والمرجع، وسيبقى الراتب مستحقًا "
-                              + "للموظف ويجب دفعه من جديد.",
-                    // The exit names the screen sends back with the line (machine keys, not part of the sentence).
-                    nextStepCodes = new[] { BankLineExitKinds.AllowPaidToRejected, BankLineExitKinds.ConfirmPaidDespiteRejection },
-                });
+                result.Refused.Add(PaidThenRejectedRefusal(record, row, previous));
             }
             else if (PaymentRecordStatuses.IsFailed(previous) && row.Outcome is BankConfirmationOutcomes.Returned or BankConfirmationOutcomes.Rejected
                      && !string.Equals(previous, row.Outcome, StringComparison.OrdinalIgnoreCase)
@@ -874,6 +867,21 @@ public sealed class BankConfirmationService
         foreach (var h in BankOutcomeLedger.UnresolvedHolds(records, confirmations))
             result.HeldForPerson.Add(BankOutcomeLedger.View(h));
     }
+
+    /// <summary>The refusal line a rejection after Paid reports (the money may have left; a person must check the statement).</summary>
+    private static object PaidThenRejectedRefusal(PayrollPaymentRecord record, BankConfirmationRow row, string previous) => new
+    {
+        paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
+        from = previous, to = row.Outcome, reason = BankOutcomeHolds.PaidThenRejected,
+        message = "The bank confirmed this salary as paid and now reports it rejected. Nothing was changed. Check the bank "
+                + "statement. If the money reached the employee, record 'paid confirmed' with the statement reference. If it "
+                + "did not, record 'not paid' with a reason and the reference: the salary is then still owed and must be paid again.",
+        messageAr = "أكّد البنك دفع هذا الراتب ثم أفاد برفضه. لم يتغير شيء. راجع كشف حساب البنك. إذا وصل المبلغ إلى الموظف "
+                  + "فسجّل «تأكيد الدفع» مع مرجع الكشف. وإذا لم يصل فسجّل «لم يُدفع» مع السبب والمرجع، وسيبقى الراتب مستحقًا "
+                  + "للموظف ويجب دفعه من جديد.",
+        // The exit names the screen sends back with the line (machine keys, not part of the sentence).
+        nextStepCodes = new[] { BankLineExitKinds.AllowPaidToRejected, BankLineExitKinds.ConfirmPaidDespiteRejection },
+    };
 
     /// <summary>A returned or rejected status as a word in a sentence: the officer never reads the stored enum value.</summary>
     private static string FailedWord(string? status, bool arabic) => status switch

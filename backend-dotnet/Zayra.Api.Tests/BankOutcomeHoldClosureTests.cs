@@ -18,8 +18,9 @@ namespace Zayra.Api.Tests;
 /// <item>A Returned/Rejected swap hold closes only through its exit (allow_failed_outcome_change) or an applied reasoned
 /// reversal to Paid, never because a later file repeats the earlier word (or any other later line).</item>
 /// <item>An open amount-mismatch hold blocks settle and Reconciled (422 bank_lines_held_for_person) and counts in the
-/// "presents clean" flags (CTO-GATE 8.4 ruling 11). It may close on a later applied line; a later line whose amount
-/// still differs never closes it.</item>
+/// "presents clean" flags (CTO-GATE 8.4 ruling 11). It closes only through an acknowledged line or a person's decision for
+/// that record: a later plain PAID line, or a later line whose amount still differs, never closes it. A rejection after
+/// Paid with a different amount raises the "rejected after Paid" hold, not only this one.</item>
 /// <item>The period handoff's returns read the same applied rows as the import and the batch history.</item>
 /// </list>
 /// Synthetic data only.
@@ -222,7 +223,28 @@ public class BankOutcomeHoldClosureTests
     }
 
     [Fact]
-    public async Task AMismatchHold_ClosesOnALaterAppliedLine_AndThenNoLongerBlocksSettle()
+    public async Task AMismatchHold_ClosesOnlyThroughAnAcknowledgedLine_AndThenNoLongerBlocksSettle()
+    {
+        using var db = NewDb();
+        var w = Seed(db, PaymentRecordStatuses.Paid, WpsStatuses.Accepted);
+        await Import(db, w, "RETURNED", "AC04", amount: 40m);
+
+        // The explicit acknowledgement: the same differing line sent again with acknowledgeAmountMismatch, so it is applied.
+        await Import(db, w, "RETURNED", "AC04", amount: 40m, valueDate: "2026-08-02",
+            options: new BankConfirmationImportOptions(AcknowledgeAmountMismatch: true));
+
+        db.BankPaymentConfirmations.OrderBy(c => c.ImportedAtUtc).Last().Applied.Should().BeTrue();
+        Blockers(await Handoff(db, w)).Should().NotContain("amount_mismatch_holdbacks");
+        var settle = await Payroll(db, w).SettlePaymentBatch(w.Batch.Id, new SettlePaymentBatchRequest("settle", null), default);
+        if (settle is UnprocessableEntityObjectResult u)
+            Element(u.Value).GetProperty("error").GetString().Should().NotBe("bank_lines_held_for_person");
+    }
+
+    // Final gate Fable P1-1, scenario A/B: the bank sends RETURNED for part of a Paid salary, which is held. A later plain PAID
+    // line (the bank repeating the original word, or anyone with the import permission) never closes that hold: nobody looked
+    // at the difference. Only an acknowledged line or a person's decision closes it.
+    [Fact]
+    public async Task AMismatchHold_IsNotClosedByALaterPlainPaidLine_AndStillBlocksSettleReconciledAndTheHandoff()
     {
         using var db = NewDb();
         var w = Seed(db, PaymentRecordStatuses.Paid, WpsStatuses.Accepted);
@@ -230,10 +252,56 @@ public class BankOutcomeHoldClosureTests
 
         await Import(db, w, "PAID", amount: 100m, valueDate: "2026-08-02");
 
-        Blockers(await Handoff(db, w)).Should().NotContain("amount_mismatch_holdbacks");
-        var settle = await Payroll(db, w).SettlePaymentBatch(w.Batch.Id, new SettlePaymentBatchRequest("settle", null), default);
-        if (settle is UnprocessableEntityObjectResult u)
-            Element(u.Value).GetProperty("error").GetString().Should().NotBe("bank_lines_held_for_person");
+        db.BankPaymentConfirmations.OrderBy(c => c.ImportedAtUtc).Last().Applied.Should().BeTrue("the plain PAID line itself applies (unchanged)");
+        w.Record.Status.Should().Be(PaymentRecordStatuses.Paid);
+        var handoff = await Handoff(db, w);
+        Blockers(handoff).Should().Contain("amount_mismatch_holdbacks");
+        handoff.GetProperty("payments").GetProperty("amountMismatchHoldbacks").GetInt32().Should().Be(1);
+        var refused = Assert.IsType<UnprocessableEntityObjectResult>(
+            await Payroll(db, w).SettlePaymentBatch(w.Batch.Id, new SettlePaymentBatchRequest("settle", null), default));
+        Element(refused.Value).GetProperty("error").GetString().Should().Be("bank_lines_held_for_person");
+        db.FinanceGlEntries.Count(e => e.EventType == GlEventTypes.NetSettlement).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task AMismatchHold_IsNotClosedByALaterPlainPaidLine_ForReconciled_AndTheListStillPresentsNotClean()
+    {
+        using var db = NewDb();
+        var w = Seed(db, PaymentRecordStatuses.Paid, WpsStatuses.Paid, settled: true);
+        await Import(db, w, "RETURNED", "AC04", amount: 40m);
+
+        await Import(db, w, "PAID", amount: 100m, valueDate: "2026-08-02");
+
+        var refused = Assert.IsType<UnprocessableEntityObjectResult>(
+            await Payroll(db, w).UpdateWpsStatus(w.Batch.Id, new WpsStatusRequest(WpsStatuses.Reconciled, null), default));
+        Element(refused.Value).GetProperty("error").GetString().Should().Be("bank_lines_held_for_person");
+        db.PayrollPaymentBatches.Single().WpsStatus.Should().Be(WpsStatuses.Paid);
+        (await ListedPresentsCleanButIsNot(db, w)).Should().BeTrue();
+        (await History(db, w)).GetProperty("presentsCleanButIsNot").GetBoolean().Should().BeTrue();
+    }
+
+    // Final gate Fable P1-1, scenario B: a rejection after Paid with a different amount raised only the weaker mismatch hold,
+    // so a later PAID line could close it. It now raises the stronger "rejected after Paid" hold, which a later PAID line never closes.
+    [Fact]
+    public async Task ARejectionOnAPaidRecord_WithADifferentAmount_RaisesThePaidThenRejectedHold_NotOnlyTheMismatchHold()
+    {
+        using var db = NewDb();
+        var w = Seed(db, PaymentRecordStatuses.Paid, WpsStatuses.Accepted);
+
+        var held = await Import(db, w, "REJECTED", "AC04", amount: 40m);
+
+        db.BankPaymentConfirmations.Single().HoldReason.Should().Be(BankOutcomeHolds.PaidThenRejected);
+        w.Record.Status.Should().Be(PaymentRecordStatuses.Paid);
+        Element(held.HeldForPerson).ToString().Should().Contain(BankOutcomeHolds.PaidThenRejected);
+        held.AmountMismatchesHeld.Should().ContainSingle("the officer still sees the figure the bank gave");
+
+        await Import(db, w, "PAID", amount: 100m, valueDate: "2026-08-02");
+
+        Blockers(await Handoff(db, w)).Should().Contain("rejection_after_paid_held");
+        (await History(db, w)).GetProperty("heldForPerson").ToString().Should().Contain(BankOutcomeHolds.PaidThenRejected);
+        var refused = Assert.IsType<UnprocessableEntityObjectResult>(
+            await Payroll(db, w).SettlePaymentBatch(w.Batch.Id, new SettlePaymentBatchRequest("settle", null), default));
+        Element(refused.Value).GetProperty("error").GetString().Should().Be("bank_lines_held_for_person");
     }
 
     // ── P2-1: the handoff's returns read the same applied rows as the import and the history ───────
