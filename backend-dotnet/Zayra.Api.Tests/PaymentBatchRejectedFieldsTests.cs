@@ -183,6 +183,41 @@ public class PaymentBatchRejectedFieldsTests
         db.FinanceGlEntries.Count(e => e.EventType == GlEventTypes.NetSettlement).Should().Be(0);
     }
 
+    // A batch the bank answered with nothing paid (every line rejected, or returned) must never post a settlement:
+    // that journal would credit Cash/Bank for money that never left. No hold is involved, so this is the failed-record rule alone.
+    [Theory]
+    [InlineData(PaymentRecordStatuses.Rejected, PaymentRecordStatuses.Rejected)]
+    [InlineData(PaymentRecordStatuses.Returned, PaymentRecordStatuses.Rejected)]
+    public async Task ABatchWithNothingPaid_IsRefusedAtSettle_AndPostsNoSettlementJournal(string first, string second)
+    {
+        using var db = NewDb();
+        var tenantId = Guid.NewGuid();
+        var companyId = Guid.NewGuid();
+        var run = new PayrollRun { TenantId = tenantId, CompanyId = companyId, Year = 2026, Month = 8, Status = "Locked" };
+        var batch = new PayrollPaymentBatch
+        {
+            TenantId = tenantId, PayrollRunId = run.Id, BatchNumber = "PB-2026-08-020", Currency = "SAR", TotalAmount = 300m,
+            WpsStatus = WpsStatuses.Accepted,
+        };
+        db.AddRange(run, batch,
+            new PayrollPaymentRecord { TenantId = tenantId, PaymentBatchId = batch.Id, EmployeeId = 1, Amount = 100m, Status = first, WpsReference = "W1" },
+            new PayrollPaymentRecord { TenantId = tenantId, PaymentBatchId = batch.Id, EmployeeId = 2, Amount = 200m, Status = second, WpsReference = "W2" });
+        db.FinanceGlEntries.Add(new FinanceGlEntry
+        {
+            TenantId = tenantId, CompanyId = companyId, SourceModule = "Payroll", SourceEntityId = run.Id, SourceEntityRef = "RUN-2026-08",
+            EventType = GlEventTypes.Accrual, DebitAccount = "", CreditAccount = "2100 - Salaries Payable", Description = PayrollGlDescriptions.NetPayable,
+            Amount = 300m, Currency = "SAR", EntryDate = new DateOnly(2026, 8, 31), Period = "2026-08",
+        });
+        db.SaveChanges();
+
+        var refused = Assert.IsType<UnprocessableEntityObjectResult>(
+            await KsaWpsReviewFixesTests.Payroll(db, tenantId, Guid.NewGuid())
+                .SettlePaymentBatch(batch.Id, new SettlePaymentBatchRequest("settle", null), default));
+
+        Web(refused.Value).GetProperty("error").GetString().Should().Be("payment_records_rejected");
+        db.FinanceGlEntries.Count(e => e.EventType == GlEventTypes.NetSettlement).Should().Be(0, "no cash left the bank");
+    }
+
     [Fact]
     public async Task AnOpenHoldOnAPaidRecord_NeverPresentsClean_OnTheListTheHistoryOrTheHandoff()
     {
