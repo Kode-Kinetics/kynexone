@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
+using Zayra.Api.Infrastructure.Government;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
 using static Zayra.Api.Tests.Government.AnbPayrollApi.AnbApiTestKit;
@@ -7,76 +8,98 @@ using static Zayra.Api.Tests.Government.AnbPayrollApi.AnbApiTestKit;
 namespace Zayra.Api.Tests.Government.AnbPayrollApi;
 
 /// <summary>
-/// ANB publishes no servers, no token URL and no security scheme. Every one of those is configuration,
-/// empty by default, and an empty or unsafe value means the client refuses: it will not be built, and a
-/// built client whose settings are later cleared will not call. No socket in either case.
+/// ANB publishes no servers, no token URL and no security scheme. Every one of those is operator configuration in ONE tree,
+/// <c>Government:Banks:Anb</c>, empty by default: base and token URLs and the token path per environment (GovernmentHttp's
+/// allow-list) and the OAuth scope and client authentication. An empty or unsafe value means the client refuses: it will not be
+/// built without its OAuth settings, and a call whose environment has no allow-listed URL will not be made. No socket either way.
 /// </summary>
 public class AnbPayrollApiConfigRefusalTests
 {
-    public static TheoryData<string> Settings => new()
-    {
-        nameof(IAnbEndpointConfig.Environment), nameof(IAnbEndpointConfig.BaseUrl), nameof(IAnbEndpointConfig.TokenUrl),
-        nameof(IAnbEndpointConfig.GrantType), nameof(IAnbEndpointConfig.Scope), nameof(IAnbEndpointConfig.ClientAuthMethod), nameof(IAnbEndpointConfig.AllowedHostSuffixes),
-    };
+    public static TheoryData<string> OAuthSettings => new() { AnbPayrollApiClient.ScopeSetting, AnbPayrollApiClient.ClientAuthMethodSetting };
 
-    private static AnbPayrollApiOptions Without(string setting, string? value = null)
+    private static IConfigurationRoot Without(string key, string? value = null)
     {
         var c = Config();
-        typeof(AnbPayrollApiOptions).GetProperty(setting)!.SetValue(c, value);
+        c[key] = value;
         return c;
     }
 
-    [Fact]
-    public void TheDefaultOptions_AreAllEmpty_AndRefuse()
-    {
-        var empty = new AnbPayrollApiOptions();
-        new[] { empty.Environment, empty.BaseUrl, empty.TokenUrl, empty.GrantType, empty.Scope, empty.ClientAuthMethod, empty.AllowedHostSuffixes }
-            .Should().OnlyContain(v => string.IsNullOrEmpty(v));
+    private static Func<AnbPayrollApiClient> Build(IConfiguration config) =>
+        () => Client(new StubAnbHandler(_ => throw new InvalidOperationException("no call")), out _, config);
 
-        var act = () => Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out _, empty);
-        var ex = act.Should().Throw<BankChannelRefusedException>().Which;
+    [Fact]
+    public void AnEmptyConfiguration_RefusesConstruction_NamingBothOAuthSettings()
+    {
+        var empty = new ConfigurationBuilder().AddInMemoryCollection().Build();
+        var ex = Build(empty).Should().Throw<BankChannelRefusedException>().Which;
         ex.Code.Should().Be(BankChannelCodes.ConfigMissing);
-        ex.Settings.Should().HaveCount(7);
+        ex.Settings.Should().BeEquivalentTo(AnbPayrollApiClient.ScopeSetting, AnbPayrollApiClient.ClientAuthMethodSetting);
     }
 
     [Fact]
-    public void AnEmptyConfigurationSection_BindsToRefusingOptions()
+    public void TheSettingsLiveInTheSharedBankTree_AndTheOldOwnTreeIsGone()
     {
-        var options = new AnbPayrollApiOptions();
-        new ConfigurationBuilder().AddInMemoryCollection().Build().GetSection(AnbPayrollApiOptions.SectionName).Bind(options);
-        var act = () => Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out _, options);
-        act.Should().Throw<BankChannelRefusedException>().Which.Code.Should().Be(BankChannelCodes.ConfigMissing);
+        AnbPayrollApiClient.ScopeKey.Should().Be("Government:Banks:Anb:OAuth:Scope");
+        AnbPayrollApiClient.ClientAuthMethodKey.Should().Be("Government:Banks:Anb:OAuth:ClientAuthMethod");
+        GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox").Should().Be("Government:Banks:Anb:BaseUrls:sandbox");
+        GovernmentHttp.TokenUrlKey(GovernmentBodies.BankAnb, "sandbox").Should().Be("Government:Banks:Anb:TokenUrls:sandbox");
+        GovernmentHttp.TokenPathKey(GovernmentBodies.BankAnb, "sandbox").Should().Be("Government:Banks:Anb:TokenPaths:sandbox");
+
+        // A value under the retired tree is never read.
+        var config = Config();
+        config[AnbPayrollApiClient.ScopeKey] = null;
+        config["Government:Anb:PayrollApi:Scope"] = "payroll";
+        var ex = Build(config).Should().Throw<BankChannelRefusedException>().Which;
+        ex.Settings.Should().Equal(AnbPayrollApiClient.ScopeSetting);
     }
 
     [Theory]
-    [MemberData(nameof(Settings))]
-    public void EachEmptySetting_RefusesConstruction_ByName(string setting)
+    [MemberData(nameof(OAuthSettings))]
+    public void EachEmptyOAuthSetting_RefusesConstruction_ByName(string setting)
     {
         foreach (var blank in new[] { null, "", "   " })
         {
-            var act = () => Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out _, Without(setting, blank));
-            var ex = act.Should().Throw<BankChannelRefusedException>().Which;
+            var ex = Build(Without(GovernmentHttp.SettingKey(GovernmentBodies.BankAnb, setting), blank)).Should().Throw<BankChannelRefusedException>().Which;
             ex.Code.Should().Be(BankChannelCodes.ConfigMissing);
             ex.Settings.Should().Equal(setting);
         }
     }
 
     [Theory]
-    [InlineData(nameof(IAnbEndpointConfig.BaseUrl), "http://anb-sandbox.test/api")]
-    [InlineData(nameof(IAnbEndpointConfig.TokenUrl), "http://anb-auth.test/token")]
-    [InlineData(nameof(IAnbEndpointConfig.BaseUrl), "anb-sandbox.test/api")]
-    [InlineData(nameof(IAnbEndpointConfig.BaseUrl), "https://anb-sandbox.test/api?x=1")]
-    [InlineData(nameof(IAnbEndpointConfig.BaseUrl), "https://user:pw@anb-sandbox.test/api")]
-    [InlineData(nameof(IAnbEndpointConfig.GrantType), "password")]
-    [InlineData(nameof(IAnbEndpointConfig.GrantType), "authorization_code")]
-    [InlineData(nameof(IAnbEndpointConfig.ClientAuthMethod), "private_key_jwt")]
-    public void AnUnsafeOrUnsupportedSetting_RefusesConstruction(string setting, string value)
+    [InlineData(AnbPayrollApiClient.ClientAuthMethodSetting, "private_key_jwt")]
+    [InlineData(AnbPayrollApiClient.ClientAuthMethodSetting, "client_secret_jwt")]
+    [InlineData(AnbPayrollApiClient.ScopeSetting, "payroll\r\nX-Injected: 1")]
+    public void AnUnsafeOrUnsupportedOAuthSetting_RefusesConstruction(string setting, string value)
     {
-        var act = () => Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out _, Without(setting, value));
-        var ex = act.Should().Throw<BankChannelRefusedException>().Which;
+        var ex = Build(Without(GovernmentHttp.SettingKey(GovernmentBodies.BankAnb, setting), value)).Should().Throw<BankChannelRefusedException>().Which;
         ex.Code.Should().Be(BankChannelCodes.ConfigInvalid);
         ex.Settings.Should().Equal(setting);
         ex.Message.Should().NotContain(value, "a refusal names the setting, never its value");
+    }
+
+    public static TheoryData<string> UrlKeys => new()
+    {
+        GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox"),
+        GovernmentHttp.TokenPathKey(GovernmentBodies.BankAnb, "sandbox"),
+    };
+
+    [Theory]
+    [MemberData(nameof(UrlKeys))]
+    public async Task AnEnvironmentWithoutItsAllowListedUrlOrTokenPath_RefusesEveryCall_WithNoSocket(string key)
+    {
+        var handler = new StubAnbHandler(_ => throw new InvalidOperationException("no call"));
+        var client = Client(handler, out _, Without(key));
+
+        var outcome = await client.SubmitAsync(Submit(BuildBatch(2)), CancellationToken.None);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.HostNotAllowed);
+        outcome.RequestSent.Should().BeFalse();
+
+        var poll = () => client.GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
+        (await poll.Should().ThrowAsync<BankChannelRefusedException>()).Which.Code.Should().Be(BankChannelCodes.HostNotAllowed);
+        var wps = () => client.DownloadWpsAsync(TestScope, PayrollId, null, CancellationToken.None);
+        (await wps.Should().ThrowAsync<BankChannelRefusedException>()).Which.Code.Should().Be(BankChannelCodes.HostNotAllowed);
+        handler.Requests.Should().BeEmpty();
     }
 
     [Fact]
@@ -85,7 +108,7 @@ public class AnbPayrollApiConfigRefusalTests
         var config = Config();
         var handler = new StubAnbHandler(_ => throw new InvalidOperationException("no call"));
         var client = Client(handler, out _, config);
-        config.TokenUrl = "";
+        config[AnbPayrollApiClient.ScopeKey] = "";
 
         var outcome = await client.SubmitAsync(Submit(BuildBatch(2)), CancellationToken.None);
         outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
@@ -94,17 +117,14 @@ public class AnbPayrollApiConfigRefusalTests
 
         var poll = () => client.GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
         (await poll.Should().ThrowAsync<BankChannelRefusedException>()).Which.Code.Should().Be(BankChannelCodes.ConfigMissing);
-        var wps = () => client.DownloadWpsAsync(TestScope, PayrollId, null, CancellationToken.None);
-        (await wps.Should().ThrowAsync<BankChannelRefusedException>()).Which.Code.Should().Be(BankChannelCodes.ConfigMissing);
-
         handler.Requests.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task ReadsForAnotherEnvironment_AreRefused()
+    public async Task ReadsForAnEnvironmentThatIsOnlyALabel_AreRefused()
     {
         var handler = new StubAnbHandler(_ => throw new InvalidOperationException("no call"));
-        var act = () => Client(handler, out _).GetStatusAsync(TestScope with { Environment = "production" }, PayrollId, null, CancellationToken.None);
+        var act = () => Client(handler, out _).GetStatusAsync(TestScope with { Environment = "uat" }, PayrollId, null, CancellationToken.None);
         (await act.Should().ThrowAsync<BankChannelRefusedException>()).Which.Code.Should().Be(BankChannelCodes.EnvironmentMismatch);
         handler.Requests.Should().BeEmpty();
     }

@@ -140,7 +140,7 @@ public sealed class GovernmentIsolationTests
     // ── Exchange ledger ────────────────────────────────────────────────────────────────────────────────
 
     private static GovernmentExchangeAttempt Attempt(Guid tenant, Guid? company, string key) =>
-        new(tenant, company, GovernmentBodies.BankAnb, "payroll.submit", GovernmentExchangeChannels.FileOut, key, GovernmentExchangeStates.Recorded,
+        new(tenant, company, GovernmentBodies.BankAnb, "payroll.file", GovernmentExchangeChannels.FileOut, key, GovernmentExchangeStates.Recorded,
             new RequestContext("ip", "ua", Guid.NewGuid(), tenant));
 
     [Fact]

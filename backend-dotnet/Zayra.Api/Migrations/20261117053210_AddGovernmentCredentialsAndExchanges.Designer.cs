@@ -17372,10 +17372,10 @@ namespace Zayra.Api.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_government_exchanges__tenant_body_operation_key");
 
-                    b.HasIndex("TenantId", "Body", "Environment", "AccountFingerprint", "BatchReference")
+                    b.HasIndex("TenantId", "Body", "Environment", "SubjectType", "SubjectId")
                         .IsUnique()
                         .HasDatabaseName("ux_government_exchanges__open_batch")
-                        .HasFilter("account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL AND state IN ('SubmitIntended','Unknown','Accepted','Initiated','Validated','InProgress','Completed','Rejected')");
+                        .HasFilter("operation = 'payroll.submit' AND subject_type = 'PaymentBatch' AND subject_id IS NOT NULL AND body <> 'bank_file' AND state IN ('SubmitIntended','Unknown','Accepted','Initiated','Validated','InProgress','Completed','Rejected','Recorded')");
 
                     b.HasIndex("TenantId", "Body", "SubjectType", "SubjectId", "CreatedAtUtc")
                         .HasDatabaseName("ix_government_exchanges__tenant_subject");
@@ -17394,7 +17394,7 @@ namespace Zayra.Api.Migrations
 
                             t.HasCheckConstraint("ck_government_exchanges__hashes", "(request_sha256 IS NULL OR request_sha256 ~ '^[0-9a-f]{64}$') AND (response_sha256 IS NULL OR response_sha256 ~ '^[0-9a-f]{64}$') AND (artifact_sha256 IS NULL OR artifact_sha256 ~ '^[0-9a-f]{64}$') AND (artifact_secondary_sha256 IS NULL OR artifact_secondary_sha256 ~ '^[0-9a-f]{64}$')");
 
-                            t.HasCheckConstraint("ck_government_exchanges__intent", "state <> 'SubmitIntended' OR (artifact_sha256 IS NOT NULL AND subject_id IS NOT NULL AND company_id IS NOT NULL AND account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL)");
+                            t.HasCheckConstraint("ck_government_exchanges__intent", "state <> 'SubmitIntended' OR (artifact_sha256 IS NOT NULL AND subject_id IS NOT NULL AND company_id IS NOT NULL AND account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL AND operation = 'payroll.submit')");
 
                             t.HasCheckConstraint("ck_government_exchanges__live_channel", "NOT is_live OR channel = 'api'");
 
@@ -17405,6 +17405,8 @@ namespace Zayra.Api.Migrations
                             t.HasCheckConstraint("ck_government_exchanges__second_person", "resolved_by_user_id IS NULL OR resolved_by_user_id IS DISTINCT FROM actor_user_id");
 
                             t.HasCheckConstraint("ck_government_exchanges__state", "state IN ('Attempted','Recorded','Simulated','Refused','Failed','SubmitIntended','Accepted','RejectedStructure','Unknown','ReleasedAfterUnknown','Initiated','Validated','InProgress','Completed','Rejected')");
+
+                            t.HasCheckConstraint("ck_government_exchanges__submission", "operation <> 'payroll.submit' OR (subject_type = 'PaymentBatch' AND subject_id IS NOT NULL AND body <> 'bank_file' AND state <> 'Attempted' AND environment IS NOT NULL AND (channel = 'api' OR environment = 'production'))");
                         });
                 });
 

@@ -60,14 +60,13 @@ public static class QiwaLiveAdapterPolicy
     /// rules as every other body), G3 a usable credential, G4 the live switch AND <c>Government:Qiwa:Enabled</c>. Read per call,
     /// so the operator switch needs no restart.
     /// </summary>
-    public static GovernmentLiveDecision DecideLiveWrite(IConfiguration? config, bool tenantConsent, bool credential, string environment) =>
-        GovernmentLivePolicy.DecideLiveWrite(config, GovernmentBodies.Qiwa,
+    internal static GovernmentLiveDecision DecideLiveWrite(IConfiguration? config, Guid tenantId, bool tenantConsent, bool credential, string environment) =>
+        GovernmentLivePolicy.DecideLiveWrite(config, new GovernmentDecisionScope(tenantId, null, environment), GovernmentBodies.Qiwa,
             new GovernmentLiveGates(
                 PartnerAgreement: HasPartnerAgreement(config),
                 TenantConsent: tenantConsent,
                 Credential: credential,
-                OperatorEnabled: LiveRequested(config) && GovernmentLivePolicy.OperatorEnabled(config, GovernmentBodies.Qiwa)),
-            environment);
+                OperatorEnabled: LiveRequested(config) && GovernmentLivePolicy.OperatorEnabled(config, GovernmentBodies.Qiwa)));
 
     /// <summary>G2 for Qiwa: the qiwa_integration module is not switched off AND the gov_qiwa_api consent record is on file.</summary>
     public static async Task<bool> HasTenantConsentAsync(Zayra.Api.Data.ZayraDbContext db, Guid tenantId, CancellationToken ct)

@@ -36,9 +36,11 @@ public sealed record GovernmentCredentialBinding(string? ClientIdentifier = null
 /// An opened secret, for a transport only. Not a DTO: no controller may reference it (GovernmentRatchetTests C), and its
 /// <see cref="ToString"/> never prints the secret or the client id.
 /// </summary>
-public sealed class UnsealedGovernmentCredential(string body, string environment, string kind, Guid? companyId, int version, string secret,
+public sealed class UnsealedGovernmentCredential(Guid tenantId, string body, string environment, string kind, Guid? companyId, int version, string secret,
     string? clientIdentifier = null, string? baseUrlHost = null, string? tokenUrlHost = null)
 {
+    /// <summary>The tenant the credential belongs to (the row it was opened from, E5). The transport refuses it for any other tenant's decision or receipt.</summary>
+    public Guid TenantId { get; } = tenantId;
     public string Body { get; } = body;
     public string Environment { get; } = environment;
     public string Kind { get; } = kind;
@@ -247,7 +249,7 @@ public sealed class GovernmentCredentialStore(
         catch (InvalidOperationException ex) when (ex is not FieldEncryptionUnavailableException) { return null; }
 
         if (!probeOnly) await RecordLastUseAsync(row, now, ct);
-        return new UnsealedGovernmentCredential(row.Body, row.Environment, row.Kind, row.CompanyId, row.CredentialVersion, secret,
+        return new UnsealedGovernmentCredential(row.TenantId, row.Body, row.Environment, row.Kind, row.CompanyId, row.CredentialVersion, secret,
             row.ClientIdentifier, row.BaseUrlHost, row.TokenUrlHost);
     }
 

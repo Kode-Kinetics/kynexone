@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
 using Zayra.Api.Infrastructure.Government;
@@ -25,7 +24,9 @@ public interface IBankChannelGate
 /// <list type="bullet">
 /// <item><b>Submit</b> needs the recorder's receipt for a COMMITTED intent of this tenant, bank, environment and exactly these frozen
 /// files, and a live-WRITE decision for the call's environment. Either missing: <see cref="BankSubmitOutcomeKind.Refused"/> with a
-/// stable code, nothing sent. A receipt sends at most once through this channel.</item>
+/// stable code, nothing sent. A receipt sends at most once in the whole process: <see cref="GovernmentHttp"/> spends it immediately
+/// before the socket, and this channel burns it when its one attempt ends without a send, so it is never used twice (security P2-A;
+/// no per-instance memory, so a channel built per request is covered too). The receipt is bound to the scope's company.</item>
 /// <item><b>Status and WPS download</b> need an open decision for the environment. In production they also need the write grade,
 /// because the bank channel may first mint a token (a POST), and the foundation's rule is that a token grant is a write.</item>
 /// <item><b>The outcome</b> of each submit goes to the ledger through <see cref="IGovernmentExchangeRecorder"/>. Anything thrown
@@ -34,16 +35,15 @@ public interface IBankChannelGate
 /// </summary>
 public sealed class GatedBankPayrollChannel : IBankPayrollChannel
 {
-    // Reasons carried in the refusal message when the decision itself has no reason code.
-    private const string GateUnavailable = "gate_unavailable";
-    private const string WriteNotGranted = "write_not_granted";
-    private const string DecisionNotForThisCall = "decision_not_for_this_call";
+    // Reasons carried in the refusal message when the decision itself has no reason code (the bank clients use the same words).
+    internal const string GateUnavailable = "gate_unavailable";
+    internal const string WriteNotGranted = "write_not_granted";
+    internal const string DecisionNotForThisCall = "decision_not_for_this_call";
 
     private readonly IBankPayrollChannel _inner;
     private readonly IBankChannelGate _gate;
     private readonly IGovernmentExchangeRecorder _recorder;
     private readonly ILogger<GatedBankPayrollChannel> _log;
-    private readonly ConcurrentDictionary<Guid, byte> _claimed = new();
 
     public GatedBankPayrollChannel(IBankPayrollChannel inner, IBankChannelGate gate, IGovernmentExchangeRecorder recorder,
         ILogger<GatedBankPayrollChannel> log)
@@ -71,13 +71,16 @@ public sealed class GatedBankPayrollChannel : IBankPayrollChannel
         if (intent is null) return Refused(BankChannelCodes.IntentMissing);
         if (!Binds(intent.Receipt, request)) return Refused(BankChannelCodes.IntentMismatch);
         if (!request.Files.All(f => HashMatches(f))) return Refused(BankChannelCodes.ArtifactHashMismatch);
-        // Claimed before anything else happens to it: a receipt is spent by its first use here, whatever the gate says.
-        if (!_claimed.TryAdd(intent.Receipt.ExchangeId, 0)) return Refused(BankChannelCodes.IntentAlreadyUsed);
+        // A spent receipt (sent, or burnt by an earlier attempt that ended without sending) never sends again, and its ledger row
+        // belongs to that first use: nothing is recorded for this one.
+        if (intent.Receipt.IsSpent) return Refused(BankChannelCodes.IntentAlreadyUsed);
 
         var decision = await DecideAsync(request.Scope, write: true, ct);
         var refusal = WriteRefusal(decision, request.Scope);
         if (refusal is not null)
         {
+            // Burnt here, so the same receipt cannot try again once the gate opens. Only the use that burns it records the refusal.
+            if (!intent.Receipt.TryConsume()) return Refused(BankChannelCodes.IntentAlreadyUsed);
             await RecordAsync(intent, GovernmentExchangeStates.Refused, BankChannelCodes.GateRefused, null, null, completed: true);
             return Refused(BankChannelCodes.GateRefused, refusal);
         }
@@ -93,6 +96,15 @@ public sealed class GatedBankPayrollChannel : IBankPayrollChannel
             var kind = ex.GetType().Name;
             Safe(() => _log.LogWarning("Bank payroll submit ended without an answer ({ExceptionType}); outcome unknown", kind));
             outcome = new BankSubmitOutcome(BankSubmitOutcomeKind.Unknown, BankChannelCodes.OutcomeUnknown, RequestSent: true);
+        }
+
+        // Every exit below has used the receipt once. Burnt now if the transport did not spend it (an attempt refused before the
+        // socket), so it is never tried again; TryConsume tells whether THIS use still owned it.
+        var ownedUnspent = intent.Receipt.TryConsume();
+        if (outcome.Kind == BankSubmitOutcomeKind.Refused && !outcome.RequestSent)
+        {
+            // Spent by another, concurrent use of the same receipt (the transport refused this one): that use owns the ledger row.
+            if (outcome.Code == BankChannelCodes.IntentAlreadyUsed || !ownedUnspent) return outcome;
         }
 
         var live = _inner.IsLiveIntegration;
@@ -149,8 +161,10 @@ public sealed class GatedBankPayrollChannel : IBankPayrollChannel
         : !decision.AllowsWrites ? WriteNotGranted
         : null;
 
+    /// <summary>The decision was made for this bank, this tenant, this company (or tenant-wide, when the call is) and this environment (E5).</summary>
     private bool IsForThisCall(GovernmentLiveDecision decision, BankChannelScope scope) =>
-        decision.Body == Body && decision.Environment is { } environment && environment == scope.Environment;
+        decision.Body == Body && decision.TenantId == scope.TenantId && decision.CompanyId == scope.CompanyId
+        && decision.Environment == scope.Environment;
 
     private async Task<GovernmentLiveDecision?> DecideAsync(BankChannelScope scope, bool write, CancellationToken ct)
     {
@@ -166,10 +180,11 @@ public sealed class GatedBankPayrollChannel : IBankPayrollChannel
         }
     }
 
-    /// <summary>The receipt is for this tenant, this bank, this environment, and exactly the frozen files of the request.</summary>
+    /// <summary>The receipt is for this tenant, this company, this bank, this environment, and exactly the frozen files of the request.</summary>
     private bool Binds(GovernmentExchangeIntentReceipt receipt, BankSubmitRequest request)
     {
-        if (receipt.TenantId != request.Scope.TenantId || receipt.Body != Body || receipt.Environment != request.Scope.Environment)
+        if (receipt.TenantId != request.Scope.TenantId || receipt.CompanyId != request.Scope.CompanyId || receipt.Body != Body
+            || receipt.Environment != request.Scope.Environment)
             return false;
         var bound = new[] { receipt.ArtifactSha256, receipt.ArtifactSecondarySha256 }.OfType<string>().ToList();
         var sent = request.Files.Select(f => f.ExpectedSha256).ToList();

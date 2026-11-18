@@ -3,22 +3,34 @@ using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Zayra.Api.Infrastructure.Government;
+using Zayra.Api.Infrastructure.Government.Credentials;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
+using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests.Government.AnbPayrollApi;
 
 /// <summary>
-/// Fake ANB for the payroll API client. No network: every request ends in <see cref="StubAnbHandler"/>.
-/// Hosts use the reserved <c>.test</c> TLD. Every person, ID, account and secret here is synthetic.
+/// Fake ANB for the payroll API client. No network: the client sends through the REAL <see cref="GovernmentHttp"/> (allow-list, live
+/// decision, intent, credential binding), whose named client is handed <see cref="StubAnbHandler"/> by <see cref="StubClientFactory"/>.
+/// Hosts use the reserved <c>.test</c> TLD; no ANB production host is configured or built in. Every person, ID, account and secret here
+/// is synthetic.
 /// </summary>
 internal static class AnbApiTestKit
 {
-    public const string BaseUrl = "https://anb-sandbox.test/api";
-    public const string TokenUrl = "https://anb-auth.test/oauth/token";
+    /// <summary>The sandbox API origin (GovernmentHttp takes plain https origins; the spec's paths are appended).</summary>
+    public const string BaseUrl = "https://anb-sandbox.test";
+    public const string TokenOrigin = "https://anb-auth.test";
+    public const string TokenPath = "/oauth/token";
+    public const string TokenUrl = TokenOrigin + TokenPath;
+    /// <summary>A synthetic stand-in for a production origin (never a real host).</summary>
+    public const string ProductionBaseUrl = "https://anb-prod.test";
+    public const string ProductionTokenOrigin = "https://anb-prod-auth.test";
     public const string ClientId = "kx-synthetic-client-7f3a";
     public const string ClientSecret = "s3cr3t-SYNTHETIC-do-not-log-91c2";
     public const string AccessToken = "tok-SYNTHETIC-bearer-55aa77";
@@ -29,29 +41,58 @@ internal static class AnbApiTestKit
         Guid.Parse("22222222-2222-2222-2222-222222222222"),
         "sandbox");
 
-    public static AnbPayrollApiOptions Config() => new()
-    {
-        Environment = "sandbox",
-        BaseUrl = BaseUrl,
-        TokenUrl = TokenUrl,
-        GrantType = "client_credentials",
-        Scope = "payroll",
-        ClientAuthMethod = "client_secret_basic",
-        AllowedHostSuffixes = "anb-sandbox.test,anb-auth.test,anb-sandbox-2.test",
-    };
+    public static readonly GovernmentLiveGates AllOpen = new(true, true, true, true);
 
-    public static AnbPayrollApiClient Client(HttpMessageHandler handler, out ListLogger<AnbPayrollApiClient> log,
-        IAnbEndpointConfig? config = null, IAnbCredentialSource? credentials = null, TimeSpan? timeout = null,
-        TimeProvider? clock = null, TimeSpan? deadline = null)
+    /// <summary>
+    /// The whole Government:Banks:Anb tree for both environments (mutable: a test may change a key after the client is built), plus the
+    /// partner agreement the gate needs. The production legal clearance only when asked for.
+    /// </summary>
+    public static IConfigurationRoot Config(bool productionClearance = false)
     {
-        log = new ListLogger<AnbPayrollApiClient>();
-        return new AnbPayrollApiClient(handler, config ?? Config(), credentials ?? new FixedCredentials(), log, clock,
-            new AnbClientLimits(timeout ?? TimeSpan.FromSeconds(10), deadline ?? TimeSpan.FromSeconds(30)));
+        var values = new Dictionary<string, string?>
+        {
+            [GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox")] = BaseUrl,
+            [GovernmentHttp.TokenUrlKey(GovernmentBodies.BankAnb, "sandbox")] = TokenOrigin,
+            [GovernmentHttp.TokenPathKey(GovernmentBodies.BankAnb, "sandbox")] = TokenPath,
+            [GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "production")] = ProductionBaseUrl,
+            [GovernmentHttp.TokenUrlKey(GovernmentBodies.BankAnb, "production")] = ProductionTokenOrigin,
+            [GovernmentHttp.TokenPathKey(GovernmentBodies.BankAnb, "production")] = TokenPath,
+            [AnbPayrollApiClient.ScopeKey] = "payroll",
+            [AnbPayrollApiClient.ClientAuthMethodKey] = AnbPayrollApiClient.AuthBasic,
+            [GovernmentLivePolicy.PartnerAgreementKey(GovernmentBodies.BankAnb)] = "agreement-ref-synthetic",
+        };
+        if (productionClearance)
+            values[GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.BankAnb, GovernmentEnvironments.Production)] = "opinion-ref-synthetic";
+        return new ConfigurationBuilder().AddInMemoryCollection(values).Build();
     }
 
-    public static AnbClientCredential Credential(string clientId = ClientId, string secret = ClientSecret, string version = "v1",
-        string environment = "sandbox") =>
-        new(clientId, secret, version, environment, "anb-sandbox.test", "anb-auth.test");
+    /// <summary>The real transport over <paramref name="handler"/>.</summary>
+    public static GovernmentHttp Transport(HttpMessageHandler handler, IConfiguration config) => new(new StubClientFactory(handler), config);
+
+    public static AnbPayrollApiClient Client(HttpMessageHandler handler, out ListLogger<AnbPayrollApiClient> log,
+        IConfiguration? config = null, IBankCredentialSource? credentials = null, TimeSpan? timeout = null,
+        TimeProvider? clock = null, TimeSpan? deadline = null, IBankChannelGate? gate = null)
+    {
+        log = new ListLogger<AnbPayrollApiClient>();
+        var settings = config ?? Config();
+        return new AnbPayrollApiClient(Transport(handler, settings), credentials ?? new FixedCredentials(), gate ?? new PolicyGate(settings, AllOpen),
+            log, clock, new AnbClientLimits(timeout ?? TimeSpan.FromSeconds(10), deadline ?? TimeSpan.FromSeconds(30)));
+    }
+
+    public static UnsealedGovernmentCredential Credential(string clientId = ClientId, string secret = ClientSecret, int version = 1,
+        string environment = "sandbox", Guid? companyId = null, string? baseHost = null, string? tokenHost = null,
+        string kind = GovernmentCredentialKinds.OAuthClient, Guid? tenantId = null) =>
+        new(tenantId ?? TestScope.TenantId, GovernmentBodies.BankAnb, environment, kind, companyId ?? TestScope.CompanyId, version, secret, clientId,
+            baseHost ?? (environment == "production" ? "anb-prod.test" : "anb-sandbox.test"),
+            tokenHost ?? (environment == "production" ? "anb-prod-auth.test" : "anb-auth.test"));
+
+    /// <summary>A committed-intent receipt for exactly this batch and scope (the recorder's constructor, reached via InternalsVisibleTo).</summary>
+    public static GovernmentExchangeIntentReceipt Receipt(Batch batch, BankChannelScope? scope = null)
+    {
+        var s = scope ?? TestScope;
+        return new GovernmentExchangeIntentReceipt(Guid.NewGuid(), s.TenantId, GovernmentBodies.BankAnb, s.Environment,
+            "submit-key-synthetic-" + Guid.NewGuid().ToString("N"), batch.Header.ExpectedSha256, batch.Body.ExpectedSha256, s.CompanyId);
+    }
 
     public static BankBatchBinding Binding(Batch batch, DateTimeOffset? intentAt = null) =>
         new(batch.Submitted, batch.Total, intentAt ?? IntentAt);
@@ -115,8 +156,17 @@ internal static class AnbApiTestKit
             total);
     }
 
-    public static AnbSubmitRequest Submit(Batch batch, AnbSubmitHeaders? headers = null) =>
-        new(TestScope, batch.Header, batch.Body, headers ?? new AnbSubmitHeaders());
+    /// <summary>The same request with a fresh receipt committed for exactly the files it now carries (for tests that rewrite a file
+    /// and re-hash it, so the guard under test, not the intent binding, is what refuses it).</summary>
+    public static AnbSubmitRequest WithReceiptForItsFiles(AnbSubmitRequest request) => request with
+    {
+        Intent = new GovernmentExchangeIntentReceipt(Guid.NewGuid(), request.Scope.TenantId, GovernmentBodies.BankAnb, request.Scope.Environment,
+            "submit-key-synthetic-" + Guid.NewGuid().ToString("N"), request.Header.ExpectedSha256, request.Body.ExpectedSha256, request.Scope.CompanyId),
+    };
+
+    /// <summary>A submit with a fresh receipt for this batch and scope, as the gated channel would pass it.</summary>
+    public static AnbSubmitRequest Submit(Batch batch, AnbSubmitHeaders? headers = null, BankChannelScope? scope = null) =>
+        new(scope ?? TestScope, batch.Header, batch.Body, headers ?? new AnbSubmitHeaders(), Intent: Receipt(batch, scope));
 
     // ── Response builders shaped by the published schemas ───────────────────────────────────────
 
@@ -174,16 +224,27 @@ internal static class AnbApiTestKit
             .ToDictionary(p => Uri.UnescapeDataString(p[0]), p => p.Length > 1 ? Uri.UnescapeDataString(p[1]) : string.Empty);
 }
 
-internal sealed class FixedCredentials : IAnbCredentialSource
+internal sealed class FixedCredentials : IBankCredentialSource
 {
-    private readonly AnbClientCredential? _credential;
+    private readonly UnsealedGovernmentCredential? _credential;
     public int Calls;
-    public FixedCredentials(AnbClientCredential? credential = null, bool none = false) =>
+    public FixedCredentials(UnsealedGovernmentCredential? credential = null, bool none = false) =>
         _credential = none ? null : credential ?? AnbApiTestKit.Credential();
-    public Task<AnbClientCredential?> GetAsync(BankChannelScope scope, CancellationToken ct)
+    public Task<UnsealedGovernmentCredential?> OpenAsync(string body, BankChannelScope scope, CancellationToken ct)
     {
         Interlocked.Increment(ref Calls);
         return Task.FromResult(_credential);
+    }
+}
+
+/// <summary>Gives the transport's named client a test handler. Only the ANB client may be asked for: a request meant for another body
+/// fails the test instead of reaching anything.</summary>
+internal sealed class StubClientFactory(HttpMessageHandler handler) : IHttpClientFactory
+{
+    public HttpClient CreateClient(string name)
+    {
+        if (name != GovernmentHttp.ClientName(GovernmentBodies.BankAnb)) throw new InvalidOperationException($"unexpected client {name}");
+        return new HttpClient(handler, disposeHandler: false) { Timeout = Timeout.InfiniteTimeSpan };
     }
 }
 
@@ -214,10 +275,11 @@ internal sealed class StubAnbHandler : HttpMessageHandler
         _token = token ?? ((_, _) => Task.FromResult(AnbApiTestKit.TokenOk()));
     }
 
-    public IReadOnlyList<CapturedRequest> TokenRequests =>
-        Requests.Where(r => r.Uri.AbsoluteUri.StartsWith(AnbApiTestKit.TokenUrl, StringComparison.Ordinal)).ToList();
-    public IReadOnlyList<CapturedRequest> ApiRequests =>
-        Requests.Where(r => !r.Uri.AbsoluteUri.StartsWith(AnbApiTestKit.TokenUrl, StringComparison.Ordinal)).ToList();
+    /// <summary>A token request is a POST to the token path (on either environment's token host).</summary>
+    public static bool IsToken(Uri uri) => uri.AbsolutePath == AnbApiTestKit.TokenPath;
+
+    public IReadOnlyList<CapturedRequest> TokenRequests => Requests.Where(r => IsToken(r.Uri)).ToList();
+    public IReadOnlyList<CapturedRequest> ApiRequests => Requests.Where(r => !IsToken(r.Uri)).ToList();
     public IReadOnlyList<CapturedRequest> Posts => ApiRequests.Where(r => r.Method == HttpMethod.Post).ToList();
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -227,7 +289,9 @@ internal sealed class StubAnbHandler : HttpMessageHandler
         var captured = new CapturedRequest(request.Method, request.RequestUri!, headers,
             request.Content?.Headers.ContentType?.ToString(), bytes);
         Requests.Enqueue(captured);
-        return request.RequestUri!.AbsoluteUri.StartsWith(AnbApiTestKit.TokenUrl, StringComparison.Ordinal)
+        if (!request.RequestUri!.Host.EndsWith(".test", StringComparison.Ordinal))
+            throw new InvalidOperationException("a test request may only name a reserved .test host");
+        return IsToken(request.RequestUri)
             ? await _token(captured, ct)
             : await _api(captured, ct);
     }

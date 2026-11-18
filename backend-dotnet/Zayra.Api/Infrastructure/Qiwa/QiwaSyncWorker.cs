@@ -169,7 +169,7 @@ public sealed class QiwaSyncWorker : BackgroundService
 
             // The live gate for THIS tenant (agreement, the tenant's consent record, a credential, the operator switch and the
             // legal clearance), read on every pass. A live adapter is never asked while it is closed; the simulator ignores it.
-            var decision = QiwaLiveAdapterPolicy.DecideLiveWrite(_configuration,
+            var decision = QiwaLiveAdapterPolicy.DecideLiveWrite(_configuration, tenantId,
                 await QiwaLiveAdapterPolicy.HasTenantConsentAsync(db, tenantId, ct),
                 credential is { } qiwaCredential && !string.IsNullOrWhiteSpace(qiwaCredential.ClientId) && !string.IsNullOrWhiteSpace(qiwaCredential.EncryptedClientSecret),
                 GovernmentEnvironments.IsKnown(environment) ? environment : GovernmentEnvironments.Sandbox);

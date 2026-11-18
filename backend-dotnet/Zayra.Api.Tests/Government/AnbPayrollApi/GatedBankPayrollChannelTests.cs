@@ -20,34 +20,26 @@ namespace Zayra.Api.Tests.Government.AnbPayrollApi;
 /// </summary>
 public class GatedBankPayrollChannelTests
 {
-    private static readonly GovernmentLiveGates AllOpen = new(true, true, true, true);
     private static readonly RequestContext Ctx = new("127.0.0.1", "test", Guid.Parse("33333333-3333-3333-3333-333333333333"),
         TestScope.TenantId);
 
-    private static IConfiguration Settings(bool productionClearance = false)
-    {
-        var values = new Dictionary<string, string?>
-        {
-            [GovernmentLivePolicy.PartnerAgreementKey(GovernmentBodies.BankAnb)] = "agreement-ref-synthetic",
-        };
-        if (productionClearance)
-            values[GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.BankAnb, GovernmentEnvironments.Production)] = "opinion-ref-synthetic";
-        return new ConfigurationBuilder().AddInMemoryCollection(values).Build();
-    }
+    /// <summary>One configuration for the gate and the transport: the kit's Government:Banks:Anb tree.</summary>
+    private static IConfiguration Settings(bool productionClearance = false) => Config(productionClearance);
 
     private static GovernmentExchangeIntentReceipt Receipt(Batch batch, Guid? exchangeId = null, Guid? tenantId = null,
-        string body = GovernmentBodies.BankAnb, string environment = "sandbox", string? headerSha = null, string? bodySha = null) =>
+        string body = GovernmentBodies.BankAnb, string environment = "sandbox", string? headerSha = null, string? bodySha = null,
+        Guid? companyId = null) =>
         new(exchangeId ?? Guid.NewGuid(), tenantId ?? TestScope.TenantId, body, environment, "submit-key-synthetic",
-            headerSha ?? batch.Header.ExpectedSha256, bodySha ?? batch.Body.ExpectedSha256);
+            headerSha ?? batch.Header.ExpectedSha256, bodySha ?? batch.Body.ExpectedSha256, companyId ?? TestScope.CompanyId);
 
     private static BankSubmitRequest Request(Batch batch, GovernmentExchangeIntentReceipt? receipt, BankChannelScope? scope = null) =>
         new(scope ?? TestScope, new[] { batch.Header, batch.Body }, new BankSubmitOptions(),
             Intent: receipt is null ? null : new BankSubmitIntent(receipt, Ctx));
 
-    private static IBankPayrollChannel Gated(StubAnbHandler handler, IBankChannelGate gate, RecordingLedger ledger, TimeSpan? timeout = null,
-        IAnbEndpointConfig? config = null) =>
-        AnbGatedChannelFactory.Create(handler, config ?? Config(), new FixedCredentials(), gate, ledger, NullLoggerFactory.Instance,
-            limits: new AnbClientLimits(timeout ?? TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30)));
+    private static IBankPayrollChannel Gated(StubAnbHandler handler, IBankChannelGate gate, IGovernmentExchangeRecorder ledger, TimeSpan? timeout = null,
+        IConfiguration? config = null, IBankCredentialSource? credentials = null) =>
+        AnbGatedChannelFactory.Create(Transport(handler, config ?? Settings(productionClearance: true)), credentials ?? new FixedCredentials(), gate, ledger,
+            NullLoggerFactory.Instance, limits: new AnbClientLimits(timeout ?? TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30)));
 
     private static StubAnbHandler AcceptingBank() =>
         new(_ => Json(HttpStatusCode.OK, new { id = PayrollId, status = "ACCEPTED", message = "" }));
@@ -104,6 +96,52 @@ public class GatedBankPayrollChannelTests
         var outcome = await Gated(handler, gate, new RecordingLedger()).SubmitAsync(Request(batch, Receipt(batch)), CancellationToken.None);
 
         outcome.Code.Should().Be(BankChannelCodes.GateRefused);
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Submit_WithADecisionForAnotherTenant_IsRefused_NothingIsSent()
+    {
+        var batch = BuildBatch(2);
+        var handler = AcceptingBank();
+        var ledger = new RecordingLedger();
+        var gate = new PolicyGate(Settings(), AllOpen) { TenantOverride = Guid.Parse("99999999-9999-9999-9999-999999999999") };
+
+        var outcome = await Gated(handler, gate, ledger).SubmitAsync(Request(batch, Receipt(batch)), CancellationToken.None);
+
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.GateRefused);
+        outcome.Message.Should().Be(GatedBankPayrollChannel.DecisionNotForThisCall);
+        outcome.RequestSent.Should().BeFalse();
+        handler.Requests.Should().BeEmpty("a decision for another tenant opens nothing here");
+    }
+
+    [Theory]
+    [InlineData("99999999-9999-9999-9999-999999999999")]
+    [InlineData(null)] // a tenant-wide decision for a company's call
+    public async Task Submit_WithADecisionForAnotherCompany_OrNoCompany_IsRefused_NothingIsSent(string? company)
+    {
+        var batch = BuildBatch(2);
+        var handler = AcceptingBank();
+        var gate = new PolicyGate(Settings(), AllOpen) { CompanyOverride = company is null ? Guid.Empty : Guid.Parse(company), CompanyIsOverridden = true };
+
+        var outcome = await Gated(handler, gate, new RecordingLedger()).SubmitAsync(Request(batch, Receipt(batch)), CancellationToken.None);
+
+        outcome.Code.Should().Be(BankChannelCodes.GateRefused);
+        outcome.Message.Should().Be(GatedBankPayrollChannel.DecisionNotForThisCall);
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AStatusRead_WithADecisionForAnotherTenant_IsRefused_NothingIsSent()
+    {
+        var handler = new StubAnbHandler(_ => Json(HttpStatusCode.OK, new { }));
+        var gate = new PolicyGate(Settings(), AllOpen) { TenantOverride = Guid.Parse("99999999-9999-9999-9999-999999999999") };
+        var channel = Gated(handler, gate, new RecordingLedger());
+
+        var read = () => channel.GetStatusAsync(TestScope, PayrollId, Binding(BuildBatch(2)), CancellationToken.None);
+
+        (await read.Should().ThrowAsync<BankChannelRefusedException>()).Which.Code.Should().Be(BankChannelCodes.GateRefused);
         handler.Requests.Should().BeEmpty();
     }
 
@@ -172,7 +210,7 @@ public class GatedBankPayrollChannelTests
         ledger.Updates.Should().BeEmpty();
     }
 
-    public static TheoryData<string> Mismatches => new() { "tenant", "body", "environment", "header", "bodyfile", "single" };
+    public static TheoryData<string> Mismatches => new() { "tenant", "company", "body", "environment", "header", "bodyfile", "single" };
 
     [Theory]
     [MemberData(nameof(Mismatches))]
@@ -187,8 +225,9 @@ public class GatedBankPayrollChannelTests
             "environment" => Receipt(batch, environment: GovernmentEnvironments.Production),
             "header" => Receipt(batch, headerSha: other.Header.ExpectedSha256),
             "bodyfile" => Receipt(batch, bodySha: other.Body.ExpectedSha256),
+            "company" => Receipt(batch, companyId: Guid.NewGuid()),
             _ => new GovernmentExchangeIntentReceipt(Guid.NewGuid(), TestScope.TenantId, GovernmentBodies.BankAnb, "sandbox", "k",
-                batch.Header.ExpectedSha256, null),
+                batch.Header.ExpectedSha256, null, TestScope.CompanyId),
         };
         var handler = AcceptingBank();
         var ledger = new RecordingLedger();
@@ -213,6 +252,77 @@ public class GatedBankPayrollChannelTests
 
         second.Code.Should().Be(BankChannelCodes.IntentAlreadyUsed);
         handler.Posts.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task OneReceipt_SendsAtMostOnce_EvenThroughTwoChannelInstances()
+    {
+        // Security P2-A: the single use is on the receipt and spent by the transport, not remembered by one channel instance.
+        var batch = BuildBatch(2);
+        var handler = AcceptingBank();
+        var ledger = new RecordingLedger();
+        var request = Request(batch, Receipt(batch));
+
+        (await Gated(handler, new PolicyGate(Settings(), AllOpen), ledger).SubmitAsync(request, CancellationToken.None))
+            .Kind.Should().Be(BankSubmitOutcomeKind.Accepted);
+        var second = await Gated(handler, new PolicyGate(Settings(), AllOpen), ledger).SubmitAsync(request, CancellationToken.None);
+
+        second.Code.Should().Be(BankChannelCodes.IntentAlreadyUsed);
+        second.RequestSent.Should().BeFalse();
+        handler.Posts.Should().ContainSingle();
+        ledger.Updates.Should().BeEmpty("the second use writes nothing over the first use's ledger row");
+    }
+
+    [Fact]
+    public async Task ManyConcurrentSubmits_OfOneReceipt_ThroughSeparateChannels_SendExactlyOnce()
+    {
+        var batch = BuildBatch(2);
+        var handler = AcceptingBank();
+        var ledger = new RecordingLedger();
+        var request = Request(batch, Receipt(batch));
+
+        var outcomes = await Task.WhenAll(Enumerable.Range(0, 16).Select(_ =>
+            Gated(handler, new PolicyGate(Settings(), AllOpen), ledger).SubmitAsync(request, CancellationToken.None)));
+
+        handler.Posts.Should().ContainSingle();
+        outcomes.Count(o => o.Kind == BankSubmitOutcomeKind.Accepted).Should().Be(1);
+        outcomes.Where(o => o.Kind != BankSubmitOutcomeKind.Accepted).Should().OnlyContain(o => o.Code == BankChannelCodes.IntentAlreadyUsed);
+        ledger.Updates.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AReceiptRefusedByAClosedGate_IsBurnt_AndCannotSendOnceTheGateOpens()
+    {
+        var batch = BuildBatch(2);
+        var handler = AcceptingBank();
+        var ledger = new RecordingLedger();
+        var gate = new PolicyGate(Settings(), AllOpen with { OperatorEnabled = false });
+        var channel = Gated(handler, gate, ledger);
+        var request = Request(batch, Receipt(batch));
+
+        (await channel.SubmitAsync(request, CancellationToken.None)).Code.Should().Be(BankChannelCodes.GateRefused);
+        gate.Gates = AllOpen;
+        var again = await channel.SubmitAsync(request, CancellationToken.None);
+
+        again.Code.Should().Be(BankChannelCodes.IntentAlreadyUsed, "the refused attempt closed its ledger row; a new intent is needed");
+        handler.Requests.Should().BeEmpty();
+        ledger.Updates.Should().ContainSingle().Which.Outcome.State.Should().Be(GovernmentExchangeStates.Refused);
+    }
+
+    [Fact]
+    public async Task AReceiptRefusedBeforeTheSocketByTheClient_IsBurnt_AndRecordedOnce()
+    {
+        var batch = BuildBatch(2);
+        var handler = AcceptingBank();
+        var ledger = new RecordingLedger();
+        var channel = Gated(handler, new PolicyGate(Settings(), AllOpen), ledger, credentials: new FixedCredentials(none: true));
+        var request = Request(batch, Receipt(batch));
+
+        (await channel.SubmitAsync(request, CancellationToken.None)).Code.Should().Be(BankChannelCodes.CredentialMissing);
+        (await channel.SubmitAsync(request, CancellationToken.None)).Code.Should().Be(BankChannelCodes.IntentAlreadyUsed);
+
+        handler.Requests.Should().BeEmpty();
+        ledger.Updates.Should().ContainSingle().Which.Outcome.State.Should().Be(GovernmentExchangeStates.Refused);
     }
 
     // ── submit: the outcome ────────────────────────────────────────────────────────────────────────────
@@ -323,17 +433,29 @@ internal sealed class PolicyGate(IConfiguration config, GovernmentLiveGates gate
 {
     public bool WriteAsRead { get; init; }
     public string? EnvironmentOverride { get; init; }
+    /// <summary>Make the decision for another tenant or company than the call's (a gate that answers for the wrong scope).</summary>
+    public Guid? TenantOverride { get; init; }
+    public Guid? CompanyOverride { get; init; }
+    /// <summary>When true, <see cref="CompanyOverride"/> replaces the call's company even where it is <see cref="Guid.Empty"/> (meaning tenant-wide, null).</summary>
+    public bool CompanyIsOverridden { get; init; }
     public bool Throw { get; init; }
+    /// <summary>Switch the gates while a test runs (the operator's kill switch moving between two calls).</summary>
+    public GovernmentLiveGates Gates { get; set; } = gates;
     public int Calls;
+    /// <summary>Every question asked, in order: (write grade?, environment).</summary>
+    public readonly List<(bool Write, string Environment)> Asked = new();
 
     public Task<GovernmentLiveDecision> DecideAsync(string body, BankChannelScope scope, bool write, CancellationToken ct)
     {
         Interlocked.Increment(ref Calls);
+        lock (Asked) Asked.Add((write, scope.Environment));
         if (Throw) throw new InvalidOperationException("gate store down");
         var environment = EnvironmentOverride ?? scope.Environment;
+        var decisionScope = new GovernmentDecisionScope(TenantOverride ?? scope.TenantId,
+            CompanyIsOverridden ? (CompanyOverride == Guid.Empty ? null : CompanyOverride) : scope.CompanyId, environment);
         return Task.FromResult(write && !WriteAsRead
-            ? GovernmentLivePolicy.DecideLiveWrite(config, body, gates, environment)
-            : GovernmentLivePolicy.Decide(body, gates, environment));
+            ? GovernmentLivePolicy.DecideLiveWrite(config, decisionScope, body, Gates)
+            : GovernmentLivePolicy.Decide(decisionScope, body, Gates));
     }
 }
 

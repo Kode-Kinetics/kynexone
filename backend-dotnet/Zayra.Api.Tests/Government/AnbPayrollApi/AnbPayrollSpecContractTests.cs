@@ -53,7 +53,7 @@ public class AnbPayrollSpecContractTests
 
         var post = handler.Posts.Single();
         post.Method.Should().Be(HttpMethod.Post);
-        post.Uri.AbsolutePath.Should().Be("/api" + Spec.SubmitPath);
+        post.Uri.AbsolutePath.Should().Be(Spec.SubmitPath);
         post.Uri.Query.Should().BeEmpty();
         post.Headers.Keys.Where(h => !TransportHeaders.Contains(h)).Should().BeSubsetOf(Spec.SubmitHeaders);
         post.Headers.Keys.Where(h => !TransportHeaders.Contains(h)).Should().BeEquivalentTo(Spec.SubmitHeaders,
@@ -71,7 +71,7 @@ public class AnbPayrollSpecContractTests
         foreach (var get in handler.ApiRequests)
         {
             get.Method.Should().Be(HttpMethod.Get);
-            get.Uri.AbsolutePath.Should().Be("/api" + Spec.StatusPath.Replace("{id}", PayrollId));
+            get.Uri.AbsolutePath.Should().Be(Spec.StatusPath.Replace("{id}", PayrollId));
             var q = ParseQuery(get.Uri);
             q.Keys.Should().BeSubsetOf(Spec.StatusQuery);
             int.Parse(q["take"]).Should().BeInRange(1, Spec.TakeMaximum);
@@ -88,7 +88,7 @@ public class AnbPayrollSpecContractTests
         var handler = new StubAnbHandler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[] { 1 }) });
         await Client(handler, out _).DownloadWpsAsync(TestScope, PayrollId, "P1", CancellationToken.None);
         var get = handler.ApiRequests.Single();
-        get.Uri.AbsolutePath.Should().Be("/api" + Spec.WpsPath.Replace("{id}", PayrollId));
+        get.Uri.AbsolutePath.Should().Be(Spec.WpsPath.Replace("{id}", PayrollId));
         get.Headers.Keys.Where(h => !TransportHeaders.Contains(h)).Should().BeSubsetOf(Spec.WpsHeaders);
     }
 

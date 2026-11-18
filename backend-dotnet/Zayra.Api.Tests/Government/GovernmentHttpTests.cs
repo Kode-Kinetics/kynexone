@@ -15,16 +15,15 @@ namespace Zayra.Api.Tests.Government;
 public sealed class GovernmentHttpTests
 {
     private const string QiwaProductionHost = "api.qiwa.tech";
-    private static readonly GovernmentLiveDecision Open = GovernmentLivePolicy.Decide(GovernmentBodies.Gosi, new GovernmentLiveGates(true, true, true, true));
-    private static readonly GovernmentLiveDecision OpenWrite = GovernmentLivePolicy.DecideLiveWrite(
-        Config(), GovernmentBodies.Gosi, new GovernmentLiveGates(true, true, true, true), "sandbox");
+    private static readonly GovernmentLiveDecision Open = GovernmentLivePolicy.Decide(TestScopes.For("sandbox"), GovernmentBodies.Gosi, new GovernmentLiveGates(true, true, true, true));
+    private static readonly GovernmentLiveDecision OpenWrite = GovernmentLivePolicy.DecideLiveWrite(Config(), TestScopes.For("sandbox"), GovernmentBodies.Gosi, new GovernmentLiveGates(true, true, true, true));
 
     /// <summary>A committed intent for one body and environment, made the only way there is: by the recorder.</summary>
     internal static async Task<GovernmentExchangeIntentReceipt> IntentAsync(string body, string environment)
     {
         var (recorder, db) = GovernmentExchangeRecorderTests.Create();
         await using var _ = db;
-        var tenant = Guid.NewGuid();
+        var tenant = TestScopes.Tenant;
         var recorded = await recorder.BeginAsync(new GovernmentExchangeAttempt(tenant, null, body, "test.write", Zayra.Api.Models.GovernmentExchangeChannels.Api,
             Guid.NewGuid().ToString("N"), Zayra.Api.Models.GovernmentExchangeStates.Attempted,
             new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "test", null, tenant), Environment: environment), default);
@@ -120,10 +119,8 @@ public sealed class GovernmentHttpTests
             Config([(QiwaLiveAdapterPolicy.PartnerAgreementKey, "synthetic-agreement"), .. extra]));
 
     /// <summary>An open live-write decision for one tenant's Qiwa environment (agreement, switch, clearance, consent, credential).</summary>
-    internal static GovernmentLiveDecision QiwaDecision(string environment) => QiwaLiveAdapterPolicy.DecideLiveWrite(
-        Config((QiwaLiveAdapterPolicy.PartnerAgreementKey, "synthetic-agreement"), (QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true"),
-            (GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Qiwa, "production"), "LEGAL-SYNTHETIC-1")),
-        tenantConsent: true, credential: true, environment);
+    internal static GovernmentLiveDecision QiwaDecision(string environment) => QiwaLiveAdapterPolicy.DecideLiveWrite(Config((QiwaLiveAdapterPolicy.PartnerAgreementKey, "synthetic-agreement"), (QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true"),
+            (GovernmentLivePolicy.LegalClearanceKey(GovernmentBodies.Qiwa, "production"), "LEGAL-SYNTHETIC-1")), TestScopes.Tenant, tenantConsent: true, credential: true, environment);
 
     private static readonly QiwaEmployeePayload Payload = new("E", "1", "NationalId", "SA", "Saudi", "1", "7-1", "W", "C");
 
@@ -182,8 +179,7 @@ public sealed class GovernmentHttpTests
         status.ErrorCode.Should().Be(LiveQiwaApiAdapter.EnvironmentRequiredCode);
         (await adapter.AcquireAccessTokenAsync("synthetic-id", "synthetic-credential", "production", default)).Should().BeNull();
         // A closed decision (no consent) sends nothing either, even to the production host.
-        var closed = QiwaLiveAdapterPolicy.DecideLiveWrite(Config((QiwaLiveAdapterPolicy.PartnerAgreementKey, "a"), (QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true")),
-            tenantConsent: false, credential: true, "production");
+        var closed = QiwaLiveAdapterPolicy.DecideLiveWrite(Config((QiwaLiveAdapterPolicy.PartnerAgreementKey, "a"), (QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true")), TestScopes.Tenant, tenantConsent: false, credential: true, "production");
         (await adapter.PushEmployeeAsync(closed, "synthetic-token", Payload, Guid.NewGuid(), default, await IntentAsync(GovernmentBodies.Qiwa, "production"))).Success.Should().BeFalse();
         // And an open decision without a committed intent sends nothing.
         (await adapter.PushEmployeeAsync(QiwaDecision("production"), "synthetic-token", Payload, Guid.NewGuid(), default)).ErrorCode

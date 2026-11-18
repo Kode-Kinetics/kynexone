@@ -296,7 +296,7 @@ public sealed class GovernmentCredentialStoreTests
     [Fact]
     public void AnUnsealedCredential_NeverPrintsItsSecret()
     {
-        new UnsealedGovernmentCredential(GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, null, 1, SecretA)
+        new UnsealedGovernmentCredential(Guid.NewGuid(), GovernmentBodies.Gosi, "sandbox", GovernmentCredentialKinds.ApiKey, null, 1, SecretA)
             .ToString().Should().NotContain("synthetic-secret");
     }
 

@@ -10,6 +10,15 @@ namespace Zayra.Api.Infrastructure.Government;
 public sealed class GovernmentTransportRefusedException(string code, string message) : InvalidOperationException(message)
 {
     public string Code { get; } = code;
+
+    /// <summary>
+    /// True only when the request had already left (a refused redirect): the body may hold it, so the outcome is unknown. False for
+    /// every refusal made before the socket, which a caller may report as "nothing was sent".
+    /// </summary>
+    public bool RequestSent { get; init; }
+
+    /// <summary>The body's HTTP status when the request had left (the refused 3xx), else null.</summary>
+    public int? HttpStatus { get; init; }
 }
 
 /// <summary>
@@ -46,6 +55,12 @@ public sealed class GovernmentHttp
     public const string CredentialBindingCode = "government_credential_binding_mismatch";
     /// <summary>A write without a committed intent for the same body and environment: refused, nothing sent.</summary>
     public const string WriteWithoutIntentCode = "government_write_without_intent";
+    /// <summary>The intent receipt was already spent by an earlier send (anywhere in this process): refused, nothing sent.</summary>
+    public const string IntentAlreadyUsedCode = "government_intent_already_used";
+    /// <summary>A company's own credential carrying another company's intent: refused, nothing sent.</summary>
+    public const string IntentCompanyMismatchCode = "government_intent_company_mismatch";
+    /// <summary>A decision, credential or receipt for another tenant or company than the call: refused, nothing sent (E5).</summary>
+    public const string ScopeMismatchCode = "government_scope_mismatch";
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
     /// <summary>Largest response body a gov client will buffer.</summary>
     public const long MaxResponseBytes = 8 * 1024 * 1024;
@@ -77,6 +92,19 @@ public sealed class GovernmentHttp
         $"Government:{GovernmentBodies.Section(body)}:TokenUrls:{environment}";
 
     /// <summary>
+    /// The token (OAuth) path on the token host, per body and environment. Operator configuration only: the credential-bound token
+    /// grant posts here and nowhere else, so no caller can choose a path that posts without an intent (security P2-B).
+    /// </summary>
+    public static string TokenPathKey(string body, string environment) =>
+        $"Government:{GovernmentBodies.Section(body)}:TokenPaths:{environment}";
+
+    /// <summary>A body's own non-URL setting, under the same section as its base URLs (<c>Government:Banks:Anb:OAuth:Scope</c>).</summary>
+    public static string SettingKey(string body, string name) => $"Government:{GovernmentBodies.Section(body)}:{name}";
+
+    /// <summary>The operator's value for <see cref="SettingKey"/>, or null. Bank clients read their settings here, from the same tree.</summary>
+    public string? Setting(string body, string name) => _config?[SettingKey(body, name)];
+
+    /// <summary>
     /// The primary handler of every government and bank client. Same guarantees as the bank client's own handler factory, so a
     /// bank client can take its handler from here: no redirects, no proxy, no cookies, no decompression, connect-time address check.
     /// </summary>
@@ -90,6 +118,9 @@ public sealed class GovernmentHttp
         handler.MaxResponseHeadersLength = 64; // KB
         handler.PooledConnectionLifetime = TimeSpan.FromMinutes(5);
         handler.ConnectTimeout = TimeSpan.FromSeconds(15);
+        // E7: no trace context leaves for a government or bank host. The runtime would otherwise add traceparent / tracestate / baggage
+        // from the caller's current activity, tying a body's access log to our request (and its ids) for anyone who can read both.
+        handler.ActivityHeadersPropagator = null;
         return handler;
     }
 
@@ -120,6 +151,9 @@ public sealed class GovernmentHttp
                     c.Timeout = DefaultTimeout;
                     c.MaxResponseContentBufferSize = MaxResponseBytes;
                 })
+                // E7: nothing that adds telemetry sits on a government client (the Sentry handler adds sentry-trace and baggage headers and
+                // records a span named by the URL, which holds ID numbers). The handlers other registrations add are cleared.
+                .ConfigureAdditionalHttpMessageHandlers((handlers, _) => handlers.Clear())
                 .RemoveAllLoggers();
         return services;
     }
@@ -151,6 +185,23 @@ public sealed class GovernmentHttp
             && string.Equals(production.Host, url.Host, StringComparison.OrdinalIgnoreCase))
             throw Refused(body, environment, "the token URL is the production token host");
         return url;
+    }
+
+    /// <summary>
+    /// The operator's token path for a body in an environment (<see cref="TokenPathKey"/>): required, a single leading <c>/</c>,
+    /// printable ASCII with no space, no query, fragment, backslash, double slash or dot segment. Anything else is a refusal.
+    /// </summary>
+    public string ResolveTokenPath(string body, string environment)
+    {
+        if (!GovernmentBodies.IsKnown(body) || !GovernmentEnvironments.IsKnown(environment))
+            throw Refused(body, environment, "unknown body or environment");
+        var path = _config?[TokenPathKey(body, environment)];
+        if (string.IsNullOrWhiteSpace(path)) throw Refused(body, environment, "no token path is configured for this environment");
+        if (path.Length > 256 || path[0] != '/' || path.StartsWith("//", StringComparison.Ordinal)
+            || path.Any(c => c is <= ' ' or > '~' or '?' or '#' or '\\' or '%')
+            || path.Split('/').Any(segment => segment is "." or ".."))
+            throw Refused(body, environment, "the configured token path is not a plain relative path");
+        return path;
     }
 
     private Uri? Candidate(string body, string environment, string? key = null)
@@ -190,39 +241,46 @@ public sealed class GovernmentHttp
     /// allow-listed base URL of the decision's body and <paramref name="environment"/>. Never retries; a 3xx is refused. The
     /// caller owns the response.
     /// </summary>
+    /// <param name="completion">ResponseContentRead (the default) buffers the body within the named client's cap; a caller that
+    /// streams the body through its own byte cap passes ResponseHeadersRead and owns the read.</param>
     public Task<HttpResponseMessage> ExchangeAsync(GovernmentLiveDecision decision, string environment, HttpMethod method,
         string relativePath, HttpContent? content, Action<HttpRequestMessage>? configure, CancellationToken ct,
-        GovernmentExchangeIntentReceipt? intent = null)
-        => SendAsync(decision, environment, method, baseOverride: null, relativePath, content, configure, ct, requireIntent: !IsRead(method), intent);
+        GovernmentExchangeIntentReceipt? intent = null, HttpCompletionOption completion = HttpCompletionOption.ResponseContentRead)
+        => SendAsync(decision, environment, method, baseOverride: null, relativePath, content, configure, ct, requireIntent: !IsRead(method), intent, completion);
 
     /// <summary>
     /// The token grant (an OAuth POST that changes nothing at the body): a live-WRITE decision, no intent, sent once to the
-    /// allow-listed TOKEN base URL of that environment.
+    /// allow-listed TOKEN base URL of that environment. INTERNAL (security P2-B): the path is the caller's, so only the transport's
+    /// own credential-bound grant and the legacy Qiwa adapter call it. Everyone else uses the credential-bound overload.
     /// </summary>
-    public Task<HttpResponseMessage> GrantTokenAsync(GovernmentLiveDecision decision, string environment, string relativePath,
+    internal Task<HttpResponseMessage> GrantTokenAsync(GovernmentLiveDecision decision, string environment, string relativePath,
         HttpContent content, Action<HttpRequestMessage>? configure, CancellationToken ct) =>
         SendAsync(decision, environment, HttpMethod.Post, ResolveTokenUrl(decision.Body, environment), relativePath, content, configure, ct,
-            requireIntent: false, intent: null);
+            requireIntent: false, intent: null, HttpCompletionOption.ResponseContentRead);
 
-    /// <summary>The token grant with a bound credential: its body, environment, API host and token host are checked first.</summary>
-    public Task<HttpResponseMessage> GrantTokenAsync(GovernmentLiveDecision decision, UnsealedGovernmentCredential credential, string relativePath,
+    /// <summary>
+    /// The token grant with a bound credential: its body, environment, API host and token host are checked first, and it posts only
+    /// to the operator's fixed token path for that body and environment (<see cref="TokenPathKey"/>). The one public token grant.
+    /// </summary>
+    public Task<HttpResponseMessage> GrantTokenAsync(GovernmentLiveDecision decision, UnsealedGovernmentCredential credential,
         HttpContent content, Action<HttpRequestMessage>? configure, CancellationToken ct)
     {
         RequireBoundTo(credential, decision.Body, credential.Environment);
-        return GrantTokenAsync(decision, credential.Environment, relativePath, content, configure, ct);
+        RequireCredentialInScope(decision, credential);
+        return GrantTokenAsync(decision, credential.Environment, ResolveTokenPath(decision.Body, credential.Environment), content, configure, ct);
     }
 
     private async Task<HttpResponseMessage> SendAsync(GovernmentLiveDecision decision, string environment, HttpMethod method, Uri? baseOverride,
         string relativePath, HttpContent? content, Action<HttpRequestMessage>? configure, CancellationToken ct,
-        bool requireIntent, GovernmentExchangeIntentReceipt? intent)
+        bool requireIntent, GovernmentExchangeIntentReceipt? intent, HttpCompletionOption completion)
     {
         ct.ThrowIfCancellationRequested();
         if (!decision.IsOpen)
             throw new GovernmentTransportRefusedException(GovernmentLivePolicy.RefusedCode,
                 $"Live exchange with {decision.Body} is switched off ({decision.ReasonCode}). Nothing was sent.");
-        if (decision.Environment is { } bound && bound != environment)
+        if (decision.Environment != environment)
             throw new GovernmentTransportRefusedException(EnvironmentMismatchCode,
-                $"The decision for {decision.Body} was made for {bound}, not {environment}. Nothing was sent.");
+                $"The decision for {decision.Body} was made for {decision.Environment}, not {environment}. Nothing was sent.");
         if (!IsRead(method) && (!decision.AllowsWrites || decision.Environment is null))
             throw new GovernmentTransportRefusedException(WriteRefusedCode,
                 $"A {method} to {decision.Body} needs a live-write decision with the recorded legal clearance. Nothing was sent.");
@@ -231,6 +289,10 @@ public sealed class GovernmentHttp
         if (requireIntent && (intent is null || intent.Body != decision.Body || intent.Environment != environment))
             throw new GovernmentTransportRefusedException(WriteWithoutIntentCode,
                 $"A {method} to {decision.Body} ({environment}) needs a committed intent for that body and environment. Nothing was sent.");
+        // E5: the intent is the decision's tenant's. (An intent that is not needed but was given is held to the same rule.)
+        if (intent is not null && intent.TenantId != decision.TenantId)
+            throw new GovernmentTransportRefusedException(ScopeMismatchCode,
+                $"The intent for {decision.Body} ({environment}) belongs to another tenant than the decision. Nothing was sent.");
 
         var baseUrl = baseOverride ?? ResolveBaseUrl(decision.Body, environment);
         if (string.IsNullOrEmpty(relativePath) || relativePath[0] != '/' || relativePath.StartsWith("//", StringComparison.Ordinal)
@@ -246,23 +308,62 @@ public sealed class GovernmentHttp
         RequireSameOrigin(decision.Body, environment, baseUrl, request.RequestUri);
 
         var client = _factory.CreateClient(ClientName(decision.Body));
-        var response = await client.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
+        // Security P2-A: a write's receipt is spent HERE, after every check that can refuse without sending and immediately before
+        // the socket, atomically on the receipt itself. A second send with it, through any channel or transport, is refused.
+        if (requireIntent && !intent!.TryConsume())
+            throw new GovernmentTransportRefusedException(IntentAlreadyUsedCode,
+                $"The intent for this {method} to {decision.Body} ({environment}) was already used for a send. Nothing was sent.");
+        var response = await client.SendAsync(request, completion, ct);
         if ((int)response.StatusCode is >= 300 and < 400)
         {
+            var status = (int)response.StatusCode;
             response.Dispose();
             throw new GovernmentTransportRefusedException(RedirectRefusedCode,
-                $"{decision.Body} answered with a redirect, which is never followed. The request was sent once; treat the outcome as unknown.");
+                $"{decision.Body} answered with a redirect, which is never followed. The request was sent once; treat the outcome as unknown.")
+            { RequestSent = true, HttpStatus = status };
         }
         return response;
     }
 
-    /// <summary>Sends with a credential: the credential must be bound to this body, environment and host first.</summary>
+    /// <summary>
+    /// Sends with a credential: the credential must be bound to this body, environment and host first; it and the decision must be for
+    /// the same tenant (and a company's own credential for that company); the receipt must be that tenant's, and a company's own
+    /// credential carries only that company's intent (security P2-A, E5).
+    /// </summary>
     public Task<HttpResponseMessage> ExchangeAsync(GovernmentLiveDecision decision, UnsealedGovernmentCredential credential, HttpMethod method,
         string relativePath, HttpContent? content, Action<HttpRequestMessage>? configure, CancellationToken ct,
-        GovernmentExchangeIntentReceipt? intent = null)
+        GovernmentExchangeIntentReceipt? intent = null, HttpCompletionOption completion = HttpCompletionOption.ResponseContentRead)
     {
         RequireBoundTo(credential, decision.Body, credential.Environment);
-        return ExchangeAsync(decision, credential.Environment, method, relativePath, content, configure, ct, intent);
+        RequireCredentialInScope(decision, credential);
+        if (intent is not null && intent.TenantId != credential.TenantId)
+            throw new GovernmentTransportRefusedException(ScopeMismatchCode,
+                $"The intent for {decision.Body} ({credential.Environment}) belongs to another tenant than the credential. Nothing was sent.");
+        if (intent is not null && credential.CompanyId is { } company && intent.CompanyId != company)
+            throw new GovernmentTransportRefusedException(IntentCompanyMismatchCode,
+                $"The intent for {decision.Body} ({credential.Environment}) belongs to another company than the credential. Nothing was sent.");
+        return ExchangeAsync(decision, credential.Environment, method, relativePath, content, configure, ct, intent, completion);
+    }
+
+    /// <summary>
+    /// Refuses a decision that was made for another tenant, company or environment than the call (E5). A tenant-wide call (company
+    /// null) takes only a tenant-wide decision, and a company's call only that company's. Public so a gate or channel that is handed a
+    /// decision can check it against its own scope before it acts.
+    /// </summary>
+    public static void RequireFor(GovernmentLiveDecision decision, Guid tenantId, Guid? companyId, string environment)
+    {
+        ArgumentNullException.ThrowIfNull(decision);
+        if (decision.TenantId != tenantId || decision.CompanyId != companyId || decision.Environment != environment)
+            throw new GovernmentTransportRefusedException(ScopeMismatchCode,
+                $"The decision for {decision.Body} was made for another tenant, company or environment than this call. Nothing was sent.");
+    }
+
+    /// <summary>A credential is its tenant's and, when it is one company's own, that company's: it never opens for another decision.</summary>
+    private static void RequireCredentialInScope(GovernmentLiveDecision decision, UnsealedGovernmentCredential credential)
+    {
+        if (credential.TenantId != decision.TenantId || (credential.CompanyId is { } company && company != decision.CompanyId))
+            throw new GovernmentTransportRefusedException(ScopeMismatchCode,
+                $"The credential for {credential.Body} ({credential.Environment}) is for another tenant or company than the decision. Nothing was sent.");
     }
 
     public static bool IsRead(HttpMethod method) => method == HttpMethod.Get || method == HttpMethod.Head;

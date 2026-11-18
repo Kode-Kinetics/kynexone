@@ -32,10 +32,10 @@ public sealed class GovernmentRecheckRegressionTests
     [InlineData(GovernmentBodies.Gosi)]
     public void ASandboxWrite_WithAllFourGates_NeedsNoLegalClearance(string body)
     {
-        var sandbox = GovernmentLivePolicy.DecideLiveWrite(Config(), body, AllOpen, "sandbox");
+        var sandbox = GovernmentLivePolicy.DecideLiveWrite(Config(), TestScopes.For("sandbox"), body, AllOpen);
 
         sandbox.AllowsWrites.Should().BeTrue("the sandbox rung (synthetic data) is usable with the four gates");
-        GovernmentLivePolicy.DecideLiveWrite(Config(), body, AllOpen, "production").ReasonCode
+        GovernmentLivePolicy.DecideLiveWrite(Config(), TestScopes.For("production"), body, AllOpen).ReasonCode
             .Should().Be(GovernmentLivePolicy.LiveWritesNeedLegalClearance, "production writes still need the recorded legal opinion");
     }
 
@@ -51,7 +51,7 @@ public sealed class GovernmentRecheckRegressionTests
     private static GovernmentExchangeAttempt Intent(Guid tenant, string key, string environment) =>
         new(tenant, tenant, GovernmentBodies.BankAnb, "payroll.submit", GovernmentExchangeChannels.Api, key, GovernmentExchangeStates.SubmitIntended,
             new RequestContext("127.0.0.1", "test", Guid.NewGuid(), tenant), new LiveBank(), Environment: environment, SubjectType: "PaymentBatch",
-            SubjectId: "B-001", ArtifactSha256: new string('a', 64), AccountFingerprint: "acct-fp-synthetic", BatchReference: "B-001");
+            SubjectId: TestBatch.Id("B-001"), ArtifactSha256: new string('a', 64), AccountFingerprint: "acct-fp-synthetic", BatchReference: "B-001");
 
     [Fact]
     public async Task TheSameBatchNumber_InSandboxAndProduction_DoesNotCollide()

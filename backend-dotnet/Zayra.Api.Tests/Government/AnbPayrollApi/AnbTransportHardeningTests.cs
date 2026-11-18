@@ -2,7 +2,10 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Zayra.Api.Infrastructure.Government;
+using Zayra.Api.Infrastructure.Government.Credentials;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
@@ -20,41 +23,16 @@ public class AnbTransportHardeningTests
 
     private static HttpResponseMessage Accepted() => Json(HttpStatusCode.OK, new { id = PayrollId, status = "ACCEPTED", message = "" });
 
-    // ── 1. Redirects ─────────────────────────────────────────────────────────────────────────────
+    // ── 1. Redirects (the transport's own guarded handler, on a real socket) ─────────────────────
 
-    [Fact]
-    public void TheFactoryHandler_NeverFollowsRedirects_AndKeepsNoState()
+    /// <summary>The transport's real guarded handler (GovernmentHttp.CreateHandler), pointed at a loopback TLS bank. Loopback is
+    /// allowed ONLY here, by the fixture's ConnectCallback; the production handler refuses it (AnbTransportGuardTests).</summary>
+    internal static AnbPayrollApiClient RealSocketClient(LoopbackTlsBank bank, IConfiguration? config = null, TimeSpan? timeout = null)
     {
-        using var handler = AnbHttpHandlerFactory.CreateHandler();
-        handler.AllowAutoRedirect.Should().BeFalse();
-        handler.UseCookies.Should().BeFalse();
-        handler.UseProxy.Should().BeFalse();
-        handler.AutomaticDecompression.Should().Be(DecompressionMethods.None);
-        handler.MaxResponseHeadersLength.Should().BeLessThanOrEqualTo(64);
-        handler.ConnectCallback.Should().NotBeNull("connect-time address checks block private and loopback targets");
-    }
-
-    public static TheoryData<string> RedirectingHandlers => new() { "sockets-default", "client-handler-default", "wrapped-sockets-default" };
-
-    [Theory]
-    [MemberData(nameof(RedirectingHandlers))]
-    public void TheClientRefusesAHandlerThatFollowsRedirects(string kind)
-    {
-        HttpMessageHandler handler = kind switch
-        {
-            "sockets-default" => new SocketsHttpHandler(),
-            "client-handler-default" => new HttpClientHandler(),
-            _ => new PassThrough(new SocketsHttpHandler()),
-        };
-        var act = () => Client(handler, out _);
-        act.Should().Throw<BankChannelRefusedException>().Which.Code.Should().Be(BankChannelCodes.HandlerFollowsRedirects);
-    }
-
-    [Fact]
-    public void TheClientAcceptsTheFactoryHandler_EvenWrapped()
-    {
-        var act = () => Client(new PassThrough(AnbHttpHandlerFactory.CreateHandler()), out _);
-        act.Should().NotThrow();
+        var settings = config ?? Config();
+        var http = new GovernmentHttp(new LoopbackClientFactory(bank.Wire(GovernmentHttp.CreateHandler())), settings);
+        return new AnbPayrollApiClient(http, new FixedCredentials(), new PolicyGate(settings, AllOpen), new ListLogger<AnbPayrollApiClient>(),
+            null, new AnbClientLimits(timeout ?? TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30)));
     }
 
     [Fact]
@@ -66,7 +44,7 @@ public class AnbTransportHardeningTests
             "anb-sandbox.test" => new(307, "", "https://anb-redirect.test/collect"),
             _ => new(200, JsonSerializer.Serialize(new { id = PayrollId, status = "ACCEPTED", message = "" })),
         });
-        var client = Client(bank.Wire(AnbHttpHandlerFactory.CreateHandler()), out _);
+        var client = RealSocketClient(bank);
 
         var outcome = await client.SubmitAsync(Submit(Small), CancellationToken.None);
 
@@ -81,14 +59,14 @@ public class AnbTransportHardeningTests
     public async Task RealHandler_A307OnTheTokenPost_IsNotFollowed_TheSecretIsNotResent_AndRefused()
     {
         var config = Config();
-        config.ClientAuthMethod = "client_secret_post";
+        config[AnbPayrollApiClient.ClientAuthMethodKey] = AnbPayrollApiClient.AuthPost;
         await using var bank = new LoopbackTlsBank(seen => seen.Host switch
         {
             "anb-auth.test" => new(307, "", "https://anb-redirect.test/steal"),
             "anb-redirect.test" => new(200, JsonSerializer.Serialize(new { access_token = AccessToken, token_type = "Bearer", expires_in = 3600 })),
             _ => new(200, JsonSerializer.Serialize(new { id = PayrollId, status = "ACCEPTED", message = "" })),
         });
-        var client = Client(bank.Wire(AnbHttpHandlerFactory.CreateHandler()), out _, config);
+        var client = RealSocketClient(bank, config);
 
         var outcome = await client.SubmitAsync(Submit(Small), CancellationToken.None);
 
@@ -100,7 +78,6 @@ public class AnbTransportHardeningTests
         bank.Requests.Should().NotContain(r => r.Host == "anb-sandbox.test", "no payroll POST without a token");
     }
 
-    private sealed class PassThrough(HttpMessageHandler inner) : DelegatingHandler(inner);
 
     // ── 2. Nothing escapes once the POST was attempted ──────────────────────────────────────────
 
@@ -145,8 +122,7 @@ public class AnbTransportHardeningTests
     public async Task ALoggerThatThrows_NeverTurnsAnAcceptedPayrollIntoAnException()
     {
         var handler = new StubAnbHandler(_ => Accepted());
-        var client = new AnbPayrollApiClient(handler, Config(), new FixedCredentials(), new ThrowingLogger(), null,
-            new AnbClientLimits(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30)));
+        var client = ThrowingLoggerClient(handler);
 
         var outcome = await client.SubmitAsync(Submit(Small), CancellationToken.None);
 
@@ -158,9 +134,15 @@ public class AnbTransportHardeningTests
     public async Task ALoggerThatThrows_OnATransportFailure_StillGivesUnknown()
     {
         var handler = new StubAnbHandler((_, _) => throw new HttpRequestException("reset"));
-        var client = new AnbPayrollApiClient(handler, Config(), new FixedCredentials(), new ThrowingLogger(), null,
-            new AnbClientLimits(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30)));
+        var client = ThrowingLoggerClient(handler);
         (await client.SubmitAsync(Submit(Small), CancellationToken.None)).Kind.Should().Be(BankSubmitOutcomeKind.Unknown);
+    }
+
+    private static AnbPayrollApiClient ThrowingLoggerClient(HttpMessageHandler handler)
+    {
+        var config = Config();
+        return new AnbPayrollApiClient(Transport(handler, config), new FixedCredentials(), new PolicyGate(config, AllOpen), new ThrowingLogger(), null,
+            new AnbClientLimits(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30)));
     }
 
     private sealed class ThrowingLogger : ILogger<AnbPayrollApiClient>
@@ -182,9 +164,9 @@ public class AnbTransportHardeningTests
         handler.Requests.Should().BeEmpty();
     }
 
-    private sealed class ExplodingCredentials : IAnbCredentialSource
+    private sealed class ExplodingCredentials : IBankCredentialSource
     {
-        public Task<AnbClientCredential?> GetAsync(BankChannelScope scope, CancellationToken ct) => throw new InvalidOperationException("store down");
+        public Task<UnsealedGovernmentCredential?> OpenAsync(string body, BankChannelScope scope, CancellationToken ct) => throw new InvalidOperationException("store down");
     }
 
     [Fact]
@@ -260,12 +242,15 @@ public class AnbTransportHardeningTests
     // ── Credential binding and the host allow-list ───────────────────────────────────────────────
 
     [Theory]
-    [InlineData("production", "anb-sandbox.test", "anb-auth.test")]
-    [InlineData("sandbox", "anb-prod.test", "anb-auth.test")]
-    [InlineData("sandbox", "anb-sandbox.test", "anb-auth-prod.test")]
-    public async Task ACredentialIssuedForAnotherEnvironmentOrHost_IsRefused(string env, string baseHost, string tokenHost)
+    [InlineData("production", "anb-sandbox.test", "anb-auth.test", "oauth_client", "same")]
+    [InlineData("sandbox", "anb-prod.test", "anb-auth.test", "oauth_client", "same")]
+    [InlineData("sandbox", "anb-sandbox.test", "anb-auth-prod.test", "oauth_client", "same")]
+    [InlineData("sandbox", "anb-sandbox.test", "anb-auth.test", "api_key", "same")]
+    [InlineData("sandbox", "anb-sandbox.test", "anb-auth.test", "oauth_client", "other")]
+    public async Task ACredentialIssuedForAnotherEnvironmentHostKindOrCompany_IsRefused(string env, string baseHost, string tokenHost, string kind, string company)
     {
-        var credential = new AnbClientCredential(ClientId, ClientSecret, "v1", env, baseHost, tokenHost);
+        var credential = Credential(environment: env, baseHost: baseHost, tokenHost: tokenHost, kind: kind,
+            companyId: company == "other" ? Guid.NewGuid() : TestScope.CompanyId);
         var handler = new StubAnbHandler(_ => throw new InvalidOperationException("no call"));
         var client = Client(handler, out _, credentials: new FixedCredentials(credential));
 
@@ -278,63 +263,96 @@ public class AnbTransportHardeningTests
         handler.Requests.Should().BeEmpty();
     }
 
+    // ── The operator's allow-list (GovernmentHttp), not a list of the bank client's own ──────────
+
     [Theory]
-    [InlineData("https://10.0.0.5/api")]
-    [InlineData("https://127.0.0.1/api")]
-    [InlineData("https://[::1]/api")]
-    [InlineData("https://169.254.169.254/api")]
-    [InlineData("https://localhost/api")]
-    [InlineData("https://anbtest/api")]
-    [InlineData("https://evil.example/api")]
-    [InlineData("https://xtest/api")]
-    [InlineData("https://anb.test.evil.example/api")]
-    public void ABaseUrlOutsideTheAllowList_IsRefused(string url)
+    [InlineData("https://10.0.0.5")]
+    [InlineData("https://127.0.0.1")]
+    [InlineData("https://[::1]")]
+    [InlineData("https://169.254.169.254")]
+    [InlineData("http://anb-sandbox.test")]
+    [InlineData("https://anb-sandbox.test/api")]
+    [InlineData("https://user:pw@anb-sandbox.test")]
+    [InlineData("https://anb-sandbox.test?x=1")]
+    [InlineData("anb-sandbox.test")]
+    public async Task ABaseUrlThatIsNotAPlainHttpsOriginWithAHostName_IsRefused_BeforeAnySocket(string url)
     {
         var config = Config();
-        config.BaseUrl = url;
-        var act = () => Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out _, config);
-        var ex = act.Should().Throw<BankChannelRefusedException>().Which;
-        ex.Code.Should().Be(BankChannelCodes.ConfigInvalid);
-        ex.Settings.Should().Equal(nameof(IAnbEndpointConfig.BaseUrl));
+        config[GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox")] = url;
+        var handler = new StubAnbHandler(_ => throw new InvalidOperationException("no call"));
+        var client = Client(handler, out _, config);
+
+        var outcome = await client.SubmitAsync(Submit(Small), CancellationToken.None);
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.HostNotAllowed);
+        var read = () => client.GetStatusAsync(TestScope, PayrollId, null, CancellationToken.None);
+        (await read.Should().ThrowAsync<BankChannelRefusedException>()).Which.Code.Should().Be(BankChannelCodes.HostNotAllowed);
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("base")]
+    [InlineData("token")]
+    public async Task ASandboxUrlOnTheProductionHost_IsRefused(string which)
+    {
+        // Fable P2-17: the environment is not a label. A sandbox setting pointing at the production host would send real files
+        // under the sandbox rung, which needs no legal clearance.
+        var config = Config();
+        if (which == "base") config[GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox")] = ProductionBaseUrl;
+        else config[GovernmentHttp.TokenUrlKey(GovernmentBodies.BankAnb, "sandbox")] = ProductionTokenOrigin;
+        var handler = new StubAnbHandler(_ => throw new InvalidOperationException("no call"));
+
+        var outcome = await Client(handler, out _, config).SubmitAsync(Submit(Small), CancellationToken.None);
+
+        outcome.Code.Should().Be(BankChannelCodes.HostNotAllowed);
+        handler.Requests.Should().BeEmpty();
     }
 
     [Fact]
-    public void ATokenUrlOutsideTheAllowList_IsRefused()
+    public async Task AnEnvironmentThatIsOnlyALabel_IsRefused()
     {
-        var config = Config();
-        config.TokenUrl = "https://login.example/token";
-        var act = () => Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out _, config);
-        act.Should().Throw<BankChannelRefusedException>().Which.Settings.Should().Equal(nameof(IAnbEndpointConfig.TokenUrl));
-    }
+        var handler = new StubAnbHandler(_ => throw new InvalidOperationException("no call"));
+        var uat = TestScope with { Environment = "uat" };
 
-    [Theory]
-    [InlineData(" ,  ")]
-    [InlineData("*")]
-    [InlineData(".")]
-    public void AnAllowListThatAllowsEverything_IsRefused(string suffixes)
-    {
-        var config = Config();
-        config.AllowedHostSuffixes = suffixes;
-        var act = () => Client(new StubAnbHandler(_ => throw new InvalidOperationException()), out _, config);
-        act.Should().Throw<BankChannelRefusedException>();
+        var outcome = await Client(handler, out _).SubmitAsync(Submit(Small, scope: uat), CancellationToken.None);
+
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.EnvironmentMismatch);
+        handler.Requests.Should().BeEmpty();
     }
 
     // ── Token cache key and lifetime ─────────────────────────────────────────────────────────────
 
-    private sealed class MutableCredentials(Func<BankChannelScope, AnbClientCredential> make) : IAnbCredentialSource
+    private sealed class MutableCredentials(Func<BankChannelScope, UnsealedGovernmentCredential> make) : IBankCredentialSource
     {
-        public Func<BankChannelScope, AnbClientCredential> Make = make;
-        public Task<AnbClientCredential?> GetAsync(BankChannelScope scope, CancellationToken ct) => Task.FromResult<AnbClientCredential?>(Make(scope));
+        public Func<BankChannelScope, UnsealedGovernmentCredential> Make = make;
+        public Task<UnsealedGovernmentCredential?> OpenAsync(string body, BankChannelScope scope, CancellationToken ct) =>
+            Task.FromResult<UnsealedGovernmentCredential?>(Make(scope));
     }
 
     [Fact]
     public async Task AnotherTenant_NeverReusesThisTenantsToken()
     {
         var handler = new StubAnbHandler(_ => Accepted());
-        var client = Client(handler, out _);
+        // Each tenant's credential carries its own tenant (a credential is never used for another tenant's call).
+        var client = Client(handler, out _, credentials: new MutableCredentials(scope => Credential(tenantId: scope.TenantId)));
         await client.SubmitAsync(Submit(Small), CancellationToken.None);
-        await client.SubmitAsync(Submit(Small) with { Scope = TestScope with { TenantId = Guid.NewGuid() } }, CancellationToken.None);
+        await client.SubmitAsync(Submit(Small, scope: TestScope with { TenantId = Guid.NewGuid() }), CancellationToken.None);
         handler.TokenRequests.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task ACredentialOfAnotherTenant_IsRefused_NoTokenRequestAndNoPost()
+    {
+        var handler = new StubAnbHandler(_ => Accepted());
+        var client = Client(handler, out _, credentials: new FixedCredentials(Credential(tenantId: Guid.NewGuid())));
+
+        var outcome = await client.SubmitAsync(Submit(Small), CancellationToken.None);
+
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.CredentialEndpointMismatch);
+        outcome.RequestSent.Should().BeFalse();
+        handler.Requests.Should().BeEmpty();
     }
 
     [Fact]
@@ -357,20 +375,21 @@ public class AnbTransportHardeningTests
     public async Task AnotherEnvironmentOrBaseUrl_GetsItsOwnToken()
     {
         var handler = new StubAnbHandler(_ => Accepted());
-        var config = Config();
-        var creds = new MutableCredentials(_ => new AnbClientCredential(ClientId, ClientSecret, "v1",
-            config.Environment!, new Uri(config.BaseUrl!).Host, new Uri(config.TokenUrl!).Host));
+        var config = Config(productionClearance: true);
+        var creds = new MutableCredentials(scope => Credential(environment: scope.Environment));
         var client = Client(handler, out _, config, creds);
 
         await client.SubmitAsync(Submit(Small), CancellationToken.None);
-        config.BaseUrl = "https://anb-sandbox-2.test/api";
+        config[GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox")] = "https://anb-sandbox-2.test";
+        creds.Make = scope => Credential(environment: scope.Environment, baseHost: scope.Environment == "sandbox" ? "anb-sandbox-2.test" : null);
         await client.SubmitAsync(Submit(Small), CancellationToken.None);
-        config.Environment = "uat";
-        await client.SubmitAsync(Submit(Small) with { Scope = TestScope with { Environment = "uat" } }, CancellationToken.None);
+        await client.SubmitAsync(Submit(Small, scope: TestScope with { Environment = "production" }), CancellationToken.None);
 
         handler.TokenRequests.Should().HaveCount(3);
         handler.Posts.Should().HaveCount(3);
         handler.Posts[1].Uri.Host.Should().Be("anb-sandbox-2.test");
+        handler.Posts[2].Uri.Host.Should().Be("anb-prod.test");
+        handler.TokenRequests[2].Uri.Host.Should().Be("anb-prod-auth.test");
     }
 
     [Fact]

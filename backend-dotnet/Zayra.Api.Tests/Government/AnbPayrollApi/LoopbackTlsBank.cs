@@ -23,7 +23,12 @@ internal sealed class LoopbackTlsBank : IAsyncDisposable
         public string BodyText => Encoding.UTF8.GetString(Body);
     }
 
-    public sealed record Reply(int Status, string Body, string? Location = null);
+    /// <param name="After">Wait this long (after reading the whole request) before answering.</param>
+    /// <param name="Never">Read the whole request, then never answer (the connection stays open until the test ends).</param>
+    public sealed record Reply(int Status, string Body, string? Location = null, TimeSpan? After = null, bool Never = false);
+
+    /// <summary>A reply that reads everything and then says nothing: the bank took the bytes and went silent.</summary>
+    public static Reply Silence() => new(0, string.Empty, Never: true);
 
     private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
     private readonly X509Certificate2 _cert;
@@ -100,6 +105,12 @@ internal sealed class LoopbackTlsBank : IAsyncDisposable
                 var seen = new Seen(requestLine[0], headers.GetValueOrDefault("Host", string.Empty).Split(':')[0], requestLine[1], body);
                 Requests.Enqueue(seen);
                 var reply = _route(seen);
+                if (reply.Never)
+                {
+                    await Task.Delay(Timeout.Infinite, _stop.Token);
+                    return;
+                }
+                if (reply.After is { } after) await Task.Delay(after, _stop.Token);
                 var payload = Encoding.UTF8.GetBytes(reply.Body);
                 var response = new StringBuilder()
                     .Append(CultureInfo.InvariantCulture, $"HTTP/1.1 {reply.Status} X\r\n")
@@ -156,5 +167,17 @@ internal sealed class LoopbackTlsBank : IAsyncDisposable
         await Task.Yield();
         _cert.Dispose();
         _stop.Dispose();
+    }
+}
+
+/// <summary>Hands the transport's named ANB client a handler wired to a <see cref="LoopbackTlsBank"/>. Test-only: production gets the
+/// guarded handler from DI, which refuses loopback (AnbTransportGuardTests).</summary>
+internal sealed class LoopbackClientFactory(HttpMessageHandler handler) : IHttpClientFactory
+{
+    public HttpClient CreateClient(string name)
+    {
+        if (name != Zayra.Api.Infrastructure.Government.GovernmentHttp.ClientName(Zayra.Api.Infrastructure.Government.GovernmentBodies.BankAnb))
+            throw new InvalidOperationException($"unexpected client {name}");
+        return new HttpClient(handler, disposeHandler: false) { Timeout = Timeout.InfiniteTimeSpan };
     }
 }

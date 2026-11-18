@@ -3,6 +3,7 @@ using System.Text;
 using FluentAssertions;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Net.Http.Headers;
+using Zayra.Api.Infrastructure.Government.Credentials;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Api;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports.Channels;
@@ -62,7 +63,7 @@ public class AnbPayrollApiSubmitTests
         var frozen = Small.Body with { Content = bytes, ExpectedSha256 = AnbConnectCsvGenerator.Sha256Hex(bytes) };
         var handler = new StubAnbHandler(_ => Json(HttpStatusCode.OK, new { id = PayrollId, status = "ACCEPTED", message = "" }));
 
-        var outcome = await Client(handler, out _).SubmitAsync(Submit(Small) with { Body = frozen }, CancellationToken.None);
+        var outcome = await Client(handler, out _).SubmitAsync(WithReceiptForItsFiles(Submit(Small) with { Body = frozen }), CancellationToken.None);
 
         outcome.Kind.Should().Be(BankSubmitOutcomeKind.Accepted);
         var parts = await ReadMultipart(handler.Posts.Single());
@@ -271,7 +272,7 @@ public class AnbPayrollApiSubmitTests
     public async Task TokenRequest_PostsTheClientCredentialInTheForm_WhenConfiguredSo()
     {
         var config = Config();
-        config.ClientAuthMethod = "client_secret_post";
+        config[AnbPayrollApiClient.ClientAuthMethodKey] = AnbPayrollApiClient.AuthPost;
         var handler = new StubAnbHandler(_ => Json(HttpStatusCode.OK, new { id = PayrollId, status = "ACCEPTED", message = "" }));
         await Client(handler, out _, config).SubmitAsync(Submit(Small), CancellationToken.None);
 
@@ -306,7 +307,7 @@ public class AnbPayrollApiSubmitTests
     {
         // Header from one batch, body from another: each file's own hash is intact.
         var other = BuildBatch(4);
-        var request = Submit(Small) with { Body = other.Body };
+        var request = WithReceiptForItsFiles(Submit(Small) with { Body = other.Body });
         var handler = new StubAnbHandler(_ => throw new InvalidOperationException("must not POST"));
 
         var outcome = await Client(handler, out _).SubmitAsync(request, CancellationToken.None);
@@ -377,14 +378,15 @@ public class AnbPayrollApiSubmitTests
     }
 
     [Fact]
-    public async Task Refused_WhenTheScopeIsForAnotherEnvironment()
+    public async Task Refused_WhenTheCredentialIsForAnotherEnvironmentThanTheScope()
     {
+        // A cleared production call holding only the sandbox credential: refused before any socket, the token request included.
         var handler = new StubAnbHandler(_ => throw new InvalidOperationException("must not POST"));
-        var request = Submit(Small) with { Scope = TestScope with { Environment = "production" } };
-        var outcome = await Client(handler, out _).SubmitAsync(request, CancellationToken.None);
+        var production = TestScope with { Environment = "production" };
+        var outcome = await Client(handler, out _, Config(productionClearance: true)).SubmitAsync(Submit(Small, scope: production), CancellationToken.None);
 
         outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
-        outcome.Code.Should().Be(BankChannelCodes.EnvironmentMismatch);
+        outcome.Code.Should().Be(BankChannelCodes.CredentialEndpointMismatch);
         handler.Requests.Should().BeEmpty();
     }
 
@@ -415,19 +417,19 @@ public class AnbPayrollApiSubmitTests
         await client.SubmitAsync(Submit(Small), CancellationToken.None);
         handler.TokenRequests.Should().HaveCount(1);
 
-        creds.Version = "v2";
+        creds.Version = 2;
         await client.SubmitAsync(Submit(Small), CancellationToken.None);
         handler.TokenRequests.Should().HaveCount(2, "a rotated credential never reuses a token minted under the old one");
 
-        await client.SubmitAsync(Submit(Small) with { Scope = TestScope with { CompanyId = Guid.NewGuid() } }, CancellationToken.None);
+        await client.SubmitAsync(Submit(Small, scope: TestScope with { CompanyId = Guid.NewGuid() }), CancellationToken.None);
         handler.TokenRequests.Should().HaveCount(3, "another company never reuses this company's token");
     }
 
-    private sealed class RotatingCredentials : IAnbCredentialSource
+    private sealed class RotatingCredentials : IBankCredentialSource
     {
-        public string Version = "v1";
-        public Task<AnbClientCredential?> GetAsync(BankChannelScope scope, CancellationToken ct) =>
-            Task.FromResult<AnbClientCredential?>(Credential(version: Version));
+        public int Version = 1;
+        public Task<UnsealedGovernmentCredential?> OpenAsync(string body, BankChannelScope scope, CancellationToken ct) =>
+            Task.FromResult<UnsealedGovernmentCredential?>(Credential(version: Version, companyId: scope.CompanyId));
     }
 
     private static byte[] Flip(byte[] content)

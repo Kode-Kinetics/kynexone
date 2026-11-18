@@ -43,7 +43,7 @@ public class AnbArtifactPreflightTests
     private static async Task<BankSubmitOutcome> Send(AnbSubmitRequest request)
     {
         var handler = new StubAnbHandler(_ => Json(HttpStatusCode.OK, new { id = PayrollId, status = "ACCEPTED", message = "" }));
-        var outcome = await Client(handler, out _).SubmitAsync(request, CancellationToken.None);
+        var outcome = await Client(handler, out _).SubmitAsync(WithReceiptForItsFiles(request), CancellationToken.None);
         if (outcome.Kind == BankSubmitOutcomeKind.Refused) handler.Requests.Should().BeEmpty();
         return outcome;
     }
