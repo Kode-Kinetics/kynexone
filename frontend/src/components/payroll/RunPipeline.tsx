@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle2, ChevronDown, Circle, CircleDot } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Circle, CircleDot, Clock, Lock, Send } from 'lucide-react';
 import { type PayrollRun } from '../../api/payroll';
 import { isProcessingActive, startRunProcessing } from '../../api/payrollProcessing';
 import { useAuth } from '../../contexts/AuthContext';
@@ -14,9 +14,11 @@ import { useRunProcessing } from '../../hooks/useRunProcessing';
 import { useT } from '../../hooks/useT';
 import { resolvePayrollRunCurrency } from '../../lib/payrollCurrency';
 import {
-  attentionFor, derivePipeline, sortByAttention,
-  type AttentionKind, type NextAction, type PipelineStage, type Reason, type StageKey,
+  attentionFor, derivePipeline, payOutForRun, sortByAttention, STAGE_ORDER,
+  type AttentionKind, type NextAction, type PipelineBatch, type PipelineStage, type Reason, type StageKey,
 } from '../../lib/payrollPipeline';
+import { payOutLabel, payOutNeedsFile, payOutTone, type PayOut, type PayOutInput } from '../../lib/payOut';
+import { paymentActionsAllowed } from '../../lib/payrollPaymentAccess';
 import { isPeriodOwning, priorRunCandidates, reviewFromSignoff, reviewIsRequired } from '../../lib/payrollRecon';
 import { isolateLtr } from '../../lib/bidi';
 import { requestFailureReason } from '../../lib/requestFailure';
@@ -34,10 +36,27 @@ const STAGE_TAB: Record<Exclude<StageKey, 'review'>, string> = {
 };
 
 /**
+ * What the Bank / WPS tab knows about the run's pay out beyond the batch list. The run bar reads the SAME facts as the tab, so its chip,
+ * its run option and the tab's steps cannot disagree (lib/payOut.ts).
+ */
+export interface PayOutContext extends Partial<Omit<PayOutInput, 'run' | 'batches' | 'can'>> {
+  runId: string;
+  /** The tab's own copy of the run's batch list (fresher than the page's after a file is made). */
+  batches: PipelineBatch[] | null;
+}
+
+/** The tabs that carry a stage's own next action: on them the run bar does not repeat it (one primary per screen). */
+const STAGE_TABS: Partial<Record<StageKey, string[]>> = { paid: ['bank-wps', 'payment-tracking'], approved: ['approvals'] };
+
+const CHIP_TONE: Record<ReturnType<typeof payOutTone>, string> = {
+  warning: 'badge-warning', danger: 'badge-danger', neutral: 'badge-neutral', info: 'badge-info', success: 'badge-success',
+};
+
+/**
  * The selected payroll run as the centre of the page: its stages in order, where it is, why it cannot
  * move on when it cannot, and the one thing to do next. The tabs below stay as the detailed views.
  */
-export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsChanged, reviewRequestKey = 0 }: {
+export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsChanged, reviewRequestKey = 0, activeTab, payOutContext = null }: {
   runId: string | null;
   onSelectRun: (id: string | null) => void;
   onNavigate: (tab: string) => void;
@@ -46,6 +65,10 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
   onRunsChanged: () => void;
   /** Bumped when something elsewhere (Approve refused for want of a sign-off) sends the user back to the review. */
   reviewRequestKey?: number;
+  /** The section on screen: the run bar leaves a stage's next action to the section that owns it. */
+  activeTab?: string;
+  /** From the Bank / WPS tab while it is open. */
+  payOutContext?: PayOutContext | null;
 }) {
   const t = useT();
   const fmt = useFormat();
@@ -78,8 +101,16 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
   };
 
   const can = { process: hasPermission('payroll.write'), approve: hasPermission('payroll.approve'), lock: hasPermission('payroll.lock') };
+  const payCan = {
+    create: paymentActionsAllowed(hasPermission, ['create']), wps: paymentActionsAllowed(hasPermission, ['wps']),
+    settle: paymentActionsAllowed(hasPermission, ['settle']), setup: hasPermission('payroll.structure_manage'),
+  };
+  // The Bank / WPS tab's facts apply to the run it has open; any other run is read from the batch list alone.
+  const ctx = payOutContext && payOutContext.runId === runId ? payOutContext : null;
+  const payOutExtra = (forRun: string | null) => (ctx && forRun === ctx.runId
+    ? { can: payCan, openBatchId: ctx.openBatchId ?? null, exportFacts: ctx.exportFacts ?? null, downloaded: ctx.downloaded ?? false, records: ctx.records ?? null }
+    : { can: payCan });
   const currency = run ? resolvePayrollRunCurrency(run, companies, companiesState) : null;
-  const currencyCode = currency?.status === 'resolved' ? currency.currency : null;
 
   // The run named in a link that does not exist (or is not visible to this user): say so, and select nothing.
   // A run created a moment ago (e.g. "Create off-cycle run" on a final settlement) can be missing from a list read just
@@ -132,7 +163,7 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
     if (s?.status === 'Failed' && (s.errorCode === 'attendance_impact_stale' || s.errorCode === 'ERR_ATTENDANCE_IMPACT_STALE')) setStaleAttendance(true);
   }, [processing.status]);
 
-  const batches = useMemo(() => (data.allBatches && runId ? data.allBatches.filter(b => b.payrollRunId === runId) : null), [data.allBatches, runId]);
+  const batches = useMemo(() => (ctx?.batches ?? (data.allBatches && runId ? data.allBatches.filter(b => b.payrollRunId === runId) : null)), [ctx?.batches, data.allBatches, runId]);
 
   const model = useMemo(() => (run ? derivePipeline({
     run,
@@ -147,7 +178,8 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
     reviewApplicable: holdAtReview,
     can,
     currencyConfirmed: currency === null || currency.status !== 'unavailable',
-  }) : null), [run, processing.status, data.openErrors, data.overrideCount, data.approvals, batches, data.prechecks, review?.reviewedAtUtc, review?.reviewedByName, holdAtReview, can.process, can.approve, can.lock, currency]); // eslint-disable-line react-hooks/exhaustive-deps
+    payOut: payOutExtra(run.id),
+  }) : null), [run, processing.status, data.openErrors, data.overrideCount, data.approvals, batches, data.prechecks, review?.reviewedAtUtc, review?.reviewedByName, holdAtReview, can.process, can.approve, can.lock, currency, ctx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Polite announcements: when the stage that needs attention changes, or the job changes state. Never per progress tick.
   const announceKey = model && run ? `${run.id}|${model.focus}|${model.stages.find(s => s.key === model.focus)?.state}|${processing.status?.status ?? ''}` : '';
@@ -195,8 +227,14 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
 
   // ── Runs that need someone ───────────────────────────────────────────────────
   const attention = useMemo(() => sortByAttention(
-    data.runs.flatMap(r => { const a = attentionFor(r, data.allBatches); return a ? [{ ...r, attention: a }] : []; }),
-  ), [data.runs, data.allBatches]);
+    data.runs.flatMap(r => {
+      // The run the Bank / WPS tab has open is read with the tab's facts, so the list and the chip agree.
+      const a: AttentionKind | null = ctx && r.id === ctx.runId && r.status === 'Locked'
+        ? (payOutNeedsFile(payOutForRun(r, ctx.batches, payOutExtra(r.id))) ? 'export' : null)
+        : attentionFor(r, data.allBatches);
+      return a ? [{ ...r, attention: a }] : [];
+    }),
+  ), [data.runs, data.allBatches, ctx]); // eslint-disable-line react-hooks/exhaustive-deps
   const attentionIds = new Set(attention.map(a => a.id));
   const otherRuns = data.runs.filter(r => !attentionIds.has(r.id));
   // A voided run is not set beside the live ones: it has its own group.
@@ -210,49 +248,150 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
   // The company is named only where two runs share a period, so a single-company tenant never sees it.
   const runLabel = (r: PayrollRun) => (data.runs.some(o => o.id !== r.id && o.year === r.year && o.month === r.month && o.companyId !== r.companyId)
     ? `${period(r)} · ${companyName(r)}` : period(r));
+  // A Locked (or Paid) run's option says where its money stands, in the run bar chip's words; the list never says what the page does not.
+  const batchesOf = (r: PayrollRun): PipelineBatch[] | null => (ctx && r.id === ctx.runId ? ctx.batches : data.allBatches);
+  const runState = (r: PayrollRun): string => (r.status === 'Locked' || r.status === 'Paid'
+    ? payOutLabel(t, payOutForRun(r, batchesOf(r), payOutExtra(r.id))) : statusText(t, r.status));
+  const attentionLabel = (r: PayrollRun & { attention: AttentionKind }): string => (r.attention === 'export' ? runState(r) : attentionText(t, r.attention));
 
   const focusStage = model?.stages.find(s => s.key === model.focus) ?? null;
   const processingStatus = processing.status;
   const processingActive = isProcessingActive(processingStatus?.status);
   const stagesOpen = !run || processingActive || (stagesPref ?? 'folded') === 'open';
   const busy = starting || (run !== null && lockingRunId === run.id);
+  const payOut: PayOut | null = model?.payOut ?? null;
+  // The section on screen owns this stage's next action: the run bar does not repeat it.
+  const sectionOwnsNext = !!model?.focus && !!activeTab && (STAGE_TABS[model.focus] ?? []).includes(activeTab);
+  const showNext = !!model && model.next.label !== 'none' && !sectionOwnsNext;
+  const focusIndex = model?.focus ? STAGE_ORDER.indexOf(model.focus) : -1;
+  const chipLabel = payOut && model?.focus === 'paid' ? payOutLabel(t, payOut) : null;
+
+  // The open run's option is its period only: its status is the chip's (said once). Other runs keep theirs, to choose between them.
+  const optionText = (r: PayrollRun, state: string) => (r.id === runId ? runLabel(r) : `${runLabel(r)} — ${state}`);
+  const picker = (
+    <select
+      id="pipeline-run-picker"
+      className="select h-9 w-full min-w-0 truncate md:w-auto md:min-w-[10rem] md:max-w-[18rem]"
+      value={runId ?? ''}
+      title={run ? `${runLabel(run)} — ${runState(run)}` : undefined}
+      onChange={e => onSelectRun(e.target.value || null)}
+      disabled={data.runsState === 'loading'}
+    >
+      <option value="">{t('Choose a run…')}</option>
+      {attention.length > 0 && (
+        <optgroup label={t('Needs attention')}>
+          {attention.map(r => <option key={r.id} value={r.id}>{optionText(r, attentionLabel(r))}</option>)}
+        </optgroup>
+      )}
+      {liveOtherRuns.length > 0 && (
+        <optgroup label={t('Other runs')}>
+          {liveOtherRuns.map(r => <option key={r.id} value={r.id}>{optionText(r, runState(r))}</option>)}
+        </optgroup>
+      )}
+      {voidedRuns.length > 0 && (
+        <optgroup label={t('Voided runs')}>
+          {voidedRuns.map(r => <option key={r.id} value={r.id}>{optionText(r, statusText(t, r.status))}</option>)}
+        </optgroup>
+      )}
+    </select>
+  );
+
+  // "Next: {title}" with the title in its own element (its words are tested and read on their own).
+  const [nextBefore, nextAfter] = t('Next: {title}', { title: '\u0001' }).split('\u0001');
 
   return (
-    <section aria-labelledby="run-pipeline-title" className="surface space-y-4 p-4" data-testid="run-pipeline">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 id="run-pipeline-title" className="text-h3 font-semibold text-fg">{t('Payroll run')}</h2>
-          {(!run || stagesOpen) && <p className="text-body-sm text-fg-muted">{t('Pick a run to see where it is and what to do next. The tabs below hold the detail.')}</p>}
-        </div>
-        <div className="flex items-center gap-2">
-          <label htmlFor="pipeline-run-picker" className="text-body-sm text-fg-muted">{t('Run')}</label>
-          <select
-            id="pipeline-run-picker"
-            className="select min-w-[14rem]"
-            value={runId ?? ''}
-            onChange={e => onSelectRun(e.target.value || null)}
-            disabled={data.runsState === 'loading'}
-          >
-            <option value="">{t('Choose a run…')}</option>
-            {attention.length > 0 && (
-              <optgroup label={t('Needs attention')}>
-                {attention.map(r => <option key={r.id} value={r.id}>{runLabel(r)} — {attentionText(t, r.attention)}</option>)}
-              </optgroup>
+    <>
+    {/* The run bar: one row, sticky under the top bar from md. Stage cards, the review and the run list open BELOW it, outside the sticky
+        part, so opening them pushes the page instead of covering it. */}
+    <section
+      aria-labelledby="run-pipeline-title"
+      className={`surface z-20 px-3 py-2 ${run ? 'md:sticky md:top-14' : ''}`}
+      data-testid="run-pipeline"
+      data-run-bar=""
+    >
+      <h2 id="run-pipeline-title" className="sr-only">{t('Payroll run')}</h2>
+      {/* One row from md on every section (items shrink and cut their text; nothing wraps to a second line). */}
+      <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-2 xl:flex-nowrap">
+        <label htmlFor="pipeline-run-picker" className="shrink-0 text-meta text-fg-muted max-md:sr-only">{t('Payroll run')}</label>
+        <div className="w-full min-w-0 md:w-auto md:shrink">{picker}</div>
+        {run && model && (
+          <>
+            <span className="badge badge-neutral inline-flex shrink-0 items-center gap-1 whitespace-nowrap" data-testid="pipeline-run-status">
+              {run.status === 'Locked' && <Lock className="h-3 w-3" aria-hidden="true" />}
+              <EnumLabel enum="PayrollRunStatus" value={run.status} />
+            </span>
+            {model.focus && (
+              <>
+                {/* The eight stages at a glance (wide screens only; the words beside it carry the meaning). */}
+                <span aria-hidden="true" className="hidden items-center gap-1 min-[1536px]:flex" data-testid="pipeline-stage-dots">
+                  {model.stages.map((stage, i) => (
+                    <span key={stage.key} className={`h-1.5 w-4 rounded-full ${i === focusIndex ? 'bg-primary' : i < focusIndex || stage.state === 'done' ? 'bg-primary/40' : 'bg-line'}`} />
+                  ))}
+                </span>
+                <span className="shrink-0 whitespace-nowrap text-body-sm text-fg-muted" data-testid="pipeline-folded-stage">
+                  <span className="max-md:sr-only">{stagePrefix(t, focusIndex + 1)}</span>
+                  <span className="font-semibold text-fg">{stageName(t, model.focus)}</span>
+                </span>
+              </>
             )}
-            {liveOtherRuns.length > 0 && (
-              <optgroup label={t('Other runs')}>
-                {liveOtherRuns.map(r => <option key={r.id} value={r.id}>{runLabel(r)} — {statusText(t, r.status)}</option>)}
-              </optgroup>
+            {chipLabel && payOut ? (
+              <span
+                className={`badge ${CHIP_TONE[payOutTone(payOut)]} inline-flex shrink-0 items-center gap-1 whitespace-nowrap`}
+                data-testid="bank-guide-chip"
+                data-chip={payOut.status}
+                title={chipLabel}
+              >
+                {payOut.status === 'submitted' ? <Send className="h-3 w-3 shrink-0" aria-hidden="true" />
+                  : payOut.status === 'confirmed' || payOut.status === 'settled' ? <CheckCircle2 className="h-3 w-3 shrink-0" aria-hidden="true" />
+                  : payOut.status === 'attention' || payOut.status === 'rejected' || payOut.status === 'setup' ? <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+                  : <Clock className="h-3 w-3 shrink-0" aria-hidden="true" />}
+                <span>{chipLabel}</span>
+              </span>
+            ) : focusStage && focusStage.state !== 'done' ? (
+              <span className={`badge shrink-0 ${focusStage.state === 'blocked' ? 'badge-danger' : 'badge-info'}`}>{stateName(t, focusStage.state)}</span>
+            ) : null}
+            <span className="hidden min-w-0 flex-1 md:block" />
+            {showNext && (
+              <div className="flex shrink-0 items-center" data-testid="pipeline-next">
+                {/* ONE button carries the next action in its own words; where it goes is its tooltip, so nothing is cut short. */}
+                <Button
+                  size="sm"
+                  className="shrink-0 whitespace-nowrap"
+                  disabled={model.next.disabled}
+                  busy={busy}
+                  title={`${nextBefore}${nextTitle(t, model.next, focusStage, payOut)}${nextAfter} — ${actionLabel(t, model.next, false)}`}
+                  aria-label={`${nextTitle(t, model.next, focusStage, payOut)} — ${actionLabel(t, model.next, false)}`}
+                  aria-describedby={model.nextReason ? 'pipeline-next-reason' : undefined}
+                  onClick={() => perform(model.next)}
+                  data-testid="pipeline-next-action"
+                >
+                  {busy ? actionLabel(t, model.next, true) : <span data-testid="pipeline-next-title">{nextTitle(t, model.next, focusStage, payOut)}</span>}
+                </Button>
+              </div>
             )}
-            {voidedRuns.length > 0 && (
-              <optgroup label={t('Voided runs')}>
-                {voidedRuns.map(r => <option key={r.id} value={r.id}>{runLabel(r)} — {statusText(t, r.status)}</option>)}
-              </optgroup>
+            {!processingActive && (
+              <button
+                type="button"
+                className="btn-ghost btn-sm ms-auto shrink-0 whitespace-nowrap md:ms-0"
+                aria-expanded={stagesOpen}
+                aria-controls="pipeline-stages-region"
+                data-testid="pipeline-stages-toggle"
+                onClick={() => chooseStages(stagesOpen ? 'folded' : 'open')}
+              >
+                {stagesOpen ? t('Hide stages') : t('Show stages')}
+                <ChevronDown className={`h-4 w-4 transition-transform duration-200 motion-reduce:transition-none ${stagesOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
+              </button>
             )}
-          </select>
-        </div>
+          </>
+        )}
       </div>
+      {/* The Pay out reason is the chip's own words: not said a second time. */}
+      {showNext && model?.nextReason && model.nextReason.id !== 'pay_out' && (
+        <p className="mt-1 text-meta text-fg-muted" id="pipeline-next-reason" data-testid="pipeline-next-reason">{reasonText(t, model.nextReason, payOut)}</p>
+      )}
+    </section>
 
+    <div className="space-y-4 empty:hidden" data-testid="pipeline-region">
       {data.runsState === 'failed' && (
         <p role="alert" className="text-body-sm text-danger-fg" data-testid="pipeline-runs-failed">
           {t('The payroll runs could not be loaded.')}{' '}
@@ -269,7 +408,7 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
               <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
                 <span className="text-body text-fg">{runLabel(r)}</span>
                 <span className="flex items-center gap-2">
-                  <span className="badge badge-warning">{attentionText(t, r.attention)}</span>
+                  <span className="badge badge-warning">{attentionLabel(r)}</span>
                   <Button size="sm" onClick={() => onSelectRun(r.id)}>{t('Open')}</Button>
                 </span>
               </li>
@@ -286,30 +425,6 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
 
       {run && model && (
         <>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-h4 font-semibold text-fg">{runLabel(run)}</span>
-            <span className="badge badge-neutral"><EnumLabel enum="PayrollRunStatus" value={run.status} /></span>
-            {currencyCode && <span className="text-body-sm text-fg-muted">{t('Amounts in {currency}', { currency: fmt.currencyLabel(currencyCode) })}</span>}
-            {focusStage && !stagesOpen && (
-              <span className="text-body-sm text-fg-muted" data-testid="pipeline-folded-stage">
-                {t('Stage {stage}: {state}', { stage: stageName(t, focusStage.key), state: stateName(t, focusStage.state) })}
-              </span>
-            )}
-            {!processingActive && (
-              <button
-                type="button"
-                className="btn-secondary btn-sm ms-auto"
-                aria-expanded={stagesOpen}
-                aria-controls="pipeline-stages-region"
-                data-testid="pipeline-stages-toggle"
-                onClick={() => chooseStages(stagesOpen ? 'folded' : 'open')}
-              >
-                {stagesOpen ? t('Hide stages') : t('Show stages')}
-                <ChevronDown className={`h-4 w-4 transition-transform ${stagesOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
-              </button>
-            )}
-          </div>
-
           {model.voided && <p role="status" className="rounded-lg border border-line bg-surface-sunken px-3 py-2 text-body-sm text-fg-muted">{t('This run was voided. It has no further stages.')}</p>}
           {model.unknownStatus && <p role="status" className="rounded-lg border border-line bg-surface-sunken px-3 py-2 text-body-sm text-fg-muted">{t('This run has a status the pipeline does not know, so no stage is highlighted.')}</p>}
 
@@ -323,6 +438,7 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
                 reviewOpen={reviewOpen}
                 progress={stage.key === 'processed' && isProcessingActive(processingStatus?.status) ? processingStatus : null}
                 fmt={fmt}
+                payOut={payOut}
               />
             ))}
           </ol>
@@ -335,26 +451,6 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
           {processing.unavailable && isProcessingActive(processingStatus?.status) && (
             <p role="status" className="text-body-sm text-warning-fg">{t('Progress could not be refreshed just now. It will keep trying.')}</p>
           )}
-
-          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-line bg-surface-sunken p-3" data-testid="pipeline-next">
-            <div className="min-w-0 flex-1">
-              <p className="text-meta text-fg-muted">{t('Next step')}</p>
-              <p className="text-body font-semibold text-fg" data-testid="pipeline-next-title">{nextTitle(t, model.next, focusStage)}</p>
-              {model.nextReason && <p className="mt-0.5 text-body-sm text-fg-muted" id="pipeline-next-reason" data-testid="pipeline-next-reason">{reasonText(t, model.nextReason)}</p>}
-            </div>
-            {model.next.label !== 'none' && (
-              <Button
-                variant="primary"
-                disabled={model.next.disabled}
-                busy={busy}
-                aria-describedby={model.nextReason ? 'pipeline-next-reason' : undefined}
-                onClick={() => perform(model.next)}
-                data-testid="pipeline-next-action"
-              >
-                {actionLabel(t, model.next, busy)}
-              </Button>
-            )}
-          </div>
 
           {actionError && (
             <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-body-sm text-danger-fg" data-testid="pipeline-action-error">
@@ -390,19 +486,22 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
 
       <div role="status" aria-live="polite" className="sr-only" data-testid="pipeline-live">{announcement}</div>
       {lockDialog}
-    </section>
+    </div>
+    </>
   );
 }
 
 // ── One stage ──────────────────────────────────────────────────────────────────
 
-function StageItem({ stage, isFocus, onOpen, reviewOpen, progress, fmt }: {
+function StageItem({ stage, isFocus, onOpen, reviewOpen, progress, fmt, payOut }: {
   stage: PipelineStage;
   isFocus: boolean;
   onOpen: () => void;
   reviewOpen: boolean;
   progress: { processedEmployees: number | null; totalEmployees: number | null; status: string } | null;
   fmt: ReturnType<typeof useFormat>;
+  /** The run's pay out (the Pay out stage's words). */
+  payOut: PayOut | null;
 }) {
   const t = useT();
   const tone = stage.state === 'done' ? 'border-line bg-success-soft text-success-fg'
@@ -457,7 +556,7 @@ function StageItem({ stage, isFocus, onOpen, reviewOpen, progress, fmt }: {
         </div>
       )}
       {stage.reason && stage.state !== 'done' && !(progress && stage.reason.id === 'processing') && (
-        <p className="text-meta" data-testid={`stage-reason-${stage.key}`}>{reasonText(t, stage.reason)}</p>
+        <p className="text-meta" data-testid={`stage-reason-${stage.key}`}>{reasonText(t, stage.reason, payOut)}</p>
       )}
     </li>
   );
@@ -476,7 +575,7 @@ function stageName(t: T, key: StageKey): string {
     case 'review': return t('Review');
     case 'approved': return t('Approved');
     case 'locked': return t('Locked');
-    case 'paid': return t('Paid / Exported');
+    case 'paid': return t('Pay out');
   }
 }
 
@@ -531,8 +630,9 @@ function detailText(t: T, d: NonNullable<PipelineStage['detail']>): string {
   }
 }
 
-function reasonText(t: T, r: Reason): string {
+function reasonText(t: T, r: Reason, payOut: PayOut | null = null): string {
   switch (r.id) {
+    case 'pay_out': return payOut ? payOutLabel(t, payOut) : t('Waits for the run to be locked.');
     case 'failed': return r.message ?? t('Processing failed.');
     case 'processing': return t('Processing is under way. This page updates by itself.');
     case 'errors_open': return t('{count, plural, one {# validation error is open. Resolve or override it on the Validation tab.} other {# validation errors are open. Resolve or override them on the Validation tab.}}', { count: r.count ?? 0 });
@@ -561,7 +661,23 @@ function reasonText(t: T, r: Reason): string {
   }
 }
 
-function nextTitle(t: T, next: NextAction, focus: PipelineStage | null): string {
+/** "Stage 8 of 8 · " before the stage's name (the name is drawn on its own, in bold). */
+function stagePrefix(t: T, n: number): string {
+  const marker = '\u0001';
+  const [before] = t('Stage {n} of 8 · {stage}', { n, stage: marker }).split(marker);
+  return before;
+}
+
+function nextTitle(t: T, next: NextAction, focus: PipelineStage | null, payOut: PayOut | null = null): string {
+  if (focus?.key === 'paid' && payOut) {
+    switch (payOut.status) {
+      case 'no_batch': return t('Create the payment batch');
+      case 'setup': return t('Complete the bank setup');
+      case 'created': case 'downloaded': return t('Send the file to your bank');
+      case 'rejected': return t('Prepare a corrected file');
+      default: break;
+    }
+  }
   switch (next.label) {
     case 'process': return t('Process payroll');
     case 'retry': return t('Retry processing');

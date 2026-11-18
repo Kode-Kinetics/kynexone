@@ -1,0 +1,10 @@
+{
+  "exceptions": [
+    {
+      "ghsa": "GHSA-fc5q-39xc-vjpf",
+      "package": "picomatch",
+      "expires": "2026-12-17",
+      "reason": "No patched release exists (4.0.7 is the latest and is inside the affected range). ReDoS needs an attacker-controlled glob pattern; picomatch is reached only through build and file-watching tooling (micromatch, anymatch, readdirp, tinyglobby) that matches repo-controlled patterns, never user input at runtime. Re-check upstream for a patched release before this expires."
+    }
+  ]
+}

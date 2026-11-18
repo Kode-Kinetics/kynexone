@@ -66,6 +66,9 @@ interface PaletteItem {
   onSelect: () => void;
 }
 
+
+/** The app menu's collapse choice (Sidebar's "<" button). Payroll keeps its own under `${key}:payroll`. */
+const SIDEBAR_COLLAPSED_KEY = 'sidebar-collapsed';
 export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const router = useRouter();
   const navigationGuard = useNavigationGuard();
@@ -87,7 +90,12 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const mayUseAssistant = isFeatureEnabled('ai_assistant') && (hasPermission('ai.query') || hasPermission('ai.insights_view')
     || (isFeatureEnabled(POLICY_INTAKE_FLAG) && hasPermission('ess.read')));
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof window !== 'undefined' && localStorage.getItem('sidebar-collapsed') === 'true');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof window !== 'undefined' && localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true');
+  // Inside Payroll the app menu folds to icons by default, so the Payroll sections and the work get the width. The same collapse
+  // button and the same storage remember the choice, under Payroll's own key, so every other page keeps the user's usual setting.
+  const inPayroll = pathname === '/payroll' || !!pathname?.startsWith('/payroll/');
+  const [payrollSidebarCollapsed, setPayrollSidebarCollapsed] = useState(() => typeof window === 'undefined' || localStorage.getItem(`${SIDEBAR_COLLAPSED_KEY}:payroll`) !== 'false');
+  const collapsed = inPayroll ? payrollSidebarCollapsed : sidebarCollapsed;
   const [commandOpen, setCommandOpen] = useState(false);
   // Lives here, not in a page: <main> is keyed by pathname and remounts on navigation.
   const [assistantOpen, setAssistantOpen] = useState(false);
@@ -429,11 +437,11 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
       <div className="flex min-h-screen">
         <Sidebar
           isOpen={sidebarOpen}
-          isCollapsed={sidebarCollapsed}
+          isCollapsed={collapsed}
           onClose={() => setSidebarOpen(false)}
-          onToggleCollapse={() => setSidebarCollapsed((c) => {
+          onToggleCollapse={() => (inPayroll ? setPayrollSidebarCollapsed : setSidebarCollapsed)((c) => {
             const next = !c;
-            localStorage.setItem('sidebar-collapsed', String(next));
+            localStorage.setItem(inPayroll ? `${SIDEBAR_COLLAPSED_KEY}:payroll` : SIDEBAR_COLLAPSED_KEY, String(next));
             return next;
           })}
           navigationRestoreTarget={sidebarTriggerRef}

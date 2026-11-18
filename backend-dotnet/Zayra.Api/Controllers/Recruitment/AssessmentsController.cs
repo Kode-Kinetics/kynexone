@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Recruitment;
@@ -24,6 +25,7 @@ public class AssessmentsController : ControllerBase
 
     // ── Templates ──────────────────────────────────────────────────────────────
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("templates")]
     public async Task<IActionResult> ListTemplates([FromQuery] bool activeOnly = true, CancellationToken ct = default)
     {
@@ -35,6 +37,7 @@ public class AssessmentsController : ControllerBase
         return Ok(items);
     }
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("templates/{id:guid}")]
     public async Task<IActionResult> GetTemplate(Guid id, CancellationToken ct)
     {
@@ -47,8 +50,21 @@ public class AssessmentsController : ControllerBase
             .Where(x => x.TenantId == tid && x.TemplateId == id)
             .OrderBy(x => x.OrderIndex).ToListAsync(ct);
 
-        return Ok(new { template, questions });
+        // The correct options travel only to the people who author templates or record candidates' marks (HR and Recruiters);
+        // everyone else who can read templates receives the questions without the answer field.
+        if (CanManageTemplates()) return Ok(new { template, questions });
+        return Ok(new
+        {
+            template,
+            questions = questions.Select(q => new
+            {
+                q.Id, q.TemplateId, q.OrderIndex, q.QuestionType, q.QuestionText, q.OptionsJson, q.Marks, q.Difficulty, q.SkillTag,
+            }),
+        });
     }
+
+    private bool CanManageTemplates() =>
+        User.HasPermission("recruitment.write") && (User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.IsInRole("Recruiter"));
 
     [HttpPost("templates")]
     [Authorize(Roles = "Admin,HR Manager")]

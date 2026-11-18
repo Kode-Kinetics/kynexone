@@ -10,13 +10,24 @@ export type BankStepState = 'done' | 'current' | 'blocked' | 'upcoming';
 export type BankStepReason =
   | 'run_not_locked' | 'no_permission_create' | 'choose_batch'
   | 'checking' | 'no_permission' | 'off' | 'check_failed'
-  | 'validation_blocked' | 'needs_validation' | 'needs_file';
+  | 'validation_blocked' | 'needs_validation' | 'needs_file' | 'needs_setup';
 
 /** What the gate (availability) and the panel (validate / generate) report upward. */
 export interface BankFlowProgress {
   gate: 'checking' | 'no_permission' | 'off' | 'failed' | 'ready';
   validation: 'none' | 'running' | 'stale' | 'blocked' | 'passed';
   generated: boolean;
+  /**
+   * The employer's bank setup (account, establishment id, ...) as saved. Incomplete holds every later step: it is the gate in front of
+   * step 2. Absent means "not reported" and is read as complete (the gate and older callers never say).
+   */
+  setup?: 'complete' | 'incomplete';
+  /** The last "Create bank file" was refused (a conflict, field errors on the date or the reference). */
+  createRefused?: boolean;
+  /** The file was downloaded in this session. */
+  downloaded?: boolean;
+  /** How many employees the last check covered. */
+  checked?: number;
 }
 
 export interface BankStep { key: BankStepKey; state: BankStepState; reason?: BankStepReason }
@@ -61,11 +72,13 @@ export function deriveBankSteps(input: {
   }
 
   const validated = generated || progress?.validation === 'passed';
-  const check: BankStep = validated ? { key: 'check', state: 'done' }
+  const setupPending = progress?.setup === 'incomplete' && !generated;
+  const check: BankStep = setupPending ? { key: 'check', state: 'upcoming', reason: 'needs_setup' }
+    : validated ? { key: 'check', state: 'done' }
     : progress?.validation === 'blocked' ? { key: 'check', state: 'blocked', reason: 'validation_blocked' }
     : { key: 'check', state: 'current' };
   const create: BankStep = generated ? { key: 'create', state: 'done' }
-    : validated ? { key: 'create', state: 'current' }
+    : validated && !setupPending ? { key: 'create', state: 'current' }
     : { key: 'create', state: 'upcoming', reason: 'needs_validation' };
   const download: BankStep = submitted ? { key: 'download', state: 'done' }
     : generated ? { key: 'download', state: 'current' }

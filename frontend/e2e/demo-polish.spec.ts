@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { boot, shot, type Handler, type Locale } from './demo-polish.fixture';
+import { boot, PERMS, shot, USER, type Handler, type Locale } from './demo-polish.fixture';
 import { LOCKED_RUN_FINDINGS } from './demo-polish.data';
 import { bootEmployeeWorkspaceFixture } from './employee-workspace.fixture';
 
@@ -132,7 +132,9 @@ for (const locale of LOCALES) {
 for (const locale of LOCALES) {
   test.describe(`Payroll dashboard on a Locked, exported run (${locale})`, () => {
     test('readiness drift is a note for next month, never a payment block, and the pipeline is translated', async ({ page }) => {
-      await boot(page, { locale, url: `/payroll?tab=dashboard&run=${RUN_ID}`, routes: payroll(), waitMs: 2500 });
+      // "Exported": the batch's bank file exists (the list's flags say so; a generated register alone is not a bank file).
+      const exported = { ...BATCH, bankFileAvailable: true, bankFileGenerated: true };
+      await boot(page, { locale, url: `/payroll?tab=dashboard&run=${RUN_ID}`, routes: payroll(p => (p === '/api/payroll/payment-batches' ? [exported] : undefined)), waitMs: 2500 });
       const panel = page.getByRole('region', { name: locale === 'ar' ? 'جاهزية الدفع' : 'Payment readiness' });
       await expect(panel).toBeVisible({ timeout: 90_000 });
       const text = await panel.innerText();
@@ -146,7 +148,8 @@ for (const locale of LOCALES) {
         expect(latinWords(pipelineText.replace(/PAY-\d+-\d+/, '')), pipelineText).toEqual([]);
         expect(pipelineText).not.toMatch(/ ,/);
       } else {
-        expect(pipelineText).toContain('Generated (file ready for the bank)');
+        expect(pipelineText).toContain('File created — not sent');
+        expect(pipelineText).toContain('Bank file generated');
       }
       await shot(page, 'payroll-dashboard-locked', locale);
     });
@@ -260,7 +263,7 @@ for (const locale of LOCALES) {
   test.describe(`Run selectors (${locale})`, () => {
     test('the live run is listed first and voided runs sit in their own group', async ({ page }) => {
       await boot(page, { locale, url: `/payroll?tab=reconciliation&run=${RUN_ID}`, routes: payroll(), waitMs: 2500 });
-      const select = page.getByRole('tabpanel').getByRole('combobox').first();
+      const select = page.getByTestId('payroll-section-panel').getByRole('combobox').first();
       await expect(select).toBeVisible({ timeout: 90_000 });
       await expect(select.locator('option')).toHaveCount(4);
       const texts = (loc: ReturnType<typeof select.locator>) => loc.evaluateAll(els => els.map(e => (e.textContent ?? '').trim()));
@@ -278,7 +281,7 @@ for (const locale of LOCALES) {
     test('the Payslips tab groups voided runs too, and shows dates and the language by name in the viewer\'s language', async ({ page }) => {
       const slip = { id: 'ps-1', payrollRunId: RUN_ID, employeeId: 1, employeeCode: 'EMP-1', employeeName: 'Nora Alharbi', payslipNumber: 'PS-2026-11-0001', language: 'en', isPublishedToEss: true, createdAtUtc: '2026-11-13T17:42:41Z', publishedAtUtc: '2026-11-13T18:00:00Z' };
       await boot(page, { locale, url: '/payroll?tab=payslips', routes: payroll(path => path === `/api/payroll/runs/${RUN_ID}/payslips` ? { items: [slip], total: 1, page: 1, pageSize: 100 } : undefined), waitMs: 2500 });
-      const select = page.getByRole('tabpanel').getByRole('combobox').first();
+      const select = page.getByTestId('payroll-section-panel').getByRole('combobox').first();
       await expect(select).toBeVisible({ timeout: 90_000 });
       const groups = await select.locator('optgroup').evaluateAll(els => els.map(e => (e as HTMLOptGroupElement).label));
       expect(groups).toEqual([locale === 'ar' ? 'المسيرات المُبطَلة' : 'Voided runs']);
@@ -297,6 +300,8 @@ for (const locale of LOCALES) {
 
 const BANK_BATCH = { ...BATCH, status: 'Draft', wpsStatus: 'Draft', effectiveWpsStatus: 'Draft', wpsStatusLabel: 'Draft', generatedFileLabel: null };
 const bankRoutes = (batch: Record<string, unknown> = BATCH) => payroll((path, search) => {
+  // Someone who prepares bank files (the tab shows who may not, separately).
+  if (path === '/api/auth/me') return { ...USER, permissions: [...PERMS, 'payroll.export'] };
   if (path === '/api/payroll/payment-batches') return search.get('runId') === RUN_ID || !search.get('runId') ? [batch] : [];
   if (path === '/api/payroll/payment-batches/b1/records') return [{ id: 'r1', paymentBatchId: 'b1', employeeId: 8, employeeName: 'Maha Almutairi', employeeCode: 'EVT2-0008', amount: 12000, iban: 'SA0380000000608010167519', wpsReference: 'REF-1', status: 'Pending' }];
   if (path === '/api/payroll/bank-exports/batches/b1/availability') return { enabled: false };
@@ -305,42 +310,45 @@ const bankRoutes = (batch: Record<string, unknown> = BATCH) => payroll((path, se
 
 for (const locale of LOCALES) {
   test.describe(`Payroll: one selected run, Bank / WPS Files (${locale})`, () => {
-    test('the Bank tab opens on the selected run and on its only batch, with a status line instead of a dead button', async ({ page }) => {
+    test('the Bank tab opens on the selected run and on its only batch; one run picker for the page, no dead button', async ({ page }) => {
       await boot(page, { locale, url: `/payroll?tab=bank-wps&run=${RUN_ID}`, routes: bankRoutes(), waitMs: 2500 });
       const top = page.locator('#pipeline-run-picker');
       await expect(top).toBeVisible({ timeout: 90_000 });
-      const tab = page.getByRole('tabpanel').getByRole('combobox').first();
-      await expect(tab).toHaveValue(RUN_ID);
       await expect(top).toHaveValue(RUN_ID);
-      // The only batch is open: its records show, nothing asks to "Select a batch".
-      await expect(page.getByText('Maha Almutairi')).toBeVisible({ timeout: 30_000 });
+      // The run bar's picker is the only one: the tab has no second run select.
+      await expect(page.getByTestId('payroll-section-panel').locator('#bank-wps-run')).toHaveCount(0);
+      // The only batch is open: its number heads the facts, its records are one click away, nothing asks to "Select a batch".
+      await expect(page.getByTestId('bank-file-facts')).toContainText('PAY-202611-220353', { timeout: 30_000 });
       await expect(page.getByText(locale === 'ar' ? 'اختر دفعة' : 'Select a batch to view payment records')).toHaveCount(0);
-      const status = page.getByTestId('bank-batch-status');
-      await expect(status).toContainText('PAY-202611-220353');
-      await expect(status).toContainText(locale === 'ar' ? 'تم إنشاء ملف البنك' : 'bank file generated');
-      await expect(page.getByRole('button', { name: /Payment Batch Created|Create Payment Batch|إنشاء دفعة/ })).toHaveCount(0);
-      await expect(page.getByTestId('bank-wps-jump')).toBeVisible();
+      // A Saudi batch whose internal register is generated does not claim a bank file.
+      await expect(page.locator('main')).not.toContainText(locale === 'ar' ? 'تم إنشاء ملف البنك' : 'bank file generated');
+      await expect(page.getByRole('button', { name: /Create payment batch|إنشاء دفعة الدفع/ })).toHaveCount(0);
+      await page.getByTestId('bank-more').click();
+      await page.getByRole('menuitem', { name: locale === 'ar' ? 'سجلات الدفع' : 'Payment records' }).click();
+      await expect(page.getByRole('dialog').getByText('Maha Almutairi')).toBeVisible();
       await shot(page, 'payroll-bank-one-batch', locale);
     });
 
-    test('a batch whose file is not generated says so in words', async ({ page }) => {
+    test('a batch whose file is not generated says so in words, in the run bar and in the run picker', async ({ page }) => {
       await boot(page, { locale, url: `/payroll?tab=bank-wps&run=${RUN_ID}`, routes: bankRoutes(BANK_BATCH), waitMs: 2500 });
-      const status = page.getByTestId('bank-batch-status');
-      await expect(status).toBeVisible({ timeout: 90_000 });
-      await expect(status).toContainText(locale === 'ar' ? 'لم يُنشأ ملف البنك بعد' : 'bank file not generated yet');
+      const chip = page.getByTestId('bank-guide-chip');
+      await expect(chip).toBeVisible({ timeout: 90_000 });
+      await expect(chip).toHaveText(locale === 'ar' ? 'لا يوجد ملف بنكي بعد' : 'No bank file yet');
+      // The run picker shows the period only; its tooltip carries the chip's words.
+      await expect(page.locator('#pipeline-run-picker')).toHaveAttribute('title', new RegExp(locale === 'ar' ? 'لا يوجد ملف بنكي بعد' : 'No bank file yet'));
     });
 
-    test('"Open Bank / WPS" keeps the run, and a run chosen in a tab is the pipeline\'s run too', async ({ page }) => {
+    test('"Open Bank / WPS" keeps the run; clearing the run leaves the tab asking for one', async ({ page }) => {
       await boot(page, { locale, url: `/payroll?tab=dashboard&run=${RUN_ID}`, routes: bankRoutes(BANK_BATCH), waitMs: 2500 });
       const open = page.getByRole('button', { name: locale === 'ar' ? /فتح.*البنك/ : /Open Bank \/ WPS/ });
       await expect(open).toBeVisible({ timeout: 90_000 });
       await open.click();
-      const tab = page.getByRole('tabpanel').getByRole('combobox').first();
-      await expect(tab).toHaveValue(RUN_ID);
+      await expect(page).toHaveURL(/tab=bank-wps/);
       await expect(page.locator('#pipeline-run-picker')).toHaveValue(RUN_ID);
-      // The other direction: clearing the choice in the tab clears it in the pipeline.
-      await tab.selectOption('');
-      await expect(page.locator('#pipeline-run-picker')).toHaveValue('');
+      await expect(page.getByTestId('bank-guide')).toBeVisible();
+      // Clearing the page's run empties the tab, which says what to do.
+      await page.locator('#pipeline-run-picker').selectOption('');
+      await expect(page.getByTestId('bank-no-run')).toBeVisible();
     });
 
     test('Payment Tracking lists the selected run\'s batches and offers all runs', async ({ page }) => {

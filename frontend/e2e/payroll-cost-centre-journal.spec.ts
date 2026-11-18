@@ -202,7 +202,7 @@ async function boot(page: Page, options: Options = {}, startTab: 'runs' | 'gl-jo
   await page.goto('/payroll');
   const names = { runs: 'Payroll Runs', 'gl-journal': 'GL Journal', approvals: 'Approvals', reports: 'Reports' };
   await page.locator(`#payroll-tab-${startTab}`).click();
-  await expect(page.locator(`#payroll-tab-${startTab}`)).toHaveAttribute('aria-selected', 'true', { timeout: 60_000 });
+  await expect(page.locator(`#payroll-tab-${startTab}`)).toHaveAttribute('aria-current', 'page', { timeout: 60_000 });
   void names;
   return { writes, reads, errors, state };
 }
@@ -237,7 +237,7 @@ test('with costing on, an Approved run offers "Review & lock" and opens the prev
   // The other company has costing off: its card keeps today's button.
   await expect(page.getByRole('button', { name: 'Lock', exact: true })).toHaveCount(1);
   await reviewAndLock(page).click();
-  await expect(page.locator('#payroll-tab-gl-journal')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('#payroll-tab-gl-journal')).toHaveAttribute('aria-current', 'page');
   await expect(tid(page, 'cc-lock-preview')).toBeVisible();
   await expect(tid(page, 'cc-lock-run-select')).toHaveValue('run-jun');
 });
@@ -405,7 +405,7 @@ test('M-6: a run sent back after approval says so and offers the approvals tab',
   await tid(page, 'cc-lock-confirm').click();
   await expect(tid(page, 'cc-lock-sent-back-banner')).toContainText(M6_EN);
   await tid(page, 'cc-lock-sent-back-banner').getByRole('button', { name: 'Go to approvals' }).click();
-  await expect(page.locator('#payroll-tab-approvals')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('#payroll-tab-approvals')).toHaveAttribute('aria-current', 'page');
 });
 
 test('separation of duties: the 403 sentence shows in Arabic and the run stays Approved', async ({ page }) => {
@@ -447,7 +447,7 @@ test('a journal that fails to load is an error with Retry, never an empty journa
 
 test('Approve: uncosted Optional lines need an acknowledgement, and only an affirmed count is sent', async ({ page }) => {
   const state = await boot(page, { uncosted: true }, 'approvals');
-  await page.getByLabel('Select payroll run to approve').selectOption('run-proc');
+  await page.locator('#pipeline-run-picker').selectOption('run-proc');
   const ack = tid(page, 'cc-approve-uncosted-ack');
   await expect(ack).toContainText('6 employees post lines on Optional accounts without a cost centre');
   const approve = page.getByRole('button', { name: 'Approve — Final' });
@@ -461,7 +461,7 @@ test('Approve: uncosted Optional lines need an acknowledgement, and only an affi
 
 test('Approve: nothing uncosted means no acknowledgement and no count', async ({ page }) => {
   const state = await boot(page, {}, 'approvals');
-  await page.getByLabel('Select payroll run to approve').selectOption('run-proc');
+  await page.locator('#pipeline-run-picker').selectOption('run-proc');
   await expect(page.getByRole('button', { name: 'Approve — Final' })).toBeEnabled();
   await expect(tid(page, 'cc-approve-uncosted-ack')).toHaveCount(0);
   await page.getByRole('button', { name: 'Approve — Final' }).click();

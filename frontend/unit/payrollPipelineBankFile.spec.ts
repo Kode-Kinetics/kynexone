@@ -3,9 +3,10 @@ import type { PayrollRun } from '../src/api/payroll';
 import { attentionFor, derivePipeline, type PipelineBatch, type PipelineInput } from '../src/lib/payrollPipeline';
 
 /**
- * "Paid / Exported" for a company whose bank file comes from the Saudi bank export. There the generated XML is an
- * INTERNAL payroll register (not a bank or WPS file), yet generating it sets the batch to Generated. The payment-batch
- * list now says per batch whether the bank export applies (bankFileAvailable) and whether it exists (bankFileGenerated).
+ * "Pay out" (formerly "Paid / Exported") for a company whose bank file comes from the Saudi bank export. There the generated XML is an
+ * INTERNAL payroll register (not a bank or WPS file), yet generating it sets the batch to Generated. The payment-batch list says per batch
+ * whether the bank export applies (bankFileAvailable) and whether it exists (bankFileGenerated). The stage reads lib/payOut.ts, the same
+ * object the run bar and the Bank / WPS tab read; it is Done only once the bank confirmed every payment or the money is settled.
  */
 const LOCKED: PipelineInput = {
   run: { status: 'Locked', createdAtUtc: '2026-10-01T08:00:00Z', processedAtUtc: '2026-10-02T08:00:00Z', lockedAtUtc: '2026-10-04T08:00:00Z' },
@@ -23,50 +24,56 @@ const paid = (batches: PipelineBatch[]) => {
   return { m, stage: m.stages.find(s => s.key === 'paid')! };
 };
 
-test.describe('Paid / Exported when the bank file comes from the Saudi bank export', () => {
-  test('the internal register alone leaves the stage current and says the bank file is not generated', () => {
+test.describe('Pay out when the bank file comes from the Saudi bank export', () => {
+  test('the internal register alone leaves the stage current: "No bank file yet", and the next step is Bank / WPS', () => {
     for (const status of ['Generated', 'Downloaded']) {
       const { m, stage } = paid([batch({ wpsStatus: status, effectiveWpsStatus: status, isSaudi: true, bankFileAvailable: true, bankFileGenerated: false })]);
       expect(stage.state, status).toBe('current');
-      expect(stage.reason, status).toEqual({ id: 'bank_file_not_generated' });
+      expect(stage.reason, status).toEqual({ id: 'pay_out' });
+      expect(m.payOut?.status, status).toBe('no_file');
+      expect(stage.detail, status).toBeNull();
       expect(m.focus).toBe('paid');
-      expect(m.nextReason).toEqual({ id: 'bank_file_not_generated' });
       expect(m.next).toMatchObject({ kind: 'goto', label: 'bank', tab: 'bank-wps', disabled: false });
     }
   });
 
-  test('a generated bank file completes the stage, and the detail says it is the bank file', () => {
+  test('a generated bank file not yet with the bank is not Done: "File created", and the detail says it is the bank file', () => {
     for (const registerToo of [false, true]) {
-      const { m, stage } = paid([batch({ isSaudi: true, bankFileAvailable: true, bankFileGenerated: true, wpsStatus: registerToo ? 'Generated' : 'Draft' })]);
-      expect(stage.state).toBe('done');
-      expect(stage.reason).toBeNull();
+      const { m, stage } = paid([batch({ isSaudi: true, bankFileAvailable: true, bankFileGenerated: true, wpsStatus: registerToo ? 'Generated' : 'Draft', effectiveWpsStatus: registerToo ? 'Generated' : 'Draft' })]);
+      expect(stage.state).toBe('current');
+      expect(m.payOut?.status).toBe('created');
       expect(stage.detail).toMatchObject({ id: 'batch', number: 'PB-1', file: 'bank_file' });
-      expect(stage.detail).not.toMatchObject({ statusAfterFile: true });
-      expect(m.focus).toBe('paid');
+      expect(m.next).toMatchObject({ kind: 'goto', tab: 'bank-wps' });
     }
   });
 
-  test('the newest batch with a bank file wins over a newer register-only batch', () => {
-    const { stage } = paid([
+  test('with several batches, the one that has gone furthest speaks for the run', () => {
+    const { m, stage } = paid([
       batch({ id: 'b2', batchNumber: 'PB-2', isSaudi: true, bankFileAvailable: true, bankFileGenerated: false, wpsStatusChangedAtUtc: '2026-10-09T00:00:00Z' }),
       batch({ id: 'b1', batchNumber: 'PB-1', isSaudi: true, bankFileAvailable: true, bankFileGenerated: true }),
     ]);
-    expect(stage.state).toBe('done');
+    expect(m.payOut?.batchId).toBe('b1');
     expect(stage.detail).toMatchObject({ number: 'PB-1', file: 'bank_file' });
   });
 
-  test('a register-only batch a person moved on (submitted, accepted, settled) is not held back: the export cannot be made any more', () => {
-    for (const status of ['Submitted', 'Accepted', 'Paid', 'Reconciled']) {
-      const { stage } = paid([batch({ wpsStatus: status, effectiveWpsStatus: status, wpsStatusLabel: status, isSaudi: true, bankFileAvailable: true, bankFileGenerated: false })]);
+  test('a batch a person recorded as submitted waits for the bank; settled money is Done', () => {
+    for (const status of ['Submitted', 'Accepted']) {
+      const { m, stage } = paid([batch({ wpsStatus: status, effectiveWpsStatus: status, wpsStatusLabel: status, isSaudi: true, bankFileAvailable: true, bankFileGenerated: true })]);
+      expect(stage.state, status).toBe('current');
+      expect(m.payOut?.status, status).toBe('submitted');
+      expect(m.next, status).toMatchObject({ kind: 'goto', tab: 'payment-tracking' });
+    }
+    for (const status of ['Paid', 'Reconciled']) {
+      const { m, stage } = paid([batch({ wpsStatus: status, effectiveWpsStatus: status, wpsStatusLabel: status, isSaudi: true, bankFileAvailable: true, bankFileGenerated: true })]);
       expect(stage.state, status).toBe('done');
-      expect(stage.detail, status).toMatchObject({ id: 'batch', number: 'PB-1', file: 'register', label: status, statusAfterFile: true });
+      expect(m.payOut?.status, status).toBe('settled');
     }
   });
 
-  test('a voided batch never completes the stage, bank file or not', () => {
-    const { stage } = paid([batch({ wpsStatus: 'Voided', effectiveWpsStatus: 'Voided', isSaudi: true, bankFileAvailable: true, bankFileGenerated: true })]);
+  test('a voided batch is never the one spoken about', () => {
+    const { m, stage } = paid([batch({ wpsStatus: 'Voided', effectiveWpsStatus: 'Voided', isSaudi: true, bankFileAvailable: true, bankFileGenerated: true })]);
     expect(stage.state).toBe('current');
-    expect(stage.reason).toEqual({ id: 'batch_not_exported' });
+    expect(m.payOut?.status).toBe('no_batch');
   });
 
   test('a locked run whose only file is the register still needs someone for the bank file', () => {
@@ -76,22 +83,16 @@ test.describe('Paid / Exported when the bank file comes from the Saudi bank expo
   });
 });
 
-test.describe('Paid / Exported for a company without the Saudi bank export keeps the generated WPS file rule', () => {
-  test('a company the export does not apply to: the generated WPS file completes the stage, with the API label', () => {
-    const { stage } = paid([batch({ isSaudi: false, bankFileAvailable: false, bankFileGenerated: false, wpsStatusLabel: 'Generated (file ready for the bank)' })]);
-    expect(stage.state).toBe('done');
+test.describe('Pay out for a company without the Saudi bank export keeps the generated WPS file rule', () => {
+  test('the generated WPS file is the file: "File created", with the API label', () => {
+    const { m, stage } = paid([batch({ isSaudi: false, bankFileAvailable: false, bankFileGenerated: false })]);
+    expect(stage.state).toBe('current');
+    expect(m.payOut?.status).toBe('created');
     expect(stage.detail).toEqual({ id: 'batch', label: 'Generated (file ready for the bank)', number: 'PB-1' });
   });
 
-  test('an older API that sends no flags: unchanged, the generated file counts and the label is as sent', () => {
-    const { stage } = paid([batch({ isSaudi: true })]);
-    expect(stage.state).toBe('done');
-    expect(stage.detail).toEqual({ id: 'batch', label: 'Generated (file ready for the bank)', number: 'PB-1' });
-  });
-
-  test('a Saudi company whose export is switched off keeps the old rule, but the detail still calls the file a register', () => {
-    const { stage } = paid([batch({ isSaudi: true, bankFileAvailable: false, bankFileGenerated: false })]);
-    expect(stage.state).toBe('done');
-    expect(stage.detail).toMatchObject({ id: 'batch', number: 'PB-1', file: 'register' });
+  test('an older API that sends no flags, for a batch that is not Saudi: the generated file counts', () => {
+    const { m } = paid([batch()]);
+    expect(m.payOut?.status).toBe('created');
   });
 });

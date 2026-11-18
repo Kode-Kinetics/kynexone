@@ -14,14 +14,15 @@
  *                    Approve without one). Off-cycle runs are not gated, so they have no review to wait for.
  *   Approved         "Processed" -> "PendingFinanceReview" (payroll review) -> "Approved" (finance decision)
  *   Locked           run.status = "Locked"                      (posts the GL journal)
- *   Paid / Exported  run.status = "Paid" or a payment batch whose bank file has been generated or later. Where the
- *                    company's bank file comes from the Saudi bank export (the batch says bankFileAvailable), the
- *                    generated XML is an INTERNAL payroll register: it sets Generated/Downloaded but is not a bank
- *                    file, so only the bank export (bankFileGenerated) completes the stage.
+ *   Pay out          NOT a status: where the money stands after the lock, read from lib/payOut.ts (derivePayOut), the one
+ *                    source the run bar, the run picker and the Bank / WPS tab also read. It is Done only once the bank
+ *                    confirmed every payment, or the batch / run is Paid. A generated internal payroll register is not
+ *                    a bank file, and a bank file is not money that landed.
  * "Voided" is a side exit, not a stage.
  */
 import type { PayrollApproval, PayrollPaymentBatch, PayrollRun } from '../api/payroll';
 import { isProcessingActive, type ProcessingStatus } from '../api/payrollProcessing';
+import { derivePayOut, payOutNeedsFile, payOutStageState, type PayOut, type PayOutInput } from './payOut';
 
 export type StageKey = 'draft' | 'prechecks' | 'processed' | 'validated' | 'review' | 'approved' | 'locked' | 'paid';
 export const STAGE_ORDER: readonly StageKey[] = ['draft', 'prechecks', 'processed', 'validated', 'review', 'approved', 'locked', 'paid'];
@@ -49,6 +50,7 @@ export type ReasonId =
   | 'batch_not_exported'    // batch exists, bank file not generated
   | 'bank_file_not_generated' // only the internal payroll register exists; the bank export has not been generated
   | 'awaiting_bank_confirmation' // the bank file exists, but the bank has not confirmed every payment ({confirmed} of {total} when known)
+  | 'pay_out'               // the Pay out stage: its words are payOutLabel(model.payOut)
   | 'voided';
 
 /**
@@ -119,6 +121,11 @@ export interface PipelineInput {
   can: { process: boolean; approve: boolean; lock: boolean };
   /** False when the company currency cannot be confirmed: Lock is withheld, as Approve is. */
   currencyConfirmed: boolean;
+  /**
+   * What the Bank / WPS tab knows beyond the batch list (the open batch, the panel's facts, the records). With it the Pay out stage
+   * reads exactly what the tab reads; without it, the batch list alone.
+   */
+  payOut?: Partial<Omit<PayOutInput, 'run' | 'batches'>>;
 }
 
 export interface PipelineModel {
@@ -129,6 +136,8 @@ export interface PipelineModel {
   voided: boolean;
   /** True when the status is not one the backend is known to use; the screen shows no highlight. */
   unknownStatus: boolean;
+  /** Where the money stands (Locked and Paid runs); null before the lock. */
+  payOut: PayOut | null;
 }
 
 const EXPORTED_WPS = new Set(['Generated', 'Downloaded', 'Submitted', 'Accepted', 'Paid', 'Reconciled']);
@@ -174,7 +183,7 @@ function fileKindOf(b: PipelineBatch): BatchFileKind | undefined {
  * completes the stage, as before. The counts come from what the list carries, the unconfirmed payments and the share the
  * bank has spoken about: total = unconfirmed / (1 - coverage) and confirmed = total - unconfirmed.
  */
-function awaitingBankConfirmation(b: PipelineBatch): Reason | null {
+export function awaitingBankConfirmation(b: PipelineBatch): Reason | null {
   const unconfirmed = b.unconfirmedPayments?.count;
   if (typeof unconfirmed !== 'number' || unconfirmed <= 0) return null;
   if (wpsOf(b) === 'Paid' || wpsOf(b) === 'Reconciled') return null;
@@ -212,7 +221,7 @@ export function derivePipeline(input: PipelineInput): PipelineModel {
 
   if (phase < 0) {
     if (voided) stages.forEach(s => { s.reason = { id: 'voided' }; });
-    return { stages, focus: null, next, nextReason, voided, unknownStatus: !voided };
+    return { stages, focus: null, next, nextReason, voided, unknownStatus: !voided, payOut: null };
   }
 
   // Draft: the run exists. Always behind us; what happens to a Draft run is the Pre-checks stage.
@@ -281,27 +290,30 @@ export function derivePipeline(input: PipelineInput): PipelineModel {
     else locked.state = 'current';
   } else locked.reason = { id: phase === 0 ? 'needs_process' : 'needs_approval' };
 
-  // Paid / Exported
+  // Pay out: one reading for the whole page (lib/payOut.ts).
   const paid = at('paid');
-  const batch = exportedBatch(batches);
-  if (phase === 4) paid.state = 'done';
-  else if (phase === 3) {
-    const waiting = batch ? awaitingBankConfirmation(batch) : null;
-    if (waiting) { paid.state = 'current'; paid.reason = waiting; }
-    else if (batch) paid.state = 'done';
-    else {
-      paid.state = 'current';
-      paid.reason = { id: !batches || batches.length === 0 ? 'no_batch' : batches.some(onlyRegister) ? 'bank_file_not_generated' : 'batch_not_exported' };
+  const payOut = phase >= 3 ? derivePayOut({
+    run, batches,
+    can: { create: false, wps: false, settle: false, setup: false, ...(input.payOut?.can ?? {}) },
+    openBatchId: input.payOut?.openBatchId ?? null,
+    exportFacts: input.payOut?.exportFacts ?? null,
+    downloaded: input.payOut?.downloaded ?? false,
+    records: input.payOut?.records ?? null,
+  }) : null;
+  if (payOut) {
+    paid.state = payOutStageState(payOut);
+    if (paid.state !== 'done') paid.reason = { id: 'pay_out' };
+    const batch = batches?.find(b => b.id === payOut.batchId) ?? null;
+    // The batch is named once there is a file to name (or money settled); before that "generated" would be a lie.
+    if (batch && payOut.status !== 'no_batch' && payOut.status !== 'setup' && payOut.status !== 'no_file' && payOut.status !== 'attention') {
+      paid.whenUtc = batch.wpsStatusChangedAtUtc ?? batch.createdAtUtc;
+      const file = fileKindOf(batch);
+      paid.detail = {
+        id: 'batch', label: batch.wpsStatusLabel ?? wpsOf(batch), number: batch.batchNumber,
+        ...(file ? { file, statusAfterFile: !FILE_STEP_WPS.has(wpsOf(batch)) } : {}),
+      };
     }
   } else paid.reason = { id: phase === 0 ? 'needs_process' : 'needs_lock' };
-  if (batch && (paid.state === 'done' || paid.reason?.id === 'awaiting_bank_confirmation')) {
-    paid.whenUtc = batch.wpsStatusChangedAtUtc ?? batch.createdAtUtc;
-    const file = fileKindOf(batch);
-    paid.detail = {
-      id: 'batch', label: batch.wpsStatusLabel ?? wpsOf(batch), number: batch.batchNumber,
-      ...(file ? { file, statusAfterFile: !FILE_STEP_WPS.has(wpsOf(batch)) } : {}),
-    };
-  }
 
   const focusStage = stages.find(s => s.state === 'current' || s.state === 'blocked') ?? null;
   // A run whose last stage is done has nothing left to focus on; leave the end highlighted.
@@ -342,14 +354,15 @@ export function derivePipeline(input: PipelineInput): PipelineModel {
       } else { next = { kind: 'lock', label: 'lock', disabled: true }; nextReason = locked.reason; }
       break;
     case 'paid':
-      next = paid.reason?.id === 'awaiting_bank_confirmation'
+      // Before the bank has the file the work is on Bank / WPS; after it, the bank's answers are recorded in Payment Tracking.
+      next = payOut && (payOut.status === 'submitted' || payOut.status === 'confirmed')
         ? { kind: 'goto', label: 'confirm_bank', tab: 'payment-tracking', disabled: false }
         : { kind: 'goto', label: 'bank', tab: 'bank-wps', disabled: false };
       nextReason = paid.reason;
       break;
     default: break;
   }
-  return { stages, focus, next, nextReason, voided, unknownStatus: false };
+  return { stages, focus, next, nextReason, voided, unknownStatus: false, payOut };
 }
 
 // ── Comparison with the previous run ───────────────────────────────────────────
@@ -421,9 +434,18 @@ export function attentionFor(run: Pick<PayrollRun, 'id' | 'status'>, batches: Pi
     case 'Locked':
       // Without the batch list we cannot say the file was made, and must not say it was not.
       if (!batches) return null;
-      return exportedBatch(batches.filter(b => b.payrollRunId === run.id)) ? null : 'export';
+      return payOutNeedsFile(payOutForRun(run, batches)) ? 'export' : null;
     default: return null;
   }
+}
+
+/** The run's Pay out from the batch list alone (the run picker's options for runs other than the open one). */
+export function payOutForRun(run: Pick<PayrollRun, 'id' | 'status'>, batches: PipelineBatch[] | null, extra: Partial<Omit<PayOutInput, 'run' | 'batches'>> = {}): PayOut {
+  return derivePayOut({
+    run, batches: batches ? batches.filter(b => b.payrollRunId === run.id) : null,
+    can: { create: false, wps: false, settle: false, setup: false, ...(extra.can ?? {}) },
+    openBatchId: extra.openBatchId ?? null, exportFacts: extra.exportFacts ?? null, downloaded: extra.downloaded ?? false, records: extra.records ?? null,
+  });
 }
 
 const ATTENTION_RANK: Record<AttentionKind, number> = { process: 0, approve: 1, finance: 2, lock: 3, export: 4 };

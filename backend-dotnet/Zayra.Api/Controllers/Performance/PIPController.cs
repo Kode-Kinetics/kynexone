@@ -5,6 +5,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Common;
 
@@ -22,6 +23,9 @@ public class PIPController : ControllerBase
         _db = db;
         _scopeService = scopeService;
     }
+
+    private const string OwnPlanRefusalEn = "This plan is about you. Someone else has to change it or record its progress.";
+    private const string OwnPlanRefusalAr = "هذه الخطة تخصّك. يجب أن يغيّرها أو يسجّل تقدمها شخص آخر.";
 
     [HttpGet]
     [HasPermission(PerformancePermissions.Read, PerformancePermissions.Write, PerformancePermissions.Approve, PerformancePermissions.Setup)]
@@ -102,6 +106,8 @@ public class PIPController : ControllerBase
         if (employee is null) return BadRequest(new { error = "employee_not_found", message = "Employee was not found in this tenant." });
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, employee.Id, ct))
+            return BadRequest(SubjectDecisionBar.Refusal(OwnPlanRefusalEn, OwnPlanRefusalAr));
         if (req.TriggerReviewId is { } reviewId
             && !await _db.AppraisalReviews.AsNoTracking().AnyAsync(
                 r => r.Id == reviewId && r.TenantId == tenantId && r.EmployeeId == employee.Id, ct))
@@ -137,6 +143,11 @@ public class PIPController : ControllerBase
             .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
         if (pip is null) return NotFound();
         if (!await _scopeService.InScopeAsync(User, tenantId, pip.EmployeeId, ct)) return NotFound();
+        // The person a plan is about may add their own comments to it; every other change is someone else's to make.
+        var onlyOwnComments = req.PerformanceGaps is null && req.ImprovementGoals is null && req.SupportPlan is null
+            && req.EndDate is null && req.HrNotes is null && req.ManagerNotes is null;
+        if (!onlyOwnComments && await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, this.GetUserId(), pip.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal(OwnPlanRefusalEn, OwnPlanRefusalAr));
         if (pip.Status is not ("Active" or "Extended"))
             return Conflict(new { error = "pip_closed", message = $"A PIP in '{pip.Status}' status cannot be edited." });
         if (req.EndDate is { } endDate && endDate < pip.StartDate)
@@ -227,6 +238,8 @@ public class PIPController : ControllerBase
         var pip = await _scopeService.FindInScopeAsync(User, tenantId,
             _db.PerformanceImprovementPlans.Where(p => p.Id == id && p.TenantId == tenantId), p => p.EmployeeId, ct);
         if (pip is null) return NotFound();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, this.GetUserId(), pip.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal(OwnPlanRefusalEn, OwnPlanRefusalAr));
         if (req.Status is not ("Improved" or "Extended" or "Failed" or "TerminationRecommended"))
             return BadRequest(new { error = "invalid_status", message = "Status must be Improved, Extended, Failed, or TerminationRecommended." });
         if (pip.Status is not ("Active" or "Extended"))
@@ -286,6 +299,8 @@ public class PIPController : ControllerBase
             .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
         if (pip is null) return NotFound();
         if (!await _scopeService.InScopeAsync(User, tenantId, pip.EmployeeId, ct)) return NotFound();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, pip.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal(OwnPlanRefusalEn, OwnPlanRefusalAr));
         if (pip.Status is not ("Active" or "Extended"))
             return Conflict(new { error = "pip_closed", message = $"Check-ins cannot be added to a PIP in '{pip.Status}' status." });
 

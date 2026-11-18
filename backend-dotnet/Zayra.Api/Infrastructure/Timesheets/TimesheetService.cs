@@ -313,11 +313,14 @@ public sealed class TimesheetService : ITimesheetService
     /// so the number HR chases is the number that was true when the timesheet was approved.
     /// </summary>
     public async Task<IReadOnlyList<TimesheetVarianceRowDto>> GetAttendanceVarianceAsync(
-        Guid tenantId, DateOnly from, DateOnly to, int? employeeId, bool overAllocatedOnly, CancellationToken ct)
+        Guid tenantId, DateOnly from, DateOnly to, int? employeeId, bool overAllocatedOnly, CancellationToken ct,
+        IReadOnlyCollection<int>? allowedEmployeeIds)
     {
         var q = _db.TimesheetDayReconciliations.AsNoTracking()
             .Where(r => r.TenantId == tenantId && r.WorkDate >= from && r.WorkDate <= to);
         if (employeeId is { } eid) q = q.Where(r => r.EmployeeId == eid);
+        // The caller's employee scope (a line manager's team, an employee's own record); null = unrestricted.
+        if (allowedEmployeeIds is not null) q = q.Where(r => allowedEmployeeIds.Contains(r.EmployeeId));
         if (overAllocatedOnly) q = q.Where(r => r.IsOverAllocated);
 
         var rows = await q

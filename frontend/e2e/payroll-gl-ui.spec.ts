@@ -162,9 +162,9 @@ async function boot(page: Page, options: Options = {}, startTab = 'runs') {
     return reply(paged([]));
   });
 
-  await page.goto('/payroll');
-  await page.locator(`#payroll-tab-${startTab}`).click();
-  await expect(page.locator(`#payroll-tab-${startTab}`)).toHaveAttribute('aria-selected', 'true', { timeout: 60_000 });
+  // Opened by its address: below 1280px the section list is folded, so a deep link is what a phone user follows.
+  await page.goto(`/payroll?tab=${startTab}`);
+  await expect(page.locator(`#payroll-tab-${startTab}`)).toHaveAttribute('aria-current', 'page', { timeout: 60_000 });
   return { writes, errors, state };
 }
 
@@ -193,7 +193,6 @@ const card = (page: Page, text: string) => {
 };
 // The void button's label is translated; the selects are found by the run they offer, not by their (translated) label.
 const voidButton = 'button[aria-label="Void run"], button[aria-label="إلغاء المسير"]';
-const runSelect = (page: Page) => page.locator('select:has(option[value="run-nov"])').first();
 
 // ═════════════════════════════ M3: the GL Journal tab for a posted run ═════════════════════════════
 
@@ -329,18 +328,19 @@ test('Arabic: the elections, choices and reference field', async ({ page }, info
 
 test('without payroll.export the batch cannot be created, and the screen says why instead of "lock the run first"', async ({ page }, info) => {
   await boot(page, { canExport: false }, 'bank-wps');
-  await page.getByLabel('Select payroll run', { exact: true }).selectOption('run-nov');
-  const create = page.getByRole('button', { name: 'Create Payment Batch' });
-  await expect(create).toBeDisabled();
-  await expect(page.getByText("You don't have permission to create payment batches — ask an administrator.").first()).toBeVisible();
+  await page.locator('#pipeline-run-picker').selectOption('run-nov');
+  // No payment permission at all: the tab says so and who gives it, and offers no flow to start.
+  await expect(page.getByTestId('bank-restricted')).toContainText('You can’t prepare bank files');
+  await expect(page.getByTestId('bank-restricted')).toContainText('Bank files need the payment batch or Payroll export permission.');
+  await expect(page.getByRole('button', { name: /Create payment batch/i })).toHaveCount(0);
   await expect(page.getByText('must be Locked first')).toHaveCount(0);
   await shot(page, info, 'glui-en-bank-no-export');
 });
 
 test('a 403 on creating a batch (permission held in the UI, refused by the server) shows the permission reason, not the lock hint', async ({ page }) => {
   await boot(page, { canExport: true, createRefused: true }, 'bank-wps');
-  await page.getByLabel('Select payroll run', { exact: true }).selectOption('run-nov');
-  await page.getByRole('button', { name: 'Create Payment Batch' }).click();
+  await page.locator('#pipeline-run-picker').selectOption('run-nov');
+  await page.getByTestId('bank-guide-primary').filter({ hasText: 'Create payment batch' }).click();
   await expect(page.getByText("You don't have permission to create payment batches — ask an administrator.").first()).toBeVisible();
   await expect(page.getByText('must be Locked first')).toHaveCount(0);
 });
@@ -358,8 +358,8 @@ test('payment tracking with payroll.export keeps the settle action', async ({ pa
 
 test('Arabic: the permission message', async ({ page }, info) => {
   await boot(page, { locale: 'ar', canExport: false }, 'bank-wps');
-  await runSelect(page).selectOption('run-nov');
-  await expect(page.getByText('ليس لديك صلاحية إنشاء دفعات الرواتب — اطلب ذلك من مسؤول النظام.').first()).toBeVisible();
+  await page.locator('#pipeline-run-picker').selectOption('run-nov');
+  await expect(page.getByTestId('bank-restricted')).toContainText('لا يمكنك تجهيز ملفات البنك');
   await shot(page, info, 'glui-ar-bank-no-export');
 });
 

@@ -330,7 +330,7 @@ public class CompanyComplianceProfilesController : ControllerBase
         {
             if (!this.GetEntityScope().CanAccessCompany(cidCreate)) return Forbid();
         }
-        else if (!User.IsInRole("Admin")) return Forbid();
+        else if (!MayChangeTenantDefault()) return Forbid();
         var error = await ValidateAsync(tenantId.Value, req, ct);
         if (error is not null) return BadRequest(new { message = error });
 
@@ -370,7 +370,7 @@ public class CompanyComplianceProfilesController : ControllerBase
         if ((profile.CompanyId is Guid existingCid && !scope.CanAccessCompany(existingCid)) ||
             (req.CompanyId is Guid newCid && !scope.CanAccessCompany(newCid)))
             return Forbid();
-        if ((profile.CompanyId is null || req.CompanyId is null) && !User.IsInRole("Admin"))
+        if ((profile.CompanyId is null || req.CompanyId is null) && !MayChangeTenantDefault())
             return Forbid();
         var error = await ValidateAsync(tenantId.Value, req, ct);
         if (error is not null) return BadRequest(new { message = error });
@@ -464,7 +464,10 @@ public class CompanyComplianceProfilesController : ControllerBase
 
     /// <summary>The scope rule Update applies: a company row needs that company in the caller's grant; a tenant-wide row is Admin-only.</summary>
     private bool MayChange(CompanyComplianceProfile profile) =>
-        profile.CompanyId is Guid cid ? this.GetEntityScope().CanAccessCompany(cid) : User.IsInRole("Admin");
+        profile.CompanyId is Guid cid ? this.GetEntityScope().CanAccessCompany(cid) : MayChangeTenantDefault();
+
+    /// <summary>The tenant-wide default profile (no company) is shared by every company: only an Admin with group-level authority may change it.</summary>
+    private bool MayChangeTenantDefault() => User.IsInRole("Admin") && this.HasGroupEntityScope();
 
     /// <summary>Updates only Jawazat policy so a stale editor cannot overwrite readiness or lifecycle fields.</summary>
     [HttpPatch("{id:guid}/jawazat-policy")]
@@ -480,7 +483,7 @@ public class CompanyComplianceProfilesController : ControllerBase
         {
             if (!this.GetEntityScope().CanAccessCompany(companyId)) return Forbid();
         }
-        else if (!User.IsInRole("Admin")) return Forbid();
+        else if (!MayChangeTenantDefault()) return Forbid();
         if (CountryCodeStandard.NormalizeToIso2(profile.CountryCode) != "SA")
             return BadRequest(new { message = "Jawazat policy is only supported for Saudi compliance profiles." });
         if (string.IsNullOrWhiteSpace(req.JawazatPolicyJson))

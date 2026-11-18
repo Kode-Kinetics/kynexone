@@ -117,7 +117,7 @@ public sealed class PackageReviewRound4PostgresTests(PostgresFixture fixture)
         Assert.Empty(dto.Errors);
         await using var db = fixture.CreateDb();
         Assert.Equal(PackageReasons.EarlierServiceUnconfirmed,
-            Code(await Package(db, s, s.UserId, Today).Freeze(s.Mohammed.Id, new PackageContractRequest(s.Term.Id), default)));
+            Code(await Package(db, s, Guid.NewGuid(), Today).Freeze(s.Mohammed.Id, new PackageContractRequest(s.Term.Id), default)));
         Assert.Equal(0, await RowCountAsync(s));
     }
 

@@ -36,10 +36,11 @@ public sealed class LlmClient : ILlmClient
 
     private async Task<LlmResponse> CompleteWithAnthropicAsync(LlmRequest request, CancellationToken cancellationToken)
     {
-        var apiKey = string.IsNullOrWhiteSpace(_options.AnthropicApiKey) ? _options.OpenAIApiKey : _options.AnthropicApiKey;
+        // A provider's key goes to that provider only; there is no fall-back to another vendor's key.
+        var apiKey = _options.AnthropicApiKey;
         if (string.IsNullOrWhiteSpace(apiKey))
         {
-            return new LlmResponse(false, "fallback", request.Model, string.Empty, Error: "Anthropic API key not configured.");
+            return new LlmResponse(false, "fallback", request.Model, string.Empty, Error: "Anthropic API key not configured (ANTHROPIC_API_KEY). Another provider's key is never used in its place.");
         }
 
         using var message = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages");
@@ -78,10 +79,11 @@ public sealed class LlmClient : ILlmClient
 
     private async Task<LlmResponse> CompleteWithOpenAiAsync(LlmRequest request, CancellationToken cancellationToken)
     {
-        var apiKey = string.IsNullOrWhiteSpace(_options.OpenAIApiKey) ? _options.AnthropicApiKey : _options.OpenAIApiKey;
+        // A provider's key goes to that provider only; there is no fall-back to another vendor's key.
+        var apiKey = _options.OpenAIApiKey;
         if (string.IsNullOrWhiteSpace(apiKey))
         {
-            return new LlmResponse(false, "fallback", request.Model, string.Empty, Error: "OpenAI API key not configured.");
+            return new LlmResponse(false, "fallback", request.Model, string.Empty, Error: "OpenAI API key not configured (OPENAI_API_KEY). Another provider's key is never used in its place.");
         }
 
         using var message = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/responses");
