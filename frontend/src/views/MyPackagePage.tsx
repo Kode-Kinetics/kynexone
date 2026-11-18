@@ -1,10 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CalendarClock, RefreshCw } from 'lucide-react';
+import { AlertTriangle, CalendarClock, Info, RefreshCw } from 'lucide-react';
 import { ReleaseAGate } from '../components/releaseA/ReleaseAGate';
 import { WhyPopover } from '../components/entitlements/WhyPopover';
-import { coverageText, date, essWhy, fill, reasonText, valueText, type FormatContext } from '../components/entitlements/packageFormat';
+import { RECORDED_ONLY_NOTE, coverageText, date, essWhy, fill, isRecordedOnlyBenefit, reasonText, valueText, type FormatContext } from '../components/entitlements/packageFormat';
 import { useLocale } from '../contexts/LocaleContext';
 import { packageApi, type EssGroup, type EssPackage } from '../api/package';
 
@@ -117,6 +117,8 @@ function MyPackage() {
                     <p className="min-w-0 text-sm font-medium text-slate-800 dark:text-slate-100">{name}</p>
                     <WhyPopover title={name} lines={essWhy(line.why, ctx)} />
                   </div>
+                  {isRecordedOnlyBenefit(line.componentCode) && <p data-testid="recorded-only-note" className="flex items-start gap-1 text-meta text-fg-muted">
+                    <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />{t(RECORDED_ONLY_NOTE)}</p>}
                   {shown
                     ? <p className="break-words text-sm tabular-nums text-slate-900 dark:text-slate-50">{valueText(line, ctx)}</p>
                     : !line.reasonCode && <p className="text-sm text-slate-400 dark:text-slate-500">{t('Not included')}</p>}

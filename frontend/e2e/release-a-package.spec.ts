@@ -151,6 +151,25 @@ for (const locale of ['en', 'ar'] as const) {
     expect(errors).toEqual([]);
   });
 
+  test(`without pay access the salary amounts are not shown, and the panel says why (${locale})`, async ({ page }) => {
+    // EmployeePackageController.WithoutSalaryAmounts: the salary record is left out and the salary lines lose their amounts; the rate stays.
+    const full = read('view-reasons.json');
+    const hidden = {
+      ...full, salary: null, salaryAmountsHidden: true,
+      package: { ...full.package, lines: full.package.lines.map((l: { source: string }) => (l.source === 'Salary' ? { ...l, amount: null, monthlyCash: null, resolvedAmount: null } : l)) },
+    };
+    const { errors } = await open(page, locale, hidden, []);
+    await expect(page.getByText(T.oneOfTwo)).toBeVisible({ timeout: 30_000 });
+    const notes = page.getByTestId('salary-amount-hidden');
+    await expect(notes).toHaveCount(2);
+    // Housing is a rate of basic: the rate is the grade's and stays; transport is an amount: the panel says who sees it.
+    await expect(notes.nth(0)).toHaveText(locale === 'ar' ? /25/ : '25% of basic salary');
+    await expect(notes.nth(1)).toHaveText(locale === 'ar' ? 'يظهر لمن لديهم صلاحية الاطلاع على تفاصيل الرواتب' : 'Shown to people who can see pay details');
+    await expect(page.getByText(/2,000|٢٬٠٠٠|800/)).toHaveCount(0);
+    await noRawCodes(page);
+    expect(errors).toEqual([]);
+  });
+
   test(`a contract activated after it started: its benefits wait for a second person, one next action (${locale})`, async ({ page }) => {
     const { errors, proposeBodies } = await open(page, locale, read('view-awaiting.json'), read('dependants.json'));
     const waiting = page.getByRole('status').filter({ hasText: T.awaiting });

@@ -116,7 +116,7 @@ public class RequisitionApprovalConvergenceTests
         var req = AddRequisition(db, tenantId, Guid.NewGuid());
         db.ManpowerRequisitions.Add(req);
         await db.SaveChangesAsync();
-        (await Controller(db, tenantId, Guid.NewGuid(), "Manager").Submit(req.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        (await Controller(db, tenantId, req.RequestedByUserId!.Value, "Manager").Submit(req.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
         var approvalId = (await db.ManpowerRequisitions.SingleAsync(x => x.Id == req.Id)).ApprovalRequestId;
         approvalId.Should().NotBeNull();
         (await db.ApprovalRequests.SingleAsync(a => a.Id == approvalId)).CurrentApproverRole.Should().Be("HR Manager",
@@ -359,7 +359,7 @@ public class RequisitionApprovalConvergenceTests
 
         // ApprovalRouter.TryResolveAsync throws ApprovalRouteInvalidException for this route. It used to be
         // called outside Submit's try/catch, so the configuration error escaped as an unhandled 500.
-        var result = await Controller(db, tenantId, Guid.NewGuid(), "Manager").Submit(req.Id, CancellationToken.None);
+        var result = await Controller(db, tenantId, req.RequestedByUserId!.Value, "Manager").Submit(req.Id, CancellationToken.None);
 
         var refusal = result.Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
         refusal.Value!.ToString().Should().Contain(ApprovalRouteInvalidException.ErrorCode);

@@ -76,7 +76,7 @@ public sealed class OfferHistoryQueryService(ZayraDbContext db, OfferLifecycleSe
             ["downloadOriginal"] = Capability(artifact is null ? "No verified original is available." : null)
         };
         var changed = previous is null ? [] : new[] { nameof(offer.StartDate), nameof(offer.ResponseDeadline), nameof(offer.ProbationMonths),
-            nameof(offer.RecipientEmail), nameof(offer.CandidateName), nameof(offer.OfferedJobTitle), nameof(offer.OfferedDepartment),
+            nameof(offer.ContractType), nameof(offer.ContractTermMonths), nameof(offer.RecipientEmail), nameof(offer.CandidateName), nameof(offer.OfferedJobTitle), nameof(offer.OfferedDepartment),
             nameof(offer.CompensationSnapshotJson), nameof(offer.DesignSnapshotJson) }.Where(name =>
                 !Equals(typeof(OfferLetter).GetProperty(name)!.GetValue(previous), typeof(OfferLetter).GetProperty(name)!.GetValue(offer))).ToArray();
         return new(offer, artifact is null ? null : new(artifact.Id, artifact.Sha256, artifact.SizeBytes, artifact.Provenance, offer.FrozenAtUtc, offer.Version),

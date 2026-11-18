@@ -4,6 +4,7 @@ import { LOCALE_DICTS, translate } from '../src/i18n/translations';
 import { navigationHints, navigationItems } from '../src/routes/navigation';
 import { RELEASE_A_FLAG } from '../src/lib/releaseA';
 import { essNavItems, essPages } from '../src/routes/essSections';
+import { isRecordedOnlyBenefit, RECORDED_ONLY_NOTE } from '../src/components/entitlements/packageFormat';
 
 // Release A R0 contract: one string file per slice, every English key translated into Arabic, spread into the
 // dictionaries once, and every Release A screen reachable only behind the release_a flag.
@@ -61,4 +62,12 @@ test('Release A navigation is flag-gated, permission-gated, explained and transl
     expect(ARABIC.test(translate('ar', page!.tab)), path).toBe(true);
   }
   expect(essPages.filter((p) => p.requiredFeatureKey === RELEASE_A_FLAG).map((p) => p.path).sort()).toEqual([...essPaths].sort());
+});
+
+test('air ticket, medical, education and per diem are marked as recorded only, in English and Arabic', () => {
+  for (const code of ['AIR_TICKET', 'MEDICAL', 'EDUCATION', 'PER_DIEM']) expect(isRecordedOnlyBenefit(code), code).toBe(true);
+  for (const code of ['HOUSING', 'TRANSPORT', 'OTHER_ALLOWANCES', 'ALW_CAR', 'BEN_GYM', 'LOAN_PERSONAL', 'BASIC']) expect(isRecordedOnlyBenefit(code), code).toBe(false);
+  expect(RECORDED_ONLY_NOTE).toBe('Recorded entitlement. Payout and claims for this benefit are not connected yet.');
+  expect(LOCALE_DICTS.en[RECORDED_ONLY_NOTE]).toBe(RECORDED_ONLY_NOTE);
+  expect(ARABIC.test(translate('ar', RECORDED_ONLY_NOTE))).toBe(true);
 });

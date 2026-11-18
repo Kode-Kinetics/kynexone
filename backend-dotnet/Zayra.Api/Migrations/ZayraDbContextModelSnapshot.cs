@@ -11631,6 +11631,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("bytea")
                         .HasColumnName("emirates_id_enc");
 
+                    b.Property<string>("EmploymentType")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("employment_type");
+
                     b.Property<string>("EnglishName")
                         .IsRequired()
                         .HasColumnType("text")
@@ -18111,6 +18116,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("interviewer_names");
 
+                    b.Property<string>("InterviewerUserIds")
+                        .HasColumnType("text")
+                        .HasColumnName("interviewer_user_ids");
+
                     b.Property<string>("Location")
                         .IsRequired()
                         .HasColumnType("text")
@@ -24382,6 +24391,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("content_html");
 
+                    b.Property<int?>("ContractTermMonths")
+                        .HasColumnType("integer")
+                        .HasColumnName("contract_term_months");
+
+                    b.Property<string>("ContractType")
+                        .HasColumnType("text")
+                        .HasColumnName("contract_type");
+
                     b.Property<string>("DeclineReason")
                         .IsRequired()
                         .HasColumnType("text")
@@ -26359,6 +26376,10 @@ namespace Zayra.Api.Migrations
                     b.Property<bool>("IsTaxable")
                         .HasColumnType("boolean")
                         .HasColumnName("is_taxable");
+
+                    b.Property<string>("LastConfirmedTermsJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("last_confirmed_terms");
 
                     b.Property<string>("NameAr")
                         .IsRequired()

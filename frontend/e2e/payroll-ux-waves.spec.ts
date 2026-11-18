@@ -371,3 +371,35 @@ for (const locale of LOCALES) {
     });
   });
 }
+
+// ── Validation tab: a zero net from a full unpaid month is a WARNING the approver can read, in English and Arabic ─────────────────
+
+for (const locale of LOCALES) {
+  test.describe(`Zero-net warning in the validation panel (${locale})`, () => {
+    const ZERO_NET = 'ZERO_NET_UNPAID_LEAVE';
+    const summary = '{count} employee(s) net zero this month: unpaid leave took the whole wage. Any loan or advance instalment they owe is carried forward to the next run, not written off. Nothing is paid to them, so they are left out of the bank file. This is a warning, not a block: check the leave, then acknowledge it when approving.';
+    const row = 'Net pay is zero: unpaid leave took the whole wage this month. Any loan or advance instalment is carried forward to the next run, not written off.';
+
+    test('the warning is explained in the panel, as a warning and not as something that must be fixed', async ({ page }) => {
+      const population = { runId: RUN_ID, runType: 'Regular', includesRecurringPay: true, populationMode: 'All', eligibleCount: 1, includedCount: 1, excludedCount: 0, notEligibleCount: 0,
+        included: [{ employeeId: 226, code: 'EVT2-0226', name: 'Layla Al-Harbi' }], excluded: [], notEligible: [] };
+      const finding = { id: 'z1', employeeId: 226, severity: 'Warning', code: ZERO_NET, isResolved: false,
+        message: 'Employee EVT2-0226 nets zero: unpaid leave took the whole wage (6,000.00) and 1,000.00 of loan or advance instalment was carried forward.' };
+      await boot(page, { locale, url: url('validation'), routes: bankHandler({ runStatus: 'Processed', extra: p => (/\/population$/.test(p) ? population : /\/runs\/[^/]+\/validate$/.test(p) ? [finding] : undefined) }), waitMs: 2500 });
+
+      const panel = page.getByTestId('zero-net-unpaid-leave-findings');
+      await expect(panel).toBeVisible({ timeout: 90_000 });
+      await expect(panel).toContainText(say(locale, 'Zero net pay from a full month of unpaid leave'));
+      await expect(panel).toContainText(say(locale, summary).replace('{count}', '1'));
+      // The panel and the findings list sit side by side in the validation tab (its tabpanel role is not guaranteed by the guided layout).
+      const tab = panel.locator('xpath=..');
+      await expect(tab).toContainText(say(locale, row));
+      await expect(tab).toContainText('Layla Al-Harbi');
+      await expect(tab.getByText('Must be fixed')).toHaveCount(0);
+      if (locale === 'ar') {
+        const text = `${await panel.innerText()} ${await tab.getByText(say(locale, row)).innerText()}`;
+        expect(latinWords(text), `zero-net warning: ${[...new Set(latinWords(text))].join(', ')}`).toEqual([]);
+      }
+    });
+  });
+}

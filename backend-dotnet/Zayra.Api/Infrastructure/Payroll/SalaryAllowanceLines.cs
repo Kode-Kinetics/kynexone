@@ -157,7 +157,8 @@ public static class SalaryAllowanceLines
     {
         var result = new Dictionary<string, AllowanceDefinitionFault>(StringComparer.Ordinal);
         if (codes.Count == 0) return result;
-        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, companyId: companyId);
+        // Payroll's view: an allowance whose change waits for Finance is still paid on its last confirmed terms, so a salary may carry it meanwhile.
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, companyId: companyId, payable: true);
         var today = Today();
         foreach (var code in codes)
             if (CashAllowanceDefinitions.SalaryLineFault(versions[code], today) is { } fault) result[code] = fault;
@@ -486,7 +487,8 @@ public static class SalaryAllowanceLines
         var rows = await LoadAsync(db, tenantId, salaryIds, ct);
         var codes = rows.SelectMany(g => g).Select(r => r.Code).Distinct().ToList();
         if (codes.Count == 0) return result;
-        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, anyCompany: true);
+        // Payroll's view: an end-of-service change waiting for Finance does not count until it is confirmed.
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, anyCompany: true, payable: true);
         // The company each record's employee works for NOW: a company's own allowance counts only for its own company's employees. One left on the salary of
         // someone who moved to a sister company (never stripped on transfer) is no wage there — exactly as that company's payroll run treats it; the
         // readiness names the line and the fix.

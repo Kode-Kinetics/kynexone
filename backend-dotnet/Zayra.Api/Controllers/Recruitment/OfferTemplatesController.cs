@@ -92,6 +92,7 @@ public class OfferTemplatesController(ZayraDbContext db, IRequestEntityScopeReso
     [HttpPost]
     [Authorize(Roles = "Admin,HR Manager,Recruiter")]
     [HasPermission("recruitment.write")]
+    [RefuseHrOfficer]
     public async Task<IActionResult> Create(OfferTemplateRequest request, CancellationToken ct)
     {
         var scope = scopeResolver.Resolve();
@@ -109,6 +110,7 @@ public class OfferTemplatesController(ZayraDbContext db, IRequestEntityScopeReso
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager,Recruiter")]
     [HasPermission("recruitment.write")]
+    [RefuseHrOfficer]
     public async Task<IActionResult> Update(Guid id, OfferTemplateRequest request, CancellationToken ct)
     {
         var t = await db.OfferLetterTemplates.FirstOrDefaultAsync(t => t.Id == id && t.TenantId == TenantId, ct);
@@ -127,6 +129,7 @@ public class OfferTemplatesController(ZayraDbContext db, IRequestEntityScopeReso
     [HttpPost("{id:guid}/archive")]
     [Authorize(Roles = "Admin,HR Manager,Recruiter")]
     [HasPermission("recruitment.write")]
+    [RefuseHrOfficer]
     public async Task<IActionResult> Archive(Guid id, OfferTemplateArchiveRequest request, CancellationToken ct)
     {
         var t = await db.OfferLetterTemplates.FirstOrDefaultAsync(t => t.Id == id && t.TenantId == TenantId, ct);

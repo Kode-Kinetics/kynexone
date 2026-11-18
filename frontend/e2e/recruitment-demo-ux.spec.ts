@@ -26,7 +26,7 @@ const offerRow = { id: 'offer-1', applicationId: 'app-1', companyId: null, serie
 const offer = { ...offerRow, offeredJobTitle: 'Sales Executive', offeredDepartment: 'Sales', startDate: '2027-01-15', basicSalary: 4500, housingAllowance: 1125, transportAllowance: 450, otherAllowances: 0, grossSalary: 6075, probationMonths: 3, sentAtUtc: null, acceptedAtUtc: null, recipientEmail: 'nora@example.invalid', frozenAtUtc: null };
 const workspace = { offer, artifact: null, originalProvenance: 'NotFrozen', approvals: [], capabilities: {}, revisions: [offerRow], changedFields: [], communicationOutcome: 'NotIssued', compensationSnapshot: null, designSnapshot: null };
 
-interface Boot { locale?: 'en' | 'ar'; url?: string; interviews?: unknown[]; hired?: unknown[] }
+interface Boot { locale?: 'en' | 'ar'; url?: string; interviews?: unknown[]; hired?: unknown[]; roles?: string[]; permissions?: string[] }
 
 async function boot(page: Page, opts: Boot = {}) {
   const posts: { path: string; body: unknown }[] = [];
@@ -38,7 +38,7 @@ async function boot(page: Page, opts: Boot = {}) {
     const path = new URL(request.url()).pathname;
     const json = (body: unknown, status = 200) => route.fulfill({ status, json: body });
     if (request.method() !== 'GET') posts.push({ path, body: request.postDataJSON() });
-    if (path === '/api/auth/me') return json({ id: 'u1', employeeId: 9, tenantId: 't1', tenantSlug: 'fixture', fullName: 'Recruiter Test', roles: ['Admin'], permissions: ['recruitment.read', 'recruitment.write', 'recruitment.approve', 'employees.read', 'dashboard.read'], companies: [{ id: 'c1', name: 'Acme Arabia', code: 'ACME', countryCode: 'SA', isActive: true }] });
+    if (path === '/api/auth/me') return json({ id: 'u1', employeeId: 9, tenantId: 't1', tenantSlug: 'fixture', fullName: 'Recruiter Test', roles: opts.roles ?? ['Admin'], permissions: opts.permissions ?? ['recruitment.read', 'recruitment.write', 'recruitment.approve', 'employees.read', 'dashboard.read'], companies: [{ id: 'c1', name: 'Acme Arabia', code: 'ACME', countryCode: 'SA', isActive: true }] });
     if (path === '/api/auth/mfa/status') return json({ promptToEnroll: false });
     if (path === '/api/features/disabled-keys') return json(['release_a']);
     if (path === '/api/features/modules') return json([]);
@@ -67,6 +67,9 @@ async function boot(page: Page, opts: Boot = {}) {
     if (path === '/api/recruitment/onboarding/tasks') return json({ total: 0, items: [] });
     if (path === '/api/recruitment/onboarding/summary') return json({ total: 0, pending: 0, inProgress: 0, completed: 0, blocked: 0, mandatory: 0, mandatoryCompleted: 0, completionPct: 0 });
     if (path === '/api/employees') return json({ items: [{ id: 7, publicId: 'emp-public-7', fullName: 'Khalid Alotaibi', employeeCode: 'EMP-0007', department: 'Sales', designation: 'Sales Executive', status: 'Active' }], total: 1, page: 1, pageSize: 8 });
+    if (path === '/api/recruitment/requisitions/my-departments') return json({ items: [{ id: 'dep-1', name: 'Sales' }] });
+    if (path === '/api/recruitment/requisitions') return json({ items: [{ id: 'rq-1', requisitionNumber: 'MRQ-0001', departmentName: 'Sales', designationTitle: 'Account Manager', headCount: 2, status: 'Draft', priority: 'Medium' }], total: 1 });
+    if (path === '/api/recruitment/interviews/mine') return json({ total: 1, items: [{ id: 'iv-1', applicationId: 'app-1', interviewType: 'Technical', scheduledAt: '2026-11-19T07:30:00Z', durationMinutes: 60, mode: 'Video', location: '', meetingLink: '', status: 'Scheduled', candidateName: 'Nora Alharbi', jobTitle: 'Sales Executive' }] });
     if (path.startsWith('/api/recruitment/')) return json({ items: [], total: 0, page: 1, pageSize: 20 });
     return json({ items: [], total: 0, page: 1, pageSize: 25 });
   });
@@ -175,6 +178,39 @@ for (const locale of ['en', 'ar'] as const) {
         await page.getByRole('button', { name: 'Generate Tasks From Checklist' }).click();
         await expect.poll(() => posts.find(p => p.path === '/api/recruitment/onboarding/tasks/bulk')?.body).toMatchObject({ checklistId: 'ck-1', applicationId: 'app-h' });
       }
+    });
+  });
+}
+
+const MANAGER = { roles: ['Manager'], permissions: ['dashboard.read', 'employees.read', 'recruitment.requisition.raise', 'recruitment.interview.feedback'] };
+
+for (const locale of ['en', 'ar'] as const) {
+  test.describe(`a line manager's Recruitment screen (${locale})`, () => {
+    test('shows only their requisitions and interviews, never the HR workspace', async ({ page }) => {
+      const { errors } = await boot(page, { locale, ...MANAGER });
+      await expect(page.getByRole('heading', { name: locale === 'en' ? 'Hiring for my team' : 'التوظيف لفريقي' })).toBeVisible();
+      await expect(page.getByRole('heading', { name: locale === 'en' ? 'My requisitions' : 'طلبات التوظيف الخاصة بي' })).toBeVisible();
+      await expect(page.getByRole('heading', { name: locale === 'en' ? 'My interviews' : 'مقابلاتي' })).toBeVisible();
+      await expect(page.getByText('MRQ-0001')).toBeVisible();
+      await expect(page.getByText('Nora Alharbi')).toBeVisible();
+      await expect(page.getByRole('button', { name: /^Job Openings|^Talent Pool|^Offers/ })).toHaveCount(0);
+      expect(errors).toEqual([]);
+      await shot(page, 'manager-screen', locale);
+    });
+
+    test('raises a requisition for their own department and gives feedback on an interview they are on', async ({ page }) => {
+      const { posts } = await boot(page, { locale, ...MANAGER });
+      await page.getByRole('button', { name: locale === 'en' ? 'New Requisition' : 'طلب توظيف جديد' }).click();
+      await page.locator('select').first().selectOption('dep-1');
+      await page.locator('input.input').first().fill('Account Manager');
+      await page.locator('textarea').first().fill('Two new key accounts');
+      await page.getByRole('button', { name: locale === 'en' ? 'Save as draft' : 'حفظ كمسودة' }).click();
+      await expect.poll(() => posts.find(p => p.path === '/api/recruitment/requisitions')?.body).toMatchObject({ departmentId: 'dep-1', designationTitle: 'Account Manager' });
+
+      await page.getByRole('button', { name: locale === 'en' ? 'Give feedback' : 'إضافة ملاحظات' }).click();
+      await page.locator('textarea').last().fill('Strong fundamentals');
+      await page.getByRole('button', { name: locale === 'en' ? 'Send feedback' : 'إرسال الملاحظات' }).click();
+      await expect.poll(() => posts.find(p => p.path === '/api/recruitment/interviews/iv-1/feedback')?.body).toMatchObject({ overallScore: 4, notes: 'Strong fundamentals' });
     });
   });
 }

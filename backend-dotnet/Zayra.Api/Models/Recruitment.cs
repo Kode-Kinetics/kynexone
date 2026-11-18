@@ -182,6 +182,9 @@ public class InterviewSchedule : ITenantOwned, ICompanyScopedOperational
     public Guid ApplicationId { get; set; }
     public string InterviewType { get; set; } = "HR Screening";        // HR Screening/Technical/Manager/Panel/Final
     public string InterviewerNames { get; set; } = string.Empty;
+    /// <summary>The logins named on the panel, as a comma-separated list of user ids, resolved when the interview was scheduled. Null on an interview
+    /// scheduled before this existed or whose names matched no single login; membership then falls back to an exact, unambiguous name match.</summary>
+    public string? InterviewerUserIds { get; set; }
     public DateTime ScheduledAt { get; set; }
     public int DurationMinutes { get; set; } = 60;
     public string Mode { get; set; } = "Video";                        // InPerson/Video/Phone
@@ -232,6 +235,10 @@ public class OfferLetter : ITenantOwned, ICompanyScopedOperational
     public decimal? AnnualRecurringCash { get; set; }
     public decimal? OneTimeCash { get; set; }
     public int ProbationMonths { get; set; } = 3;
+    /// <summary>"Permanent" or "Fixed-term". Null on an offer written before the term was recorded, which reads as Permanent.</summary>
+    public string? ContractType { get; set; }
+    /// <summary>The length of a fixed term in months; null for a permanent offer.</summary>
+    public int? ContractTermMonths { get; set; }
     public string ContentHtml { get; set; } = string.Empty;
     // Self-contained, immutable after approval begins. Never re-resolve a template on download.
     [System.Text.Json.Serialization.JsonIgnore]

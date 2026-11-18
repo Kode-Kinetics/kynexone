@@ -8,12 +8,14 @@ import { launchLeave } from './launchLeave';
 import { launchCompliance } from './launchCompliance';
 import { launchAttendance } from './launchAttendance';
 import { launchRecruitment } from './launchRecruitment';
+import { managerRecruitment } from './managerRecruitment';
 import { launchNewHires } from './launchNewHires';
 import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { hireWizard } from './hireWizard';
 import { demoFixes } from './demoFixes';
+import { overtimeSettings } from './overtimeSettings';
 import { settledService } from './settledService';
 import { onboardingP3 } from './onboardingP3';
 import { setupExperience } from './setupExperience';
@@ -119,6 +121,7 @@ const en: Dict = {
   ...launchCompliance.en,
   ...launchAttendance.en,
   ...launchRecruitment.en,
+  ...managerRecruitment.en,
   ...launchNewHires.en,
   ...benefitPlanForm.en,
   // Create-company wizard (./companyWizard). First, so an existing app-wide entry for the same key wins.
@@ -1672,6 +1675,7 @@ const en: Dict = {
   ...employeeCompletion.en,
   ...hireWizard.en,
   ...demoFixes.en,
+  ...overtimeSettings.en,
   ...settledService.en,
   ...onboardingP2.en,
   ...onboardingP3.en,
@@ -1734,6 +1738,7 @@ const ar: Dict = {
   ...launchCompliance.ar,
   ...launchAttendance.ar,
   ...launchRecruitment.ar,
+  ...managerRecruitment.ar,
   ...launchNewHires.ar,
   ...benefitPlanForm.ar,
   ...removalSafety.ar,
@@ -3283,6 +3288,7 @@ const ar: Dict = {
   ...employeeCompletion.ar,
   ...hireWizard.ar,
   ...demoFixes.ar,
+  ...overtimeSettings.ar,
   ...settledService.ar,
   ...onboardingP2.ar,
   ...onboardingP3.ar,

@@ -118,3 +118,10 @@ public static class OvertimeLateSettlement
         return staged;
     }
 }
+
+/// <summary>The overtime payroll impact statuses a payroll run reads.</summary>
+public static class OvertimeImpactStatuses
+{
+    /// <summary>Approved after its month closed and carried into a later run as an "Overtime Back Pay" adjustment: that adjustment pays it, no run selects it.</summary>
+    public const string CarriedForward = "CarriedForward";
+}

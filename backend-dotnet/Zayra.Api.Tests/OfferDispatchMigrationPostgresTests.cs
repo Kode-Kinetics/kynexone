@@ -27,7 +27,7 @@ public sealed class OfferDispatchMigrationPostgresTests
         await LegacyRows.InsertAsync(db,"companies",company);await LegacyRows.InsertAsync(db,"companies",other);
         var app=new JobApplication{TenantId=tenant,CompanyId=company.Id,CandidateId=Guid.NewGuid(),JobOpeningId=Guid.NewGuid()};db.JobApplications.Add(app);await db.SaveChangesAsync();
         var offer=new OfferLetter{TenantId=tenant,CompanyId=company.Id,ApplicationId=app.Id,StartDate=new(2027,1,1),CommunicationOutcome="ExternalRecorded"};
-        db.OfferLetters.Add(offer);await db.SaveChangesAsync();
+        await LegacyRows.InsertAsync(db,"offer_letters",offer); // OLD schema: a later migration adds offer columns the current model would insert.
         var artifact=new OfferArtifact{TenantId=tenant,CompanyId=company.Id,ApplicationId=app.Id,OfferId=offer.Id,StorageKey=$"{tenant:N}/dispatch-test.pdf",State="Finalized"};
         db.OfferArtifacts.Add(artifact);db.OfferLifecycleEvents.Add(new(){TenantId=tenant,CompanyId=company.Id,ApplicationId=app.Id,OfferId=offer.Id,EventType="ExternalSent",DataJson="{\"evidence\":\"ExternalRecorded\"}"});await db.SaveChangesAsync();
         var migration=db.Database.GetMigrations().SingleOrDefault(m=>m.EndsWith("_OfferDispatch"));migration.Should().NotBeNull("an additive dispatch migration must exist");

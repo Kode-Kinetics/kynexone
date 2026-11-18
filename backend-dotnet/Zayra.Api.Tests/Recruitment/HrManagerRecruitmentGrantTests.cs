@@ -31,8 +31,8 @@ public class HrManagerRecruitmentGrantTests
         var (db, tenant) = await SeedTenantAsync();
         (await RecruitmentKeysAsync(db, tenant, "Recruiter")).Should().Equal("recruitment.read", "recruitment.write");
         (await RecruitmentKeysAsync(db, tenant, "HR Director"))
-            .Should().Equal("recruitment.approve", "recruitment.delete", "recruitment.read", "recruitment.write");
-        foreach (var role in new[] { "HR Officer", "HR Assistant", "Manager", "Supervisor", "Employee", "Payroll Manager", "Payroll Officer",
+            .Should().Equal("recruitment.approve", "recruitment.delete", "recruitment.interview.feedback", "recruitment.read", "recruitment.requisition.raise", "recruitment.write");
+        foreach (var role in new[] { "HR Assistant", "Supervisor", "Employee", "Payroll Manager", "Payroll Officer",
                      "Finance", "Finance Approver", "Compliance Officer", "Auditor", "Kiosk Operator" })
             (await RecruitmentKeysAsync(db, tenant, role)).Should().BeEmpty(role);
     }

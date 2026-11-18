@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Data;
@@ -30,10 +31,13 @@ public static class CashAllowanceDefinitions
     /// only group definitions are read, so a reader that does not say whose salary or run it is about never sees a company's own allowance (it fails closed:
     /// "no definition"). <paramref name="anyCompany"/> reads every company's own too, for a caller that checks access itself or only shows a line that is
     /// already on a salary record.</summary>
+    /// <para><paramref name="payable"/>: the versions as PAYROLL reads them (<see cref="Payable"/>): a version whose change waits for Finance is read as the
+    /// terms Finance last confirmed. Read-only (never with <paramref name="tracked"/>).</para>
     public static async Task<ILookup<string, PayComponent>> VersionsAsync(
         ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct, bool includeRemoved = false, bool tracked = false,
-        Guid? companyId = null, bool anyCompany = false)
+        Guid? companyId = null, bool anyCompany = false, bool payable = false)
     {
+        if (payable && tracked) throw new ArgumentException("Payroll's view of a definition is read-only and is never tracked.", nameof(payable));
         if (codes.Count == 0) return Enumerable.Empty<PayComponent>().ToLookup(x => x.Code);
         var query = ScopedBypass.TenantWide(db.PayComponents, tenantId,
                 "A cash allowance definition is a tenant-wide row; its effective-dated versions are read together to pick the one in effect.");
@@ -43,7 +47,91 @@ public static class CashAllowanceDefinitions
             : companyId is Guid company ? query.Where(c => c.CompanyId == null || (c.CompanyId == company && c.IsOffered))
             : query.Where(c => c.CompanyId == null);
         if (!includeRemoved) query = query.Where(c => !c.IsDeleted);
-        return (await query.ToListAsync(ct)).OrderBy(c => c.EffectiveFrom ?? DateOnly.MinValue).ToLookup(c => c.Code, StringComparer.Ordinal);
+        var rows = await query.ToListAsync(ct);
+        if (payable) rows = Payable(rows, companyId, anyCompany);
+        return rows.OrderBy(c => c.EffectiveFrom ?? DateOnly.MinValue).ToLookup(c => c.Code, StringComparer.Ordinal);
+    }
+
+    // ── A change waiting for Finance never stops payroll ────────────────────────────────────────
+
+    /// <summary>The terms of a cash allowance Finance confirmed, kept on the row (<see cref="PayComponent.LastConfirmedTermsJson"/>) while a change to it
+    /// waits for Finance again: everything payroll, back pay, end of service and the pre-run check read from a definition version.</summary>
+    public sealed record ConfirmedTerms(int Version, DateOnly? EffectiveFrom, DateOnly? EffectiveTo, bool IsActive, string NameEn, string NameAr,
+        string? GlDriverKey, bool EosbIncluded, string? EosbExclusionCategory, string? EosbExclusionReason, bool IsTaxable, Guid? CompanyId,
+        DateTime FinanceConfirmedAtUtc, Guid? FinanceConfirmedByUserId);
+
+    private static readonly JsonSerializerOptions SnapshotJson = new(JsonSerializerDefaults.Web);
+
+    /// <summary>The snapshot of a CONFIRMED version, taken just before a change sends it (or a new version of it) back to Finance. <paramref name="window"/>
+    /// is the stretch of time the kept terms cover when it is not the version's own (a Finance correction from a month on: from that month to where the
+    /// corrected version ended).</summary>
+    public static string ConfirmedSnapshot(PayComponent confirmed, (DateOnly? From, DateOnly? To)? window = null)
+    {
+        if (confirmed.FinanceConfirmedAtUtc is not DateTime at)
+            throw new InvalidOperationException("Only a confirmed allowance version has confirmed terms to keep.");
+        var (from, to) = window ?? (confirmed.EffectiveFrom, confirmed.EffectiveTo);
+        return JsonSerializer.Serialize(new ConfirmedTerms(1, from, to, confirmed.IsActive, confirmed.NameEn, confirmed.NameAr, confirmed.GlDriverKey,
+            confirmed.EosbIncluded, confirmed.EosbExclusionCategory, confirmed.EosbExclusionReason, confirmed.IsTaxable, confirmed.CompanyId, at,
+            confirmed.FinanceConfirmedByUserId), SnapshotJson);
+    }
+
+    /// <summary>The kept confirmed terms of a version, or null (none kept, or unreadable: then the version is read as it is, pending, and refused).</summary>
+    public static ConfirmedTerms? KeptTerms(PayComponent version)
+    {
+        if (version.FinanceConfirmedAtUtc is not null || string.IsNullOrWhiteSpace(version.LastConfirmedTermsJson)) return null;
+        try { return JsonSerializer.Deserialize<ConfirmedTerms>(version.LastConfirmedTermsJson, SnapshotJson) is { Version: 1 } t ? t : null; }
+        catch (JsonException) { return null; }
+    }
+
+    /// <summary>
+    /// Versions as payroll reads them. A version waiting for Finance that kept the terms Finance last confirmed is read as those terms (a detached copy:
+    /// their window, switch, names, GL driver, end-of-service answer, taxable flag and company, confirmed), so the last confirmed version keeps paying until
+    /// the change is confirmed. For one company's run (<paramref name="companyId"/>) kept terms of another company's own allowance (one since widened to the
+    /// group) are not that company's: the version stays pending there and is refused. A version that was never confirmed has nothing kept and is refused.
+    /// </summary>
+    public static List<PayComponent> Payable(IEnumerable<PayComponent> versions, Guid? companyId = null, bool anyCompany = false) =>
+        versions.Select(v => KeptTerms(v) is { } t && (anyCompany || t.CompanyId is null || t.CompanyId == companyId) ? AsConfirmed(v, t) : v).ToList();
+
+    /// <summary>Run finding code: a run paid the last confirmed terms of an allowance whose change is waiting for Finance.</summary>
+    public const string HeldBackWarningCode = "CASH_ALLOWANCE_CHANGE_WAITING_FOR_FINANCE";
+
+    /// <summary>The run finding for one allowance paid on held-back terms. The screen translates it by its code (validationFindingText.ts), so the
+    /// sentence's shape is fixed: "{name} ({code}): a change is waiting for Finance since {date}; …".</summary>
+    public static string HeldBackMessage(string name, string code, DateTime pendingSinceUtc) =>
+        $"{name} ({code}): a change is waiting for Finance since {pendingSinceUtc:yyyy-MM-dd}; this run paid the last confirmed terms. "
+        + "Ask another Finance approver to confirm the change in Benefits by grade.";
+
+    /// <summary>
+    /// The allowances of <paramref name="codes"/> that a run of <paramref name="companyId"/> for the month starting <paramref name="periodStart"/> pays on the
+    /// terms Finance last confirmed, because a change to them is waiting for Finance: the code, its name, and since when it waits. Empty when none.
+    /// </summary>
+    public static async Task<List<(string Code, string NameEn, DateTime PendingSinceUtc)>> HeldBackAsync(ZayraDbContext db, Guid tenantId,
+        IReadOnlyCollection<string> codes, Guid companyId, DateOnly periodStart, CancellationToken ct)
+    {
+        var result = new List<(string, string, DateTime)>();
+        if (codes.Count == 0) return result;
+        var raw = await VersionsAsync(db, tenantId, codes, ct, companyId: companyId);
+        foreach (var code in codes.Distinct().OrderBy(c => c, StringComparer.Ordinal))
+        {
+            var paid = InEffect(Payable(raw[code], companyId), periodStart);
+            if (paid is null) continue;
+            var row = raw[code].First(v => v.Id == paid.Id);
+            if (KeptTerms(row) is null) continue;
+            result.Add((code, paid.NameEn, row.UpdatedAtUtc ?? row.CreatedAtUtc));
+        }
+        return result;
+    }
+
+    private static PayComponent AsConfirmed(PayComponent pending, ConfirmedTerms t)
+    {
+        var copy = pending.DetachedCopy();
+        copy.EffectiveFrom = t.EffectiveFrom; copy.EffectiveTo = t.EffectiveTo; copy.IsActive = t.IsActive;
+        copy.NameEn = t.NameEn; copy.NameAr = t.NameAr; copy.GlDriverKey = t.GlDriverKey;
+        copy.EosbIncluded = t.EosbIncluded; copy.EosbExclusionCategory = t.EosbExclusionCategory; copy.EosbExclusionReason = t.EosbExclusionReason;
+        copy.IsTaxable = t.IsTaxable; copy.CompanyId = t.CompanyId;
+        copy.FinanceConfirmedAtUtc = t.FinanceConfirmedAtUtc; copy.FinanceConfirmedByUserId = t.FinanceConfirmedByUserId;
+        copy.LastConfirmedTermsJson = null;
+        return copy;
     }
 
     /// <summary>The version of a definition in effect on <paramref name="date"/>: switched on, not removed. Null when there is none.</summary>
@@ -135,7 +223,7 @@ public static class CashAllowanceDefinitions
         if (codes.Count == 0) return issues;
         // Every company's own allowances are read once; each employee then sees the group's and their own company's only (a company's own allowance is
         // no definition at all for a sister company's employee, exactly as its run will treat it).
-        var allVersions = await VersionsAsync(db, tenantId, codes, ct, anyCompany: true);
+        var allVersions = await VersionsAsync(db, tenantId, codes, ct, anyCompany: true, payable: true);
         foreach (var employee in employees.OrderBy(e => e.Code, StringComparer.Ordinal))
         {
             if (!records.TryGetValue(employee.Id, out var recordId)) continue;

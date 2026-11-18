@@ -354,6 +354,32 @@ public class OvertimeLateSettlementRunTests
         (await db.OvertimePayrollImpacts.AsNoTracking().SingleAsync(i => i.Id == s.ImpactId)).PayrollRunId.Should().Be(s.June.Id);
     }
 
+    /// <summary>
+    /// The company's own overtime_late_approval_mode (Setup > Payroll rules) decides what its run does, ahead of the account-wide
+    /// policy: a company that carries late overtime pays it in a tenant that refuses, and a company that refuses pays nothing in a
+    /// tenant that carries.
+    /// </summary>
+    [Theory]
+    [InlineData("Refuse", "BackPay", 1)]
+    [InlineData("BackPay", "Refuse", 0)]
+    public async Task TheCompanysLateApprovalMode_WinsOverTheTenantsInTheRun(string tenantMode, string companyMode, int backPayLines)
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var s = await ArrangeAsync(db, tenantMode);
+        db.CompanyPayrollRules.Add(new CompanyPayrollRule
+        {
+            TenantId = s.TenantId, CompanyId = s.CompanyId, RuleKey = PayrollRuleKeys.OvertimeLateApprovalMode, RuleValue = companyMode,
+        });
+        await db.SaveChangesAsync();
+
+        await ProcessOkAsync(db, s, s.June);
+
+        (await BackPayLines(db, s.June.Id)).Should().HaveCount(backPayLines);
+        (await db.PayrollValidationResults.AsNoTracking().AnyAsync(v => v.PayrollRunId == s.June.Id && v.Code == Code))
+            .Should().Be(backPayLines == 0, "an unpaid late entry is flagged, a paid one is not");
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("Refuse")]
@@ -510,6 +536,65 @@ public class OvertimeLateSettlementRunTests
         (await db.PayrollAdjustments.AsNoTracking().CountAsync(a => a.TenantId == s.TenantId)).Should().Be(1, "one adjustment per request: rebound, not duplicated");
         (await db.PayrollAdjustments.AsNoTracking().SingleAsync(a => a.TenantId == s.TenantId)).PayrollRunId.Should().Be(replacement.Id);
         (await db.OvertimePayrollImpacts.AsNoTracking().SingleAsync(i => i.Id == s.ImpactId)).Status.Should().Be("Processed");
+    }
+
+    /// <summary>
+    /// The audit's suspected re-payment. May is locked; overtime worked in May is approved late (BackPay), so the approval writes a
+    /// CarriedForward impact and an "Overtime Back Pay" adjustment on the open June run. Then MAY itself (the ORIGINAL month) is voided
+    /// and replaced. The replacement selects the period's impacts by work date and used to skip only Processed ones, so it took the
+    /// CarriedForward impact and paid the overtime in May as well, while June's adjustment paid it again.
+    /// </summary>
+    [Fact]
+    public async Task CarriedAtApproval_ThenTheOriginalMonthIsVoidedAndReplaced_TheReplacementDoesNotPayItAgain()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var s = await ArrangeAsync(db, OvertimeLateSettlement.BackPay, impactStatus: "CarriedForward");
+        await AddApprovalTimeCarryAsync(db, s, s.June);
+
+        var may = await db.PayrollRuns.SingleAsync(r => r.TenantId == s.TenantId && r.Month == 5);
+        (await new PayrollVoidService(db).VoidAsync(may.Id, s.TenantId, null, "test", "wrong employee data", CancellationToken.None))
+            .IsVoided.Should().BeTrue("premise: the original month is voided");
+        db.ChangeTracker.Clear();
+        var mayReplacement = await AddReplacementAsync(db, s, month: 5);
+        await ProcessOkAsync(db, s, mayReplacement);
+        await ProcessOkAsync(db, s, s.June);
+
+        (await db.PayrollEarnings.AsNoTracking().Where(e => e.PayrollRunId == mayReplacement.Id && e.EmployeeId == s.Emp.Id && e.ComponentCode == "OVERTIME")
+                .Select(e => e.Amount).ToListAsync()).Sum()
+            .Should().Be(0m, "the overtime was carried into June at approval; the May replacement must not pay it as well");
+        (await BackPayLines(db, s.June.Id)).Should().ContainSingle().Which.Amount.Should().Be(150m);
+        (await db.OvertimePayrollImpacts.AsNoTracking().SingleAsync(i => i.Id == s.ImpactId)).Status
+            .Should().Be("CarriedForward", "the impact is paid by its adjustment; no run takes it");
+    }
+
+    /// <summary>
+    /// Accepted behaviour (audit P2-5): once the run that carried late overtime is voided, the overtime is paid again only while
+    /// the mode is BackPay. If the company moved to Refuse in between, the replacement run does not pay it; it must then say so,
+    /// naming the employee and the AMOUNT owed, so Finance can settle it through the overtime record.
+    /// </summary>
+    [Fact]
+    public async Task CarrierVoided_ThenRefuse_TheReplacementFlagsTheEmployeeAndTheAmountOwed()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var s = await ArrangeAsync(db, OvertimeLateSettlement.BackPay, impactStatus: "CarriedForward");
+        await AddApprovalTimeCarryAsync(db, s, s.June);
+        await ProcessOkAsync(db, s, s.June);
+        (await new PayrollVoidService(db).VoidAsync(s.June.Id, s.TenantId, null, "test", "wrong run", CancellationToken.None)).IsVoided.Should().BeTrue();
+        db.ChangeTracker.Clear();
+        var setting = await db.SystemSettings.SingleAsync(x => x.TenantId == s.TenantId && x.SettingKey == PolicyRegistry.OvertimeLateApprovalMode);
+        setting.SettingValue = OvertimeLateSettlement.Refuse;
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var replacement = await AddReplacementAsync(db, s, month: 6);
+        await ProcessOkAsync(db, s, replacement);
+
+        (await BackPayLines(db, replacement.Id)).Should().BeEmpty("in Refuse mode no run pays it automatically");
+        var finding = await db.PayrollValidationResults.AsNoTracking().SingleAsync(v => v.PayrollRunId == replacement.Id && v.Code == Code);
+        finding.EmployeeId.Should().Be(s.Emp.Id);
+        finding.Message.Should().Contain("E-LATE-1").And.Contain("150.00", "the amount owed is named, not only the hours");
     }
 
     [Fact]

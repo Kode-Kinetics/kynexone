@@ -45,6 +45,7 @@ const pairs: Array<[string, string]> = [
   ['Employee + {n} dependants', 'الموظف + {n} من المعالين'],
   ['Employee (no dependants on file in scope)', 'الموظف (لا يوجد معالون مسجلون مشمولون)'],
   ['Reviewed at renewal', 'يُراجَع عند التجديد'],
+  ['Shown to people who can see pay details', 'يظهر لمن لديهم صلاحية الاطلاع على تفاصيل الرواتب'],
 
   // Reasons
   ['Your company does not offer this benefit.', 'لا تقدّم شركتك هذه الميزة.'],

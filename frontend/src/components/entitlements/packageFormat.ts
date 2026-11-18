@@ -6,6 +6,14 @@ import { createFormatter } from '../../lib/format';
 
 export type Translate = (key: string) => string;
 
+/** Grade benefits that are stored and shown but that nothing pays, claims or tracks yet: no payout, claim or balance reads them.
+ * The matrix row and My package say so in one line, so nobody reads a recorded value as a promise of money. */
+export const RECORDED_ONLY_BENEFIT_CODES: readonly string[] = ['AIR_TICKET', 'MEDICAL', 'EDUCATION', 'PER_DIEM'];
+export const RECORDED_ONLY_NOTE = 'Recorded entitlement. Payout and claims for this benefit are not connected yet.';
+export function isRecordedOnlyBenefit(code: string): boolean {
+  return RECORDED_ONLY_BENEFIT_CODES.includes(code);
+}
+
 /** The fields both the HR line and the employee line carry. */
 export interface ValueLine {
   componentCode: string;

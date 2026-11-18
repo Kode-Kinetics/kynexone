@@ -56,11 +56,12 @@ public class RequisitionSubmitConcurrencyPostgresTests
 
         for (var round = 0; round < Rounds; round++)
         {
-            var requisitionId = await SeedDraftAsync(tenantId, round);
+            var requester = Guid.NewGuid();       // a line manager may submit only a requisition they raised themselves
+            var requisitionId = await SeedDraftAsync(tenantId, round, requester);
 
             var results = await RaceAsync(
-                () => SubmitAsync(tenantId, requisitionId),
-                () => SubmitAsync(tenantId, requisitionId));
+                () => SubmitAsync(tenantId, requisitionId, requester),
+                () => SubmitAsync(tenantId, requisitionId, requester));
 
             results.Should().NotContainNulls($"round {round}: the losing submit must be refused cleanly, never a 500");
             results.OfType<OkObjectResult>().Should().HaveCount(1, $"round {round}: exactly one submit wins");
@@ -77,7 +78,7 @@ public class RequisitionSubmitConcurrencyPostgresTests
         }
     }
 
-    private async Task<Guid> SeedDraftAsync(Guid tenantId, int round)
+    private async Task<Guid> SeedDraftAsync(Guid tenantId, int round, Guid requester)
     {
         await using var db = _fx.CreateDb();
         var req = new ManpowerRequisition
@@ -88,7 +89,7 @@ public class RequisitionSubmitConcurrencyPostgresTests
             DesignationTitle = "Site Supervisor",
             HeadCount = 2,
             Status = "Draft",
-            RequestedByUserId = Guid.NewGuid(),
+            RequestedByUserId = requester,
             RequestedByName = "Line Manager",
         };
         db.ManpowerRequisitions.Add(req);
@@ -96,7 +97,7 @@ public class RequisitionSubmitConcurrencyPostgresTests
         return req.Id;
     }
 
-    private async Task<IActionResult> SubmitAsync(Guid tenantId, Guid requisitionId)
+    private async Task<IActionResult> SubmitAsync(Guid tenantId, Guid requisitionId, Guid requester)
     {
         await using var db = _fx.CreateDb();
         await db.Database.OpenConnectionAsync();      // warm before the barrier releases
@@ -110,7 +111,7 @@ public class RequisitionSubmitConcurrencyPostgresTests
                 User = new ClaimsPrincipal(new ClaimsIdentity(new[]
                 {
                     new Claim("tenant_id", tenantId.ToString()),
-                    new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                    new Claim(ClaimTypes.NameIdentifier, requester.ToString()),
                     new Claim(ClaimTypes.Role, "Manager"),
                     new Claim("is_group_scope", "true"),
                 }, "Test")),

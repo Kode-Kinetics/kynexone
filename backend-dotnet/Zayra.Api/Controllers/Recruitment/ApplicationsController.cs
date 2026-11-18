@@ -22,13 +22,13 @@ public class ApplicationsController : ControllerBase
 
     public ApplicationsController(ZayraDbContext db, IRecruitmentService svc, INotificationService notify, OfferLifecycleService? lifecycle = null)
     {
-        _db = db; _svc = svc; _notify = notify; _lifecycle = lifecycle ?? new(db, new ConfigurationBuilder().Build());
+        _db = db; _svc = svc; _notify = notify; _lifecycle = lifecycle ?? new(db, new ConfigurationBuilder().Build(), null, notify);
     }
 
     private OfferActor Actor(Guid tenant, Guid? company) => new(tenant, company, this.GetUserId() ?? Guid.Empty, UserName());
     private IActionResult LifecycleFailure(OfferLifecycleException e)
     {
-        var body = new { error = e.Code, message = e.Message };
+        var body = new { error = e.Code, message = e.Message, messageAr = e.MessageAr };
         return e.Status switch { 409 => Conflict(body), 404 => NotFound(body), 422 => UnprocessableEntity(body), 400 => BadRequest(body), _ => StatusCode(e.Status, body) };
     }
 
@@ -124,6 +124,7 @@ public class ApplicationsController : ControllerBase
         var candidate = await _db.Candidates
             .FirstOrDefaultAsync(c => c.Id == req.CandidateId && c.TenantId == tenantId, ct);
         if (candidate is null) return BadRequest(new { message = "Candidate not found." });
+        if (candidate.Status == CandidateStanding.Blacklisted) return Conflict(new { error = CandidateStanding.ErrorCode, message = CandidateStanding.Message, messageAr = CandidateStanding.MessageAr });
 
         var exists = await _db.JobApplications
             .AnyAsync(a => a.TenantId == tenantId && a.JobOpeningId == req.JobOpeningId && a.CandidateId == req.CandidateId, ct);
@@ -215,6 +216,8 @@ public class ApplicationsController : ControllerBase
         var userId = this.GetUserId();
         var app = await _db.JobApplications.FirstOrDefaultAsync(a => a.Id == id && a.TenantId == tenantId, ct);
         if (app is null) return NotFound();
+        if (await CandidateStanding.IsBlacklistedAsync(_db, tenantId, app.CandidateId, ct))
+            return Conflict(new { error = CandidateStanding.ErrorCode, message = CandidateStanding.Message, messageAr = CandidateStanding.MessageAr });
 
         var interview = new InterviewSchedule
         {
@@ -223,6 +226,7 @@ public class ApplicationsController : ControllerBase
             ApplicationId = id,
             InterviewType = req.InterviewType,
             InterviewerNames = req.InterviewerNames,
+            InterviewerUserIds = await InterviewPanel.ResolveIdsAsync(_db, tenantId, req.InterviewerNames, null, ct, app.CompanyId),
             ScheduledAt = req.ScheduledAt,
             DurationMinutes = req.DurationMinutes,
             Mode = req.Mode,
@@ -254,6 +258,9 @@ public class ApplicationsController : ControllerBase
         var iv = await _db.InterviewSchedules
             .FirstOrDefaultAsync(i => i.Id == interviewId && i.TenantId == tenantId, ct);
         if (iv is null) return NotFound();
+        // This route writes the interview's single shared verdict (status, overall rating, recommendation, notes), so it is for HR coordinators only. A
+        // panellist who is a line manager gives their own scorecard through POST interviews/{id}/feedback.
+        if (!InterviewPanel.IsCoordinator(User)) return Forbid();
 
         iv.Status = "Completed";
         iv.OverallRating = req.OverallRating;
@@ -288,7 +295,8 @@ public class ApplicationsController : ControllerBase
             var offer = await _lifecycle.CreateAsync(Actor(tenantId, app.CompanyId), id,
                 new(req.StartDate, req.ProbationMonths, req.Designation, req.Department, req.DepartmentId, req.DesignationId,
                     req.ResponseDeadline, req.TemplateId, req.Components, req.BasicSalary, req.HousingAllowance,
-                    req.TransportAllowance, req.OtherAllowances, ExpectedApplicationVersion: req.ExpectedApplicationVersion), ct);
+                    req.TransportAllowance, req.OtherAllowances, ExpectedApplicationVersion: req.ExpectedApplicationVersion,
+                    ContractType: req.ContractType, ContractTermMonths: req.ContractTermMonths), ct);
             return Created($"/api/recruitment/offers/{offer.Id}", offer);
         }
         catch (OfferLifecycleException e) { return LifecycleFailure(e); }
@@ -435,4 +443,5 @@ public record GenerateOfferRequest(
     int ProbationMonths,
     Guid? DepartmentId = null, Guid? DesignationId = null, string? Designation = null, Guid? TemplateId = null,
     IReadOnlyList<Zayra.Api.Application.Recruitment.OfferComponentInput>? Components = null,
-    long? ExpectedApplicationVersion = null, DateTime? ResponseDeadline = null);
+    long? ExpectedApplicationVersion = null, DateTime? ResponseDeadline = null,
+    string? ContractType = null, int? ContractTermMonths = null);

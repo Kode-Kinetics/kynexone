@@ -255,7 +255,10 @@ public class AuthSeeder : IAuthSeeder
             "finance.gl.read", "finance.gl.manage", "finance.gl.export", "finance.gl.drivers.manage",
             "payroll.rates.read", "payroll.rates.manage",
             // M2: prepares the bank file and nothing else. It confirms nothing and moves no cash: no WPS status, no settle, no remit.
-            "payroll.payment_batch.manage"
+            "payroll.payment_batch.manage",
+            // Company Finance confirms monthly cash allowances (payroll.approve); the list waiting for Finance is on Benefits by grade. Read only:
+            // entitlements.manage (edit, publish, add, remove) stays with HR.
+            "entitlements.read"
         }), 4, true, cancellationToken);
 
         // Level 5 — HR Officer: HR operations specialist
@@ -270,7 +273,10 @@ public class AuthSeeder : IAuthSeeder
             // for someone else is gated on overtime.write (OvertimeController.CreateRequest), not on data scope.
             "leave.read", "leave.write", "attendance.read", "overtime.read", "overtime.write", "profile.read",
             // LRN: sees the catalogue and assigns training; does not author courses, correct records or report.
-            "learning.read", "learning.assign"
+            "learning.read", "learning.assign",
+            // Recruitment: works the pipeline (read and write) and decides nothing: no recruitment.approve (offers, requisitions) and no
+            // recruitment.delete (owner decision 2026-11-16). Existing tenants: migration GrantManagerHrOfficerRecruitment.
+            "recruitment.read", "recruitment.write"
         }), 5, true, cancellationToken);
 
         // Level 6 — Payroll Officer: payroll processing
@@ -305,7 +311,9 @@ public class AuthSeeder : IAuthSeeder
             // both prepares the bank file and pays it.
             "payroll.wps_status.update", "payroll.payment.settle", "payroll.remit.manage",
             // CMP: the default final step of a merit worksheet (HR Manager → Finance Approver) and the cycle approver.
-            "compensation.read", "compensation.approve"
+            "compensation.read", "compensation.approve",
+            // Company Finance confirms monthly cash allowances (payroll.approve); the list waiting for Finance is on Benefits by grade. Read only.
+            "entitlements.read"
         }), 8, true, cancellationToken);
 
         // Level 9 — Compliance Officer: compliance and contracts
@@ -325,6 +333,9 @@ public class AuthSeeder : IAuthSeeder
             "dashboard.read", "employees.read", "approvals.read", "approvals.write", "approvals.decide", "notifications.read",
             "manager.read", "manager.approve", "ess.read", "ess.write", "leave.read", "leave.approve",
             "attendance.read", "overtime.read", "overtime.approve", "profile.read", "loans.read",
+            // File overtime for a member of the manager's OWN team (data scope), while the company allows it
+            // (overtime_manager_files_for_team, default on). Never overtime.write, which files for anyone.
+            "overtime.file_for_team",
             "performance.read", "performance.write",
             // CMP: a line manager plans merit for their own direct reports only (their own line sits on their manager's sheet).
             "compensation.plan",
@@ -333,7 +344,11 @@ public class AuthSeeder : IAuthSeeder
             // LRN: the team training report. Scoped to the manager's own reporting tree by IDataScopeService.
             "learning.report",
             // SUC: nominate own reports and keep their development plans (data-scoped); never slates or the 9-box.
-            "succession.nominate", "succession.devplans.read", "succession.devplans.manage", "succession.self"
+            "succession.nominate", "succession.devplans.read", "succession.devplans.manage", "succession.self",
+            // Recruitment, narrowly (owner decision 2026-11-16): raise requisitions for their own department, and give feedback on the
+            // interviews they are named on. Not recruitment.read/write: no candidate lists, offers or hiring. Existing tenants: migration
+            // GrantManagerHrOfficerRecruitment.
+            "recruitment.requisition.raise", "recruitment.interview.feedback"
         }), 10, true, cancellationToken);
 
         // Level 11 — Supervisor: front-line supervision
@@ -451,6 +466,7 @@ public class AuthSeeder : IAuthSeeder
             ("overtime.read", "Overtime", "Read overtime requests"),
             ("overtime.write", "Overtime", "Submit overtime requests"),
             ("overtime.approve", "Overtime", "Approve or reject overtime requests"),
+            ("overtime.file_for_team", "Overtime", "File overtime for a member of your own team, when the company allows line managers to"),
             ("overtime.policy_manage", "Overtime", "Manage overtime types and policies"),
             // Payroll
             ("payroll.read", "Payroll", "Read payroll runs and slips"),
@@ -486,6 +502,9 @@ public class AuthSeeder : IAuthSeeder
             ("recruitment.write", "Recruitment", "Manage recruitment pipeline"),
             ("recruitment.approve", "Recruitment", "Approve requisitions and offers"),
             ("recruitment.delete", "Recruitment", "Delete recruitment records"),
+            // Narrow keys for a line manager, who is not a recruiter: neither opens the pipeline, a candidate or an offer.
+            ("recruitment.requisition.raise", "Recruitment", "Raise and submit your own manpower requisitions for your own department"),
+            ("recruitment.interview.feedback", "Recruitment", "See and give feedback on the interviews you are assigned to"),
             // Performance
             ("performance.read", "Performance", "Read appraisal and performance data"),
             ("performance.write", "Performance", "Create and update performance reviews"),

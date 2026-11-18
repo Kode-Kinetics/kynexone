@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Recruitment;
@@ -66,6 +67,7 @@ public class WorkforcePlanningController : ControllerBase
     // POST /api/recruitment/workforce-planning
     [HttpPost]
     [Authorize(Roles = "Admin,HR Manager")]
+    [RefuseHrOfficer]
     public async Task<IActionResult> Create([FromBody] CreateWorkforcePlanRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -120,6 +122,7 @@ public class WorkforcePlanningController : ControllerBase
     // PATCH /api/recruitment/workforce-planning/{id}/status
     [HttpPatch("{id:guid}/status")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [RefuseHrOfficer]
     public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateStatusRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -145,6 +148,7 @@ public class WorkforcePlanningController : ControllerBase
     // DELETE /api/recruitment/workforce-planning/{id}
     [HttpDelete("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [RefuseHrOfficer]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();

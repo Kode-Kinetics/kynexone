@@ -2492,6 +2492,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.FormulaExpression).HasMaxLength(1024);
             entity.Property(x => x.EosbExclusionReason).HasMaxLength(500);
             entity.Property(x => x.EosbExclusionCategory).HasMaxLength(20);
+            entity.Property(x => x.LastConfirmedTermsJson).HasColumnName("last_confirmed_terms").HasColumnType("jsonb");
             entity.Property(x => x.Value).HasPrecision(18, 4);
             entity.Property(x => x.BenefitCategory).HasMaxLength(120);
             entity.Property(x => x.PolicyClass).HasMaxLength(16);

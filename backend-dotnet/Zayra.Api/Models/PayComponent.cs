@@ -91,6 +91,17 @@ public class PayComponent : ITenantOwned, ICompanyScoped
     /// already held the Finance permission, in which case it is confirmed at creation by that person.</summary>
     public Guid? FinanceConfirmedByUserId { get; set; }
 
+    /// <summary>The terms Finance last confirmed, kept while a change to a confirmed cash allowance (<c>ALW_*</c>) waits for Finance again: the window,
+    /// the active switch, the names, the GL driver, the end-of-service answer, the taxable flag and the owning company, as JSON. Payroll, back pay, end
+    /// of service and the pre-run check read these instead of the pending row until the change is confirmed (then it is cleared), so a pending change
+    /// never stops the company's payroll and never pays unconfirmed terms. Null on every other row. Written only by Benefits by grade
+    /// (<c>CashAllowanceDefinitions.ConfirmedSnapshot</c>); read only by <c>CashAllowanceDefinitions.Payable</c>.</summary>
+    public string? LastConfirmedTermsJson { get; set; }
+
+    /// <summary>A detached copy (every scalar field), for a read-only view that must never be saved: payroll's reading of a pending allowance as its
+    /// last confirmed terms (<c>CashAllowanceDefinitions.Payable</c>).</summary>
+    public PayComponent DetachedCopy() => (PayComponent)MemberwiseClone();
+
     /// <summary>Ties the emitted line to a gl_drivers Key. NULL ⇒ the existing EarningDriverKey/
     /// DeductionDriverKey source+code routing is used unchanged (the day-one seeds set this only for
     /// documentation parity; GL routing still keys on the persisted line Source+Code).</summary>

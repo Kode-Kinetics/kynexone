@@ -16,7 +16,8 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// </summary>
 public static class PayrollRunDefinitionStaleness
 {
-    public sealed record Stale(string Code, DateOnly EffectiveFrom);
+    /// <param name="NoLongerInEffect">The run's month has no version of the allowance any more (switched off or ended since), rather than other terms.</param>
+    public sealed record Stale(string Code, DateOnly EffectiveFrom, bool NoLongerInEffect = false);
 
     /// <summary>The first (by code) allowance whose applicable definition no longer matches what <paramref name="run"/> consumed, or null when none does.</summary>
     public static async Task<Stale?> FindAsync(ZayraDbContext db, Guid tenantId, PayrollRun run, CancellationToken ct)
@@ -25,14 +26,22 @@ public static class PayrollRunDefinitionStaleness
         var runMonth = new DateOnly(run.Year, run.Month, 1);
         var consumed = (await db.PayrollEarnings.AsNoTracking()
                 .Where(e => e.TenantId == tenantId && e.PayrollRunId == run.Id).Select(e => new { e.ComponentCode, e.DefinitionTerms }).Distinct().ToListAsync(ct))
-            .Select(e => (Code: PayrollArrearsComponents.SourceComponent(e.ComponentCode), Terms: e.DefinitionTerms))
+            .Select(e => (Code: PayrollArrearsComponents.SourceComponent(e.ComponentCode), Terms: e.DefinitionTerms,
+                BackPay: PayrollArrearsComponents.SourceComponent(e.ComponentCode) != e.ComponentCode))
             .Where(e => EntitlementComponentRules.IsAllowance(e.Code))
             .ToList();
         if (consumed.Count == 0) return null;
         var codes = consumed.Select(c => c.Code).Distinct(StringComparer.Ordinal).OrderBy(c => c, StringComparer.Ordinal).ToList();
-        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, includeRemoved: true, companyId: run.CompanyId);
+        // Payroll's view (a change waiting for Finance reads as the confirmed terms), the same one Process read: confirming the change makes the run stale.
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, includeRemoved: true, companyId: run.CompanyId, payable: true);
         foreach (var code in codes)
         {
+            // The month's own allowance line must still be paid for that month: a version switched on and in effect then. One that was switched off, ended
+            // or removed after the run was processed (a change confirmed after it) makes the run stale, never approved as it stands. Back pay keeps the
+            // payroll run's own fallback (ForPeriod): the expense of a definition removed since still posts on its driver.
+            var inEffect = CashAllowanceDefinitions.InEffect(versions[code], runMonth);
+            if (consumed.Any(c => c.Code == code && !c.BackPay) && inEffect is null)
+                return new Stale(code, runMonth, NoLongerInEffect: true);
             var applicable = CashAllowanceDefinitions.ForPeriod(versions[code], runMonth);
             var applicableTerms = applicable is null ? null : CashAllowanceDefinitions.Terms(applicable);
             if (consumed.Any(c => c.Code == code && (c.Terms is null || c.Terms != applicableTerms)))

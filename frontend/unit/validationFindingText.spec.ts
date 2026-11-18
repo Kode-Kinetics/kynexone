@@ -36,6 +36,36 @@ test.describe('validation finding text', () => {
   });
 });
 
+test.describe('benefit findings keep their details in both languages', () => {
+  const HELD = { code: 'CASH_ALLOWANCE_CHANGE_WAITING_FOR_FINANCE',
+    message: 'بدل سيارة (ALW_CAR): a change is waiting for Finance since 2026-11-16; this run paid the last confirmed terms. Ask another Finance approver to confirm the change in Benefits by grade.' };
+  const LEGACY = { code: 'LEGACY_BENEFIT_ENROLMENT_SKIPPED',
+    message: "علي حسن (C001): the previous benefits system's enrolment 3f2b1c9e-0000-4000-8000-000000000001 in سيارة (SalaryAllowance) was not paid. Benefits are now set in Benefits by grade. Review it in the legacy enrolment reconcile report, and end it or move it to the employee's grade package." };
+  test('the held-back allowance finding names the allowance and the date, in English and Arabic', () => {
+    expect(findingText(en, HELD)).toBe('بدل سيارة (ALW_CAR): a change is waiting for Finance since 2026-11-16, so this run paid the last confirmed terms. Ask another Finance approver to confirm the change in Benefits by grade.');
+    const text = findingText(ar, HELD);
+    expect(text).toContain('ALW_CAR');
+    expect(text).toContain('2026-11-16');
+    expect(latin(text), text).toEqual([]);
+  });
+  test('the skipped legacy enrolment finding names the employee, the plan and the reference, in Arabic', () => {
+    const text = findingText(ar, LEGACY);
+    expect(text).toContain('علي حسن');
+    expect(text).toContain('3f2b1c9e-0000-4000-8000-000000000001');
+    expect(latin(text), text).toEqual([]);
+  });
+});
+
+test.describe('late overtime no run pays', () => {
+  const LATE = { code: 'OVERTIME_PRIOR_PERIOD_UNPAID', message: 'Employee EVT2-0008 has 2.00 h of approved overtime (150.00 owed) from an earlier pay period (2026-05-28) that no payroll run has paid.' };
+  test('names the amount owed, in English and in Arabic', () => {
+    expect(findingText(en, LATE)).toContain('150.00');
+    const arabic = findingText(ar, LATE);
+    expect(arabic).toContain('150.00');
+    expect(latin(arabic)).toEqual([]);
+  });
+});
+
 test.describe('pay item labels', () => {
   const labels = ['Overtime (5.00 h × (168.75 + 125.00 × 0.90)/h)', 'Late/early attendance deduction', 'Loss of Pay (1.00 d × 133.33/d)', 'Basic Salary', 'Housing Allowance'];
 

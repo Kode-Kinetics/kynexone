@@ -27,7 +27,6 @@ public class OnboardingTemplatesController : ControllerBase
 {
     public const string ManagePermission = "onboarding.templates.manage";
     private static readonly string[] LinkSections = { "person", "emergency", "arabicName", "id", "bank", "documents" };
-    private static readonly string[] TaskStatuses = { "Pending", "InProgress", "Completed", "Skipped", "Blocked" };
     private const string Why = "Tenant-pinned lookup for a hire template or checklist reference; the caller's company access is checked explicitly.";
 
     private readonly ZayraDbContext _db;
@@ -538,7 +537,7 @@ public class OnboardingTemplatesController : ControllerBase
         var mayWork = User.HasClaim("permission", "employees.write") || CallerOwnerRoles().Contains(task.OwnerRole) || (me is not null && task.AssignedToUserId == me);
         if (!mayWork) return NotFound();   // same answer as a task that does not exist
 
-        if (request.Status is not null && !TaskStatuses.Contains(request.Status, StringComparer.Ordinal)) return Fail(422, "validation_failed");
+        if (request.Status is not null && !Zayra.Api.Application.Onboarding.OnboardingTaskRules.IsKnownStatus(request.Status)) return Fail(422, "validation_failed");
         if (request.DueDate is not null && request.DueDate != task.DueDate)
         {
             if ((request.DueOverrideReason?.Trim().Length ?? 0) < 5) return Fail(422, "due_override_reason_required");
@@ -553,13 +552,13 @@ public class OnboardingTemplatesController : ControllerBase
         // Skipping a task that holds back activation is a decision someone must be able to explain later.
         var skipReason = request.Note?.Trim() ?? string.Empty;
         var skipping = request.Status == "Skipped" && task.Status != "Skipped";
-        if (skipping && task.BlocksActivation && skipReason.Length < 5) return Fail(422, "skip_reason_required");
+        if (Zayra.Api.Application.Onboarding.OnboardingTaskRules.SkipReasonMissing(task, request.Status, skipReason)) return Fail(422, "skip_reason_required");
         if (request.Note is not null) task.Notes = request.Note.Length > 2000 ? request.Note[..2000] : request.Note;
         if (request.Status is not null && request.Status != task.Status)
         {
             if (request.Status == "Completed")
             {
-                if (task.EvidenceRequired && task.EvidenceDocumentId is null) return Fail(422, "task_evidence_required");
+                if (Zayra.Api.Application.Onboarding.OnboardingTaskRules.EvidenceMissing(task, request.Status)) return Fail(422, "task_evidence_required");
                 task.CompletedDate = DateOnly.FromDateTime(DateTime.UtcNow); task.CompletedBy = me;
             }
             else { task.CompletedDate = null; task.CompletedBy = null; }

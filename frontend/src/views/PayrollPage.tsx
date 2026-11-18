@@ -1879,6 +1879,8 @@ const GOSI_COHORT_NOT_RECORDED = 'GOSI_COHORT_NOT_RECORDED';
 const GOSI_NEW_ENTRANT_BLOCKED = 'GOSI_NEW_ENTRANT_SCHEDULE_NOT_MODELLED';
 const GOSI_NEW_ENTRANT_APPLIED = 'GOSI_NEW_ENTRANT_SCHEDULE_APPLIED';
 const GOSI_BELOW_MINIMUM_WAGE = 'GOSI_BELOW_MINIMUM_CONTRIBUTORY_WAGE';
+/** PayrollValidationEngine.ZeroNetUnpaidLeave — a Warning, acknowledged by count at approval. */
+const ZERO_NET_UNPAID_LEAVE = 'ZERO_NET_UNPAID_LEAVE';
 
 /**
  * The run a payroll tab works on. The page holds ONE selected run (the pipeline's Run selector and the tabs' own selectors are the same choice):
@@ -1942,6 +1944,7 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
   const cohortBlocked = results.filter(r => r.code === GOSI_NEW_ENTRANT_BLOCKED);
   const cohortApplied = results.filter(r => r.code === GOSI_NEW_ENTRANT_APPLIED);
   const belowMinimumWage = results.filter(r => r.code === GOSI_BELOW_MINIMUM_WAGE);
+  const zeroNetLeave = results.filter(r => r.code === ZERO_NET_UNPAID_LEAVE);
   const [cohortOnly, setCohortOnly] = useState(false);
   const shown = cohortOnly && cohortBlocked.length + cohortNotRecorded.length + cohortApplied.length > 0
     ? [...cohortBlocked, ...cohortNotRecorded, ...cohortApplied]
@@ -2001,6 +2004,15 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
         </div>
       )}
 
+      {zeroNetLeave.length > 0 && (
+        <div className="surface space-y-1 px-5 py-4" data-testid="zero-net-unpaid-leave-findings">
+          <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Zero net pay from a full month of unpaid leave')}</p>
+          <p className="text-sm text-amber-700 dark:text-amber-400">
+            {t('{count} employee(s) net zero this month: unpaid leave took the whole wage. Any loan or advance instalment they owe is carried forward to the next run, not written off. Nothing is paid to them, so they are left out of the bank file. This is a warning, not a block: check the leave, then acknowledge it when approving.', { count: zeroNetLeave.length })}
+          </p>
+        </div>
+      )}
+
       {results.length === 0 && !loading ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <CheckCircle2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
@@ -2019,7 +2031,11 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
                   <span className="font-mono text-xs text-slate-500">{r.code}</span>
                   {r.employeeId && <span className="text-xs text-slate-400"><EmployeeLabelText label={employeeLabel(r.employeeId, names, id => t('Emp #{employeeId}', { employeeId: id }))} /></span>}
                 </div>
-                <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{r.message}</p>
+                <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
+                  {r.code === ZERO_NET_UNPAID_LEAVE
+                    ? t('Net pay is zero: unpaid leave took the whole wage this month. Any loan or advance instalment is carried forward to the next run, not written off.')
+                    : r.message}
+                </p>
               </div>
               {r.isResolved
                 ? <span className="ms-auto shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">{t('Overridden')}</span>
@@ -2334,6 +2350,9 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
   const [ackOverridden, setAckOverridden] = useState(false);
   const [ackOutside, setAckOutside] = useState(false);
   const [ackPayWarnings, setAckPayWarnings] = useState(false);
+  // Employees who net zero because unpaid leave took the whole wage (ZERO_NET_UNPAID_LEAVE): acknowledged by count.
+  const [zeroNetIds, setZeroNetIds] = useState<number[]>([]);
+  const [ackZeroNet, setAckZeroNet] = useState(false);
   // The cash/cheque list names the person (the run's population is already loaded for the gate) and falls back to the number.
   const employeeName = (id: number, ibanOnFile: boolean) => {
     const member = population ? [...population.included, ...population.excluded, ...population.notEligible].find(m => m.employeeId === id) : undefined;
@@ -2346,12 +2365,15 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
     payrollApi.listAllRuns().then(setRuns).catch(() => {});
 
   const refreshGate = React.useCallback((id: string) => {
-    if (!id) { setPopulation(null); setOverrideReport(null); return; }
+    if (!id) { setPopulation(null); setOverrideReport(null); setZeroNetIds([]); return; }
     setGateLoading(true); setGateError('');
-    Promise.allSettled([payrollApi.runPopulation(id), payrollApi.runValidationOverrides(id)])
-      .then(([pop, ovr]) => {
+    Promise.allSettled([payrollApi.runPopulation(id), payrollApi.runValidationOverrides(id), payrollApi.listValidationResults(id)])
+      .then(([pop, ovr, findings]) => {
         setPopulation(pop.status === 'fulfilled' ? pop.value : null);
         setOverrideReport(ovr.status === 'fulfilled' ? ovr.value : null);
+        setZeroNetIds(findings.status === 'fulfilled' && Array.isArray(findings.value)
+          ? [...new Set(findings.value.filter(f => f.code === ZERO_NET_UNPAID_LEAVE && f.employeeId != null).map(f => Number(f.employeeId)))]
+          : []);
         // A failure here is not cosmetic: without the counts the approver cannot acknowledge, and
         // the backend will refuse. Say so rather than presenting a button that 409s.
         if (pop.status === 'rejected' || ovr.status === 'rejected')
@@ -2370,6 +2392,7 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
     setAckOverridden(false);
     setAckOutside(false);
     setAckPayWarnings(false);
+    setAckZeroNet(false);
     refreshGate(runId);
   }, [runId, refreshGate]);
 
@@ -2390,12 +2413,14 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
   const payWarnings = population?.payWarnings ?? [];
   const payWarningCount = population?.payWarningCount ?? 0;
   const needsPayWarningAck = payWarningCount > 0;
+  const zeroNetCount = zeroNetIds.length;
+  const needsZeroNetAck = zeroNetCount > 0;
   const leftOut = population?.leftOut ?? [];
   // S-048: the final approval seals the journal, so with costing on the approver states how many employees post uncosted.
   const sealsJournal = hasPermission('payroll.approve') && (isFinance || isAdmin) && (selectedRun?.status === 'Processed' || selectedRun?.status === 'PendingFinanceReview');
   const uncosted = useUncostedAck(runId, sealsJournal);
   const gateSatisfied =
-    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && (!needsOutsideAck || ackOutside) && (!needsPayWarningAck || ackPayWarnings) && (!uncosted.needed || uncosted.affirmed) && !gateLoading && !gateError && currencyConfirmed;
+    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && (!needsOutsideAck || ackOutside) && (!needsPayWarningAck || ackPayWarnings) && (!needsZeroNetAck || ackZeroNet) && (!uncosted.needed || uncosted.affirmed) && !gateLoading && !gateError && currencyConfirmed;
 
   const handleApprove = async () => {
     if (!runId) return;
@@ -2409,6 +2434,7 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
         expectedOverriddenCount: needsOverriddenAck && ackOverridden ? overriddenCount : null,
         expectedOutsideBankCount: needsOutsideAck && ackOutside ? outsideCount : null,
         expectedPayWarningCount: needsPayWarningAck && ackPayWarnings ? payWarningCount : null,
+        expectedZeroNetCount: needsZeroNetAck && ackZeroNet ? zeroNetCount : null,
         expectedUncostedCount: uncosted.expected(),
       });
       await refreshRuns();
@@ -2419,6 +2445,7 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
       setAckOverridden(false);
       setAckOutside(false);
       setAckPayWarnings(false);
+      setAckZeroNet(false);
       refreshGate(runId);
     } catch (e: unknown) {
       const data = (e as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
@@ -2439,8 +2466,10 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
       // acknowledges the truth rather than a stale number.
       if (data?.error === 'uncosted_not_acknowledged') void uncosted.refresh();
       if (data?.error === 'excluded_employees_not_acknowledged' || data?.error === 'overridden_errors_not_acknowledged'
-          || data?.error === 'outside_bank_payments_not_acknowledged' || data?.error === 'pay_warnings_not_acknowledged') {
+          || data?.error === 'outside_bank_payments_not_acknowledged' || data?.error === 'pay_warnings_not_acknowledged'
+          || data?.error === 'zero_net_not_acknowledged') {
         setAckExcluded(false);
+        setAckZeroNet(false);
         setAckOutside(false);
         setAckPayWarnings(false);
         setAckOverridden(false);
@@ -2584,6 +2613,19 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
                     primary: `${w.code} — ${w.name}`,
                     secondary: payPopulationReasonLabel(t, w.reasonCode),
                   }))}
+                />
+              )}
+
+              {needsZeroNetAck && (
+                <AcknowledgementPanel
+                  tone="amber"
+                  ackId="ack-zero-net"
+                  title={t('{zeroNetCount} employee(s) net zero because unpaid leave took the whole wage', { zeroNetCount })}
+                  blurb={t('They are paid nothing this month and are left out of the bank file. Any loan or advance instalment is carried forward, not written off. Check the leave before approving.')}
+                  checked={ackZeroNet}
+                  onChange={setAckZeroNet}
+                  confirmLabel={t('I have reviewed the list and confirm exactly {zeroNetCount} employee(s) net zero this month.', { zeroNetCount })}
+                  rows={zeroNetIds.map(id => ({ key: String(id), primary: employeeName(id, false), secondary: '' }))}
                 />
               )}
 

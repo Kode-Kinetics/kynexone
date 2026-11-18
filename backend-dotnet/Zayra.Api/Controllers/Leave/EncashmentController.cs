@@ -198,9 +198,36 @@ public class EncashmentController : ControllerBase
     [HasPermission("payroll.approve")]
     public async Task<IActionResult> PayrollApprove(Guid id, [FromBody] EncashmentDecisionRequest req, CancellationToken ct)
     {
+        // The target run must still be open when the approval COMMITS, not only when it is checked: the whole decision runs in
+        // one transaction that reads the run with FOR UPDATE, so a payroll Process (which holds the same row) either finishes
+        // first, and the approval then sees the run is no longer Draft and refuses, or starts after, and finds the adjustment.
+        // Lock order: this path takes only the payroll_runs row (no batch, loan or advance lock), consistent with the documented
+        // order payroll.batch-payment advisory -> payroll_runs FOR UPDATE -> finance.loan -> finance.advance. Only a success
+        // commits; a refusal writes nothing. InMemory/SQLite-less providers, or an ambient transaction, run the body directly.
+        if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
+            return await PayrollApproveCoreAsync(id, req, ct);
+        var attempt = 0;
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            if (attempt++ > 0) _db.ChangeTracker.Clear();
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            var result = await PayrollApproveCoreAsync(id, req, ct);
+            if (result is OkObjectResult) await tx.CommitAsync(ct);
+            return result;
+        });
+    }
+
+    private async Task<IActionResult> PayrollApproveCoreAsync(Guid id, EncashmentDecisionRequest req, CancellationToken ct)
+    {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         if (this.GetUserId() is null) return UnattributedDecision();
+        // Take the target run's row lock FIRST, before reading the request: a second approver of the same request then waits
+        // here and reads the request as the first one left it (already decided), instead of deciding on a stale read.
+        if (req.PayrollRunId is Guid lockRunId && lockRunId != Guid.Empty)
+            await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag).AsNoTracking()
+                .Where(r => r.TenantId == tenantId && r.Id == lockRunId).Select(r => r.Id).FirstOrDefaultAsync(ct);
 
         var encashment = await _db.LeaveEncashmentRequests
             .FirstOrDefaultAsync(e => e.Id == id && e.TenantId == tenantId, ct);
@@ -218,7 +245,8 @@ public class EncashmentController : ControllerBase
             await CallerTookHrStepAsync(tenantId.Value, encashment, ct)));
         if (!verdict.Passed) return StatusCode(StatusCodes.Status403Forbidden, new { message = verdict.Message });
 
-        var targetRun = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(r =>
+        // FOR UPDATE (see PayrollApprove): held to the end of this transaction, so the "run is open" check below is still true at commit.
+        var targetRun = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag).AsNoTracking().FirstOrDefaultAsync(r =>
             r.TenantId == tenantId && r.Id == req.PayrollRunId.Value, ct);
         if (targetRun is null) return BadRequest(new { message = "Target payroll run was not found in this tenant." });
         var targetError = await ValidateTargetRunAsync(tenantId.Value, encashment, targetRun, ct);

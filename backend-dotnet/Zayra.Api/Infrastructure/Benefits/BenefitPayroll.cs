@@ -25,6 +25,7 @@ public static class BenefitPayroll
 {
     public const string RecurringSource = "BenefitRecurring";
     public const string ClaimSource = "BenefitClaim";
+    public const string LegacyEnrollmentSkippedCode = "LEGACY_BENEFIT_ENROLMENT_SKIPPED";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     /// <summary>Serializes only the agreed, typed payment witness, never a payroll or Employee entity.</summary>
     public static string SerializeWitness(BenefitPayrollWitness witness) => JsonSerializer.Serialize(witness, Json);
@@ -44,6 +45,46 @@ public static class BenefitPayroll
         }
         catch (JsonException) { throw new BenefitPaymentException("A benefit payment policy snapshot is invalid."); }
     }
+    /// <summary>How a legacy enrolment's frozen terms deliver it: Coverage, SalaryAllowance, PayrollDeduction, Reimbursement, or Unreadable when the
+    /// snapshot cannot be read (treated as carrying terms, so it is never silently ignored).</summary>
+    public static string DeliveryOf(BenefitEnrollment enrollment)
+    {
+        try { return Policy(enrollment.PaymentPolicySnapshotJson)?.Policy.Delivery ?? "Coverage"; }
+        catch (BenefitPaymentException) { return "Unreadable"; }
+    }
+
+    /// <summary>Whether a delivery moves money through payroll (paid in salary, deducted, or reimbursed).</summary>
+    public static bool CarriesPayTerms(string delivery) => delivery is "SalaryAllowance" or "PayrollDeduction" or "Reimbursement" or "Unreadable";
+
+    /// <summary>
+    /// For a Benefits-by-grade (release_a) tenant: one warning per ACTIVE legacy enrolment with payment terms that covers part of the period, for the
+    /// run's employees in its company. Payroll does not pay it (StageAsync), and says so naming the employee, the enrolment and the plan. Empty when
+    /// release_a is off (the legacy system then pays as before).
+    /// </summary>
+    public static async Task<List<(int EmployeeId, string Message)>> LegacySkipWarningsAsync(ZayraDbContext db, Guid tenantId, Guid companyId,
+        IReadOnlyCollection<int> employeeIds, DateOnly start, DateOnly end, CancellationToken ct)
+    {
+        if (employeeIds.Count == 0 || !await Entitlements.EntitlementMatrixService.ReleaseAEnabledAsync(db, tenantId, ct)) return [];
+        var ids = employeeIds.ToList();
+        var candidates = (await db.BenefitEnrollments.AsNoTracking().Where(e => e.TenantId == tenantId && e.CompanyId == companyId
+                && ids.Contains(e.EmployeeId) && e.Status == "Active").ToListAsync(ct))
+            .Where(e => e.EffectiveFrom <= end && (e.EffectiveTo is null || e.EffectiveTo >= start))
+            .Select(e => (Enrollment: e, Delivery: DeliveryOf(e))).Where(x => CarriesPayTerms(x.Delivery)).ToList();
+        if (candidates.Count == 0) return [];
+        var who = await db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && ids.Contains(e.Id))
+            .ToDictionaryAsync(e => e.Id, e => (e.EmployeeCode, e.FullName), ct);
+        var planIds = candidates.Select(x => x.Enrollment.BenefitPlanId).Distinct().ToList();
+        var plans = await db.BenefitPlans.AsNoTracking().Where(p => p.TenantId == tenantId && planIds.Contains(p.Id)).ToDictionaryAsync(p => p.Id, p => p.Name, ct);
+        return candidates.OrderBy(x => x.Enrollment.EmployeeId).ThenBy(x => x.Enrollment.EffectiveFrom).Select(x =>
+        {
+            var (code, name) = who.GetValueOrDefault(x.Enrollment.EmployeeId);
+            var plan = plans.GetValueOrDefault(x.Enrollment.BenefitPlanId) ?? "Benefit";
+            return (x.Enrollment.EmployeeId,
+                $"{name ?? x.Enrollment.EmployeeName} ({code}): the previous benefits system's enrolment {x.Enrollment.Id} in {plan} ({x.Delivery}) was not paid. "
+                + "Benefits are now set in Benefits by grade. Review it in the legacy enrolment reconcile report, and end it or move it to the employee's grade package.");
+        }).ToList();
+    }
+
     public static Guid SourceId(Guid chainId, string frequency, DateOnly periodStart, string delivery)
     {
         var period = frequency == "OneTime" ? "once" : frequency == "Annual" ? periodStart.Year.ToString() : periodStart.ToString("yyyy-MM");
@@ -79,12 +120,9 @@ public static class BenefitPayroll
             await FinanceDecisionSerializer.AcquireAsync(db, AdditionalBenefitGrants.LockScope, tenantId, employee.PublicId, ct);
         var enrollments = await db.BenefitEnrollments.AsNoTracking().Where(e => e.TenantId == tenantId
             && e.CompanyId == companyId && ids.Contains(e.EmployeeId)).ToListAsync(ct);
-        if (await Entitlements.EntitlementMatrixService.ReleaseAEnabledAsync(db, tenantId, ct))
-        {
-            if (enrollments.Any(e => Policy(e.PaymentPolicySnapshotJson)?.Policy.Delivery is "SalaryAllowance" or "PayrollDeduction" or "Reimbursement"))
-                throw new BenefitPaymentException("This company has benefit payment terms from the previous benefits authority. Reconcile them before running payroll under the current package authority.");
-            return [];
-        }
+        // Release A: the grade package is the only authority. Legacy enrolments are never paid; one that still carries payment terms is named
+        // on the run as a warning (LegacySkipWarningsAsync) and listed in the reconcile report, and never stops the company's payroll.
+        if (await Entitlements.EntitlementMatrixService.ReleaseAEnabledAsync(db, tenantId, ct)) return [];
         var allSourceRows = await db.PayrollAdjustments.Where(a => a.TenantId == tenantId && ids.Contains(a.EmployeeId)
             && (a.SourceType == RecurringSource || a.SourceType == ClaimSource)).ToListAsync(ct);
         var sourceIds = allSourceRows.Where(a => a.SourceId.HasValue).ToDictionary(a => (a.SourceType, a.SourceId!.Value));

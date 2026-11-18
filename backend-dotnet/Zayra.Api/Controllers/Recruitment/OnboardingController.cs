@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
+using Zayra.Api.Application.Onboarding;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Models;
@@ -20,6 +21,24 @@ public class OnboardingController : ControllerBase
 
     private Guid GetTenantId() =>
         Guid.TryParse(User.FindFirst("tenant_id")?.Value, out var id) ? id : Guid.Empty;
+
+    private ObjectResult Fail(int status, string code) =>
+        StatusCode(status, new
+        {
+            type = "about:blank", title = code, status, code, traceId = HttpContext.TraceIdentifier, errors = (object?)null, titleKey = "onboarding.error." + code,
+            message = code switch
+            {
+                "task_evidence_required" => "Upload a document for this task before completing it.",
+                "skip_reason_required" => "Give a reason of at least 5 characters for skipping: this task holds back activation.",
+                _ => "Check the highlighted fields and try again.",
+            },
+            messageAr = code switch
+            {
+                "task_evidence_required" => "ارفع مستندًا لهذه المهمة قبل إكمالها.",
+                "skip_reason_required" => "اكتب سبب التجاوز (5 أحرف على الأقل): هذه المهمة تمنع تفعيل الموظف.",
+                _ => "تحقق من الحقول المحددة ثم أعد المحاولة.",
+            },
+        });
 
     private Guid? GetUserId() =>
         Guid.TryParse(User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var id) ? id : null;
@@ -329,13 +348,23 @@ public class OnboardingController : ControllerBase
         var task = await TasksInScope(tid).FirstOrDefaultAsync(x => x.Id == id, ct);
         if (task == null) return NotFound();
 
+        // The same rules as the worklist endpoint (OnboardingTemplatesController.UpdateTask): a fixed list of statuses, a reason to skip a task that
+        // holds back activation, and evidence before completing a task that needs it. This tab is not a way round them.
+        if (!OnboardingTaskRules.IsKnownStatus(req.Status)) return Fail(422, "validation_failed");
+        if (OnboardingTaskRules.SkipReasonMissing(task, req.Status, req.Notes)) return Fail(422, "skip_reason_required");
+        if (OnboardingTaskRules.EvidenceMissing(task, req.Status)) return Fail(422, "task_evidence_required");
+
         var old = task.Status;
         task.Status = req.Status;
         task.Notes = req.Notes ?? task.Notes;
         task.UpdatedAtUtc = DateTime.UtcNow;
 
         if (req.Status == "Completed")
+        {
             task.CompletedDate = DateOnly.FromDateTime(DateTime.UtcNow);
+            task.CompletedBy = GetUserId();
+        }
+        else { task.CompletedDate = null; task.CompletedBy = null; }
 
         _db.RecruitmentAuditLogs.Add(new RecruitmentAuditLog
         {

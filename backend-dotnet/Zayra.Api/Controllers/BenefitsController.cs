@@ -206,8 +206,11 @@ public class BenefitsController : ControllerBase
         return Ok(await GradeBenefitDefaults.PreviewAsync(_db, tenantId.Value, employee, start, ct));
     }
 
+    // The legacy Benefits page opens for employees.write; these reads resolved to employees.read, so a line manager or recruiter listed every plan through
+    // the API. The enrolment reads' gate (HR writers, payroll and finance readers) is the page's audience, never wider (LegacyBenefitsReadGateTests).
     [HttpGet("plans")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Finance,Auditor")]
+    [HasPermission("employees.write", "payroll.read", "finance.gl.read")]
     public async Task<IActionResult> ListPlans([FromQuery] Guid? companyId, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -364,6 +367,7 @@ public class BenefitsController : ControllerBase
 
     [HttpGet("plans/{planId:guid}/eligibility")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Finance,Auditor")]
+    [HasPermission("employees.write", "payroll.read", "finance.gl.read")]
     public async Task<IActionResult> ListEligibility(Guid planId, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -490,6 +494,8 @@ public class BenefitsController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        // Release A: a Benefits-by-grade tenant gets benefits from the grade package; a new legacy enrolment is refused like every legacy writer.
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct)) return MovedToBenefitsByGrade();
         if (req.ExceptionReason is not null) return Conflict(new { code = "additional_benefit_approval_required", message = "Submit an additional benefit request from the employee Benefits page for independent approval.", requestUrl = "/api/compensation/benefits/additional-grants" });
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.Id == req.EmployeeId && x.TenantId == tenantId && !x.IsDeleted, ct);
         if (employee is null) return NotFound("Employee not found.");
@@ -579,6 +585,52 @@ public class BenefitsController : ControllerBase
         if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
         if (companyId.HasValue) q = q.Where(x => x.CompanyId == companyId);
         return Ok(await q.OrderByDescending(x => x.CreatedAtUtc).Select(x => BenefitEnrollmentDto.From(x)).ToListAsync(ct));
+    }
+
+    /// <summary>
+    /// Read-only reconcile report for a Benefits-by-grade (release_a) tenant: every enrolment of the previous benefits system that still exists, with
+    /// whether it carries payment terms (paid in salary, deducted, or reimbursed). Payroll never pays those under release_a and names each active one as a
+    /// warning on the run; this list is where HR sees what is left to end or move to the grade package. Empty while release_a is off (the legacy system
+    /// is then the authority). The enrolment list's permission gate (HR writers, payroll and finance readers), without a legacy role list; the caller's
+    /// company scope applies.
+    /// </summary>
+    [HttpGet("legacy-reconcile")]
+    [HasPermission("employees.write", "payroll.read", "finance.gl.read")]
+    public async Task<IActionResult> LegacyReconcile(CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        if (!await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct))
+            return Ok(new LegacyBenefitReconcileReport(false, []));
+        // The caller's company scope is part of the query: only the companies they reach are read. A row with no company is tenant-wide and only a
+        // group-level caller sees it (EntityScopeContext.CanAccessCompany).
+        var scope = this.GetEntityScope();
+        var query = _db.BenefitEnrollments.AsNoTracking().Where(x => x.TenantId == tenantId);
+        if (!scope.IsGroupLevel)
+        {
+            var companies = scope.AccessibleCompanyIds.ToList();
+            query = query.Where(x => x.CompanyId.HasValue && companies.Contains(x.CompanyId.Value));
+        }
+        var enrollments = await query.ToListAsync(ct);
+        var employeeIds = enrollments.Select(x => x.EmployeeId).Distinct().ToList();
+        var codes = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && employeeIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => (x.EmployeeCode, x.FullName), ct);
+        var planIds = enrollments.Select(x => x.BenefitPlanId).Distinct().ToList();
+        var plans = await _db.BenefitPlans.AsNoTracking().Where(x => x.TenantId == tenantId && planIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => (x.Code, x.Name), ct);
+        var items = enrollments
+            .Select(x =>
+            {
+                var delivery = BenefitPayroll.DeliveryOf(x);
+                var who = codes.GetValueOrDefault(x.EmployeeId);
+                var plan = plans.GetValueOrDefault(x.BenefitPlanId);
+                return new LegacyBenefitReconcileRow(x.Id, x.EmployeeId, who.EmployeeCode ?? string.Empty, who.FullName ?? x.EmployeeName, x.CompanyId,
+                    x.BenefitPlanId, plan.Code ?? string.Empty, plan.Name ?? string.Empty, delivery, BenefitPayroll.CarriesPayTerms(delivery), x.Status,
+                    x.EffectiveFrom, x.EffectiveTo);
+            })
+            .OrderByDescending(x => x.CarriesPayTerms).ThenBy(x => x.EmployeeCode, StringComparer.Ordinal).ThenBy(x => x.EffectiveFrom)
+            .ToList();
+        return Ok(new LegacyBenefitReconcileReport(true, items));
     }
 
     /// <summary>One enrolment with its contributions and payroll-deduction links.</summary>
@@ -937,6 +989,10 @@ public record BenefitEligibilityRequest(
     bool RequireProbationCompleted = false,
     string? CustomCriteriaNote = null);
 public record BenefitEnrollmentRequest(Guid BenefitPlanId, int EmployeeId, string? CoverageTier, DateOnly EffectiveFrom, DateOnly? EffectiveTo, decimal? RequestedBenefitAmount = null, string? ExceptionReason = null);
+/// <summary>One enrolment from the previous benefits system that still exists for a Benefits-by-grade (release_a) tenant.</summary>
+public record LegacyBenefitReconcileRow(Guid EnrollmentId, int EmployeeId, string EmployeeCode, string EmployeeName, Guid? CompanyId,
+    Guid PlanId, string PlanCode, string PlanName, string Delivery, bool CarriesPayTerms, string Status, DateOnly EffectiveFrom, DateOnly? EffectiveTo);
+public record LegacyBenefitReconcileReport(bool ReleaseA, IReadOnlyList<LegacyBenefitReconcileRow> Items);
 public record BenefitContributionRequest(decimal EmployeeAmount, decimal EmployerAmount, string? Frequency, string? PayrollComponentCode, DateOnly EffectiveFrom, DateOnly? EffectiveTo, bool IsActive = true);
 public record BenefitPayrollDeductionLinkRequest(Guid BenefitContributionId, Guid PayrollDeductionId, decimal? LinkedAmount);
 

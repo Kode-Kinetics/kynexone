@@ -194,6 +194,8 @@ public class RecruitmentService : IRecruitmentService
         if (candidate is null)
             return Result(OfferAcceptanceOutcome.IncompleteRecruitmentData, offerId, app.Id, null,
                 "The application candidate was not found in this tenant.");
+        if (candidate.Status == CandidateStanding.Blacklisted)
+            return Result(OfferAcceptanceOutcome.InvalidApplicationState, offerId, app.Id, app.OnboardingDraftId, CandidateStanding.Message);
 
         var opening = await _db.JobOpenings.AsNoTracking()
             .FirstOrDefaultAsync(j => j.Id == app.JobOpeningId && j.TenantId == tenantId, ct);
@@ -202,6 +204,8 @@ public class RecruitmentService : IRecruitmentService
                 "The application job opening was not found in this tenant.");
 
         var fullName = $"{candidate.FirstName} {candidate.LastName}".Trim();
+        // The opening's grade and its matching hire template's defaults travel on the draft to the employee (blanks only).
+        var hire = await OfferHireDefaults.ResolveAsync(_db, tenantId, offer, opening, ct);
 
         // Auto-hierarchy: default the new joiner's reporting manager to the head of the
         // department they're joining, so the org tree applies without manual entry. HR can override.
@@ -225,10 +229,17 @@ public class RecruitmentService : IRecruitmentService
             Nationality = candidate.Nationality,
             Department = offer.OfferedDepartment,
             Designation = offer.OfferedJobTitle,
+            Grade = hire.Grade,
+            EmploymentType = hire.EmploymentType,
+            WorkLocation = hire.WorkLocation,
             ManagerEmployeeId = deptHeadId,
             JoiningDate = offer.StartDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc),
             Salary = offer.BasicSalary,
-            ContractType = "Permanent",
+            // What the offer promised: permanent, or fixed-term for N months (end date derived from the start date). An offer written
+            // before the term was recorded has no type and hires as Permanent, as every hire did.
+            ContractType = OfferContractTerm.Normalize(offer.ContractType) ?? OfferContractTerm.Permanent,
+            ContractStartDate = offer.StartDate,
+            ContractEndDate = OfferContractTerm.EndDate(offer.ContractType, offer.StartDate, offer.ContractTermMonths),
             // A Saudi probation never runs past day 180 (Art. 53): six months is served as 180 days.
             ProbationEndDate = Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ProbationEnd(
                 offer.CompanyId is { } offerCompany

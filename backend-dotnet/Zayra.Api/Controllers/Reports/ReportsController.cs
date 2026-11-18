@@ -690,9 +690,11 @@ public class ReportsController : ControllerBase
         var q = _db.OvertimeRequests
             .Where(x => x.TenantId == tid && x.Status == "Approved" && x.WorkDate >= from && x.WorkDate <= to);
         if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
+        // The APPROVED minutes, which payroll pays: HR may approve fewer than were requested, and summing the request
+        // overstated every trimmed one. Grouped by employee, not display name, so two people who share a name stay two rows.
         return await q
-            .GroupBy(x => x.EmployeeName)
-            .Select(g => new { Employee = g.Key, TotalHours = g.Sum(x => x.RequestedMinutes) / 60.0, Count = g.Count() })
+            .GroupBy(x => new { x.EmployeeId, x.EmployeeName })
+            .Select(g => new { g.Key.EmployeeId, Employee = g.Key.EmployeeName, TotalHours = g.Sum(x => x.ApprovedMinutes) / 60.0, Count = g.Count() })
             .OrderByDescending(x => x.TotalHours).ToListAsync(ct);
     }
 
