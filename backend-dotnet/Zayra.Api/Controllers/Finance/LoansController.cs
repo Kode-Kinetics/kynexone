@@ -232,7 +232,10 @@ public partial class LoansController : ControllerBase
                 && employeeCompanies.Any(e => e.Id == x.EmployeeIntId.Value && e.CompanyId != x.CompanyId))));
     }
 
+    // The same keys an advance request needs (AdvancesController.Create): loans.self for the employee's own request, loans.write
+    // for HR or Finance raising one on someone's behalf. Turning loans.self off now stops self-service loan requests.
     [HttpPost]
+    [HasPermission("loans.self", "loans.write")]
     public Task<IActionResult> CreateLoan([FromBody] CreateLoanRequest req, CancellationToken ct) =>
         FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, "finance.loan-create", GetTenantId(), GetTenantId(), () => CreateLoanCore(req, ct), ct);
 
@@ -533,7 +536,7 @@ public partial class LoansController : ControllerBase
     [HttpPatch("{id:guid}/settle")]
     [Authorize(Roles = "Admin,HR Manager,Finance")]
     public Task<IActionResult> SettleLoan(Guid id, [FromBody] LoanSettlementRequest req, CancellationToken ct) =>
-        Task.FromResult<IActionResult>(Conflict("Record a repayment with its payment reference through the repayments endpoint. Waivers require a separate write-off workflow."));
+        Task.FromResult<IActionResult>(Conflict(RetiredEndpoint));
 
     [HttpGet("{id:guid}/installments")]
     [HasPermission("loans.self", "loans.read", "loans.write")]
@@ -552,7 +555,19 @@ public partial class LoansController : ControllerBase
     [HttpPatch("{id:guid}/installments/{installmentId:guid}/pay")]
     [Authorize(Roles = "Admin,Finance,HR Manager")]
     public Task<IActionResult> MarkInstallmentPaid(Guid id, Guid installmentId, [FromBody] PayInstallmentRequest req, CancellationToken ct) =>
-        Task.FromResult<IActionResult>(Conflict("Record a repayment with a payment reference through the repayments endpoint. Receipts are allocated to the oldest unpaid installments."));
+        Task.FromResult<IActionResult>(Conflict(RetiredEndpoint));
+
+    /// <summary>
+    /// The answer of the two retired endpoints (settle a loan, mark an instalment paid). A loan balance goes down only by a recorded
+    /// repayment with its payment reference, by payroll, or, for a leaver, by the final settlement (what it cannot recover moves
+    /// to the employee receivable). Forgiving a loan balance is not supported; the old text promised a write-off workflow that
+    /// does not exist.
+    /// </summary>
+    private static readonly object RetiredEndpoint = LoanRefusals.Body("loan_endpoint_retired",
+        "This action is no longer available. Record a repayment with its payment reference on the loan (receipts go to the oldest unpaid instalments). " +
+        "Forgiving or writing off a loan balance is not supported.",
+        "لم يعد هذا الإجراء متاحًا. سجّل سدادًا مع مرجع الدفع على القرض (تُخصَّص الإيصالات لأقدم الأقساط غير المدفوعة). " +
+        "الإعفاء من رصيد القرض أو شطبه غير مدعوم.");
 
     // ── Audit & Reconciliation Report ────────────────────────────────────────
 

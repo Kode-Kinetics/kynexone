@@ -103,7 +103,9 @@ public partial class LoansController
             return Ok(ProjectPolicy(policy));
         }, ct);
 
+    // The loan read keys, as every other loan read: the employee's own (loans.self) or the loan book (loans.read / loans.write).
     [HttpGet("eligibility")]
+    [HasPermission("loans.self", "loans.read", "loans.write")]
     public async Task<IActionResult> GetLoanEligibility([FromQuery] Guid loanTypeId, [FromQuery] decimal? amount,
         [FromQuery] int? installments, [FromQuery] string repaymentMethod = "BankTransfer", [FromQuery] int? employeeIntId = null, CancellationToken ct = default)
     {
