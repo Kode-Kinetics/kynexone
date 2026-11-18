@@ -51,7 +51,7 @@ public sealed class GovernmentRecheckRegressionTests
     private static GovernmentExchangeAttempt Intent(Guid tenant, string key, string environment) =>
         new(tenant, tenant, GovernmentBodies.BankAnb, "payroll.submit", GovernmentExchangeChannels.Api, key, GovernmentExchangeStates.SubmitIntended,
             new RequestContext("127.0.0.1", "test", Guid.NewGuid(), tenant), new LiveBank(), Environment: environment, SubjectType: "PaymentBatch",
-            SubjectId: "B-001", ArtifactSha256: new string('a', 64), AccountFingerprint: "acct-fp-synthetic", BatchReference: "B-001");
+            SubjectId: TestBatch.Id("B-001"), ArtifactSha256: new string('a', 64), AccountFingerprint: "acct-fp-synthetic", BatchReference: "B-001");
 
     [Fact]
     public async Task TheSameBatchNumber_InSandboxAndProduction_DoesNotCollide()

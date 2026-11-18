@@ -38,7 +38,7 @@ public sealed class GovernmentExchangeRecorderTests
     private static GovernmentExchangeAttempt Attempt(Guid tenant, string key = "batch-1", string state = GovernmentExchangeStates.SubmitIntended,
         IGovernmentAdapter? adapter = null, string channel = GovernmentExchangeChannels.Api, byte[]? body = null, string? preview = null) =>
         new(tenant, tenant, GovernmentBodies.BankAnb, "payroll.submit", channel, key, state, Ctx(tenant), adapter,
-            Environment: "sandbox", SubjectType: "PaymentBatch", SubjectId: "42", RequestBody: body,
+            Environment: "sandbox", SubjectType: "PaymentBatch", SubjectId: TestBatch.Id($"B-{key}"), RequestBody: body,
             ArtifactSha256: new string('a', 64), PreviewText: preview, AccountFingerprint: "acct-fp-synthetic", BatchReference: $"B-{key}");
 
     [Fact]

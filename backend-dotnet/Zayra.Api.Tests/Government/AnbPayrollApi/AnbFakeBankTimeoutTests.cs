@@ -43,7 +43,7 @@ public class AnbFakeBankTimeoutTests
         var context = new RequestContext("127.0.0.1", "test", Guid.NewGuid(), TestScope.TenantId);
         var begun = await recorder.BeginAsync(new GovernmentExchangeAttempt(TestScope.TenantId, TestScope.CompanyId, GovernmentBodies.BankAnb,
             "payroll.submit", GovernmentExchangeChannels.Api, "batch-synthetic-" + silence, GovernmentExchangeStates.SubmitIntended, context,
-            Environment: "sandbox", SubjectType: "PaymentBatch", SubjectId: "42", ArtifactSha256: batch.Header.ExpectedSha256,
+            Environment: "sandbox", SubjectType: "PaymentBatch", SubjectId: Guid.NewGuid().ToString(), ArtifactSha256: batch.Header.ExpectedSha256,
             ArtifactSecondarySha256: batch.Body.ExpectedSha256, AccountFingerprint: "acct-fp-synthetic", BatchReference: "B-" + silence,
             TotalAmount: batch.Total, ItemCount: batch.Rows.Count), CancellationToken.None);
         var receipt = begun.Receipt!;

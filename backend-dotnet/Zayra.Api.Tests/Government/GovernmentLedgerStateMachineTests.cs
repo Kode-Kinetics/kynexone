@@ -27,7 +27,7 @@ public sealed class GovernmentLedgerStateMachineTests
 
     private static GovernmentExchangeAttempt Intent(Guid tenant, string key, string batch = "B-001", char artifact = 'a') =>
         new(tenant, tenant, GovernmentBodies.BankAnb, "payroll.submit", GovernmentExchangeChannels.Api, key, GovernmentExchangeStates.SubmitIntended,
-            Ctx(tenant), new LiveBank(), Environment: "sandbox", SubjectType: "PaymentBatch", SubjectId: batch, ArtifactSha256: Hash(artifact),
+            Ctx(tenant), new LiveBank(), Environment: "sandbox", SubjectType: "PaymentBatch", SubjectId: TestBatch.Id(batch), ArtifactSha256: Hash(artifact),
             ArtifactSecondarySha256: Hash('b'), AccountFingerprint: "acct-fp-synthetic", BatchReference: batch, TotalAmount: 2_997_000.50m, ItemCount: 3000);
 
     private static GovernmentExchangeOutcome To(Guid tenant, string state, string? bankId = null) => new(state, Ctx(tenant), ExternalReference: bankId);

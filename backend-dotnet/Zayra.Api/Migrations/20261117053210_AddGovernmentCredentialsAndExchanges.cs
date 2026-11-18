@@ -113,12 +113,13 @@ namespace Zayra.Api.Migrations
                     table.CheckConstraint("ck_government_exchanges__counts", "state_version >= 1 AND poll_count >= 0 AND (item_count IS NULL OR item_count >= 0)");
                     table.CheckConstraint("ck_government_exchanges__environment", "environment IS NULL OR environment IN ('sandbox','production')");
                     table.CheckConstraint("ck_government_exchanges__hashes", "(request_sha256 IS NULL OR request_sha256 ~ '^[0-9a-f]{64}$') AND (response_sha256 IS NULL OR response_sha256 ~ '^[0-9a-f]{64}$') AND (artifact_sha256 IS NULL OR artifact_sha256 ~ '^[0-9a-f]{64}$') AND (artifact_secondary_sha256 IS NULL OR artifact_secondary_sha256 ~ '^[0-9a-f]{64}$')");
-                    table.CheckConstraint("ck_government_exchanges__intent", "state <> 'SubmitIntended' OR (artifact_sha256 IS NOT NULL AND subject_id IS NOT NULL AND company_id IS NOT NULL AND account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL)");
+                    table.CheckConstraint("ck_government_exchanges__intent", "state <> 'SubmitIntended' OR (artifact_sha256 IS NOT NULL AND subject_id IS NOT NULL AND company_id IS NOT NULL AND account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL AND operation = 'payroll.submit')");
                     table.CheckConstraint("ck_government_exchanges__live_channel", "NOT is_live OR channel = 'api'");
                     table.CheckConstraint("ck_government_exchanges__live_states", "state NOT IN ('Accepted','Initiated','Validated','InProgress','Completed','Rejected') OR (is_live AND channel = 'api')");
                     table.CheckConstraint("ck_government_exchanges__resolution", "(resolution IS NULL AND resolved_by_user_id IS NULL AND resolved_at_utc IS NULL) OR (resolution IN ('bank_has_it','bank_does_not') AND resolved_by_user_id IS NOT NULL AND resolved_at_utc IS NOT NULL AND resolution_reason IS NOT NULL)");
                     table.CheckConstraint("ck_government_exchanges__second_person", "resolved_by_user_id IS NULL OR resolved_by_user_id IS DISTINCT FROM actor_user_id");
                     table.CheckConstraint("ck_government_exchanges__state", "state IN ('Attempted','Recorded','Simulated','Refused','Failed','SubmitIntended','Accepted','RejectedStructure','Unknown','ReleasedAfterUnknown','Initiated','Validated','InProgress','Completed','Rejected')");
+                    table.CheckConstraint("ck_government_exchanges__submission", "operation <> 'payroll.submit' OR (subject_type = 'PaymentBatch' AND subject_id IS NOT NULL AND body <> 'bank_file' AND state <> 'Attempted' AND environment IS NOT NULL AND (channel = 'api' OR environment = 'production'))");
                     table.ForeignKey(
                         name: "FK_government_exchanges_companies_company_id",
                         column: x => x.company_id,
@@ -182,9 +183,9 @@ namespace Zayra.Api.Migrations
             migrationBuilder.CreateIndex(
                 name: "ux_government_exchanges__open_batch",
                 table: "government_exchanges",
-                columns: new[] { "tenant_id", "body", "environment", "account_fingerprint", "batch_reference" },
+                columns: new[] { "tenant_id", "body", "environment", "subject_type", "subject_id" },
                 unique: true,
-                filter: "account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL AND state IN ('SubmitIntended','Unknown','Accepted','Initiated','Validated','InProgress','Completed','Rejected')");
+                filter: "operation = 'payroll.submit' AND subject_type = 'PaymentBatch' AND subject_id IS NOT NULL AND body <> 'bank_file' AND state IN ('SubmitIntended','Unknown','Accepted','Initiated','Validated','InProgress','Completed','Rejected','Recorded')");
 
             migrationBuilder.CreateIndex(
                 name: "ux_government_exchanges__tenant_body_operation_key",

@@ -89,9 +89,9 @@ public class GovernmentExchange : ITenantOwned, ICompanyScopedOperational
     public string? ExternalReference { get; set; }
     /// <summary>Second artifact hash for a two-file submission (a bank header and body); <see cref="ArtifactSha256"/> is the first.</summary>
     public string? ArtifactSecondarySha256 { get; set; }
-    /// <summary>Keyed fingerprint of the debit account. With <see cref="BatchReference"/> it makes one open submission per batch.</summary>
+    /// <summary>Keyed fingerprint of the debit account the submission names. Recorded for the audit trail; it is NOT part of the batch lock.</summary>
     public string? AccountFingerprint { get; set; }
-    /// <summary>The batch number the body sees (ANB's batchNumber). One open or landed submission per (tenant, body, account, batch).</summary>
+    /// <summary>The batch number the body sees (ANB's batchNumber). Recorded for the audit trail; it is NOT part of the batch lock, which is the payment batch's id.</summary>
     public string? BatchReference { get; set; }
     public decimal? TotalAmount { get; set; }
     public int? ItemCount { get; set; }
@@ -113,6 +113,20 @@ public class GovernmentExchange : ITenantOwned, ICompanyScopedOperational
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
     public DateTime? CompletedAtUtc { get; set; }
+}
+
+/// <summary>Operations whose meaning the database and the recorder rely on.</summary>
+public static class GovernmentExchangeOperations
+{
+    /// <summary>A payroll payment batch sent (or recorded as sent) to a bank. The one operation that holds a payment batch.</summary>
+    public const string PayrollSubmit = "payroll.submit";
+}
+
+/// <summary>The subject types the ledger gives a fixed meaning to.</summary>
+public static class GovernmentExchangeSubjects
+{
+    /// <summary>A payroll payment batch, identified by its id (a Guid, stored in its canonical lower-case "D" form).</summary>
+    public const string PaymentBatch = "PaymentBatch";
 }
 
 public static class GovernmentExchangeResolutions
@@ -164,8 +178,12 @@ public static class GovernmentExchangeStates
     /// <summary>States that claim the body has the exchange. Only a live adapter on the api channel may write them.</summary>
     public static readonly IReadOnlyList<string> LiveOnly = [Accepted, Initiated, Validated, InProgress, Completed, Rejected];
 
-    /// <summary>A submission in these states holds its batch: no second open submission for the same (tenant, body, account, batch).</summary>
-    public static readonly IReadOnlyList<string> HoldsTheBatch = [SubmitIntended, Unknown, Accepted, Initiated, Validated, InProgress, Completed, Rejected];
+    /// <summary>
+    /// A payroll submission in these states holds its PAYMENT BATCH: no second one for the same (tenant, bank, environment, payment
+    /// batch id), on any channel, whatever file, batch number or debit account it carries. <see cref="Recorded"/> is a person's "I
+    /// submitted this" on a manual or file channel (wave 2) and holds the batch like an api submission does.
+    /// </summary>
+    public static readonly IReadOnlyList<string> HoldsTheBatch = [SubmitIntended, Unknown, Accepted, Initiated, Validated, InProgress, Completed, Rejected, Recorded];
 
     /// <summary>States an attempt may be recorded in at first.</summary>
     public static readonly IReadOnlyList<string> Initial = [Attempted, Recorded, Simulated, Refused, Failed, SubmitIntended];

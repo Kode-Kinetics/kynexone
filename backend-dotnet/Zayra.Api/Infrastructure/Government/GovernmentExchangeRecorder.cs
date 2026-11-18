@@ -191,7 +191,7 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
     /// conflict the write is rolled back (savepoint) or thrown away (fresh unit) and <paramref name="onConflict"/> runs in a clean state.
     /// </summary>
     private async Task<T> RunAsync<T>(Func<ZayraDbContext, IAuditService, Task<T>> work,
-        Func<ZayraDbContext, Task<T>>? onConflict, CancellationToken ct, bool mustBeDurable = false)
+        Func<ZayraDbContext, DbUpdateException, Task<T>>? onConflict, CancellationToken ct, bool mustBeDurable = false)
     {
         if (_ambient?.Database.CurrentTransaction is { } tx)
         {
@@ -215,19 +215,20 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
                 // Only this write's entries can be pending (the caller had none), so this forgets nothing of the caller's.
                 foreach (var entry in _ambient.ChangeTracker.Entries().Where(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted).ToList())
                     entry.State = EntityState.Detached;
-                if (ex is DbUpdateException and not DbUpdateConcurrencyException && onConflict is not null) return await onConflict(_ambient);
+                if (ex is DbUpdateException conflict and not DbUpdateConcurrencyException && onConflict is not null) return await onConflict(_ambient, conflict);
                 throw;
             }
         }
 
+        DbUpdateException? lost = null;
         var (db, audit, owner) = _open();
         await using (owner)
         {
             try { return await work(db, audit); }
-            catch (DbUpdateException ex) when (ex is not DbUpdateConcurrencyException && onConflict is not null) { }
+            catch (DbUpdateException ex) when (ex is not DbUpdateConcurrencyException && onConflict is not null) { lost = ex; }
         }
         var (fresh, _, freshOwner) = _open();
-        await using (freshOwner) return await onConflict!(fresh);
+        await using (freshOwner) return await onConflict!(fresh, lost!);
     }
 
     public async Task<GovernmentExchangeRecordResult> BeginAsync(GovernmentExchangeAttempt attempt, CancellationToken ct)
@@ -237,6 +238,8 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
         RequireHonestState(attempt.State, isLive, attempt.Channel);
         if (!GovernmentExchangeStates.Initial.Contains(attempt.State, StringComparer.Ordinal))
             throw new GovernmentExchangeConflictException(IllegalTransitionCode, $"An attempt cannot start in state '{attempt.State}'.");
+        if (attempt.Operation == GovernmentExchangeOperations.PayrollSubmit) ValidatePayrollSubmission(attempt);
+        attempt = Normalise(attempt);
 
         var requestSha = Sha256(attempt.RequestBody);
         var isIntent = attempt.Channel == GovernmentExchangeChannels.Api && GovernmentExchangeStates.Intents.Contains(attempt.State, StringComparer.Ordinal);
@@ -245,12 +248,17 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
             var existing = await FindByKeyAsync(db, attempt.TenantId, attempt.Body, attempt.Operation, attempt.IdempotencyKey, ct);
             if (existing is not null) return new GovernmentExchangeRecordResult(SameContentOrConflict(existing, attempt, requestSha), false);
 
-            var holding = GovernmentExchangeStates.HoldsTheBatch.ToArray();
-            if (attempt.AccountFingerprint is not null && attempt.BatchReference is not null
-                && await db.GovernmentExchanges.AsNoTracking().AnyAsync(x => x.TenantId == attempt.TenantId && x.Body == attempt.Body
-                        && x.Environment == attempt.Environment && x.AccountFingerprint == attempt.AccountFingerprint && x.BatchReference == attempt.BatchReference
+            // The same key and the same filter as ux_government_exchanges__open_batch: the payment batch's id, in this environment, on
+            // ANY channel. The database holds it for real (a race, a raw insert); this check only gives the caller the clear answer.
+            if (HoldsAPaymentBatch(attempt))
+            {
+                var holding = GovernmentExchangeStates.HoldsTheBatch.ToArray();
+                if (await db.GovernmentExchanges.AsNoTracking().AnyAsync(x => x.TenantId == attempt.TenantId && x.Body == attempt.Body
+                        && x.Environment == attempt.Environment && x.Operation == GovernmentExchangeOperations.PayrollSubmit
+                        && x.SubjectType == GovernmentExchangeSubjects.PaymentBatch && x.SubjectId == attempt.SubjectId
                         && holding.Contains(x.State), ct))
-                throw new GovernmentExchangeConflictException(BatchHeldCode, "This batch already has an open or completed submission.");
+                    throw new GovernmentExchangeConflictException(BatchHeldCode, "This payment batch already has an open or completed submission.");
+            }
 
             var row = NewRow(attempt, requestSha, isLive);
             db.GovernmentExchanges.Add(row);
@@ -265,11 +273,15 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
         },
         // Lost a race on a unique key. If the caller can see the winner and it carries the same content, hand it back; otherwise it
         // is a conflict (another company's row, another submission of the batch, another payload), never a 500.
-        async fresh =>
+        async (fresh, lost) =>
         {
             var winner = await FindByKeyAsync(fresh, attempt.TenantId, attempt.Body, attempt.Operation, attempt.IdempotencyKey, ct);
             if (winner is null)
-                throw new GovernmentExchangeConflictException(KeyInUseCode, "This attempt collides with another exchange record.");
+                // Another submission of this payment batch won the race (the batch lock fired), or the key is held by a row this caller
+                // cannot see (another company's): either way a conflict, never a 500.
+                throw HoldsAPaymentBatch(attempt) && IsBatchLock(lost)
+                    ? new GovernmentExchangeConflictException(BatchHeldCode, "This payment batch already has an open or completed submission.")
+                    : new GovernmentExchangeConflictException(KeyInUseCode, "This attempt collides with another exchange record.");
             return new GovernmentExchangeRecordResult(SameContentOrConflict(winner, attempt, requestSha), false);
         }, ct, mustBeDurable: isIntent);
     }
@@ -452,7 +464,54 @@ public sealed class GovernmentExchangeRecorder : IGovernmentExchangeRecorder
         if (a.State == GovernmentExchangeStates.SubmitIntended
             && (a.ArtifactSha256 is null || a.SubjectId is null || a.CompanyId is null || a.AccountFingerprint is null || a.BatchReference is null))
             throw new ArgumentException("A submission intent names the frozen artifact, the subject, the company, the account and the batch.", nameof(a));
+        // A submission intent is a payroll submission, whose lock is the payment batch: under any other operation it would hold nothing.
+        if (a.State == GovernmentExchangeStates.SubmitIntended && a.Operation != GovernmentExchangeOperations.PayrollSubmit)
+            throw new ArgumentException($"A submission intent is recorded under the '{GovernmentExchangeOperations.PayrollSubmit}' operation only.", nameof(a));
     }
+
+    /// <summary>
+    /// A payroll submission names the payment batch by id (the lock is that id), is a bank body's other than the file-only bank, is
+    /// not a plain attempt (it would earn a receipt outside the lock), and is only ever recorded on the api channel in sandbox or
+    /// production, and on any other channel (a person's manual record or a file) in production only.
+    /// </summary>
+    private static void ValidatePayrollSubmission(GovernmentExchangeAttempt a)
+    {
+        if (a.SubjectType != GovernmentExchangeSubjects.PaymentBatch || !Guid.TryParse(a.SubjectId, out var batch) || batch == Guid.Empty)
+            throw new ArgumentException("A payroll submission names its payment batch by id (subject type PaymentBatch, a Guid).", nameof(a));
+        if (!GovernmentBodies.IsBank(a.Body) || a.Body == GovernmentBodies.BankFile)
+            throw new ArgumentException($"A payroll submission goes to a bank body, not '{a.Body}'.", nameof(a));
+        if (a.State == GovernmentExchangeStates.Attempted)
+            throw new ArgumentException("A payroll submission cannot start as a plain attempt.", nameof(a));
+        if (a.Channel != GovernmentExchangeChannels.Api && a.Environment is { } environment && environment != GovernmentEnvironments.Production)
+            throw new ArgumentException("A manual or file submission is always production; sandbox is the api channel's.", nameof(a));
+    }
+
+    /// <summary>The attempt as it is stored: a payroll submission's batch id in its canonical form, and a non-api one in production.</summary>
+    private static GovernmentExchangeAttempt Normalise(GovernmentExchangeAttempt a)
+    {
+        if (a.Operation != GovernmentExchangeOperations.PayrollSubmit) return a;
+        return a with
+        {
+            SubjectId = Guid.Parse(a.SubjectId!).ToString("D"),
+            Environment = a.Channel == GovernmentExchangeChannels.Api ? a.Environment : GovernmentEnvironments.Production,
+        };
+    }
+
+    /// <summary>The unique violation is the payment-batch lock's (Postgres names the constraint; a provider that does not is not assumed to).</summary>
+    private static bool IsBatchLock(DbUpdateException ex)
+    {
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+            if (e is Npgsql.PostgresException { ConstraintName: BatchLockIndex }) return true;
+        return false;
+    }
+
+    /// <summary>The unique index that holds one open submission per payment batch.</summary>
+    private const string BatchLockIndex = "ux_government_exchanges__open_batch";
+
+    /// <summary>True when this attempt would sit in the batch lock (<c>ux_government_exchanges__open_batch</c>): a payroll submission in a holding state.</summary>
+    private static bool HoldsAPaymentBatch(GovernmentExchangeAttempt a) =>
+        a.Operation == GovernmentExchangeOperations.PayrollSubmit && a.SubjectType == GovernmentExchangeSubjects.PaymentBatch && a.SubjectId is not null
+        && a.Body != GovernmentBodies.BankFile && GovernmentExchangeStates.HoldsTheBatch.Contains(a.State, StringComparer.Ordinal);
 
     private static string? Sha256(byte[]? bytes) =>
         bytes is null ? null : Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();

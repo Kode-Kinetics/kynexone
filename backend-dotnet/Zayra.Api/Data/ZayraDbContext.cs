@@ -6119,7 +6119,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                 // A submission intent names the frozen artifact, the subject, the company, the account and the batch (architecture 3.5).
                 t.HasCheckConstraint("ck_government_exchanges__intent",
                     "state <> 'SubmitIntended' OR (artifact_sha256 IS NOT NULL AND subject_id IS NOT NULL AND company_id IS NOT NULL "
-                    + "AND account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL)");
+                    + "AND account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL AND operation = 'payroll.submit')");
+                // A payroll submission is about a payment batch (its id), at a bank that is not the file-only one, never a plain attempt,
+                // always with an environment, and only the api channel has a sandbox: a manual or file submission is production.
+                t.HasCheckConstraint("ck_government_exchanges__submission",
+                    "operation <> 'payroll.submit' OR (subject_type = 'PaymentBatch' AND subject_id IS NOT NULL AND body <> 'bank_file' "
+                    + "AND state <> 'Attempted' AND environment IS NOT NULL AND (channel = 'api' OR environment = 'production'))");
                 // Unknown is resolved by a second person, with a reason, one of two ways.
                 t.HasCheckConstraint("ck_government_exchanges__resolution",
                     "(resolution IS NULL AND resolved_by_user_id IS NULL AND resolved_at_utc IS NULL) "
@@ -6158,11 +6163,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Resolution).HasMaxLength(24);
             entity.Property(x => x.ResolutionReason).HasMaxLength(500);
             entity.Property(x => x.StateVersion).IsConcurrencyToken();
-            // One open or landed submission per batch, whatever idempotency key the client sends (architecture 3.5).
-            // Per environment: a sandbox batch never holds the production batch number.
-            entity.HasIndex(x => new { x.TenantId, x.Body, x.Environment, x.AccountFingerprint, x.BatchReference }).IsUnique()
-                .HasFilter("account_fingerprint IS NOT NULL AND batch_reference IS NOT NULL "
-                    + "AND state IN ('SubmitIntended','Unknown','Accepted','Initiated','Validated','InProgress','Completed','Rejected')")
+            // One open or landed submission per PAYMENT BATCH, whatever idempotency key, file, batch number or debit account it is sent
+            // with, and whatever channel it came by (architecture 3.5; CTO directive E1/E2). The key is the batch's id, never a value the
+            // caller supplies. Per environment: a sandbox submission never holds the production one.
+            entity.HasIndex(x => new { x.TenantId, x.Body, x.Environment, x.SubjectType, x.SubjectId }).IsUnique()
+                .HasFilter("operation = 'payroll.submit' AND subject_type = 'PaymentBatch' AND subject_id IS NOT NULL AND body <> 'bank_file' "
+                    + "AND state IN ('SubmitIntended','Unknown','Accepted','Initiated','Validated','InProgress','Completed','Rejected','Recorded')")
                 .HasDatabaseName("ux_government_exchanges__open_batch");
             // The body's own id for an exchange (ANB's payroll id) belongs to one attempt; polls update that row.
             // Per environment: a sandbox bank id may repeat a production one.
