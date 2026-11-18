@@ -168,6 +168,17 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
   );
 }
 
+/** One count in a toolbar row (a KpiCard without the second line): the number, then what it counts. */
+function CountChip({ label, value, color }: { label: string; value: string | number; color: string }) {
+  return (
+    <div className="surface flex items-center gap-2 px-3 py-1.5">
+      <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg ${color}`}><AlertTriangle className="h-4 w-4" aria-hidden="true" /></span>
+      <span className="whitespace-nowrap text-base font-bold tabular-nums text-slate-900 dark:text-white">{value}</span>
+      <span className="whitespace-nowrap text-xs text-slate-500 dark:text-slate-400">{label}</span>
+    </div>
+  );
+}
+
 function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
   const t = useT();
   return (
@@ -1039,7 +1050,7 @@ function SalaryChangesPanel({ onApplied }: { onApplied: () => void }) {
                 {stale.message && <p className="mt-1">{stale.message}</p>}
               </div>
             )}
-            <div className="basis-full space-y-2">
+            <div className="basis-full space-y-2 empty:hidden">
               <SalaryChangeMoney change={r} />
               <SalaryAllowanceComparison current={r.currentAllowances} proposed={r.proposedAllowances} carriedForward={r.allowancesCarriedForward ?? false} currency={r.currency} basic={r.basicSalary} />
             </div>
@@ -1248,10 +1259,10 @@ function EmployeeSalaryTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <input type="number" aria-label={t('Employee ID filter')} placeholder={t('Filter by Employee ID')} className={`${inp} w-52`} value={empIdFilter} onChange={e => setEmpIdFilter(e.target.value)} />
-        <button type="button" className={btn.ghost} onClick={load}>{t('Search')}</button>
-        <button type="button" className={`ms-auto ${btn.primary}`} onClick={() => setShowAssign(true)}><Plus className="h-4 w-4" /> {t('Assign Salary')}</button>
+      <div className="flex flex-wrap items-center gap-3">
+        <input type="number" aria-label={t('Employee ID filter')} placeholder={t('Filter by Employee ID')} className={`${inp} max-w-52`} value={empIdFilter} onChange={e => setEmpIdFilter(e.target.value)} />
+        <button type="button" className={`${btn.ghost} whitespace-nowrap`} onClick={load}>{t('Search')}</button>
+        <button type="button" className={`ms-auto whitespace-nowrap ${btn.primary}`} onClick={() => setShowAssign(true)}><Plus className="h-4 w-4 shrink-0" /> {t('Assign Salary')}</button>
       </div>
       {submitted && (
         <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
@@ -1280,15 +1291,15 @@ function EmployeeSalaryTab() {
                 const gross = a.basicSalary + a.housingAllowance + a.transportAllowance + a.foodAllowance + a.mobileAllowance + a.otherAllowance;
                 return (
                   <tr key={a.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-                    <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{t('Emp #{employeeId}', { employeeId: a.employeeId })}</td>
-                    <td className="px-3 py-2 text-slate-500">{structName(a.salaryStructureId)}</td>
-                    <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{a.basicSalary.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{a.housingAllowance.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{a.transportAllowance.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-end font-semibold text-slate-900 dark:text-white">{gross.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-end text-rose-500">{a.fixedDeduction > 0 ? `(${a.fixedDeduction.toLocaleString()})` : '—'}</td>
-                    <td className="px-3 py-2 text-xs text-slate-400">{fmtDate(a.effectiveDate)}</td>
-                    <td className="px-3 py-2"><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${a.isActive ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500'}`}>{a.isActive ? t('Active') : t('Inactive')}</span></td>
+                    <td className="px-3 py-1.5 font-medium text-slate-900 dark:text-white">{t('Emp #{employeeId}', { employeeId: a.employeeId })}</td>
+                    <td className="px-3 py-1.5 text-slate-500">{structName(a.salaryStructureId)}</td>
+                    <td className="px-3 py-1.5 text-end text-slate-700 dark:text-slate-300">{a.basicSalary.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-end text-slate-700 dark:text-slate-300">{a.housingAllowance.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-end text-slate-700 dark:text-slate-300">{a.transportAllowance.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-end font-semibold text-slate-900 dark:text-white">{gross.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-end text-rose-500">{a.fixedDeduction > 0 ? `(${a.fixedDeduction.toLocaleString()})` : '—'}</td>
+                    <td className="px-3 py-1.5 text-xs text-slate-400">{fmtDate(a.effectiveDate)}</td>
+                    <td className="px-3 py-1.5"><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${a.isActive ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500'}`}>{a.isActive ? t('Active') : t('Inactive')}</span></td>
                   </tr>
                 );
               })}
@@ -1968,24 +1979,24 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
     <div className="space-y-4">
       {/* The run is the run bar's (shared by every Payroll section): no second picker here. */}
       {runId ? (
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <button type="button" className={`${btn.primary} whitespace-nowrap max-sm:min-h-11 max-sm:w-full max-sm:justify-center`} onClick={validate} disabled={loading}>
             {loading ? t('Validating…') : t('Run Validation')}
           </button>
+          {/* The counts share the button's row: one slim toolbar, so the issue list starts in the first screenful. */}
+          {results.length > 0 && (
+            <>
+              <CountChip label={t('Total Issues')} value={results.length} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+              <CountChip label={t('Warnings')} value={warnings.length} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+              <CountChip label={t('Errors')} value={errors.length} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
+            </>
+          )}
         </div>
       ) : <NoRunChosen />}
 
       {error && <div className="rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">{error}</div>}
 
       {runId && <AttendanceReconciliationPanel runId={runId} />}
-
-      {results.length > 0 && (
-        <div className="grid grid-cols-3 gap-4">
-          <KpiCard label={t('Total Issues')} value={results.length} icon={AlertTriangle} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
-          <KpiCard label={t('Warnings')} value={warnings.length} icon={AlertTriangle} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
-          <KpiCard label={t('Errors')} value={errors.length} icon={AlertTriangle} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
-        </div>
-      )}
 
       {(cohortNotRecorded.length > 0 || cohortBlocked.length > 0 || cohortApplied.length > 0 || belowMinimumWage.length > 0) && (
         <div className="surface space-y-2 px-5 py-4" data-testid="gosi-cohort-findings">
@@ -2026,9 +2037,9 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
           </p>
         </div>
       ) : (
-        <div className="surface divide-y divide-slate-100 dark:divide-white/5">
+        <div className="surface divide-y divide-slate-100 dark:divide-white/5" data-testid="validation-results">
           {shown.map(r => (
-            <div key={r.id} className="flex items-start gap-3 px-5 py-4">
+            <div key={r.id} className="flex items-start gap-3 px-5 py-3">
               <div className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${r.severity === 'Error' ? 'bg-rose-500' : r.severity === 'Warning' ? 'bg-amber-500' : 'bg-sky-400'}`} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
@@ -4472,12 +4483,8 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
 
   return (
     <div className="space-y-4">
-      <div className="surface p-4">
-        <p className="text-xs text-slate-500 dark:text-slate-400">
-          {t('Double-entry GL journal generated from processed payroll earnings and deductions. Use this to post payroll to your accounting system.')}
-        </p>
-      </div>
-      <div className="flex items-center gap-3">
+      {/* The picker, the button and the one-line explanation share a row (the explanation was a card of its own above them). */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <select aria-label={t('Select payroll run for GL journal')} data-testid="cc-lock-run-select" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">{t('Select payroll run…')}</option>
           <RunSelectOptions runs={runs} />
@@ -4485,6 +4492,9 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
         <button type="button" className={btn.primary} onClick={() => void load()} disabled={!runId || loading}>
           <BookOpen className="h-4 w-4" /> {loading ? t('Loading…') : t('Generate Journal')}
         </button>
+        <p className="min-w-56 flex-1 text-xs text-slate-500 dark:text-slate-400">
+          {t('Double-entry GL journal generated from processed payroll earnings and deductions. Use this to post payroll to your accounting system.')}
+        </p>
       </div>
       {runsError && <LoadError message={runsError} onRetry={loadRuns} />}
       {journalError && <LoadError message={journalError} onRetry={() => void load()} />}
@@ -4510,17 +4520,17 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
       {journal && !journal.costing?.enabled && !(journal.isPosted && (journal.journals?.length ?? 0) > 0) && (
         <div className="space-y-4">
           <div className="grid grid-cols-3 gap-4">
-            <div className="surface p-4">
+            <div className="surface px-4 py-2.5">
               <p className="text-xs text-slate-400">{t('Period')}</p>
-              <p className="text-lg font-bold text-slate-900 dark:text-white">{journal.period}</p>
+              <p className="text-base font-bold text-slate-900 dark:text-white">{journal.period}</p>
             </div>
-            <div className="surface p-4">
+            <div className="surface px-4 py-2.5">
               <p className="text-xs text-slate-400">{t('Total Debits')}</p>
-              <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalDebits, journal.currency)}</p>
+              <p className="text-base font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalDebits, journal.currency)}</p>
             </div>
-            <div className="surface p-4">
+            <div className="surface px-4 py-2.5">
               <p className="text-xs text-slate-400">{t('Total Credits')}</p>
-              <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalCredits, journal.currency)}</p>
+              <p className="text-base font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalCredits, journal.currency)}</p>
             </div>
           </div>
 
@@ -4798,22 +4808,22 @@ function FinalSettlementTab() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <SettlementRunDutyPanel settlements={settlements} onChanged={() => void loadSettlements()} />
       {confirmDialog}
-      <div className="surface p-4">
-        <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Final Settlement Lifecycle')}</p>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          {t('Calculate and save a Draft payable, submit it, approve the GL accrual, disburse it through an off-cycle payroll run, then settle the accepted payment batch.')}
-        </p>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          {t('Approval needs a second person: whoever calculated, recalculated or submitted a settlement cannot approve it.')}
-        </p>
-        <p className="mt-2 text-sm font-semibold text-sapphire dark:text-cyanAccent">{t('Outstanding approved/disbursing payable: {toLocaleString}', { toLocaleString: outstandingTotal.toLocaleString('en-US', { minimumFractionDigits: 2 }) })}</p>
+      <div className="surface flex flex-wrap items-start justify-between gap-x-6 gap-y-1 px-4 py-3">
+        <div className="min-w-0 flex-1 basis-80">
+          <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Final Settlement Lifecycle')}</p>
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+            {t('Calculate and save a Draft payable, submit it, approve the GL accrual, disburse it through an off-cycle payroll run, then settle the accepted payment batch.')}{' '}
+            {t('Approval needs a second person: whoever calculated, recalculated or submitted a settlement cannot approve it.')}
+          </p>
+        </div>
+        <p className="shrink-0 text-sm font-semibold text-sapphire dark:text-cyanAccent">{t('Outstanding approved/disbursing payable: {toLocaleString}', { toLocaleString: outstandingTotal.toLocaleString('en-US', { minimumFractionDigits: 2 }) })}</p>
       </div>
 
-      <div className="surface p-5 space-y-4">
-        <div className="grid grid-cols-2 gap-4">
+      <div className="surface space-y-3 p-4">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-3 lg:grid-cols-4">
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Employee ID *')}</label>
             <input type="number" className={inp} placeholder="e.g. 1" value={form.employeeId} onChange={e => setForm(f => ({ ...f, employeeId: e.target.value }))} />
