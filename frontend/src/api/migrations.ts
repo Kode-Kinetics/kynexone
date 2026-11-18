@@ -161,6 +161,14 @@ export interface VarianceLine {
   presence: VariancePresence;
 }
 
+export interface VarianceRegisterError {
+  code: string;
+  row: number | null;
+  params: Record<string, string>;
+  /** English text — the fallback for a code this build does not know. */
+  message: string;
+}
+
 export interface VarianceReport {
   runId: string;
   period: string;
@@ -179,6 +187,13 @@ export interface VarianceReport {
   lines: VarianceLine[];
   /** Per-row complaints from the CSV parser. Rows that errored were NOT compared. */
   registerErrors: string[];
+  /**
+   * The same complaints with a stable `code` and `params`, so the page can say them in the viewer's language.
+   * Optional: an older server sends only the English strings above, which stay the fallback.
+   */
+  registerErrorDetails?: VarianceRegisterError[];
+  /** The run's own currency (its company's default, else the tenant's). */
+  currency: string;
 }
 
 /**
