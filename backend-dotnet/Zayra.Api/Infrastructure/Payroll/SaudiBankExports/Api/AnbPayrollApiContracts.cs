@@ -147,7 +147,7 @@ public sealed record AnbStatusLine(
     DateTimeOffset? CreatedAt,
     DateTimeOffset? UpdatedAt)
 {
-    public override string ToString() => $"AnbStatusLine(status={PaymentStatus}, amount={SalaryAmount})";
+    public override string ToString() => $"AnbStatusLine(status={PaymentStatus})";
 }
 
 /// <summary>All pages of one payroll, merged. <see cref="Complete"/> is true only when the distinct lines

@@ -234,30 +234,28 @@ public sealed class PeriodHandoffReconciler
         var settledAt = await BankOutcomeLedger.SettledAtAsync(_db, tenantId, batches, ct);
         var rejectedAfterSettlement = BankOutcomeLedger.RejectedAfterSettlement(records, settledAt);
         var rejectedAfterSettlementTotal = rejectedAfterSettlement.Sum(r => r.Amount);
-        var glCorrectionTotal = overall.ReturnedTotal + rejectedAfterSettlementTotal;
+        // Returned money needs the correction only once the settlement journal credited Cash/Bank for it (owner ruling 2026-11-17).
+        var returnedAfterSettlement = BankOutcomeLedger.ReturnedAfterSettlement(records, settledAt);
+        var returnedAfterSettlementTotal = returnedAfterSettlement.Sum(r => r.Amount);
+        var glCorrectionTotal = returnedAfterSettlementTotal + rejectedAfterSettlementTotal;
         if (glCorrectionTotal > 0m) blockers.Add("gl_correction_awaiting");
 
         // A line held for a person (a rejection after Paid, a Returned/Rejected swap, a DUPL refusal) keeps the period open
         // until the person resolves it: a salary must never read Paid while the bank says otherwise (B2).
         var heldForPerson = BankOutcomeLedger.UnresolvedHolds(records, confirmations);
         foreach (var hold in heldForPerson) blockers.Add(BankOutcomeHolds.BlockerFor(hold.HoldReason));
+        var blockingHolds = BankOutcomeLedger.BlockingHolds(records, confirmations);
         if (overall.ReconciliationDelta != 0m) blockers.Add("payment_coverage_delta");
 
         // Only OPEN mismatch holds: one closes once a later line for the record was applied or decided (CTO ruling N3).
         var heldMismatches = BankOutcomeLedger.OpenAmountMismatchHolds(confirmations).Count;
         if (heldMismatches > 0) blockers.Add("amount_mismatch_holdbacks");
 
-        var returnsDetail = records.Where(r => string.Equals(r.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase)).Select(r =>
-        {
-            var latest = confirmations.Where(c => c.PaymentRecordId == r.Id && c.Outcome == BankConfirmationOutcomes.Returned)
-                .OrderByDescending(c => c.ImportedAtUtc).FirstOrDefault();
-            return new
-            {
-                paymentRecordId = r.Id, r.EmployeeId, r.Amount, status = r.Status,
-                reasonCode = latest?.ReasonCode, reasonText = latest?.ReasonText,
-                bankReference = latest?.BankReference, valueDate = latest?.ValueDate,
-            };
-        }).ToList();
+        // The same applied rows the import and the batch history read (final gate P2-1): a held line never speaks for a return.
+        var returned = records.Where(r => string.Equals(r.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase)).ToList();
+        var returnsDetail = returned
+            .Select(r => BankOutcomeLedger.FailedLine(r, BankConfirmationOutcomes.Returned, BankOutcomeLabels.ReturnedMoneyCameBack, confirmations))
+            .ToList();
 
         var payments = new
         {
@@ -272,7 +270,7 @@ public sealed class PeriodHandoffReconciler
                     // A batch reading Paid with returns or unconfirmed records open is exactly the state
                     // this pod exists to make visible.
                     presentsCleanButIsNot = BankOutcomeLedger.PresentsCleanButIsNot(
-                        b.WpsStatus, cov, heldForPerson.Count(h => own.Any(r => r.Id == h.PaymentRecordId))),
+                        b.WpsStatus, cov, blockingHolds.Count(h => own.Any(r => r.Id == h.PaymentRecordId))),
                 };
             }).ToList(),
             coverage = overall,
@@ -300,7 +298,9 @@ public sealed class PeriodHandoffReconciler
         // Dated from the row that decided the rejection, including a person's confirm_duplicate_not_paid (N1).
         var rejectionDates = rejectedAfterSettlementIds
             .Select(id => BankOutcomeLedger.RejectionDecision(id, confirmations)?.ValueDate);
-        var returnPeriod = returnsDetail.Select(r => r.valueDate).Concat(rejectionDates)
+        var returnDates = returnedAfterSettlement
+            .Select(r => BankOutcomeLedger.LatestApplied(r.Id, BankConfirmationOutcomes.Returned, confirmations)?.ValueDate);
+        var returnPeriod = returnDates.Concat(rejectionDates)
             .Select(d => d.HasValue ? $"{d.Value.Year}-{d.Value.Month:D2}" : nowPeriod)
             .OrderByDescending(p => p, StringComparer.Ordinal).FirstOrDefault() ?? nowPeriod;
         var returnPeriodClosed = glCorrectionTotal > 0
@@ -320,7 +320,7 @@ public sealed class PeriodHandoffReconciler
             // return's period and gated by PeriodCloseGuard. This pod does not post it.
             returnedAmountAwaitingGlCorrection = new
             {
-                amount = JournalAmount.Round(overall.ReturnedTotal),
+                amount = JournalAmount.Round(returnedAfterSettlementTotal),
                 targetPeriod = returnPeriod,
                 targetPeriodClosed = returnPeriodClosed,
                 correction = "DR Cash-Bank / CR 2100 Salaries Payable (per returned employee)",

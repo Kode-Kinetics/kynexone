@@ -178,16 +178,18 @@ public class AnbRecheckFixTests
     [InlineData("com")]
     public void ASuffixThatIsATldOrAPublicSuffix_IsRefused(string suffix)
     {
-        var act = Build(WithHosts(suffix, "https://api.anb.com.sa/api", "https://auth.anb.com.sa/token"));
+        var act = Build(WithHosts(suffix, "https://api.bank-example.com.sa/api", "https://auth.bank-example.com.sa/token"));
         var ex = act.Should().Throw<BankChannelRefusedException>().Which;
         ex.Code.Should().Be(BankChannelCodes.ConfigInvalid);
         ex.Settings.Should().Contain(nameof(IAnbEndpointConfig.AllowedHostSuffixes));
     }
 
+    // A made-up domain under a real two-letter public suffix: the rule under test is about the public suffix itself, which no
+    // .example or .test name can show (both are single-label, non-country TLDs).
     [Fact]
     public void ARegistrableDomainUnderAPublicSuffix_IsAccepted()
     {
-        var act = Build(WithHosts("anb.com.sa", "https://api.anb.com.sa/api", "https://auth.anb.com.sa/token"));
+        var act = Build(WithHosts("bank-example.com.sa", "https://api.bank-example.com.sa/api", "https://auth.bank-example.com.sa/token"));
         act.Should().NotThrow();
     }
 

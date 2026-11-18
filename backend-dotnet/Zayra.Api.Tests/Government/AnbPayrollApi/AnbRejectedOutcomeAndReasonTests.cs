@@ -83,6 +83,7 @@ public class AnbRejectedOutcomeAndReasonTests
 
         using var db = NewDb();
         var seeded = Seed(db, batch);
+        SettlementJournalFixture.Settle(db, seeded.BatchId);   // the returned figure is a correction only after settlement (owner ruling 2026-11-17)
         var (result, refusal) = await new BankConfirmationService(db, new IBankConfirmationParser[] { new GenericCsvBankConfirmationParser() })
             .ImportAsync(seeded.TenantId, seeded.BatchId, "anb-status.csv", csv, BankChannelConfirmationFile.ParserKey,
                 new BankConfirmationImportOptions(), Guid.NewGuid(), "Payroll Officer", default);

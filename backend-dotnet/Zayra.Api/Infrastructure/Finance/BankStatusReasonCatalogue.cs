@@ -49,6 +49,9 @@ public static class BankStatusReasonCatalogue
         ["AM04"] = new("There was not enough money in the paying account.", "الرصيد في حساب الدفع غير كافٍ.",
             "Check the bank statement, add funds, and ask your bank or payroll team how to send the salaries again. Do not resend without checking.",
             "راجع كشف حساب البنك وأودع المبلغ المطلوب، واسأل البنك أو فريق الرواتب عن طريقة إعادة إرسال الرواتب. لا تعد الإرسال قبل التحقق."),
+        // Duplication: the same voice as DUPL, never "not paid" or "owed" (final gate P1-3).
+        ["AM05"] = new(DuplicateEnglish, DuplicateArabic,
+            "Do not pay again until you have checked.", "لا تعد الدفع قبل التحقق من ذلك."),
         // InconsistentWithEndCustomer
         ["BE01"] = new("The name or ID does not match the account holder.", "الاسم أو رقم الهوية لا يطابق صاحب الحساب.",
             "Ask HR to check the employee's name, ID and IBAN against the bank's record.",
@@ -70,8 +73,23 @@ public static class BankStatusReasonCatalogue
 
     public static IReadOnlyCollection<string> KnownCodes => Codes.Keys.ToList();
 
-    /// <summary>True when the code is ISO DUPL (DuplicatePayment), in any letter case.</summary>
-    public static bool IsDuplicate(string? code) => Normalise(code) == "DUPL";
+    /// <summary>True when the code is ISO DUPL (DuplicatePayment) or AM05 (Duplication), in any letter case.</summary>
+    public static bool IsDuplicate(string? code) => Normalise(code) is "DUPL" or "AM05";
+
+    /// <summary>
+    /// True when the bank refused the line as a duplicate: the code is DUPL or AM05, or the reason text says so ("duplicat..." in
+    /// any letter case, or the Arabic words for a repeat). Hidden format and control characters are removed from the text first, so
+    /// a zero-width character cannot hide the word. Only ever used to HOLD a line for a person ("when in doubt, hold").
+    /// </summary>
+    public static bool IsDuplicate(string? code, string? reasonText)
+    {
+        if (IsDuplicate(code)) return true;
+        if (string.IsNullOrWhiteSpace(reasonText)) return false;
+        var visible = new string(reasonText.Where(c => char.GetUnicodeCategory(c) is not
+            (System.Globalization.UnicodeCategory.Format or System.Globalization.UnicodeCategory.Control)).ToArray());
+        return visible.Contains("DUPLICAT", StringComparison.OrdinalIgnoreCase)
+               || visible.Contains("مكرر", StringComparison.Ordinal) || visible.Contains("تكرار", StringComparison.Ordinal);
+    }
 
     public static bool IsKnown(string? code) => Normalise(code) is { } c && Codes.ContainsKey(c);
 
@@ -140,9 +158,14 @@ public static class BankOutcomeLabels
         "Held: the bank changed its answer between returned and rejected; a payroll or finance user must check which is right",
         "معلّق: غيّر البنك ردّه بين مرتجع ومرفوض، ويجب أن يراجع مستخدم الرواتب أو المالية الرد الصحيح");
 
+    /// <summary>The bank's amount differs from the payroll amount (CTO-GATE 8.4 ruling 11).</summary>
+    public static readonly BankText HeldAmountMismatch = new(
+        "Held: the bank's amount differs from the payroll amount; a payroll or finance user must check the difference",
+        "معلّق: المبلغ لدى البنك يختلف عن مبلغ مسير الرواتب، ويجب أن يراجع مستخدم الرواتب أو المالية الفرق");
+
     public static IReadOnlyList<BankText> All => new[]
     {
         NotPaidRejectedByBank, SettledByBank, ReturnedMoneyCameBack, HeldAcceptedWithChange, AcceptedCreditNotConfirmed,
-        HeldDuplicateRejection, HeldRejectionAfterPaid, HeldFailedOutcomeChanged,
+        HeldDuplicateRejection, HeldRejectionAfterPaid, HeldFailedOutcomeChanged, HeldAmountMismatch,
     };
 }

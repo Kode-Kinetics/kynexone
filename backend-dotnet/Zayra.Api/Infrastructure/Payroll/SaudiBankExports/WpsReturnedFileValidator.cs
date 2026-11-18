@@ -113,7 +113,7 @@ public static class WpsReturnedFileValidator
 
     private const string Conformance = "WpsConformance.cs";
     private const string Rules_ = "KsaWageFileRules.cs";
-    private const string Note = "demo-notes research of the 2017 spec; not encoded in repo code";
+    private const string Note = "an earlier reading of the wage-file specification; not encoded in repo code";
 
     private static readonly IReadOnlyDictionary<string, Entry> Catalogue = new Dictionary<string, Entry>(StringComparer.Ordinal)
     {
@@ -170,6 +170,9 @@ public static class WpsReturnedFileValidator
         ["file_reference_charset"] = new(U, Rules_ + " restricts OUR outbound reference; the bank chose this one",
             "The file reference [FILE-REF] differs from the format this product generates (upper-case letters and digits only). This is a warning only because the bank chose it.",
             "مرجع الملف [FILE-REF] يختلف عن الصيغة التي ينتجها هذا المنتج (أحرف كبيرة وأرقام فقط). هذا تحذير فقط لأن البنك هو من اختاره."),
+        ["file_reference_unreadable"] = new(U, "Own replay guard: the reference is the key a bank file is remembered by, so it must be plain letters and digits",
+            "The file reference [FILE-REF] contains characters other than letters and digits, or hidden characters. Nothing was applied.",
+            "مرجع الملف [FILE-REF] يحتوي على رموز غير الأحرف والأرقام أو على رموز مخفية. لم يُطبَّق أي شيء."),
         ["file_ref_already_imported"] = new(U, "Own replay guard: a bank file reference belongs to one payment batch of the company",
             "This file reference [FILE-REF] was already imported for another payment batch of this company, so this file cannot belong to this batch. If the bank re-issued the file, ask for a new reference. Nothing was applied.",
             "مرجع الملف [FILE-REF] سبق استيراده لدفعة رواتب أخرى لهذه الشركة، لذلك لا يمكن أن يخص هذا الملف هذه الدفعة. إذا أعاد البنك إصدار الملف فاطلب مرجعاً جديداً. لم يُطبَّق أي شيء."),
@@ -608,13 +611,20 @@ public static class WpsReturnedFileValidator
         foreach (var tag in new[] { "ESTB-ID", "32A-VAL" })
             if (string.IsNullOrEmpty(Get(tag))) add("header_tag_missing_unverified", WpsFindingSeverity.Warning, L(tag), false, tag);
 
-        // [FILE-REF] 16x
-        var fileRef = Get("FILE-REF");
+        // [FILE-REF] 16x. It is the key the file is remembered by, so it is normalised (trimmed, upper case) and must then be plain
+        // letters and digits: a reference hiding a format, bidi or zero-width character, or any other character, refuses the file.
+        var rawFileRef = Get("FILE-REF");
+        var fileRef = rawFileRef?.Trim().ToUpperInvariant();
         if (string.IsNullOrEmpty(fileRef)) add("file_reference_missing", WpsFindingSeverity.Error, L("FILE-REF"), true);
+        else if (!fileRef.All(c => c is (>= '0' and <= '9') or (>= 'A' and <= 'Z')))
+        {
+            add("file_reference_unreadable", WpsFindingSeverity.Error, L("FILE-REF"), true);
+            fileRef = null;
+        }
         else
         {
             if (fileRef.Length > MaxFileReferenceLength) add("file_reference_too_long", WpsFindingSeverity.Error, L("FILE-REF"), true);
-            if (!fileRef.All(c => c is (>= '0' and <= '9') or (>= 'A' and <= 'Z')))
+            if (!string.Equals(fileRef, rawFileRef, StringComparison.Ordinal))
                 add("file_reference_charset", WpsFindingSeverity.Warning, L("FILE-REF"), false);
         }
 
@@ -684,7 +694,11 @@ public static class WpsReturnedFileValidator
         if (string.IsNullOrEmpty(value)) return null;
         var kept = value.Where(c => char.GetUnicodeCategory(c) is not (UnicodeCategory.Format or UnicodeCategory.LineSeparator
             or UnicodeCategory.ParagraphSeparator or UnicodeCategory.Control)).ToArray();
-        var cleaned = new string(kept).TrimStart('=', '+', '-', '@').Trim();
+        // Trim first (a space or non-breaking space can sit in front of a formula), then strip leading formula characters, and repeat
+        // until neither leads.
+        var cleaned = new string(kept).Trim();
+        while (cleaned.Length > 0 && cleaned[0] is '=' or '+' or '-' or '@')
+            cleaned = cleaned.TrimStart('=', '+', '-', '@').Trim();
         return cleaned.Length == 0 ? null : cleaned;
     }
 
