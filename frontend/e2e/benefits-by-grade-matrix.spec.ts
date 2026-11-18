@@ -487,7 +487,9 @@ for (const locale of ['en', 'ar'] as const) {
       const box = await trigger.boundingBox();
       expect(box!.width).toBeGreaterThanOrEqual(24);
       expect(box!.height).toBeGreaterThanOrEqual(24);
-      await trigger.click();
+      // The row can sit near the fold (the Arabic rows are taller): scroll it in and let the scroll land before the click,
+      // or the click's own scroll closes the menu it just opened.
+      await openRowMenu(page, locale, benefitName(locale, 'PER_DIEM'));
       await expect(page.getByRole('menu')).toBeVisible();
       await expect(page.getByRole('menuitem', { name: say(locale, 'Mark the rest Not offered') })).toBeVisible();
       await page.keyboard.press('Escape');

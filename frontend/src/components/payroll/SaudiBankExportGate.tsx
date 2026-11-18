@@ -1,6 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
-import dynamic from 'next/dynamic';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { AlertTriangle, Landmark } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useT } from '../../hooks/useT';
@@ -9,12 +8,13 @@ import { bankFileProductionAllowed } from '../../lib/payrollPaymentAccess';
 import { requestFailureReason } from '../../lib/requestFailure';
 import { Skeleton } from '../ui/Skeleton';
 import type { BankFlowProgress } from '../../lib/bankFileSteps';
+import type { PayrollPaymentBatch } from '../../api/payroll';
+import type { GuideSlots } from './BankFileGuide';
 
 // The server allow-list, not a browser flag, owns activation. Old APIs, denied requests and failed probes keep this additive feature
 // out of the way of existing payroll, but never silently: a Saudi batch says why its bank-file panel is not there and what to do next.
-const Panel = dynamic(() => import('./SaudiBankExportPanel').then(m => m.SaudiBankExportPanel), {
-  loading: () => <GateSkeleton />,
-});
+// The panel is split from the page; while it arrives the guided flow is already drawn, with this skeleton in step 2.
+const Panel = lazy(() => import('./SaudiBankExportPanel').then(m => ({ default: m.SaudiBankExportPanel })));
 
 type Probe = { batchId: string; state: 'enabled' | 'off' } | { batchId: string; state: 'failed'; error: unknown };
 
@@ -44,7 +44,13 @@ function GateReason({ testId, title, children, action }: { testId: string; title
   );
 }
 
-export function SaudiBankExportGate({ batchId, employeeIds, employeeLabels, isSaudi = false, onProgress, suggestedReference }: {
+export function SaudiBankExportGate({ batchId, employeeIds, employeeLabels, isSaudi = false, onProgress, suggestedReference, renderGuide, batch, recordsCount, onOpenRecords }: {
+  /** Passed to the panel: the open batch, its record count, and the records drawer. */
+  batch?: PayrollPaymentBatch | null;
+  recordsCount?: number | null;
+  onOpenRecords?: () => void;
+  /** Draws the guided flow; the gate says why the bank file is not there in step 2 of it, and the panel fills the steps when it is. */
+  renderGuide: (slots: GuideSlots) => React.ReactNode;
   batchId: string;
   employeeIds: number[];
   employeeLabels?: Record<number, string>;
@@ -76,25 +82,32 @@ export function SaudiBankExportGate({ batchId, employeeIds, employeeLabels, isSa
   useEffect(() => { if (gate !== 'ready') onProgress?.({ gate, validation: 'none', generated: false }); }, [gate, onProgress]);
 
   if (gate === 'ready') {
-    return <Panel key={batchId} batchId={batchId} employeeIds={employeeIds} employeeLabels={employeeLabels} onProgress={onProgress} suggestedReference={suggestedReference} />;
+    return (
+      <Suspense fallback={<>{renderGuide({ panels: { check: { body: <GateSkeleton /> } } })}</>}>
+        <Panel key={batchId} batchId={batchId} employeeIds={employeeIds} employeeLabels={employeeLabels} onProgress={onProgress} suggestedReference={suggestedReference} renderGuide={renderGuide}
+          batch={batch} recordsCount={recordsCount} onOpenRecords={onOpenRecords} />
+      </Suspense>
+    );
   }
   if (!isSaudi) return null;
-  if (gate === 'checking') return <GateSkeleton />;
+  // Step 2 is where the bank file is prepared, so it is where its absence is explained.
+  const inStep = (body: React.ReactNode) => <>{renderGuide({ panels: { check: { body } } })}</>;
+  if (gate === 'checking') return inStep(<GateSkeleton />);
   if (gate === 'no_permission') {
-    return (
+    return inStep(
       <GateReason testId="bank-file-no-permission" title={t('You cannot prepare the bank file')}>
         {t('Preparing the Saudi bank file needs the Payroll export permission. Ask an administrator to give it to your role, then come back to this batch.')}
-      </GateReason>
+      </GateReason>,
     );
   }
   if (gate === 'off') {
-    return (
+    return inStep(
       <GateReason testId="bank-file-off" title={t('Bank file export is switched off for this company')}>
         {t('The platform team switches bank file export on for each company. Ask them to turn it on, then reload this batch.')}
-      </GateReason>
+      </GateReason>,
     );
   }
-  return (
+  return inStep(
     <GateReason
       testId="bank-file-check-failed"
       title={t('Could not check whether the bank file can be prepared')}
@@ -102,6 +115,6 @@ export function SaudiBankExportGate({ batchId, employeeIds, employeeLabels, isSa
     >
       <AlertTriangle className="me-1 inline h-4 w-4 align-text-bottom text-warning-fg" aria-hidden="true" />
       {current && current.state === 'failed' ? t(requestFailureReason(current.error)) : ''}
-    </GateReason>
+    </GateReason>,
   );
 }

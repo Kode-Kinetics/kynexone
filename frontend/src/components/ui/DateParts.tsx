@@ -46,22 +46,23 @@ export function MonthPicker({ value, onChange, className = '', 'aria-label': ari
   );
 }
 
-export function DatePicker({ value, onChange, className = '', 'aria-label': ariaLabel }: { value: string; onChange: (v: string) => void; className?: string; 'aria-label'?: string }) {
+/** `placeholders`: an unset part shows its name (Day, Month, Year) instead of a blank, so an empty date reads as a date still to be chosen. */
+export function DatePicker({ value, onChange, className = '', 'aria-label': ariaLabel, placeholders = false }: { value: string; onChange: (v: string) => void; className?: string; 'aria-label'?: string; placeholders?: boolean }) {
   const { t } = useLocale();
   const { parts, names, years, set } = useParts(value, 'date', onChange);
   const days = Array.from({ length: parts.year != null && parts.month != null ? daysInMonth(parts.year, parts.month) : 31 }, (_, i) => i + 1);
   return (
     <span className={`flex gap-1.5 ${className}`} role="group" aria-label={ariaLabel}>
       <select className="select w-16" aria-label={t('Day')} value={parts.day ?? ''} onChange={e => set({ day: Number(e.target.value) })}>
-        {parts.day == null && <option value="" />}
+        {parts.day == null && <option value="">{placeholders ? t('Day') : ''}</option>}
         {days.map(d => <option key={d} value={d}>{d}</option>)}
       </select>
       <select className="select w-full" aria-label={t('Month')} value={parts.month ?? ''} onChange={e => set({ month: Number(e.target.value) })}>
-        {parts.month == null && <option value="" />}
+        {parts.month == null && <option value="">{placeholders ? t('Month') : ''}</option>}
         {names.map((n, i) => <option key={n} value={i + 1}>{n}</option>)}
       </select>
       <select className="select w-24" aria-label={t('Year')} value={parts.year ?? ''} onChange={e => set({ year: Number(e.target.value) })}>
-        {parts.year == null && <option value="" />}
+        {parts.year == null && <option value="">{placeholders ? t('Year') : ''}</option>}
         {years.map(y => <option key={y} value={y}>{y}</option>)}
       </select>
     </span>

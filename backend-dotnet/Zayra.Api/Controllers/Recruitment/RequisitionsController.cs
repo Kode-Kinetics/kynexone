@@ -80,6 +80,8 @@ public class RequisitionsController : ControllerBase
         return Ok(new { items });
     }
 
+    // Read access: HR keys, or the narrow "raise" key (a line manager sees only the requisitions they raised, see SeesAllRequisitions).
+    [HasPermission("recruitment.read", "recruitment.write", "recruitment.requisition.raise")]
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] string? status,
@@ -101,6 +103,7 @@ public class RequisitionsController : ControllerBase
         return Ok(new { items, total, page, pageSize });
     }
 
+    [HasPermission("recruitment.read", "recruitment.write", "recruitment.requisition.raise")]
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
@@ -380,6 +383,7 @@ public class RequisitionsController : ControllerBase
         User.Claims.Where(c => c.Type == System.Security.Claims.ClaimTypes.Role).Select(c => c.Value).ToList(),
         User.Claims.Where(c => c.Type == "permission").Select(c => c.Value).ToList());
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("stats")]
     public async Task<IActionResult> Stats(CancellationToken ct)
     {

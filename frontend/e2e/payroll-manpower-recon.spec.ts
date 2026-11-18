@@ -131,7 +131,7 @@ async function boot(page: Page, opts: { population?: unknown; recon?: string; pe
     return json([]);
   });
   await page.goto(opts.url ?? `/payroll?tab=runs&run=${RUN}`);
-  await expect(page.getByRole('heading', { name: /^(Payroll Management|إدارة الرواتب)$/ })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('payroll-section-panel')).toBeVisible({ timeout: 30_000 });
   return s;
 }
 
@@ -399,7 +399,9 @@ test.describe('sign-off', () => {
 test.describe('Approve is refused without a current sign-off', () => {
   test('a 409 reconciliation_not_reviewed says why and takes the run back to Review', async ({ page }) => {
     const s = await boot(page, { recon: 'recon-signed.json', url: `/payroll?tab=approvals&run=${RUN}` });
-    await expect(page.getByTestId('pipeline-next-title')).toHaveText('Approve the run');
+    // On Approvals the section carries the stage's own action, so the run bar does not repeat it.
+    await expect(page.getByTestId('pipeline-stages').locator('[aria-current="step"]')).toHaveAttribute('data-stage', 'approved');
+    await expect(page.getByTestId('pipeline-next')).toHaveCount(0);
     // The run is processed again elsewhere: the sign-off no longer counts, and the server says so at Approve.
     s.approveError = { status: 409, body: { error: 'reconciliation_not_reviewed', reason: 'Stale', processVersion: 4, signedVersion: 3, message: 'The reconciliation was signed off on an earlier processing of this run.' } };
     s.recon = { ...fixture('recon-full.json'), processVersion: 4, signoff: { id: 'so-1', status: 'Superseded', signedOffByName: 'Layla Al-Harbi', signedOffAtUtc: '2026-11-02T09:15:00Z', snapshotHash: 'x', supersededReason: 'Reprocessed' } };
@@ -598,7 +600,9 @@ const POPULATION = {
 test.describe('pay population at Approve', () => {
   test('people paid with a warning or employed but unpaid are acknowledged by count, and everyone left out is listed with a reason', async ({ page }) => {
     const s = await boot(page, { recon: 'recon-signed.json', url: `/payroll?tab=approvals&run=${RUN}`, population: POPULATION });
-    await expect(page.getByTestId('pipeline-next-title')).toHaveText('Approve the run');
+    // On Approvals the section carries the stage's own action, so the run bar does not repeat it.
+    await expect(page.getByTestId('pipeline-stages').locator('[aria-current="step"]')).toHaveAttribute('data-stage', 'approved');
+    await expect(page.getByTestId('pipeline-next')).toHaveCount(0);
     const leftOut = page.getByTestId('payroll-left-out');
     await expect(leftOut).toContainText('3 employee(s) in this company are not paid by this run');
     await expect(leftOut).toContainText('Suspended — not paid (pay hold)');

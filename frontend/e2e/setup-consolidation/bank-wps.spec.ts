@@ -28,7 +28,7 @@ test('a payroll manager opens the form untouched, saves, and the settings go to 
   // The only format is offered as the default; that is not an unsaved edit.
   await expect(page.getByText(/Unsaved changes/)).toHaveCount(0);
 
-  await page.getByLabel(/MOL establishment/i).fill('7-1234567');
+  await page.getByLabel(/Establishment ID \(Ministry of HR\)/i).fill('7-1234567');
   await page.getByLabel('ANB main account number').fill('1234567890123456');
   await page.getByLabel(/^Organisation name/i).fill('Workspace Fixture LLC');
   await page.getByLabel(/^Company name/i).fill('Workspace Fixture LLC');
@@ -104,14 +104,14 @@ test('switching company with unsaved bank details asks first, and keeping the ed
   });
   const picker = page.getByRole('combobox', { name: /company/i });
   await picker.selectOption('co-a');
-  await page.getByLabel(/MOL establishment/i).fill('7-1234567');
+  await page.getByLabel(/Establishment ID \(Ministry of HR\)/i).fill('7-1234567');
   await picker.selectOption('co-b');
   const dialog = page.getByRole('dialog');
   await expect(dialog).toContainText('You have unsaved bank details');
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByLabel(/MOL establishment/i)).toHaveValue('7-1234567');
+  await expect(page.getByLabel(/Establishment ID \(Ministry of HR\)/i)).toHaveValue('7-1234567');
   await picker.selectOption('co-b');
   await page.getByRole('dialog').getByRole('button', { name: 'Discard and switch' }).click();
-  await expect(page.getByLabel(/MOL establishment/i)).toHaveValue('');
+  await expect(page.getByLabel(/Establishment ID \(Ministry of HR\)/i)).toHaveValue('');
 });

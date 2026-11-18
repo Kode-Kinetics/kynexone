@@ -52,8 +52,6 @@ const ar: Record<string, string> = {
   'Create a payment batch for this run, or open one from the list.': 'أنشئ دفعة دفع لهذا المسير أو افتح إحدى الدفعات من القائمة.',
   'Needs the Payroll export permission. Ask an administrator.': 'تتطلب صلاحية «تصدير الرواتب». اطلب ذلك من مسؤول النظام.',
   'Bank file export is switched off for this company. Ask the platform team.': 'تصدير ملف البنك متوقف لهذه الشركة. اطلب من فريق المنصة تفعيله.',
-  'The availability check failed. Use Retry in the bank file section.': 'فشل التحقق من الإتاحة. استخدم «إعادة المحاولة» في قسم ملف البنك.',
-  'The check found blockers. Fix them in the bank file section, then check again.': 'وجد التحقق عوائق. عالجها في قسم ملف البنك ثم تحقق مجددًا.',
   'Waits for a successful check.': 'بانتظار نجاح التحقق.',
   'Waits for the bank file.': 'بانتظار ملف البنك.',
   'Download the files, send them to your bank, then record the batch as submitted in Payment Tracking.': 'نزّل الملفات وأرسلها إلى بنكك ثم سجّل الدفعة «مُرسلة» في تتبع المدفوعات.',

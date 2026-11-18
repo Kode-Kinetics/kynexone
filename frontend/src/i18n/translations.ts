@@ -27,6 +27,7 @@ import { payrollCostCentres } from './payrollCostCentres';
 import { glErp } from './glErp';
 import { payrollGlUi } from './payrollGlUi';
 import { payrollUx } from './payrollUx';
+import { bankFileGuide } from './bankFileGuide';
 import { statutoryRules } from './statutoryRules';
 import { glApiKeys } from './glApiKeys';
 import { signInSecurity } from './signInSecurity';
@@ -1689,6 +1690,7 @@ const en: Dict = {
   ...glErp.en,
   ...payrollGlUi.en,
   ...payrollUx.en,
+  ...bankFileGuide.en,
   ...statutoryRules.en,
   ...glApiKeys.en,
   // Sign-in security and the trust-this-browser choice — see ./signInSecurity.
@@ -3300,6 +3302,7 @@ const ar: Dict = {
   ...glErp.ar,
   ...payrollGlUi.ar,
   ...payrollUx.ar,
+  ...bankFileGuide.ar,
   ...statutoryRules.ar,
   ...glApiKeys.ar,
   ...signInSecurity.ar,

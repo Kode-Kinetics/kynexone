@@ -107,8 +107,13 @@ async function bootPayroll(page: Page, locale: Locale, opts: {
     if (p.startsWith('/api/features') || p === '/api/notifications') return json([]);
     return json([]);
   });
-  await page.goto('/payroll');
-  if (opts.openSalaryTab !== false) await page.getByRole('tab', { name: say(locale, 'Employee Salary') }).click();
+  if (opts.openSalaryTab !== false) {
+    // Payroll's sections are links in its section nav (folded to a switcher below 1280px); the section's own address opens it on any width.
+    await page.goto('/payroll?tab=employee-salary');
+    await expect(page.locator('h1')).toHaveText(say(locale, 'Employee Salary'), { timeout: 30_000 });
+  } else {
+    await page.goto('/payroll');
+  }
   return { posts };
 }
 

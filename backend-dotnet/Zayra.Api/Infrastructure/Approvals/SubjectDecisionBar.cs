@@ -53,4 +53,7 @@ public static class SubjectDecisionBar
 
     /// <summary>The response body for a refused decision: <c>{ error, message }</c>.</summary>
     public static object Refusal(string message) => new { error = ErrorCode, message };
+
+    /// <summary>The same refusal with the Arabic text beside the English: <c>{ error, message, messageAr }</c>.</summary>
+    public static object Refusal(string message, string messageAr) => new { error = ErrorCode, message, messageAr };
 }

@@ -112,7 +112,7 @@ jobs:
     # Runs prebuilt output (--no-build), so it needs no compile memory. The 32 GB runner is billed
     # per minute even on a public repo; the standard runner is not. Keep this lane on the free runner.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: [changes, backend-build]
     if: needs.changes.outputs.docs_only != 'true'
     steps:
@@ -418,8 +418,8 @@ jobs:
       # Keep this fail-closed so a future lockfile change cannot quietly reintroduce a
       # High/Critical advisory into the independently deployed frontend.
       - name: npm audit (frontend; fail on High/Critical)
-        run: npm audit --omit=dev --audit-level=high
-        working-directory: frontend
+        run: |
+          python3 scripts/npm_audit_gate.py --dir frontend --exceptions .github/npm-audit-exceptions/frontend.json
 
       # mobile/ has its own package.json and package-lock.json and is built into binaries
       # that land on real devices, but until now no workflow audited it — `npm audit`

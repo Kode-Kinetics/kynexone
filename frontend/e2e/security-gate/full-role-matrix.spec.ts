@@ -1,7 +1,6 @@
 import { test, expect, request as pwRequest, type APIRequestContext } from '@playwright/test';
-import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { BASE_URL, ROLES, roleByKey, storageStatePath, tokenPath, type RoleFixture } from './roles';
+import { BASE_URL, ROLES, roleByKey, roleToken, storageStatePath, type RoleFixture } from './roles';
 import { stampActor } from '../identity/actor';
 import { expectedPermissions, loadRoleCatalog } from '../identity/role-catalog';
 import { evaluatePolicy } from '../identity/role-policy';
@@ -22,11 +21,6 @@ const catalog = loadRoleCatalog();
 const tenantRoles = ROLES.filter((r): r is RoleFixture & { role: string; tenantSlug: string } =>
   r.role !== null && r.tenantSlug !== null);
 
-function tokenFor(key: string): string {
-  const p = tokenPath(key);
-  if (!fs.existsSync(p)) throw new Error(`No stored token for '${key}'. The security-setup project must run first.`);
-  return JSON.parse(fs.readFileSync(p, 'utf8')).token as string;
-}
 
 async function apiAs(key: string): Promise<APIRequestContext> {
   const role = roleByKey(key);
@@ -34,7 +28,7 @@ async function apiAs(key: string): Promise<APIRequestContext> {
   return pwRequest.newContext({
     baseURL: BASE_URL,
     timeout: 30_000,
-    extraHTTPHeaders: { Authorization: `Bearer ${tokenFor(key)}` },
+    extraHTTPHeaders: { Authorization: `Bearer ${await roleToken(key)}` },
   });
 }
 

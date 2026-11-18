@@ -110,7 +110,7 @@ public sealed class PackageReviewRound3PostgresTests(PostgresFixture fixture)
         var s = await SeedAsync();
         await using (var db = fixture.CreateDb())
             Assert.Equal(PackageReasons.TermRunningNeedsProposal,
-                Code(await Package(db, s, s.UserId, Today).Freeze(s.Mohammed.Id, new PackageContractRequest(s.Term.Id), default)));
+                Code(await Package(db, s, Guid.NewGuid(), Today).Freeze(s.Mohammed.Id, new PackageContractRequest(s.Term.Id), default)));
         EmployeeContract v2;
         await using (var db = fixture.CreateDb())
             v2 = (EmployeeContract)((OkObjectResult)await Contracts(db, s, Today).Supersede(s.Term.Id,

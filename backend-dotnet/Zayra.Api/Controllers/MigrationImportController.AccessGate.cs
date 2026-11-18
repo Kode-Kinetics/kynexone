@@ -50,6 +50,14 @@ public sealed partial class MigrationImportController
         refusedRows = refusals.Select(r => new { section = r.Section, row = r.Row, key = r.Key, problem = r.Problem }).ToList(),
     });
 
+    private const string RoleNeedsGroupScopeProblem =
+        "Roles are shared by every company in the workspace; only a group-level administrator can change them through an import. "
+        + "/ الأدوار مشتركة بين جميع شركات مساحة العمل، ولا يغيّرها عبر الاستيراد إلا مسؤول على مستوى المجموعة.";
+
+    private const string UserOutsideScopeProblem =
+        "This user is group-wide or also works in a company you do not manage, so an import by a company-scoped administrator cannot change their account. "
+        + "/ هذا المستخدم على مستوى المجموعة أو يعمل أيضاً في شركة لا تديرها، لذلك لا يستطيع مسؤول مقيّد بشركة تغيير حسابه عبر الاستيراد.";
+
     private async Task<List<AccessRefusal>> FindAccessRefusalsAsync(Guid tenantId, MigrationPackageRequest request, CancellationToken ct)
     {
         var refusals = new List<AccessRefusal>();
@@ -75,6 +83,9 @@ public sealed partial class MigrationImportController
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var callerId = UserId();
         var callerIsGroupScope = this.GetEntityScope().IsGroupLevel;
+        // The Access screen's management scope (AccessController.ManagementScope): a token with group authority acts group-wide
+        // whatever company is selected; otherwise the caller's own companies bound which logins and roles an import may change.
+        var managementScope = this.HasGroupEntityScope() ? EntityScopeContext.GroupLevel : this.GetEntityScope();
 
         // Roles as the Access screen resolves them (AccessManagementService.LoadRoles): this tenant's or a platform
         // role, by normalised name, through the same query filters.
@@ -100,6 +111,9 @@ public sealed partial class MigrationImportController
             var name = Val(row, "Name");
             var normalized = AuthService.Normalize(name);
             packageRoles[normalized] = Bool(row, "IsActive", true);
+            // Roles are shared by every company of the workspace; the Access screen lets only group-level administrators change them.
+            if (!managementScope.IsGroupLevel)
+                refusals.Add(new AccessRefusal("roles", index, name, RoleNeedsGroupScopeProblem));
             if (!rolesByName.TryGetValue(normalized, out var existing)) continue;
             if (existing.TenantId is null || existing.IsSystem || !existing.IsEditable)
                 refusals.Add(new AccessRefusal("roles", index, name, $"'{existing.Name}' is a system role; an import cannot change it."));
@@ -145,6 +159,10 @@ public sealed partial class MigrationImportController
                 problems.Add($"This user already holds permissions you do not hold ({List(targetMissing)}); an import cannot change their account.");
             if (Bool(row, "IsGroupScope", false) && !callerIsGroupScope)
                 problems.Add("Only a group-scope importer can give a user group scope.");
+            // The Access screen changes a login only when it is visible to the caller and entirely inside the caller's companies.
+            if (target is not null && !managementScope.IsGroupLevel
+                && !await AccessManagementService.UserWithinManagementScopeAsync(_db, tenantId, target.Id, managementScope, ct))
+                problems.Add(UserOutsideScopeProblem);
 
             var grantsAdmin = false;
             var roleNames = Val(row, "RoleNames").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
