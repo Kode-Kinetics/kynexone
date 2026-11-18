@@ -170,7 +170,7 @@ function AnalyticsDashboard() {
   const allFailed = failedCount === Object.keys(ANALYTICS_SOURCE_LABELS).length;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {failedCount > 0 && (
         <div role="alert" className="flex items-center justify-between gap-3 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-400">
           <span>
@@ -187,7 +187,7 @@ function AnalyticsDashboard() {
         <div className="surface p-4 text-sm text-slate-400">KPI summary unavailable</div>
       ) : kpis && (
         <>
-          <div className="grid gap-x-4 gap-y-4 lg:grid-cols-3" data-testid="kpi-groups">
+          <div className="grid gap-x-4 gap-y-3 lg:grid-cols-3" data-testid="kpi-groups">
           <div>
             <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">Workforce</h3>
             <div className="grid grid-cols-2 gap-2">
@@ -913,7 +913,7 @@ export function ReportsPage() {
   useEffect(() => { if (requestedReport) setActiveTab('library'); }, [requestedReport]);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Reports & Analytics')}</h1>
         <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">

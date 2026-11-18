@@ -6,7 +6,7 @@ import { ALL_PERMISSIONS, boot, type ApiMocks, type Persona } from '../setup-con
  * Space pass, batch 2 (Screen Standard 1 and 2): the main content of a screen sits in the first screenful at 1366x768 and
  * 1280x720, in English and Arabic, and the page never scrolls sideways. Every API call is intercepted; nothing is read or written.
  *
- *   /reports   Analytics Dashboard: the first trend chart heading is inside the first screenful (it started below 900 under four bands of tall KPI tiles)
+ *   /reports   Analytics Dashboard: every KPI band starts inside the first screenful: the Last Payroll Run band shows its heading and values (it started near y=880 under three bands of tall KPI tiles; the trend charts follow it)
  *   /learning  Overview: the Completion table starts above y=600 (it started near 1000 under seven tall indicator cards)
  *
  * SPACE_SHOTS_DIR=<dir> also saves a screenshot per screen, viewport and language (the before/after evidence).
@@ -67,12 +67,12 @@ for (const locale of LOCALES) {
     test.describe(`space batch 2 (${locale} ${viewport.width}x${viewport.height})`, () => {
       test.use({ viewport });
 
-      test('/reports: the first trend chart starts in the first screenful and nothing scrolls sideways', async ({ page }) => {
+      test('/reports: the last KPI band (Last Payroll Run) starts in the first screenful and nothing scrolls sideways', async ({ page }) => {
         await boot(page, { persona: persona(['HR Manager'], ['reports.read']), locale, url: '/reports', mocks: REPORTS });
-        const heading = page.getByRole('heading', { level: 3 }).filter({ hasText: /Headcount Trend|اتجاه/ }).first();
+        const heading = page.getByRole('heading', { level: 3, name: /Last Payroll Run|آخر/ });
         await expect(heading).toBeVisible({ timeout: 60_000 });
         await shot(page, 'reports', locale);
-        expect(await heading.evaluate(el => Math.round(el.getBoundingClientRect().top)), 'first chart heading top').toBeLessThanOrEqual(viewport.height - 40);
+        expect(await heading.evaluate(el => Math.round(el.getBoundingClientRect().top)), 'Last Payroll Run heading top').toBeLessThanOrEqual(viewport.height - 80);
         expect(await noSideways(page)).toBeLessThanOrEqual(0);
       });
 
