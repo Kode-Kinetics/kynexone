@@ -160,7 +160,7 @@ public class BankOutcomeHoldClosureTests
         await Import(db, w, "RJCT", "AC04");
 
         var reversed = await Import(db, w, "PAID", valueDate: "2026-08-02",
-            options: new BankConfirmationImportOptions(AllowReturnReversal: true, ReturnReversalReason: "Statement shows the credit"));
+            options: new BankConfirmationImportOptions(AllowReturnReversal: true, ReturnReversalReason: "Statement shows the credit", CallerMayRecordPaymentStatus: true));
 
         w.Record.Status.Should().Be(PaymentRecordStatuses.Paid);
         reversed.HeldForPerson.Should().BeEmpty();

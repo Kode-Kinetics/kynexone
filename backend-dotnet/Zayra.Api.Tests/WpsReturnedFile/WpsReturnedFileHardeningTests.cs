@@ -207,7 +207,7 @@ public class WpsReturnedFileHardeningTests
 
         var (result, refusal) = await service.ImportAsync(s.TenantId, s.BatchId, "f.txt",
             WpsReturnedFileOracle.Build(s.Rows.Select(r => r with { Status = "PAID" }).ToList()), "wps-returned-file",
-            new BankConfirmationImportOptions(), null, "x", default);
+            new BankConfirmationImportOptions(), Guid.NewGuid(), "x", default);
         db.SaveChanges();
 
         result.Should().BeNull();
@@ -228,7 +228,7 @@ public class WpsReturnedFileHardeningTests
 
         var (result, refusal) = await service.ImportAsync(s.TenantId, s.BatchId, "f.txt",
             WpsReturnedFileOracle.Build(s.Rows.Select(r => r with { Status = "PAID" }).ToList()), "wps-returned-file",
-            new BankConfirmationImportOptions(), null, "x", default);
+            new BankConfirmationImportOptions(), Guid.NewGuid(), "x", default);
 
         refusal.Should().BeNull();
         result!.PaidApplied.Should().Be(3);

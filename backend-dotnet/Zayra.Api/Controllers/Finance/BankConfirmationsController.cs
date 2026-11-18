@@ -76,12 +76,25 @@ public class BankConfirmationsController : ControllerBase
         // D3: BEFORE ReadPayloadAsync — an unauthorised caller must not even get their file consumed.
         if (await BatchScopeErrorAsync(tid.Value, batchId, ct) is { } scopeErr) return scopeErr;
 
+        // Re-marking a returned or rejected salary as paid is a payment-status decision, like an exit: it needs the manual-Paid
+        // permission on top of the import's (wave 1 P1). The same code and shape as the exit check below.
+        if (allowReturnReversal && !HasPermission(Infrastructure.Payroll.PaymentPermissions.WpsStatus))
+            return StatusCode(StatusCodes.Status403Forbidden, BankLineExitKinds.NeedsPaymentStatusPermissionBody());
+
         if (allowReturnReversal && string.IsNullOrWhiteSpace(returnReversalReason))
             return BadRequest(new
             {
                 error = "return_reversal_reason_required",
                 message = "Re-marking a returned or rejected payment as paid requires an explicit reason — it asserts that "
                         + "money the bank told us did not reach the employee actually did.",
+            });
+
+        if (returnReversalReason?.Trim().Length > BankLineExitKinds.MaxReversalReasonLength)
+            return BadRequest(new
+            {
+                error = "return_reversal_reason_too_long",
+                message = $"The reason for re-marking a payment as paid is at most {BankLineExitKinds.MaxReversalReasonLength} characters.",
+                messageAr = $"سبب إعادة تسجيل الدفعة كمدفوعة لا يتجاوز {BankLineExitKinds.MaxReversalReasonLength} حرفًا.",
             });
 
         // Exits (CTO ruling N2) travel with the payload: a multipart "exits" field or the structured payload's "exits", each
@@ -92,18 +105,12 @@ public class BankConfirmationsController : ControllerBase
         // An exit sets a status the bank's word did not say (it can mark a salary Paid), so it needs the manual-Paid permission on
         // top of the import's (final gate security P2-D). The plain import keeps payroll.export alone.
         if (exits is { Count: > 0 } && !HasPermission(Infrastructure.Payroll.PaymentPermissions.WpsStatus))
-            return StatusCode(StatusCodes.Status403Forbidden, new
-            {
-                error = BankLineExitKinds.NeedsPaymentStatusPermissionCode,
-                message = "Resolving a held bank line needs the permission to record payment status (payroll.wps_status.update) as "
-                        + "well as the import permission. Ask a person who holds it to send the exit.",
-                messageAr = "تتطلب معالجة سطر بنكي معلّق صلاحية تسجيل حالة الدفع (payroll.wps_status.update) إضافةً إلى صلاحية "
-                          + "الاستيراد. اطلب من شخص يملكها إرسال الإجراء.",
-            });
+            return StatusCode(StatusCodes.Status403Forbidden, BankLineExitKinds.NeedsPaymentStatusPermissionBody());
 
         var options = new BankConfirmationImportOptions(
             acknowledgeAmountMismatch, allowReturnReversal, returnReversalReason?.Trim(), allowCrossBatchReimport, dryRun,
-            exits?.Select(e => e with { Reason = e.Reason?.Trim(), BankReference = e.BankReference?.Trim() }).ToList());
+            exits?.Select(e => e with { Reason = e.Reason?.Trim(), BankReference = e.BankReference?.Trim() }).ToList(),
+            CallerMayRecordPaymentStatus: HasPermission(Infrastructure.Payroll.PaymentPermissions.WpsStatus));
 
         var (result, refusal) = await _service.ImportAsync(
             tid.Value, batchId, fileName!, content!, format, options, this.GetUserId(), UserName(), ct);
