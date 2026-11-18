@@ -486,6 +486,7 @@ builder.Services.AddScoped<IHrLetterIssuer, HrLetterIssuer>();
 var pdfCapacity = builder.Configuration.GetValue("Pdf:MaxConcurrentRenders", 3);
 builder.Services.AddSingleton(new Zayra.Api.Infrastructure.Documents.PdfRenderGate(pdfCapacity));
 builder.Services.AddScoped<IRecruitmentService, RecruitmentService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Recruitment.IEssJobBoardService, Zayra.Api.Infrastructure.Recruitment.EssJobBoardService>();
 builder.Services.AddScoped<OfferArtifactService>();
 builder.Services.AddScoped<OfferLifecycleService>();
 builder.Services.AddScoped<OfferDispatchService>();
