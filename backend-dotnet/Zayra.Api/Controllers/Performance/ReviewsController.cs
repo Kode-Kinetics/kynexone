@@ -13,6 +13,7 @@ using Zayra.Api.Models;
 
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Common;
+using Zayra.Api.Infrastructure.Performance;
 
 namespace Zayra.Api.Controllers.Performance;
 
@@ -164,6 +165,8 @@ public class ReviewsController : ControllerBase
             .Where(a => a.TenantId == tenantId && a.ReviewId == id)
             .FirstOrDefaultAsync(ct);
 
+        var goalKpi = await GoalKpi.ForReviewAsync(_db, tenantId, review.EmployeeId, review.CycleId, ct);
+
         // GAP 7: the manager's and HR's notes, and anonymous 360 feedback, are for the rating approver
         // tier only. Everyone else gets the review with the notes blanked and anonymous entries removed.
         var canViewSensitive = HasPermission(RatingApproverPermission);
@@ -201,7 +204,7 @@ public class ReviewsController : ControllerBase
             }
         }
 
-        return Ok(new { review, template, breakdown, competencies, goals, feedback360 = feedback, auditLog, calibration, appeal });
+        return Ok(new { review, template, breakdown, competencies, goals, feedback360 = feedback, auditLog, calibration, appeal, goalKpi });
     }
 
     // ── Self-assessment ────────────────────────────────────────────────────────
@@ -237,6 +240,8 @@ public class ReviewsController : ControllerBase
             .FirstOrDefaultAsync(c => c.Id == review.CycleId && c.TenantId == tenantId, ct);
         if (cycle is not null && cycle.Status is not ("Active" or "InReview"))
             return BadRequest(new { message = $"Performance cycle is in '{cycle.Status}' status. Self-assessment requires an Active or InReview cycle." });
+        if (ScoreRangeRefusal(("KPI", req.KpiScore), ("Competency", req.CompetencyScore), ("Productivity", req.ProductivityScore)) is { } outOfRange)
+            return outOfRange;
 
         var old = review.SelfAssessmentNotes;
         review.SelfAssessmentNotes         = req.Notes;
@@ -321,9 +326,27 @@ public class ReviewsController : ControllerBase
         if (cycle is not null && cycle.Status is not ("InReview" or "Active" or "Calibration"))
             return BadRequest(new { message = $"Performance cycle is in '{cycle.Status}' status. Manager review requires the cycle to be InReview or Active." });
 
+        if (ScoreRangeRefusal(("KPI", req.KpiScore), ("Competency", req.CompetencyScore), ("Attendance", req.AttendanceScore),
+                ("Productivity", req.ProductivityScore), ("Feedback", req.FeedbackScore), ("Discipline", req.DisciplineScore)) is { } outOfRange)
+            return outOfRange;
+
+        // KPI GOALS FEED THE KPI SCORE. When the employee has agreed (approved, not cancelled) goals in this cycle, the
+        // KPI score is their weighted achievement and the weights must make up the whole scorecard. A typed number
+        // beside them was never compared with them. No goals in the cycle: the reviewer's KPI score stands.
+        var goalKpi = await GoalKpi.ForReviewAsync(_db, tenantId, review.EmployeeId, review.CycleId, ct);
+        if (goalKpi is not null && goalKpi.TotalWeight != 100m)
+            return Conflict(new
+            {
+                error = "goal_weights_not_100",
+                message = $"This employee's agreed goals in the cycle carry {goalKpi.TotalWeight:0.##}% of the scorecard. Their weights must " +
+                          "total 100% before the review can be submitted: change a goal's weight, or approve or cancel a goal.",
+                totalWeight = goalKpi.TotalWeight,
+                goalCount = goalKpi.GoalCount,
+            });
+
         var oldScore = review.FinalScore.ToString("F2");
 
-        review.KpiScore          = req.KpiScore;
+        review.KpiScore          = goalKpi?.KpiScore ?? req.KpiScore;
         review.CompetencyScore   = req.CompetencyScore;
         review.AttendanceScore   = req.AttendanceScore;
         review.ProductivityScore = req.ProductivityScore;
@@ -388,6 +411,9 @@ public class ReviewsController : ControllerBase
             return BadRequest(SubjectDecisionBar.Refusal("You cannot change the score of your own appraisal. Ask another HR administrator."));
         if (string.IsNullOrWhiteSpace(req.Reason))
             return BadRequest(new { message = "A reason is required for any score override." });
+        if (ScoreRangeRefusal(("KPI", req.KpiScore), ("Competency", req.CompetencyScore), ("Attendance", req.AttendanceScore),
+                ("Productivity", req.ProductivityScore), ("Feedback", req.FeedbackScore), ("Discipline", req.DisciplineScore)) is { } outOfRange)
+            return outOfRange;
 
         var old = $"KPI:{review.KpiScore},Comp:{review.CompetencyScore},Att:{review.AttendanceScore}," +
                   $"Prod:{review.ProductivityScore},FB:{review.FeedbackScore},Disc:{review.DisciplineScore}";
@@ -694,6 +720,20 @@ public class ReviewsController : ControllerBase
             review.FinalScore = 0m; review.FinalRating = string.Empty; review.CalibrationAdjustment = 0m;
         }
         return released;
+    }
+
+    /// <summary>A 400 naming the first component score outside 0-100, or null when all are in range (absent = not given).</summary>
+    private BadRequestObjectResult? ScoreRangeRefusal(params (string Name, decimal? Value)[] scores)
+    {
+        foreach (var (name, value) in scores)
+            if (value is decimal v && (v < 0m || v > 100m))
+                return BadRequest(new
+                {
+                    error = "score_out_of_range",
+                    message = $"The {name} score must be between 0 and 100 (received {v:0.##}).",
+                    component = name,
+                });
+        return null;
     }
 
     private bool HasPermission(string permission) =>

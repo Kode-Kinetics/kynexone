@@ -8,6 +8,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Models;
 
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Performance;
 
 namespace Zayra.Api.Controllers.Performance;
 
@@ -93,6 +94,7 @@ public class GoalsController : ControllerBase
         var employee = await _db.Employees.AsNoTracking()
             .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == req.EmployeeId && !e.IsDeleted, ct);
         if (employee is null) return BadRequest(new { message = "Employee not found." });
+        if (await CycleRefusalAsync(tenantId, req.CycleId, ct) is { } badCycle) return badCycle;
 
         var goal = new EmployeeGoal
         {
@@ -137,6 +139,11 @@ public class GoalsController : ControllerBase
         if (!scope.CanAccessEmployee(goal.EmployeeId))
             return NotFound(); // out of scope reads as a wrong id (ScopedRecordLookup's rule)
         if (WeightRefusal(req.Weight) is { } weightRefusal) return weightRefusal;
+        if (await CycleRefusalAsync(tenantId, req.CycleId, ct) is { } badCycle) return badCycle;
+        // The cycle a goal scores in is fixed once it is agreed: moving an approved goal would change two scorecards
+        // behind the approver's back. A draft can still be moved.
+        if (!goal.ManagerApproved && req.CycleId is not null) goal.CycleId = req.CycleId;
+        if (goal.ManagerApproved && await WeightCapRefusalAsync(tenantId, goal, req.Weight, ct) is { } overCap) return overCap;
 
         goal.Title           = req.Title;
         goal.Description     = req.Description ?? string.Empty;
@@ -247,6 +254,7 @@ public class GoalsController : ControllerBase
                 message = $"Only a draft goal can be approved (this one is {goal.Status}).",
                 status = goal.Status,
             });
+        if (await WeightCapRefusalAsync(tenantId, goal, goal.Weight, ct) is { } overCap) return overCap;
         goal.Status             = "Active";
         goal.ManagerApproved    = true;
         goal.ApprovedByUserId   = userId;
@@ -257,6 +265,31 @@ public class GoalsController : ControllerBase
 
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// A goal's weight is its share of the employee's KPI scorecard in its cycle (GoalKpi), so the agreed goals of one
+    /// cycle may not carry more than 100% between them. Goals with no cycle are not part of any scorecard.
+    /// </summary>
+    private async Task<IActionResult?> WeightCapRefusalAsync(Guid tenantId, EmployeeGoal goal, decimal weight, CancellationToken ct)
+    {
+        if (goal.CycleId is not Guid cycleId) return null;
+        var others = await GoalKpi.AgreedWeightExceptAsync(_db, tenantId, goal.EmployeeId, cycleId, goal.Id, ct);
+        if (others + weight <= 100m) return null;
+        return Conflict(new
+        {
+            error = "goal_weights_exceed_100",
+            message = $"This employee's agreed goals in the cycle already carry {others:0.##}% of the scorecard; this goal's " +
+                      $"{weight:0.##}% would take it to {others + weight:0.##}%. Lower a weight first: the weights must total 100%.",
+            agreedWeight = others,
+            weight,
+        });
+    }
+
+    /// <summary>A goal's cycle must be a cycle of this tenant.</summary>
+    private async Task<IActionResult?> CycleRefusalAsync(Guid tenantId, Guid? cycleId, CancellationToken ct) =>
+        cycleId is Guid id && !await _db.PerformanceCycles.AsNoTracking().AnyAsync(c => c.Id == id && c.TenantId == tenantId, ct)
+            ? BadRequest(new { error = "goal_cycle_not_found", message = "The performance cycle for this goal was not found." })
+            : null;
 
     /// <summary>A goal's weight is its share of the employee's scorecard, in percent.</summary>
     private BadRequestObjectResult? WeightRefusal(decimal weight) =>
