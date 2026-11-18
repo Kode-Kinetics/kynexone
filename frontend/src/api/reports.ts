@@ -88,7 +88,14 @@ export interface AnalyticsKPIs {
   payroll: { lastRunYear?: number | null; lastRunMonth?: number | null; lastRunStatus?: string | null; totalNetSalary?: number | null };
   compliance: { visasExpiring: number | null; passportsExpiring: number | null };
   recruitment: { openPositions: number | null; pendingApplications: number | null };
-  financial: { activeLoans: number | null; outstandingLoanBalance: number | null };
+  financial: {
+    /** Open loans: Active and Overdue. */
+    activeLoans: number | null;
+    /** The single total, only when the loan book is in one currency (null when it spans several). */
+    outstandingLoanBalance: number | null;
+    loanCurrencyCode?: string | null;
+    outstandingLoanBalanceByCurrency?: { currency: string; amount: number; count: number }[] | null;
+  };
   generatedAt: string;
 }
 

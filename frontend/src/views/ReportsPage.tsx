@@ -1,5 +1,6 @@
 'use client';
 
+import { moneyByCurrency } from '../lib/exitDebts';
 import { useConfirm } from '../components/ui/useConfirm';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiErrorReason, notifyApiError } from '../api/client';
@@ -212,8 +213,11 @@ function AnalyticsDashboard() {
             <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Finance & Compliance</h3>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <KpiCard label={t('Pending OT')} value={kpis.overtime.pendingOT} definition={t('Overtime requests waiting for a decision.')} />
-              <KpiCard label={t('Active Loans')} value={kpis.financial.activeLoans} sub={t('Outstanding: {amount}', { amount: fmt(kpis.financial.outstandingLoanBalance) })}
-                definition={t('Active employee loans. Outstanding is what is still to be repaid on them.')}
+              <KpiCard label={t('Active Loans')} value={kpis.financial.activeLoans} sub={(kpis.financial.outstandingLoanBalanceByCurrency?.length ?? 0) > 1
+                  // Several currencies: one figure per currency, never one total adding them together.
+                  ? t('Outstanding by currency: {amounts}', { amounts: moneyByCurrency(kpis.financial.outstandingLoanBalanceByCurrency ?? [], (n, c) => `${c} ${fmt(n)}`) ?? '—' })
+                  : t('Outstanding: {amount}', { amount: fmt(kpis.financial.outstandingLoanBalance) })}
+                definition={t('Open employee loans, overdue ones included. Outstanding is what is still to be repaid on them, per currency.')}
                 drill={{ href: '/reports?report=finance.loan-balance', label: t('Open the Loan Balance report') }} />
               <KpiCard label={t('Visas Expiring (30d)')} value={kpis.compliance.visasExpiring} definition={t('Active visas that expire in the next 30 days.')} />
               <KpiCard label={t('Passports Expiring (30d)')} value={kpis.compliance.passportsExpiring} definition={t('Active passports that expire in the next 30 days.')} />

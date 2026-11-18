@@ -576,18 +576,38 @@ public partial class LoansController : ControllerBase
             .Where(x => x.TenantId == tid && x.SourceModule == "Loan" && (loanIds.Contains(x.SourceEntityId) || receiptIds.Contains(x.SourceEntityId)))
             .ToListAsync(ct);
 
+        // Amounts per currency: a loan book in several currencies has no single total, so the totals below are null then and
+        // ByCurrency carries the figures. A loan with no currency of its own is in its company's (or the tenant's) currency.
+        static bool Disbursed(EmployeeLoan l) => l.DisbursementDate.HasValue || l.Status is "Active" or "Settled" or "Overdue" or "Closed";
+        var companyIds = loans.Where(x => x.CompanyId.HasValue).Select(x => x.CompanyId!.Value).Distinct().ToList();
+        var companyCurrency = companyIds.Count == 0 ? new Dictionary<Guid, string>() : await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tid && companyIds.Contains(c.Id)).ToDictionaryAsync(c => c.Id, c => c.DefaultCurrency, ct);
+        var tenantCurrency = await GlAccountResolver.ResolveCurrencyAsync(_db, tid, null, ct);
+        string CurrencyOf(EmployeeLoan l) => !string.IsNullOrWhiteSpace(l.Currency) ? l.Currency!
+            : l.CompanyId is Guid c && companyCurrency.TryGetValue(c, out var cc) ? cc : tenantCurrency;
+        var byCurrency = loans.GroupBy(CurrencyOf).OrderBy(g => g.Key, StringComparer.Ordinal).Select(g => new
+        {
+            Currency = g.Key, Count = g.Count(),
+            Disbursed = g.Where(Disbursed).Sum(x => x.ApprovedAmount),
+            Outstanding = g.Sum(x => x.OutstandingBalance),
+            Repaid = g.Sum(x => x.TotalRepaid),
+        }).ToList();
+        var oneCurrency = byCurrency.Count <= 1;
         var summary = new
         {
             GeneratedAtUtc = DateTime.UtcNow,
             Period = period ?? "All",
             TotalLoans = loans.Count,
             ActiveLoans = loans.Count(x => x.Status == "Active"),
+            OverdueLoans = loans.Count(x => x.Status == "Overdue"),
             SettledLoans = loans.Count(x => x.Status == "Settled"),
             PendingLoans = loans.Count(x => x.Status == "Pending"),
             ApprovedAwaitingDisbursement = loans.Count(x => x.Status == "Approved"),
-            TotalDisbursed = loans.Where(x => x.DisbursementDate.HasValue || x.Status is "Active" or "Settled" or "Overdue" or "Closed").Sum(x => x.ApprovedAmount),
-            TotalOutstanding = loans.Sum(x => x.OutstandingBalance),
-            TotalRepaid = loans.Sum(x => x.TotalRepaid),
+            CurrencyCode = oneCurrency ? byCurrency.FirstOrDefault()?.Currency : null,
+            TotalDisbursed = oneCurrency ? loans.Where(Disbursed).Sum(x => x.ApprovedAmount) : (decimal?)null,
+            TotalOutstanding = oneCurrency ? loans.Sum(x => x.OutstandingBalance) : (decimal?)null,
+            TotalRepaid = oneCurrency ? loans.Sum(x => x.TotalRepaid) : (decimal?)null,
+            ByCurrency = byCurrency,
             GlEntriesCount = glEntries.Count,
             Reconciliation = loans.Select(l => new
             {

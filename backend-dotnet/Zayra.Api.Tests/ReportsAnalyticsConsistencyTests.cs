@@ -122,7 +122,7 @@ public sealed class ReportsAnalyticsConsistencyTests
         { "payroll", ["lastRunYear", "lastRunMonth", "lastRunStatus", "totalNetSalary", "currencyCode", "runCount", "byCurrency"], "payroll.read" },
         { "compliance", ["visasExpiring", "passportsExpiring"], "compliance.read" },
         { "recruitment", ["openPositions", "pendingApplications"], "recruitment.read" },
-        { "financial", ["activeLoans", "outstandingLoanBalance"], "loans.read" },
+        { "financial", ["activeLoans", "outstandingLoanBalance", "loanCurrencyCode", "outstandingLoanBalanceByCurrency"], "loans.read" },
     };
 
     [Fact]

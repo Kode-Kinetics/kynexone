@@ -1,5 +1,6 @@
 'use client';
 
+import { moneyByCurrency } from '../lib/exitDebts';
 import { useCallback, useEffect, useState } from 'react';
 import { apiErrorReason, notifyApiError } from '../api/client';
 import { TransliterateButton } from '../components/TransliterateButton';
@@ -1841,6 +1842,12 @@ function AuditReportTab() {
   const { currencyCode } = useTenantSettings();
   const fx = useFormat();
   const fmt = (n: number) => fx.plain.money(n, currencyCode);
+  // A loan-book amount: the single total when the book is in one currency, otherwise one figure per currency.
+  const auditMoney = (audit: { byCurrency?: { currency: string; [k: string]: number | string }[] } & Record<string, unknown>, total: string, part: string) => {
+    const rows = (audit.byCurrency ?? []).map(r => ({ currency: r.currency, amount: Number(r[part] ?? 0) }));
+    if (rows.length > 1) return moneyByCurrency(rows, (n, c) => fx.plain.money(n, c)) ?? '—';
+    return fx.plain.money(Number(audit[total] ?? 0), rows[0]?.currency ?? (audit.currencyCode as string | undefined) ?? currencyCode);
+  };
   const [loanAudit, setLoanAudit] = useState<any>(null);
   const [advanceAudit, setAdvanceAudit] = useState<any>(null);
   const [bonusAudit, setBonusAudit] = useState<any>(null);
@@ -1893,8 +1900,10 @@ function AuditReportTab() {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <SummaryCard label={t('Total Loans')} value={loanAudit.totalLoans} icon={CreditCard} color="text-blue-600 dark:text-blue-400" />
             <SummaryCard label={t('Active')} value={loanAudit.activeLoans} icon={TrendingUp} color="text-emerald-600 dark:text-emerald-400" />
-            <SummaryCard label={t('Total Disbursed')} value={fmt(loanAudit.totalDisbursed)} icon={DollarSign} color="text-sapphire" />
-            <SummaryCard label={t('Outstanding')} value={fmt(loanAudit.totalOutstanding)} icon={AlertTriangle} color="text-amber-600 dark:text-amber-400" />
+            {/* Amounts per currency: a book in several currencies has no single total (the server sends null for it). */}
+            <SummaryCard label={t('Total Disbursed')} value={auditMoney(loanAudit, 'totalDisbursed', 'disbursed')} icon={DollarSign} color="text-sapphire" />
+            <SummaryCard label={t('Outstanding')} value={auditMoney(loanAudit, 'totalOutstanding', 'outstanding')} icon={AlertTriangle} color="text-amber-600 dark:text-amber-400" />
+            {(loanAudit.overdueLoans ?? 0) > 0 && <SummaryCard label={t('Overdue loans')} value={loanAudit.overdueLoans} icon={AlertTriangle} color="text-rose-600 dark:text-rose-400" />}
           </div>
           <div className="surface overflow-hidden">
             <p className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">{t('Reconciliation — Loan Register')}</p>
