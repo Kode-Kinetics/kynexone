@@ -119,6 +119,9 @@ async function boot(page: Page, locale: Locale, permissions: string[], url: stri
   return { errors, calls };
 }
 
+/** The form control a field label names (a required mark or an `i` button beside the label never matches). */
+const control = (scope: ReturnType<Page['getByTestId']>, label: string) => scope.getByLabel(label).and(scope.locator('select, input, textarea'));
+
 const HR = ['entitlements.read', 'entitlements.manage'];
 const FINANCE = ['payroll.approve'];
 const EMPLOYEE = ['ess.read', 'ess.write'];
@@ -153,17 +156,17 @@ for (const locale of ['en', 'ar'] as const) {
       const { errors, calls } = await boot(page, locale, HR, '/benefits/usage');
       await page.getByTestId('usage-row').filter({ hasText: educationName(locale) }).getByRole('button', { name: say(locale, 'Request a benefit for {name}', { name: 'Mohammed Abdelrahman' }) }).click();
       const dialog = page.getByTestId('usage-request-dialog');
-      await dialog.getByLabel(say(locale, 'Benefit')).selectOption('EDUCATION');
+      await control(dialog, say(locale, 'Benefit')).selectOption('EDUCATION');
       await expect(page.getByTestId('usage-request-left')).toBeVisible();
       await page.getByTestId('usage-request-submit').click();
       await expect(dialog.getByText(say(locale, 'Choose the child this claim is for.'))).toBeVisible();
       await expect(dialog.getByText(say(locale, 'Give the academic year the fees are for.'))).toBeVisible();
       expect(calls).toHaveLength(0);
-      await dialog.getByLabel(say(locale, 'Child'), { exact: true }).selectOption('d-son');
-      await dialog.getByLabel(say(locale, 'Amount ({currency})', { currency: 'SAR' })).fill('7500');
-      await dialog.getByLabel(say(locale, 'Academic year')).fill('2026/2027');
-      await dialog.getByLabel(say(locale, 'School')).fill('Al Noor International School');
-      await dialog.getByLabel(say(locale, 'Evidence reference'), { exact: true }).fill('INV-9');
+      await control(dialog, say(locale, 'Child')).selectOption('d-son');
+      await control(dialog, say(locale, 'Amount ({currency})', { currency: 'SAR' })).fill('7500');
+      await control(dialog, say(locale, 'Academic year')).fill('2026/2027');
+      await control(dialog, say(locale, 'School')).fill('Al Noor International School');
+      await control(dialog, say(locale, 'Evidence reference')).fill('INV-9');
       await shot(page, `hr-request-education-${locale}`);
       await page.getByTestId('usage-request-submit').click();
       await expect(dialog).toHaveCount(0);
@@ -181,10 +184,10 @@ for (const locale of ['en', 'ar'] as const) {
         : route.fallback());
       await page.getByTestId('usage-row').filter({ hasText: ticketName(locale) }).getByRole('button', { name: say(locale, 'Request a benefit for {name}', { name: 'Mohammed Abdelrahman' }) }).click();
       const dialog = page.getByTestId('usage-request-dialog');
-      await dialog.getByLabel(say(locale, 'Benefit')).selectOption('AIR_TICKET');
-      await dialog.getByLabel(say(locale, 'Who it is for'), { exact: true }).selectOption('d-son');
-      await dialog.getByLabel(say(locale, 'Number of tickets or items')).fill('1');
-      await dialog.getByLabel(say(locale, 'Evidence reference'), { exact: true }).fill('BKG-1');
+      await control(dialog, say(locale, 'Benefit')).selectOption('AIR_TICKET');
+      await control(dialog, say(locale, 'Who it is for')).selectOption('d-son');
+      await control(dialog, say(locale, 'Number of tickets or items')).fill('1');
+      await control(dialog, say(locale, 'Evidence reference')).fill('BKG-1');
       await page.getByTestId('usage-request-submit').click();
       await expect(page.getByTestId('usage-request-error')).toHaveText(say(locale, 'The grade’s limit of dependants for this period is reached. Use a child or traveller already named.'));
       expect(errors).toEqual([]);
@@ -217,10 +220,10 @@ for (const locale of ['en', 'ar'] as const) {
       await shot(page, `ess-my-benefits-${locale}-desktop`);
       await card.getByRole('button', { name: say(locale, 'Request a benefit') }).click();
       const dialog = page.getByTestId('usage-request-dialog');
-      await dialog.getByLabel(say(locale, 'Benefit')).selectOption('AIR_TICKET');
-      await dialog.getByLabel(say(locale, 'Who it is for'), { exact: true }).selectOption('d-wife');
-      await dialog.getByLabel(say(locale, 'Number of tickets or items')).fill('1');
-      await dialog.getByLabel(say(locale, 'Evidence reference'), { exact: true }).fill('BKG-55');
+      await control(dialog, say(locale, 'Benefit')).selectOption('AIR_TICKET');
+      await control(dialog, say(locale, 'Who it is for')).selectOption('d-wife');
+      await control(dialog, say(locale, 'Number of tickets or items')).fill('1');
+      await control(dialog, say(locale, 'Evidence reference')).fill('BKG-55');
       await shot(page, `ess-request-${locale}`);
       await page.getByTestId('usage-request-submit').click();
       await expect(dialog).toHaveCount(0);
