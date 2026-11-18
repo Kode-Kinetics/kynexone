@@ -308,7 +308,7 @@ test.describe('a bank rejection is never worded as returned (W1)', () => {
     expect(payOutLabel(identity, p)).toBe(`1 ${REJECTED_EN}`);
     expect(payOutLabel(arabic, p)).toBe(`1 ${REJECTED_AR}`);
     expect(payOutLabel(identity, p)).not.toMatch(/returned/);
-    expect(payOutTone(p)).toBe('warning');
+    expect(payOutTone(p)).toBe('danger');
     expect(confirmedResponsePurpose(identity, p)).not.toMatch(/returned/);
     expect(confirmedResponsePurpose(arabic, p)).not.toMatch(/المُعادة|مُعادة/);
   });
@@ -342,5 +342,25 @@ test.describe('a rejected file does not claim nobody was paid (W2)', () => {
   test('no catalogue key still says no one was paid', () => {
     expect(Object.keys(LOCALE_DICTS.ar).filter(k => /No one in it was paid/.test(k))).toEqual([]);
     expect(Object.values(LOCALE_DICTS.ar).filter(v => /لم يُدفع لأي أحد/.test(v))).toEqual([]);
+  });
+});
+
+test.describe('the bank-response bar and chip tell a rejection from a return (W6)', () => {
+  const mixed = [{ status: 'Paid', amount: 100 }, { status: 'Rejected', amount: 40 }, { status: 'Returned', amount: 60 }];
+  const confirmed = (recs: { status: string; amount: number }[]) => derivePayOut({ run: RUN, batches: [sub('Accepted')], can: ALL, records: recs });
+
+  test('chip tone: danger when any payment was rejected, warning when only returned, success when clean', () => {
+    expect(payOutTone(confirmed(mixed))).toBe('danger');
+    expect(payOutTone(confirmed([{ status: 'Paid', amount: 100 }, { status: 'Rejected', amount: 40 }]))).toBe('danger');
+    expect(payOutTone(confirmed([{ status: 'Paid', amount: 100 }, { status: 'Returned', amount: 60 }]))).toBe('warning');
+    expect(payOutTone(confirmed([{ status: 'Paid', amount: 100 }]))).toBe('success');
+  });
+
+  test('chip tone: danger when the rejection count comes from the batch list, and when the whole file was rejected', () => {
+    const fromList = derivePayOut({ run: RUN, batches: [sub('Accepted', { ...ALL_PAID, unresolvedRejections: { count: 2, total: 800 } })], can: ALL });
+    expect(payOutTone(fromList)).toBe('danger');
+    const fileRejected = derivePayOut({ run: RUN, batches: [sub('Rejected', { wpsRejectionReason: 'Invalid MOL establishment id' })], can: ALL });
+    expect(fileRejected.status).toBe('rejected');
+    expect(payOutTone(fileRejected)).toBe('danger');
   });
 });

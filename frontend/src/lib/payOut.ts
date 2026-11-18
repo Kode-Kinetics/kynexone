@@ -314,7 +314,10 @@ export function payOutTone(p: PayOut): PayOutTone {
     case 'attention': case 'rejected': return 'danger';
     case 'created': case 'downloaded': return 'neutral';
     case 'submitted': return 'info';
-    case 'confirmed': return p.returned === 0 && (p.rejected ?? 0) === 0 ? 'success' : p.returned === undefined ? 'info' : 'warning';
+    case 'confirmed':
+      // A rejection is money the bank refused (danger); a return alone needs attention (warning).
+      if ((p.rejected ?? 0) > 0) return 'danger';
+      return p.returned === 0 ? 'success' : p.returned === undefined ? 'info' : 'warning';
     case 'settled': return 'success';
   }
 }
