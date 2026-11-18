@@ -78,6 +78,40 @@ public class OffboardingController : ControllerBase
         return o is null ? NotFound() : Ok(o);
     }
 
+    /// <summary>
+    /// Every loan and salary advance the leaver still owes, whatever its repayment method, held loans flagged
+    /// (<see cref="Zayra.Api.Infrastructure.Payroll.LoanRecoveryScope"/>), so the clearance checklist shows a debt the final
+    /// settlement will not recover instead of letting the employee leave with it unseen. Read-only.
+    ///
+    /// <para>Who may read it: an offboarding reader (the gate of <see cref="Get"/>) who may also see loan balances, through the
+    /// loan book (loans.read / loans.write) or the final settlement, whose plan shows the loan recovery (payroll.approve).
+    /// Company scope is the caller's own query filters, as for the offboarding and the settlement plan.</para>
+    /// </summary>
+    [HttpGet("{id:guid}/open-debts")]
+    [HasPermission("employees.write", "payroll.approve")]
+    public async Task<IActionResult> OpenDebts(Guid id, CancellationToken ct)
+    {
+        if (!User.HasPermission("loans.read") && !User.HasPermission("loans.write") && !User.HasPermission("payroll.approve"))
+            return Forbid();
+        var tenantId = this.GetTenantId()!.Value;
+        var employeeId = await _db.EmployeeOffboardings.AsNoTracking()
+            .Where(x => x.Id == id && x.TenantId == tenantId)
+            .Select(x => (int?)x.EmployeeId)
+            .FirstOrDefaultAsync(ct);
+        if (employeeId is null) return NotFound();
+        var items = await Zayra.Api.Infrastructure.Payroll.LoanRecoveryScope.ListAsync(_db, tenantId, employeeId.Value, null, allCompanies: true, ct);
+        // A single total only when every debt is in one currency; amounts in different currencies are never added.
+        var currencies = items.Select(x => x.Currency).Distinct().ToList();
+        var single = currencies.Count <= 1;
+        return Ok(new
+        {
+            items,
+            currencyCode = single ? currencies.FirstOrDefault() : null,
+            totalOutstanding = single ? Math.Round(items.Sum(x => x.OutstandingBalance), 2) : (decimal?)null,
+            heldOutstanding = single ? Math.Round(items.Where(x => x.Held).Sum(x => x.OutstandingBalance), 2) : (decimal?)null,
+        });
+    }
+
     /// <summary>Attrition insight: in-notice/completed counts, avg exit rating, and reasons breakdown.</summary>
     [HttpGet("summary")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]

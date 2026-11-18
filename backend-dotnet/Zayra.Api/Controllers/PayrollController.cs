@@ -4894,8 +4894,10 @@ public partial class PayrollController : ControllerBase
         // names the candidates; the tracked rows are read after the locks, so the residual is what payroll left, and payroll, if
         // it comes second, sees the debt already moved. Lock order: the caller holds the batch-payment lock (and, for the bank
         // settlement, the run row); the debt locks come next, loans then advances, each ascending (AcquireDebtLocksAsync).
+        // Every open loan of the leaver not on hold, whatever its repayment method: the same set the settlement run recovered from
+        // (LoanRecoveryScope). A held loan stays open on the loan, as the plan warned.
         System.Linq.Expressions.Expression<Func<EmployeeLoan, bool>> openLoan = l =>
-            l.TenantId == tenantId && l.CompanyId == run.CompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null
+            l.TenantId == tenantId && l.CompanyId == run.CompanyId && !l.IsDeleted && l.CollectionStatus != LoanRecoveryScope.OnHold && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null
             && employeeIds.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0;
         // Only the paying company's advances, as for loans: an advance another legal entity paid (an employee who moved) is that
         // entity's 1410 receivable; this company's settlement neither reclassifies nor reports it. A legacy advance with no company
@@ -9298,7 +9300,8 @@ public partial class PayrollController : ControllerBase
         decimal UnpaidWagesAmount, Guid? WagesPaidByRunId, DateOnly? WagesPaidThroughDate,
         decimal WageBaseDeltaAmount,
         List<FinalSettlementLine> Lines, List<string> Warnings,
-        int NoticePeriodDaysShort, int DaysInMonth, int DaysWorkedInMonth);
+        int NoticePeriodDaysShort, int DaysInMonth, int DaysWorkedInMonth,
+        List<ExitDebtLine> OpenDebts, decimal HeldDebt, decimal UnrecoveredDebt);
 
     private static void ApplyPlan(EmployeeFinalSettlement s, FinalSettlementPlan p)
     {
@@ -9483,6 +9486,11 @@ public partial class PayrollController : ControllerBase
             eosbResult = SafeEosbBreakdown(s.EosbResultJson),
             appliedRule = SafeEosbRule(s.EosbResultJson),
             warnings = plan?.Warnings ?? new List<string>(),
+            // Every open loan and advance of the leaver at this company (any repayment method, held ones flagged), what the
+            // settlement plans to take from each, the held total and what it cannot fund (null where not computed).
+            openDebts = plan?.OpenDebts,
+            heldDebt = plan?.HeldDebt,
+            unrecoveredDebt = plan?.UnrecoveredDebt,
             // Unpaid-leave arrears not yet collected, and leave refunds not yet paid (null where not computed).
             outstandingLeaveDeductions,
             lines = lines.Select(l => new
@@ -9653,10 +9661,13 @@ public partial class PayrollController : ControllerBase
 
         // ── PLANNED debt recovery. Planned only: the run RE-CAPS against the live balance and is the sole
         //    decrement path, so there is exactly one recovery mechanism and no double-recovery to guard. ─
-        var loans = await _db.EmployeeLoans.AsNoTracking()
-            .Where(l => l.TenantId == tenantId && l.CompanyId == companyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue")
-                     && l.EmployeeIntId == employee.Id && l.OutstandingBalance > 0)
+        // Every open loan of this company, whatever its repayment method (LoanRecoveryScope): the run recovers all of them from the
+        // final pay except a loan on hold, which is listed and warned about but never recovered here.
+        var openLoans = await LoanRecoveryScope.OpenLoans(_db.EmployeeLoans.AsNoTracking(), tenantId, companyId)
+            .Where(l => l.EmployeeIntId == employee.Id)
             .ToListAsync(ct);
+        var loans = openLoans.Where(l => !LoanRecoveryScope.IsHeld(l)).ToList();
+        var heldLoans = openLoans.Where(LoanRecoveryScope.IsHeld).ToList();
         // Exactly the advances the settlement run will recover (and the settlement payment will disposition): this company's, and
         // legacy advances with no company. One shared rule, so the plan cannot count an advance another legal entity owns.
         var advances = await Infrastructure.Payroll.AdvanceRecoveryScope.Query(_db, tenantId, companyId).AsNoTracking()
@@ -9728,18 +9739,20 @@ public partial class PayrollController : ControllerBase
 
         // Recovery is planned against what the settlement can actually fund, in a fixed order.
         var recoveryBudget = net;
+        var debtBudget = net;
         decimal loanPlan = 0m, advPlan = 0m, rcvPlan = 0m;
+        var plannedById = new Dictionary<Guid, decimal>();
         foreach (var l in loans.OrderBy(l => l.Id))
         {
-            if (recoveryBudget <= 0m) break;
-            var take = Math.Min(l.OutstandingBalance, recoveryBudget);
-            loanPlan += take; recoveryBudget -= take;
+            if (debtBudget <= 0m) break;
+            var take = Math.Min(l.OutstandingBalance, debtBudget);
+            loanPlan += take; debtBudget -= take; recoveryBudget -= take; plannedById[l.Id] = take;
         }
         foreach (var a in advances.OrderBy(a => a.Id))
         {
-            if (recoveryBudget <= 0m) break;
-            var take = Math.Min(a.OutstandingBalance, recoveryBudget);
-            advPlan += take; recoveryBudget -= take;
+            if (debtBudget <= 0m) break;
+            var take = Math.Min(a.OutstandingBalance, debtBudget);
+            advPlan += take; debtBudget -= take; recoveryBudget -= take; plannedById[a.Id] = take;
         }
         foreach (var r in receivables.OrderBy(r => r.CreatedAtUtc))
         {
@@ -9748,11 +9761,21 @@ public partial class PayrollController : ControllerBase
             rcvPlan += take; recoveryBudget -= take;
         }
         var totalDebt = Math.Round(loans.Sum(l => l.OutstandingBalance) + advances.Sum(a => a.OutstandingBalance), 2);
-        if (totalDebt > Math.Round(loanPlan + advPlan, 2))
-            warnings.Add($"{totalDebt - Math.Round(loanPlan + advPlan, 2):N2} of outstanding loan/advance cannot be " +
+        var unrecoveredDebt = Math.Max(0m, Math.Round(totalDebt - Math.Round(loanPlan + advPlan, 2), 2));
+        if (unrecoveredDebt > 0m)
+            warnings.Add($"{employee.FullName} ({employee.EmployeeCode}): {unrecoveredDebt:N2} {currency} of outstanding loan/advance cannot be " +
                          "funded by this settlement. It is NOT written off: when the settlement is paid, the residual " +
                          "is reclassified to the Employee Overpayment Receivable (1420) up to what 1400/1410 actually " +
                          "carries, and reported when it cannot be.");
+        var heldDebt = Math.Round(heldLoans.Sum(l => l.OutstandingBalance), 2);
+        if (heldDebt > 0m)
+            warnings.Add($"{employee.FullName} ({employee.EmployeeCode}): {heldDebt:N2} {currency} of loan balance is on hold " +
+                         $"({string.Join(", ", heldLoans.Select(l => l.LoanNumber))}) and is NOT recovered by this settlement. It stays " +
+                         "open on the loan until HR releases the hold or Finance records its recovery.");
+        // Every open loan and advance, held ones included, with what this settlement plans to take from each.
+        var openDebts = (await LoanRecoveryScope.ListAsync(_db, tenantId, employee.Id, companyId, allCompanies: false, ct))
+            .Select(d => d with { PlannedRecovery = Math.Round(plannedById.GetValueOrDefault(d.Id), 2) })
+            .ToList();
 
         // [FLAG-COMPLIANCE-KSA] Art. 88 — one week from the end of the contract, two where the WORKER
         // terminated it. Persisted so an overdue settlement is visible on the list view.
@@ -9807,7 +9830,8 @@ public partial class PayrollController : ControllerBase
             wageBaseDelta,
             lines, warnings,
             noticeDaysShort,
-            DateTime.DaysInMonth(lastDay.Year, lastDay.Month), lastDay.Day);
+            DateTime.DaysInMonth(lastDay.Year, lastDay.Month), lastDay.Day,
+            openDebts, heldDebt, unrecoveredDebt);
     }
 
     private Task<string> ResolveCurrencyAsync(Guid tenantId, CancellationToken ct)

@@ -41,6 +41,7 @@ import { glEosb } from './glEosb';
 import { glLeaveProvision } from './glLeaveProvision';
 import { belowMinimum } from './belowMinimum';
 import { loanBatchApprover } from './loanBatchApprover';
+import { loanExit } from './loanExit';
 import { deadEnds } from './deadEnds';
 import { leaveDocument } from './leaveDocument';
 import { recruitmentDemo } from './recruitmentDemo';
@@ -1705,6 +1706,7 @@ const en: Dict = {
   ...glLeaveProvision.en,
   ...belowMinimum.en,
   ...loanBatchApprover.en,
+  ...loanExit.en,
   ...deadEnds.en,
   ...leaveDocument.en,
   ...recruitmentDemo.en,
@@ -3309,6 +3311,7 @@ const ar: Dict = {
   ...glLeaveProvision.ar,
   ...belowMinimum.ar,
   ...loanBatchApprover.ar,
+  ...loanExit.ar,
   ...deadEnds.ar,
   ...leaveDocument.ar,
   ...recruitmentDemo.ar,
