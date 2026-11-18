@@ -39,7 +39,7 @@ test('the dictionaries carry the Release A strings', () => {
 
 test('Release A navigation is flag-gated, permission-gated, explained and translated', () => {
   // Admin screens are sidebar entries; the employee's own two are tabs inside Self-Service.
-  const menuPaths = ['/benefits/by-grade', '/contract-renewals'];
+  const menuPaths = ['/benefits/by-grade', '/benefits/usage', '/contract-renewals'];
   for (const path of menuPaths) {
     const item = navigationItems.find((i) => i.path === path);
     expect(item, path).toBeDefined();

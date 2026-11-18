@@ -72,6 +72,8 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Benefits', icon: HeartPulse, path: '/benefits', requiredPermissions: ['employees.write'], hiddenWhenFeatureKey: 'release_a' },
       // Release A (release_a opt-in flag): benefits by grade and contract renewals.
       { label: 'Benefits by grade', icon: Layers3, path: '/benefits/by-grade', requiredPermissions: ['entitlements.read'], requiredFeatureKey: 'release_a' },
+      // Benefit utilisation: HR reads and records with entitlements.*, Finance reads and approves with payroll.approve.
+      { label: 'Benefit usage', icon: Layers3, path: '/benefits/usage', requiredPermissions: ['entitlements.read', 'payroll.approve'], requiredFeatureKey: 'release_a' },
       { label: 'Contract renewals', icon: FileSignature, path: '/contract-renewals', requiredPermissions: ['contracts.renewal.read'], requiredFeatureKey: 'release_a' },
       // CMP (compensation opt-in flag): merit cycles, manager worksheets, pay benchmarks and pay equity.
       { label: 'Merit planning', icon: TrendingUp, path: '/compensation', requiredPermissions: ['compensation.read', 'compensation.plan', 'compensation.manage', 'compensation.approve', 'compensation.benchmarks.manage', 'compensation.equity.read'], requiredFeatureKey: 'compensation' },
@@ -144,6 +146,7 @@ export const navigationHints: Record<string, string> = {
   '/loans': 'Salary advances and loans, with their repayment schedules.',
   '/benefits': 'Benefit plans offered to employees, and who is enrolled.',
   '/benefits/by-grade': 'What each grade is entitled to — housing, transport, tickets, medical, education, per diem — per company.',
+  '/benefits/usage': 'Education and tickets used and left, per employee: a use is requested and Finance approves it.',
   '/contract-renewals': 'Contracts ending soon: what is due next, the legal deadline, and each renewal’s progress.',
   '/compensation': 'Merit cycles, manager worksheets within budget and guidelines, pay benchmarks and pay equity.',
   '/recruitment': 'Open positions, candidates and the hiring pipeline.',

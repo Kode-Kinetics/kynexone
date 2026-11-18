@@ -363,6 +363,7 @@ RLS: shape (a) for all three, plus the company-scope predicate for the two tier-
 | `employee_entitlements` | S | Labour-law evidence of the package agreed for each term. Anonymise with the employee only after the S minimum. |
 | `contract_renewal_cases` | S | Evidence of a renewal decision, its notice and its Qiwa outcome. The referenced Qiwa evidence and notice documents must be retained at least as long. |
 | `employee_salary_allowances` | S | Owner: **Payroll Engineering**. The monthly cash allowances a salary record pays; kept as long as the salary record it belongs to (RESTRICT FK). RLS shape (a). |
+| `benefit_usage_requests` | S | Requests to use frozen contract benefits (education, tickets), decided like a loan. Kept as long as the frozen `employee_entitlements` row it measures (RESTRICT FK); anonymise with the employee only after the S minimum. RLS shape (a) + company scope. |
 
 ### T. Selfie attendance and biometric consent (selfie attendance v2)
 

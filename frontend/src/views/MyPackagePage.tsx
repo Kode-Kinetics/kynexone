@@ -7,6 +7,7 @@ import { WhyPopover } from '../components/entitlements/WhyPopover';
 import { coverageText, date, essWhy, fill, reasonText, valueText, type FormatContext } from '../components/entitlements/packageFormat';
 import { useLocale } from '../contexts/LocaleContext';
 import { packageApi, type EssGroup, type EssPackage } from '../api/package';
+import { MyBenefitUsageCard } from '../components/entitlements/MyBenefitUsageCard';
 
 /**
  * My package / باقتي (Release A slice R2): the employee's own pay, contract benefits fixed for this contract year, and the
@@ -128,6 +129,7 @@ function MyPackage() {
           </ul>
         </section>
       ))}
+      <MyBenefitUsageCard />
     </div>
   );
 }
