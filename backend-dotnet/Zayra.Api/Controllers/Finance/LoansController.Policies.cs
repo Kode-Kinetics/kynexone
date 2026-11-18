@@ -108,23 +108,23 @@ public partial class LoansController
         [FromQuery] int? installments, [FromQuery] string repaymentMethod = "BankTransfer", [FromQuery] int? employeeIntId = null, CancellationToken ct = default)
     {
         var tid = GetTenantId();
-        var uid = GetUserId();
         if (!employeeIntId.HasValue)
-            employeeIntId = await _db.Employees.Where(x => x.TenantId == tid && x.UserAccountId == uid && !x.IsDeleted).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+            employeeIntId = await CallerEmployeeIdAsync(ct);
         if (!employeeIntId.HasValue) return BadRequest("A linked employee is required.");
         var scope = await _scopeService.ResolveAsync(User, tid, ct);
         if (!scope.CanAccessEmployee(employeeIntId.Value)) return Forbid();
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == employeeIntId.Value && !x.IsDeleted, ct);
         var type = await _db.LoanTypes.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == loanTypeId && !x.IsDeleted && x.IsActive, ct);
         if (employee == null || type == null) return NotFound();
-        if (!IsHrLoanActor() && !IsFinanceActor() && employee.UserAccountId != uid) return Forbid();
+        var isSelf = await IsCallerEmployeeAsync(employee.Id, ct);
+        if (!IsHrLoanActor() && !IsFinanceActor() && !isSelf) return Forbid();
         // No amount (or 0) = preview: the employee sees their limit as soon as they pick a type.
         var preview = amount is null or 0m;
         var result = await new LoanEligibilityService(_db).EvaluateAsync(tid, employee, type, amount ?? 0m, installments ?? 0,
             repaymentMethod, ct: ct, preview: preview);
         var policy = JsonSerializer.Deserialize<LoanPolicy>(result.PolicySnapshotJson)!;
         var canRequestException = !result.Eligible && policy.AllowExceptions && result.Codes.All(LoanLifecycleService.ExceptionCodes.Contains);
-        var maySeeSalary = IsHrLoanActor() || IsFinanceActor() || employee.UserAccountId == uid;
+        var maySeeSalary = IsHrLoanActor() || IsFinanceActor() || isSelf;
         decimal? monthlySalary = maySeeSalary ? result.MonthlySalary : null;
         // Salary-derived figures in the breakdown are the same salary monthlySalary already gates.
         var limits = (result.Limits ?? []).Select(x => maySeeSalary ? x : x with { SalaryBasisAmount = null }).ToList();

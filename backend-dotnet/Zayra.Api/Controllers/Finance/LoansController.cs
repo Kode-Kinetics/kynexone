@@ -101,12 +101,35 @@ public partial class LoansController : ControllerBase
 
     private bool CanReadLoanBook() => User.HasPermission("loans.read") || User.HasPermission("loans.write");
 
+    /// <summary>
+    /// Which employee the caller IS, the way advances, self-service and the data scope decide it: the login-to-employee link
+    /// (the employee_id claim, issued from employee_user_accounts, <see cref="Zayra.Api.Infrastructure.Common.CallerEmployeeResolver"/>), with the legacy
+    /// Employees.UserAccountId column as the fallback for a login linked only that way. A login linked only through the link
+    /// table (UserAccountId cleared, as NoLogin access and offboarding leave it) used to be refused its own loans.
+    /// </summary>
+    private async Task<int?> CallerEmployeeIdAsync(CancellationToken ct)
+    {
+        var tid = GetTenantId();
+        if (await Zayra.Api.Infrastructure.Common.CallerEmployeeResolver.ResolveAsync(_db, User, tid, ct) is int linked) return linked;
+        if (GetUserId() is not Guid uid) return null;
+        return await _db.Employees.Where(x => x.TenantId == tid && x.UserAccountId == uid && !x.IsDeleted).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+    }
+
+    /// <summary>True when the caller is this employee (link first, legacy column as fallback); grants owner-only access.</summary>
+    private async Task<bool> IsCallerEmployeeAsync(int? employeeIntId, CancellationToken ct)
+    {
+        if (employeeIntId is not int employeeId) return false;
+        var tid = GetTenantId();
+        if (await Zayra.Api.Infrastructure.Common.CallerEmployeeResolver.ResolveAsync(_db, User, tid, ct) == employeeId) return true;
+        return GetUserId() is Guid uid
+            && await _db.Employees.AnyAsync(x => x.TenantId == tid && x.Id == employeeId && x.UserAccountId == uid && !x.IsDeleted, ct);
+    }
+
     private async Task<bool> CanReadLoanAsync(EmployeeLoan loan, CancellationToken ct)
     {
         if (CanReadLoanBook()) return await CanAccessLoanAsync(loan, ct);
-        if (!User.HasPermission("loans.self") || GetUserId() is not { } userId || !loan.EmployeeIntId.HasValue) return false;
-        return await _db.Employees.AnyAsync(x => x.TenantId == GetTenantId() && x.Id == loan.EmployeeIntId
-            && x.UserAccountId == userId && !x.IsDeleted, ct);
+        if (!User.HasPermission("loans.self") || GetUserId() is null || !loan.EmployeeIntId.HasValue) return false;
+        return await IsCallerEmployeeAsync(loan.EmployeeIntId, ct);
     }
 
     [HttpGet]
@@ -125,8 +148,7 @@ public partial class LoansController : ControllerBase
         var q = _db.EmployeeLoans.Where(x => x.TenantId == tid && !x.IsDeleted);
         if (mine)
         {
-            var uid = GetUserId();
-            var ownId = await _db.Employees.Where(x => x.TenantId == tid && x.UserAccountId == uid && !x.IsDeleted).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+            var ownId = await CallerEmployeeIdAsync(ct);
             // IgnoreQueryFilters: an authenticated employee retains access to their own historical loans after a company transfer.
             // The server-resolved employee id, tenant and soft-delete predicates constrain this bypass to that owner only.
             q = ScopedBypass.TenantWide(_db.EmployeeLoans, tid, "Authenticated employee's own loan history across company transfer; employee id is server-resolved.").Where(x => x.TenantId == tid && !x.IsDeleted && ownId.HasValue && x.EmployeeIntId == ownId);
@@ -155,7 +177,7 @@ public partial class LoansController : ControllerBase
         var installments = await _db.LoanInstallments.Where(x => x.LoanId == id && x.TenantId == tid).OrderBy(x => x.InstallmentNumber).ToListAsync(ct);
         var approvals = await _db.LoanApprovals.Where(x => x.LoanId == id && x.TenantId == tid).OrderBy(x => x.StepOrder).ToListAsync(ct);
         var auditLogs = await _db.LoanAuditLogs.AsNoTracking().Where(x => x.LoanId == id && x.TenantId == tid).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
-        var ownLoan = await _db.Employees.AnyAsync(x => x.TenantId == tid && x.Id == loan.EmployeeIntId && x.UserAccountId == GetUserId() && !x.IsDeleted, ct);
+        var ownLoan = await IsCallerEmployeeAsync(loan.EmployeeIntId, ct);
         if (!IsHrLoanActor() && !IsFinanceActor() && !ownLoan)
         {
             // Salary-bearing lifecycle snapshots are not a team-manager entitlement. Redact a detached view, never stored audit evidence.
@@ -180,9 +202,9 @@ public partial class LoansController : ControllerBase
     {
         var tid = GetTenantId();
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
-        if (loan == null && GetUserId() is { } ownUserId)
+        if (loan == null && GetUserId() is not null)
         {
-            var ownEmployeeId = await _db.Employees.Where(x => x.TenantId == tid && x.UserAccountId == ownUserId && !x.IsDeleted).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+            var ownEmployeeId = await CallerEmployeeIdAsync(ct);
             // IgnoreQueryFilters: owner-only historical detail remains available across a legal-entity transfer.
             // Server-resolved employee identity plus tenant, loan id and soft-delete guards prevent arbitrary cross-company reads.
             loan = await ScopedBypass.TenantWide(_db.EmployeeLoans, tid, "Owner-only historical loan detail after transfer; tenant and linked employee are server-resolved.").FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid
@@ -224,7 +246,7 @@ public partial class LoansController : ControllerBase
         if (!IsRepaymentMethod(req.RepaymentMethod)) return BadRequest("Invalid repayment method.");
         if (req.EmployeeId == Guid.Empty && !req.EmployeeIntId.HasValue)
         {
-            var ownId = await _db.Employees.Where(x => x.TenantId == tid && x.UserAccountId == uid && !x.IsDeleted).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+            var ownId = await CallerEmployeeIdAsync(ct);
             if (!ownId.HasValue) return BadRequest("No linked employee account was found.");
             req = req with { EmployeeIntId = ownId };
         }
@@ -233,7 +255,7 @@ public partial class LoansController : ControllerBase
         var employee = identity.Employee!;
         var scope = await _scopeService.ResolveAsync(User, tid, ct);
         if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
-        if (employee.UserAccountId != uid && !IsHrLoanActor() && !IsFinanceActor()) return Forbid();
+        if (!IsHrLoanActor() && !IsFinanceActor() && !await IsCallerEmployeeAsync(employee.Id, ct)) return Forbid();
 
         var loanType = await _db.LoanTypes.FirstOrDefaultAsync(x => x.Id == req.LoanTypeId && x.TenantId == tid && !x.IsDeleted, ct);
         if (loanType == null || !loanType.IsActive) return NotFound("Loan type not found.");
