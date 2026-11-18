@@ -3430,7 +3430,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
                 </li>
               ))}
             </ul>
-            <p className="mt-2 text-meta text-fg-muted">{t('Paying again creates a new payment batch with a new file reference. Never upload this file again.')}</p>
+            <p className="mt-2 text-meta text-fg-muted">{t('Pay them in a new payment batch linked to the original batch. It gets a new file reference; never upload this file again.')}</p>
             {onNavigate && <button type="button" className="mt-2 text-body-sm font-medium text-primary underline-offset-2 hover:underline" onClick={() => onNavigate('payment-tracking')}>{t('Open Payment Tracking')}</button>}
           </div>
         )}
@@ -3461,7 +3461,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
       <ol className="space-y-3">
         {[
           [t('The bank pays and answers for each payment'), null],
-          [t('Record the bank’s response'), t('Record the bank’s response in Payment Tracking: confirmed, returned or rejected. Paying again creates a new payment batch with a new file reference. Never upload this file again.')],
+          [t('Record the bank’s response'), t('Record the bank’s response in Payment Tracking: confirmed, returned or rejected. Pay them in a new payment batch linked to the original batch. It gets a new file reference; never upload this file again.')],
           [t('Finance settles the payments'), t('Settle only payments the bank confirmed. Settling posts the net-pay settlement to the ledger and needs the payment settlement permission.')],
         ].map(([title, body], i) => (
           <li key={i} className="flex gap-3">

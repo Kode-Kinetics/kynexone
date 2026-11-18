@@ -383,3 +383,43 @@ test.describe('the bank-response bar and chip tell a rejection from a return (W6
     expect(src).toMatch(/role="progressbar"[^>]*className="[^"]*\bgap-px\b/);
   });
 });
+
+test.describe('one re-pay phrase: a new payment batch linked to the original batch (W7)', () => {
+  const EN_BAD = /\b(pay(ing)?|paid)\b[^.']{0,40}\bagain\b/i;
+  const AR_BAD = /(أعد|إعادة)\s*(ال)?(دفع|صرف)|ادفع\S*\s+مجددًا|تُدفع\S*\s+.{0,20}مجددًا/;
+  const NEW_AR = 'دفعة دفع جديدة مرتبطة بالدفعة الأصلية';
+  const confirmed = (recs: { status: string; amount: number }[]) => derivePayOut({ run: RUN, batches: [sub('Accepted')], can: ALL, records: recs });
+  const catalogues: Record<string, Record<string, string>> = { 'bankFileGuide.ar': bankFileGuide.ar, 'payrollUx.ar': payrollUx.ar };
+
+  test('no string in the touched catalogues, EN keys or AR values, says pay again / paid again / paying again', () => {
+    for (const [name, dict] of Object.entries(catalogues)) {
+      for (const [k, v] of Object.entries(dict)) {
+        expect(k, `${name} EN key`).not.toMatch(EN_BAD);
+        expect(v, `${name} AR value for "${k}"`).not.toMatch(AR_BAD);
+      }
+    }
+    for (const [k, v] of Object.entries(LOCALE_DICTS.ar)) {
+      if (/Payment Tracking|payment batch/.test(k)) { expect(k, 'EN key').not.toMatch(EN_BAD); expect(v, `AR for "${k}"`).not.toMatch(AR_BAD); }
+    }
+  });
+
+  test('no re-pay wording left in the screen and the lib that show it (text and source)', () => {
+    for (const f of ['../src/lib/payOut.ts', '../src/views/PayrollPage.tsx']) {
+      const src = fs.readFileSync(path.resolve(__dirname, f), 'utf8');
+      expect(src.match(/(Paying|Pay|pay|paid|Paid) (the returned ones |them |it )?again|paying again/g) ?? [], f).toEqual([]);
+    }
+  });
+
+  test('the response panel, What happens next and the Response step line name the new payment batch linked to the original, EN and AR', () => {
+    const panel = 'Pay them in a new payment batch linked to the original batch. It gets a new file reference; never upload this file again.';
+    for (const k of [panel, `Record the bank’s response in Payment Tracking: confirmed, returned or rejected. ${panel}`]) {
+      expect(LOCALE_DICTS.ar[k], k).toContain(NEW_AR);
+    }
+    const returned = confirmed([{ status: 'Paid', amount: 100 }, { status: 'Returned', amount: 60 }]);
+    expect(confirmedResponsePurpose(identity, returned)).toBe('The bank answered every payment. Pay the returned ones in a new payment batch linked to the original batch.');
+    expect(confirmedResponsePurpose(arabic, returned)).toContain(NEW_AR);
+    const rejected = confirmed([{ status: 'Paid', amount: 100 }, { status: 'Rejected', amount: 40 }]);
+    expect(confirmedResponsePurpose(identity, rejected)).toContain('pay them in a new payment batch linked to the original batch');
+    expect(confirmedResponsePurpose(arabic, rejected)).toContain(NEW_AR);
+  });
+});

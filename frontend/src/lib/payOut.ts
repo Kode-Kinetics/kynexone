@@ -241,7 +241,7 @@ export function derivePayOut(input: PayOutInput): PayOut {
     }
     const counts = { ...(answered !== undefined && total !== undefined ? { answered, total } : {}), ...(split ? { split } : {}), ...(returned !== undefined ? { returned } : {}), ...(rejected !== undefined ? { rejected } : {}) };
     if (waiting === false) {
-      // Every payment answered. Returned ones still need paying again (Payment Tracking), and returns not reported are not known to be
+      // Every payment answered. Returned ones are still to be paid in a new payment batch (Payment Tracking), and returns not reported are not known to be
       // zero: only a batch with NO returns is "done".
       const clean = returned === 0 && (rejected ?? 0) === 0;
       return result('confirmed', batch, [...front, clean ? step('response', 'done', 'confirmed') : step('response', 'current', 'here')],
@@ -364,8 +364,8 @@ export function bankResponseBuckets(t: Translate, split: PayOutSplit): BankRespo
 
 /** The line under the Response step once the bank answered every payment. */
 export function confirmedResponsePurpose(t: Translate, p: PayOut): string {
-  if ((p.rejected ?? 0) > 0) return t('The bank answered every payment. Some were rejected by the bank and not paid: check the bank statement, then pay them in a new payment batch.');
-  return (p.returned ?? 0) > 0 ? t('The bank answered every payment. Pay the returned ones again from Payment Tracking.') : t('The bank confirmed every payment.');
+  if ((p.rejected ?? 0) > 0) return t('The bank answered every payment. Some were rejected by the bank and not paid: check the bank statement, then pay them in a new payment batch linked to the original batch.');
+  return (p.returned ?? 0) > 0 ? t('The bank answered every payment. Pay the returned ones in a new payment batch linked to the original batch.') : t('The bank confirmed every payment.');
 }
 
 /** The line under the Response step when the bank rejected the whole file: the bank statement decides what was paid, never "no one". */
