@@ -391,7 +391,8 @@ for (const locale of LOCALES) {
       await expect(panel).toBeVisible({ timeout: 90_000 });
       await expect(panel).toContainText(say(locale, 'Zero net pay from a full month of unpaid leave'));
       await expect(panel).toContainText(say(locale, summary).replace('{count}', '1'));
-      const tab = page.getByRole('tabpanel');
+      // The panel and the findings list sit side by side in the validation tab (its tabpanel role is not guaranteed by the guided layout).
+      const tab = panel.locator('xpath=..');
       await expect(tab).toContainText(say(locale, row));
       await expect(tab).toContainText('Layla Al-Harbi');
       await expect(tab.getByText('Must be fixed')).toHaveCount(0);
