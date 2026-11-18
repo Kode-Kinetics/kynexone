@@ -266,7 +266,7 @@ public class PaymentBatchRejectedFieldsTests
             await Ctrl(db, w).UpdateWpsStatus(w.Batch.Id, new WpsStatusRequest(WpsStatuses.Reconciled, null), default)).Value);
 
         refused.GetProperty("error").GetString().Should().Be("payments_not_reconciled");
-        refused.GetProperty("message").GetString().Should().Contain("check the bank statement before paying again").And.NotContainEquivalentOf("never left");
-        refused.GetProperty("messageAr").GetString().Should().Contain("راجع كشف حساب البنك قبل إعادة الدفع");
+        refused.GetProperty("message").GetString().Should().Contain("check the bank statement before paying in a new payment batch").And.NotContainEquivalentOf("never left");
+        refused.GetProperty("messageAr").GetString().Should().Contain("راجع كشف حساب البنك قبل الدفع في دفعة دفع جديدة");
     }
 }

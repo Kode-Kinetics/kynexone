@@ -35,23 +35,23 @@ public static class BankStatusReasonCatalogue
     {
         // IncorrectAccountNumber
         ["AC01"] = new("The account number (IBAN) is wrong.", "رقم الحساب (الآيبان) غير صحيح.",
-            "Ask HR to correct the employee's IBAN, then pay this salary again.",
-            "اطلب من الموارد البشرية تصحيح آيبان الموظف ثم أعد دفع هذا الراتب."),
+            "Ask HR to correct the employee's IBAN, then pay this salary in a new payment batch linked to the original batch.",
+            "اطلب من الموارد البشرية تصحيح آيبان الموظف ثم ادفع هذا الراتب في دفعة دفع جديدة مرتبطة بالدفعة الأصلية."),
         // ClosedAccountNumber
         ["AC04"] = new("The account is closed.", "الحساب مغلق.",
-            "Check whether it is the employee's account or your paying account. If it is the employee's, ask HR for a new IBAN, then pay again.",
-            "تحقق هل هو حساب الموظف أم حساب الدفع لديكم. فإن كان حساب الموظف فاطلب من الموارد البشرية آيبانًا جديدًا ثم أعد الدفع."),
+            "Check whether it is the employee's account or your paying account. If it is the employee's, ask HR for a new IBAN, then pay it in a new payment batch linked to the original batch.",
+            "تحقق هل هو حساب الموظف أم حساب الدفع لديكم. فإن كان حساب الموظف فاطلب من الموارد البشرية آيبانًا جديدًا ثم ادفعه في دفعة دفع جديدة مرتبطة بالدفعة الأصلية."),
         // BlockedAccount
         ["AC06"] = new("The account is blocked.", "الحساب موقوف.",
-            "Check whether it is the employee's account or your paying account, and ask the bank what is needed to release it. Pay again once it is resolved.",
-            "تحقق هل هو حساب الموظف أم حساب الدفع لديكم، واسأل البنك عمّا يلزم لرفع الإيقاف، ثم أعد الدفع بعد المعالجة."),
+            "Check whether it is the employee's account or your paying account, and ask the bank what is needed to release it. Once it is resolved, pay in a new payment batch linked to the original batch.",
+            "تحقق هل هو حساب الموظف أم حساب الدفع لديكم، واسأل البنك عمّا يلزم لرفع الإيقاف، وبعد المعالجة ادفع في دفعة دفع جديدة مرتبطة بالدفعة الأصلية."),
         // InsufficientFunds
         ["AM04"] = new("There was not enough money in the paying account.", "الرصيد في حساب الدفع غير كافٍ.",
-            "Check the bank statement, add funds, and ask your bank or payroll team how to send the salaries again. Do not resend without checking.",
-            "راجع كشف حساب البنك وأودع المبلغ المطلوب، واسأل البنك أو فريق الرواتب عن طريقة إعادة إرسال الرواتب. لا تعد الإرسال قبل التحقق."),
+            "Check the bank statement, add funds, then pay the salaries in a new payment batch linked to the original batch. Do not create the new batch without checking.",
+            "راجع كشف حساب البنك وأودع المبلغ المطلوب، ثم ادفع الرواتب في دفعة دفع جديدة مرتبطة بالدفعة الأصلية. لا تنشئ الدفعة الجديدة قبل التحقق."),
         // Duplication: the same voice as DUPL, never "not paid" or "owed" (final gate P1-3).
         ["AM05"] = new(DuplicateEnglish, DuplicateArabic,
-            "Do not pay again until you have checked.", "لا تعد الدفع قبل التحقق من ذلك."),
+            "Do not create a new payment batch until you have checked.", "لا تنشئ دفعة دفع جديدة قبل التحقق من ذلك."),
         // InconsistentWithEndCustomer
         ["BE01"] = new("The name or ID does not match the account holder.", "الاسم أو رقم الهوية لا يطابق صاحب الحساب.",
             "Ask HR to check the employee's name, ID and IBAN against the bank's record.",
@@ -59,7 +59,7 @@ public static class BankStatusReasonCatalogue
         // DuplicatePayment. A duplicate refusal usually means the ORIGINAL payment went through, so it never reads "not paid":
         // the line is held for a person (CTO ruling 4). Its text never says the salary is owed.
         ["DUPL"] = new(DuplicateEnglish, DuplicateArabic,
-            "Do not pay again until you have checked.", "لا تعد الدفع قبل التحقق من ذلك."),
+            "Do not create a new payment batch until you have checked.", "لا تنشئ دفعة دفع جديدة قبل التحقق من ذلك."),
         // InvalidFileFormat
         ["FF01"] = new("The bank could not read the file format.", "تعذّر على البنك قراءة صيغة الملف.",
             "Salaries in this file may not have been processed: check the bank statement and ask the bank which format it expects.",
@@ -67,9 +67,9 @@ public static class BankStatusReasonCatalogue
     };
 
     internal const string DuplicateEnglish =
-        "The bank refused this as a duplicate. Check whether the original payment reached the employee before paying again.";
+        "The bank refused this as a duplicate. Check whether the original payment reached the employee before creating a new payment batch.";
     internal const string DuplicateArabic =
-        "رفض البنك هذه العملية لأنها مكررة. تحقق مما إذا كانت عملية الدفع الأصلية قد وصلت إلى الموظف قبل الدفع مرة أخرى.";
+        "رفض البنك هذه العملية لأنها مكررة. تحقق مما إذا كانت عملية الدفع الأصلية قد وصلت إلى الموظف قبل إنشاء دفعة دفع جديدة.";
 
     public static IReadOnlyCollection<string> KnownCodes => Codes.Keys.ToList();
 

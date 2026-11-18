@@ -1110,8 +1110,10 @@ public class BankConfirmationHoldsAndSettlementTests
         ShouldBeAnInstruction(refused, BankLineExitKinds.AllowPaidToRejected, BankLineExitKinds.ConfirmPaidDespiteRejection);
         refused.GetProperty("message").GetString().Should().Contain("Check the bank statement")
             .And.Contain("record 'paid confirmed' with the statement reference")
-            .And.Contain("record 'not paid' with a reason and the reference");
+            .And.Contain("record 'not paid' with a reason and the reference")
+            .And.Contain("must be paid in a new payment batch linked to the original batch").And.NotContain("paid again");
         refused.GetProperty("messageAr").GetString().Should().Contain("راجع كشف حساب البنك").And.Contain("«تأكيد الدفع»").And.Contain("«لم يُدفع»")
+            .And.Contain("دفعة دفع جديدة مرتبطة بالدفعة الأصلية").And.NotContain("من جديد")
             .And.NotBe(BankOutcomeLabels.HeldRejectionAfterPaid.Arabic);
     }
 
@@ -1129,8 +1131,10 @@ public class BankConfirmationHoldsAndSettlementTests
         SnakeCaseExit.IsMatch(en).Should().BeFalse();
         SnakeCaseExit.IsMatch(ar).Should().BeFalse();
         en.Should().Contain("Check the bank statement for the original payment").And.Contain("record 'original payment received'")
-            .And.Contain("Both need a reason and the bank's reference").And.NotContainEquivalentOf("owed");
-        ar.Should().Contain("راجع كشف حساب البنك بحثًا عن الدفعة الأصلية").And.NotContain("مستحق");
+            .And.Contain("Both need a reason and the bank's reference").And.NotContainEquivalentOf("owed")
+            .And.Contain("pay in a new payment batch linked to the original batch").And.NotContain("pay again");
+        ar.Should().Contain("راجع كشف حساب البنك بحثًا عن الدفعة الأصلية").And.NotContain("مستحق")
+            .And.Contain("دفعة دفع جديدة مرتبطة بالدفعة الأصلية").And.NotContain("وأعد الدفع");
     }
 
     [Fact]

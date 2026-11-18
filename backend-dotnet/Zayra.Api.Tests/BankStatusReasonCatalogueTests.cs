@@ -18,8 +18,8 @@ public class BankStatusReasonCatalogueTests
         { "AM04", "There was not enough money in the paying account.", "الرصيد في حساب الدفع غير كافٍ." },
         { "BE01", "The name or ID does not match the account holder.", "الاسم أو رقم الهوية لا يطابق صاحب الحساب." },
         // A duplicate refusal usually means the ORIGINAL payment went through: never "not paid, still owed" (CTO ruling 4).
-        { "DUPL", "The bank refused this as a duplicate. Check whether the original payment reached the employee before paying again.",
-                  "رفض البنك هذه العملية لأنها مكررة. تحقق مما إذا كانت عملية الدفع الأصلية قد وصلت إلى الموظف قبل الدفع مرة أخرى." },
+        { "DUPL", "The bank refused this as a duplicate. Check whether the original payment reached the employee before creating a new payment batch.",
+                  "رفض البنك هذه العملية لأنها مكررة. تحقق مما إذا كانت عملية الدفع الأصلية قد وصلت إلى الموظف قبل إنشاء دفعة دفع جديدة." },
         { "FF01", "The bank could not read the file format.", "تعذّر على البنك قراءة صيغة الملف." },
     };
 

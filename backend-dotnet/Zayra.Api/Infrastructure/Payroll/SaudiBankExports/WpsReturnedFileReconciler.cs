@@ -242,16 +242,16 @@ public static class WpsReturnedFileReconciler
                 var label = BankOutcomeLabels.NotPaidRejectedByBank;
                 var noReason = BankStatusReasonCatalogue.Describe(null);
                 lines.Add(Line(WpsReconciliationClass.Rejected, null,
-                    $"{label.English}. The bank reported this line as {statusRaw}. {noReason.English}. Check the bank statement to confirm no money left. If none did, this salary is still owed to the employee: pay it through a supplementary payment run after correcting any bank detail.",
-                    $"{label.Arabic}. أفاد البنك بأن حالة هذا السطر {Iso(statusRaw)}. {noReason.Arabic}. راجع كشف حساب البنك للتأكد من عدم خروج أي مبلغ. فإن لم يخرج مبلغ فالراتب ما زال مستحقًا للموظف: ادفعه عبر مسير دفع إضافي بعد تصحيح أي بيان بنكي."));
+                    $"{label.English}. The bank reported this line as {statusRaw}. {noReason.English}. Check the bank statement to confirm no money left. If none did, this salary is still owed to the employee: pay it in a new payment batch linked to the original batch after correcting any bank detail.",
+                    $"{label.Arabic}. أفاد البنك بأن حالة هذا السطر {Iso(statusRaw)}. {noReason.Arabic}. راجع كشف حساب البنك للتأكد من عدم خروج أي مبلغ. فإن لم يخرج مبلغ فالراتب ما زال مستحقًا للموظف: ادفعه في دفعة دفع جديدة مرتبطة بالدفعة الأصلية بعد تصحيح أي بيان بنكي."));
             }
             else if (outcome == BankConfirmationOutcomes.Returned)
             {
                 var label = BankOutcomeLabels.ReturnedMoneyCameBack;
                 var noReason = BankStatusReasonCatalogue.Describe(null);
                 lines.Add(Line(WpsReconciliationClass.Returned, null,
-                    $"{label.English}. The bank reported this line as {statusRaw}. {noReason.English}. Check the bank statement, correct the employee's bank details if needed, then pay again.",
-                    $"{label.Arabic}. أفاد البنك بأن حالة هذا السطر {Iso(statusRaw)}. {noReason.Arabic}. راجع كشف حساب البنك وصحّح بيانات بنك الموظف عند الحاجة ثم أعد الصرف."));
+                    $"{label.English}. The bank reported this line as {statusRaw}. {noReason.English}. Check the bank statement, correct the employee's bank details if needed, then pay it in a new payment batch linked to the original batch.",
+                    $"{label.Arabic}. أفاد البنك بأن حالة هذا السطر {Iso(statusRaw)}. {noReason.Arabic}. راجع كشف حساب البنك وصحّح بيانات بنك الموظف عند الحاجة ثم ادفعه في دفعة دفع جديدة مرتبطة بالدفعة الأصلية."));
             }
             else if (row.Net is { } net && Math.Abs(net - e.Amount) > 0.005m)
             {

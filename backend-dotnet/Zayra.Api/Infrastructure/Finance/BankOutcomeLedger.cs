@@ -293,7 +293,7 @@ public static class BankOutcomeMessages
         var open = new List<string>();
         if (returned > 0) open.Add($"{returned} returned by the bank (the money came back)");
         if (rejected > 0)
-            open.Add($"{rejected} not paid: rejected by bank (the bank refused the instruction; check the bank statement before paying again)");
+            open.Add($"{rejected} not paid: rejected by bank (the bank refused the instruction; check the bank statement before paying in a new payment batch)");
         if (unconfirmed > 0) open.Add($"{unconfirmed} not yet confirmed by the bank");
         return "This batch cannot reach Reconciled while payments are open: " + string.Join("; ", open) + ". Import the "
              + "bank/WPS response (POST payment-batches/{id}/bank-confirmations) and resolve each first: reconciling now "
@@ -305,7 +305,7 @@ public static class BankOutcomeMessages
     {
         var open = new List<string>();
         if (returned > 0) open.Add($"{returned} أعادها البنك (عاد المبلغ)");
-        if (rejected > 0) open.Add($"{rejected} لم يُدفع: رفضه البنك (رفض البنك التعليمات؛ راجع كشف حساب البنك قبل إعادة الدفع)");
+        if (rejected > 0) open.Add($"{rejected} لم يُدفع: رفضه البنك (رفض البنك التعليمات؛ راجع كشف حساب البنك قبل الدفع في دفعة دفع جديدة)");
         if (unconfirmed > 0) open.Add($"{unconfirmed} لم يؤكدها البنك بعد");
         return "لا يمكن وضع هذه الدفعة في حالة «تمت المطابقة» ما دامت هناك مدفوعات مفتوحة: " + string.Join("؛ ", open)
              + ". استورد ملف رد البنك وعالج كل سطر أولًا: فالمطابقة الآن تُغلق الشهر على رواتب لم يستلمها الموظفون.";

@@ -13,17 +13,17 @@ public class BankReasonAndLabelWordingTests
 {
     public static readonly TheoryData<string, string, string> NextSteps = new()
     {
-        { "AC01", "Ask HR to correct the employee's IBAN, then pay this salary again.",
-                  "اطلب من الموارد البشرية تصحيح آيبان الموظف ثم أعد دفع هذا الراتب." },
-        { "AC04", "Check whether it is the employee's account or your paying account. If it is the employee's, ask HR for a new IBAN, then pay again.",
-                  "تحقق هل هو حساب الموظف أم حساب الدفع لديكم. فإن كان حساب الموظف فاطلب من الموارد البشرية آيبانًا جديدًا ثم أعد الدفع." },
-        { "AC06", "Check whether it is the employee's account or your paying account, and ask the bank what is needed to release it. Pay again once it is resolved.",
-                  "تحقق هل هو حساب الموظف أم حساب الدفع لديكم، واسأل البنك عمّا يلزم لرفع الإيقاف، ثم أعد الدفع بعد المعالجة." },
-        { "AM04", "Check the bank statement, add funds, and ask your bank or payroll team how to send the salaries again. Do not resend without checking.",
-                  "راجع كشف حساب البنك وأودع المبلغ المطلوب، واسأل البنك أو فريق الرواتب عن طريقة إعادة إرسال الرواتب. لا تعد الإرسال قبل التحقق." },
+        { "AC01", "Ask HR to correct the employee's IBAN, then pay this salary in a new payment batch linked to the original batch.",
+                  "اطلب من الموارد البشرية تصحيح آيبان الموظف ثم ادفع هذا الراتب في دفعة دفع جديدة مرتبطة بالدفعة الأصلية." },
+        { "AC04", "Check whether it is the employee's account or your paying account. If it is the employee's, ask HR for a new IBAN, then pay it in a new payment batch linked to the original batch.",
+                  "تحقق هل هو حساب الموظف أم حساب الدفع لديكم. فإن كان حساب الموظف فاطلب من الموارد البشرية آيبانًا جديدًا ثم ادفعه في دفعة دفع جديدة مرتبطة بالدفعة الأصلية." },
+        { "AC06", "Check whether it is the employee's account or your paying account, and ask the bank what is needed to release it. Once it is resolved, pay in a new payment batch linked to the original batch.",
+                  "تحقق هل هو حساب الموظف أم حساب الدفع لديكم، واسأل البنك عمّا يلزم لرفع الإيقاف، وبعد المعالجة ادفع في دفعة دفع جديدة مرتبطة بالدفعة الأصلية." },
+        { "AM04", "Check the bank statement, add funds, then pay the salaries in a new payment batch linked to the original batch. Do not create the new batch without checking.",
+                  "راجع كشف حساب البنك وأودع المبلغ المطلوب، ثم ادفع الرواتب في دفعة دفع جديدة مرتبطة بالدفعة الأصلية. لا تنشئ الدفعة الجديدة قبل التحقق." },
         { "BE01", "Ask HR to check the employee's name, ID and IBAN against the bank's record.",
                   "اطلب من الموارد البشرية مطابقة اسم الموظف ورقم هويته وآيبانه مع سجل البنك." },
-        { "DUPL", "Do not pay again until you have checked.", "لا تعد الدفع قبل التحقق من ذلك." },
+        { "DUPL", "Do not create a new payment batch until you have checked.", "لا تنشئ دفعة دفع جديدة قبل التحقق من ذلك." },
         { "FF01", "Salaries in this file may not have been processed: check the bank statement and ask the bank which format it expects.",
                   "قد لا تكون رواتب هذا الملف قد عولجت: راجع كشف حساب البنك واسأل البنك عن الصيغة التي يطلبها." },
     };
@@ -41,15 +41,15 @@ public class BankReasonAndLabelWordingTests
     }
 
     [Fact]
-    public void ADuplicate_NeverSaysOwed_AndSaysDoNotPayAgainUntilChecked()
+    public void ADuplicate_NeverSaysOwed_AndSaysDoNotCreateANewPaymentBatchUntilChecked()
     {
         var text = BankStatusReasonCatalogue.Describe("DUPL");
         foreach (var english in new[] { text.English, text.NextStepEnglish, BankOutcomeLabels.HeldDuplicateRejection.English })
             english.Should().NotContainEquivalentOf("owed").And.NotContainEquivalentOf("still due");
         foreach (var arabic in new[] { text.Arabic, text.NextStepArabic, BankOutcomeLabels.HeldDuplicateRejection.Arabic })
             arabic.Should().NotContain("مستحق");
-        text.NextStepEnglish.Should().Contain("Do not pay again until you have checked");
-        text.NextStepArabic.Should().Contain("لا تعد الدفع قبل التحقق");
+        text.NextStepEnglish.Should().Contain("Do not create a new payment batch until you have checked");
+        text.NextStepArabic.Should().Contain("لا تنشئ دفعة دفع جديدة قبل التحقق");
     }
 
     [Fact]
@@ -76,7 +76,7 @@ public class BankReasonAndLabelWordingTests
             record, BankConfirmationOutcomes.Rejected, BankOutcomeLabels.NotPaidRejectedByBank, new[] { confirmation })))
             .RootElement.GetProperty("reasonDescription");
 
-        view.GetProperty("nextStepEn").GetString().Should().Be("Ask HR to correct the employee's IBAN, then pay this salary again.");
+        view.GetProperty("nextStepEn").GetString().Should().Be("Ask HR to correct the employee's IBAN, then pay this salary in a new payment batch linked to the original batch.");
         view.GetProperty("nextStepAr").GetString().Should().Contain("تصحيح آيبان الموظف");
     }
 
@@ -143,14 +143,42 @@ public class BankReasonAndLabelWordingTests
     {
         var english = BankOutcomeMessages.NotReconciled(1, 2, 3);
         english.Should().Contain("2 not paid: rejected by bank")
-            .And.Contain("check the bank statement before paying again")
+            .And.Contain("check the bank statement before paying in a new payment batch")
             .And.Contain("1 returned by the bank").And.Contain("3 not yet confirmed by the bank");
         english.Should().NotContainEquivalentOf("never left");
 
         var arabic = BankOutcomeMessages.NotReconciledAr(1, 2, 3);
-        arabic.Should().Contain("لم يُدفع: رفضه البنك").And.Contain("راجع كشف حساب البنك قبل إعادة الدفع");
+        arabic.Should().Contain("لم يُدفع: رفضه البنك").And.Contain("راجع كشف حساب البنك قبل الدفع في دفعة دفع جديدة");
         arabic.Any(ch => ch is >= '؀' and <= 'ۿ').Should().BeTrue();
         BankOutcomeMessages.NotReconciledAr(0, 0, 3).Should().NotContain("رفضه");
+    }
+
+    // ── W7: one re-pay phrase, "new payment batch" ───────────────────────────────────────────────
+
+    [Fact]
+    public void NoBankOutcomeText_SaysPayAgain_OrSupplementaryRun_ItSaysNewPaymentBatch()
+    {
+        var english = BankStatusReasonCatalogue.KnownCodes.SelectMany(c =>
+            {
+                var d = BankStatusReasonCatalogue.Describe(c);
+                return new[] { d.English, d.NextStepEnglish };
+            })
+            .Append(BankOutcomeMessages.NotReconciled(1, 1, 1)).Concat(BankOutcomeLabels.All.Select(l => l.English)).ToList();
+        var arabic = BankStatusReasonCatalogue.KnownCodes.SelectMany(c =>
+            {
+                var d = BankStatusReasonCatalogue.Describe(c);
+                return new[] { d.Arabic, d.NextStepArabic };
+            })
+            .Append(BankOutcomeMessages.NotReconciledAr(1, 1, 1)).Concat(BankOutcomeLabels.All.Select(l => l.Arabic)).ToList();
+
+        foreach (var text in english)
+            text.Should().NotMatchRegex("(?i)(pay(ing)?|paid) (this salary |it |them )?again|supplementary|resend");
+        foreach (var text in arabic)
+            text.Should().NotContain("أعد الدفع").And.NotContain("إعادة الدفع").And.NotContain("أعد دفع").And.NotContain("الدفع مرة أخرى").And.NotContain("إعادة إرسال").And.NotContain("دفع إضافي");
+        BankStatusReasonCatalogue.Describe("AC01").NextStepEnglish.Should().Contain("new payment batch linked to the original batch");
+        BankStatusReasonCatalogue.Describe("AC01").NextStepArabic.Should().Contain("دفعة دفع جديدة مرتبطة بالدفعة الأصلية");
+        BankOutcomeMessages.NotReconciled(0, 1, 0).Should().Contain("new payment batch");
+        BankOutcomeMessages.NotReconciledAr(0, 1, 0).Should().Contain("دفعة دفع جديدة");
     }
 
     [Fact]

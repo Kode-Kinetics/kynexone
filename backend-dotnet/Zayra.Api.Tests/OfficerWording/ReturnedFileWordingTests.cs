@@ -58,7 +58,19 @@ public class ReturnedFileWordingTests
     // ── F7a: a rejected line says what to do next ───────────────────────────────────────────────
 
     [Fact]
-    public void ARejectedLine_SaysCheckTheStatement_ThenPayThroughASupplementaryRun_InBothLanguages()
+    public void AReturnedLine_SaysCorrectTheBankDetails_ThenPayInANewPaymentBatch_InBothLanguages()
+    {
+        var rows = WithStatus(2, "PAID").ToList();
+        rows[1] = rows[1] with { Status = "RETURNED" };
+
+        var line = Run(rows, Expected(rows)).Lines.Single(l => l.Classification == WpsReconciliationClass.Returned);
+
+        line.ReasonEn.Should().Contain("pay it in a new payment batch linked to the original batch").And.NotContain("pay again");
+        line.ReasonAr.Should().Contain("ادفعه في دفعة دفع جديدة مرتبطة بالدفعة الأصلية").And.NotContain("أعد الصرف");
+    }
+
+    [Fact]
+    public void ARejectedLine_SaysCheckTheStatement_ThenPayInANewPaymentBatch_InBothLanguages()
     {
         var rows = WithStatus(2, "PAID").ToList();
         rows[1] = rows[1] with { Status = "REJECTED" };
@@ -66,8 +78,8 @@ public class ReturnedFileWordingTests
         var line = Run(rows, Expected(rows)).Lines.Single(l => l.Classification == WpsReconciliationClass.Rejected);
 
         line.ReasonEn.Should().Contain("Check the bank statement to confirm no money left")
-            .And.Contain("this salary is still owed to the employee").And.Contain("supplementary payment run");
-        line.ReasonAr.Should().Contain("راجع كشف حساب البنك").And.Contain("ما زال مستحقًا للموظف").And.Contain("مسير دفع إضافي");
+            .And.Contain("this salary is still owed to the employee").And.Contain("new payment batch linked to the original batch").And.NotContain("supplementary");
+        line.ReasonAr.Should().Contain("راجع كشف حساب البنك").And.Contain("ما زال مستحقًا للموظف").And.Contain("دفعة دفع جديدة مرتبطة بالدفعة الأصلية").And.NotContain("مسير دفع إضافي");
         line.ReasonEn.Length.Should().BeLessThan(1000, "the English text is stored on the ledger row, which holds 1000 characters");
     }
 

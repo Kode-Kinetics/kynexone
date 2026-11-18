@@ -568,9 +568,9 @@ public sealed class BankConfirmationService
                     message = BankOutcomeLabels.HeldDuplicateRejection.English,
                     messageAr = BankOutcomeLabels.HeldDuplicateRejection.Arabic,
                     nextStep = "Check the bank statement for the original payment. If it reached the employee, record 'original payment "
-                             + "received'. If it did not, record 'not paid' and pay again. Both need a reason and the bank's reference.",
+                             + "received'. If it did not, record 'not paid' and pay in a new payment batch linked to the original batch. Both need a reason and the bank's reference.",
                     nextStepAr = "راجع كشف حساب البنك بحثًا عن الدفعة الأصلية. إن كانت قد وصلت إلى الموظف فسجّل «استلام الدفعة الأصلية». "
-                               + "وإن لم تصل فسجّل «لم يُدفع» وأعد الدفع. وكلاهما يحتاج إلى سبب ومرجع البنك.",
+                               + "وإن لم تصل فسجّل «لم يُدفع» وادفع في دفعة دفع جديدة مرتبطة بالدفعة الأصلية. وكلاهما يحتاج إلى سبب ومرجع البنك.",
                     // The exit names the screen sends back with the line (machine keys, not part of the sentence).
                     nextStepCodes = new[] { BankLineExitKinds.ConfirmOriginalPaymentReceived, BankLineExitKinds.ConfirmDuplicateNotPaid },
                 });
@@ -651,10 +651,10 @@ public sealed class BankConfirmationService
                     from = previous, to = row.Outcome, reason = hold,
                     message = "The bank confirmed this salary as paid and now reports it rejected. Nothing was changed. Check the bank "
                             + "statement. If the money reached the employee, record 'paid confirmed' with the statement reference. If it "
-                            + "did not, record 'not paid' with a reason and the reference: the salary is then still owed and must be paid again.",
+                            + "did not, record 'not paid' with a reason and the reference: the salary is then still owed and must be paid in a new payment batch linked to the original batch.",
                     messageAr = "أكّد البنك دفع هذا الراتب ثم أفاد برفضه. لم يتغير شيء. راجع كشف حساب البنك. إذا وصل المبلغ إلى الموظف "
                               + "فسجّل «تأكيد الدفع» مع مرجع الكشف. وإذا لم يصل فسجّل «لم يُدفع» مع السبب والمرجع، وسيبقى الراتب مستحقًا "
-                              + "للموظف ويجب دفعه من جديد.",
+                              + "للموظف ويجب دفعه في دفعة دفع جديدة مرتبطة بالدفعة الأصلية.",
                     // The exit names the screen sends back with the line (machine keys, not part of the sentence).
                     nextStepCodes = new[] { BankLineExitKinds.AllowPaidToRejected, BankLineExitKinds.ConfirmPaidDespiteRejection },
                 });
