@@ -12,7 +12,7 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    [Migration("20261118000000_AddGovernmentCredentialsAndExchanges")]
+    [Migration("20261118020000_AddGovernmentCredentialsAndExchanges")]
     partial class AddGovernmentCredentialsAndExchanges
     {
         /// <inheritdoc />
