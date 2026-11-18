@@ -336,11 +336,11 @@ public sealed class HrTransactionalInvariantPostgresTests
     }
 
     /// <summary>
-    /// The race the test above only starts at the same moment, FORCED: both approvers have read the HR-approved request and
-    /// passed every check before either writes (each SaveChanges waits at a barrier until both have arrived). Whatever order
-    /// the commits land in, the request is payroll-approved once: one adjustment for payroll, one "Encashed" ledger row, the
-    /// reserved days consumed once, and the loser told plainly (409) that it was already decided. Kept as a guard: the request's
-    /// DecisionVersion concurrency token and the unique payroll-artifact index already serialise the two writes.
+    /// The race the test above only starts at the same moment, FORCED: each approver's SaveChanges waits at a barrier for the
+    /// other. The approval now holds the target run's row lock from before it reads the request, so the second approver waits
+    /// there and reads the request the first one already decided: it is refused and the request is payroll-approved once (one
+    /// adjustment, one "Encashed" ledger row, the reserved days consumed once). Before the lock, both passed every check and
+    /// the DecisionVersion token / unique artifact index refused the loser at commit; either way nothing was applied twice.
     /// </summary>
     [Fact]
     public async Task LeaveEncashmentPayrollApproval_BothApproversPastEveryCheck_StillAppliesOnce()
@@ -362,13 +362,12 @@ public sealed class HrTransactionalInvariantPostgresTests
 
         var results = await Task.WhenAll(Task.Run(Approve), Task.Run(Approve));
 
-        barrier.Arrived.Should().BeGreaterThanOrEqualTo(2, "both approvers reached the write having passed every check: this is the real race");
+        barrier.Arrived.Should().BeGreaterThanOrEqualTo(1, "the winning approval reached its write while the other waited");
         results.Count(x => x is OkObjectResult).Should().Be(1, "exactly one approval wins");
         var loser = results.Single(x => x is not OkObjectResult);
-        loser.Should().BeOfType<ConflictObjectResult>();
-        // The loser is refused by the request's concurrency token or by the one-artifact-per-request unique index, whichever
-        // its commit meets first; either way it is a 409 that says the request was already decided.
-        System.Text.Json.JsonSerializer.Serialize(((ObjectResult)loser).Value).Should().MatchRegex("concurrently|already has a payroll artifact");
+        loser.Should().BeOfType<BadRequestObjectResult>();
+        System.Text.Json.JsonSerializer.Serialize(((ObjectResult)loser).Value).Should().Contain("Only HR-approved requests",
+            "the second approver reads the request as already decided");
 
         await using var verify = _fixture.CreateDb();
         var request = await verify.LeaveEncashmentRequests.AsNoTracking().SingleAsync(x => x.Id == seeded.RequestId);
@@ -380,6 +379,60 @@ public sealed class HrTransactionalInvariantPostgresTests
         var balance = await verify.EmployeeLeaveBalances.AsNoTracking().SingleAsync(x => x.TenantId == seeded.TenantId
             && x.EmployeeId == seeded.EmployeeId && x.LeaveTypeId == seeded.LeaveTypeId);
         (balance.Pending, balance.Encashed).Should().Be((0m, 2m), "the reserved days are consumed once");
+    }
+
+    /// <summary>
+    /// The target run must still be open when the approval commits, not only when it was checked. A payroll Process holds the
+    /// run row (FOR UPDATE) and moves it out of Draft while the approval is checking it: the approval must wait for that row,
+    /// then see the run is no longer open and refuse, leaving nothing behind (no adjustment on a run that will never pay it,
+    /// no days consumed).
+    /// </summary>
+    [Fact]
+    public async Task LeaveEncashmentPayrollApproval_RunMovedOutOfDraftMeanwhile_IsRefused_NotAppliedToAClosedRun()
+    {
+        var seeded = await SeedHrApprovedEncashmentAsync();
+        var lockHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // "Process": holds the run row and, after a moment, moves it out of Draft and commits.
+        var processTask = Task.Run(async () =>
+        {
+            await using var holder = _fixture.CreateDb();
+            await holder.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                await using var tx = await holder.Database.BeginTransactionAsync();
+                var run = await holder.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                    .SingleAsync(r => r.Id == seeded.RunId);
+                lockHeld.TrySetResult();
+                await Task.WhenAny(release.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+                run.Status = "Processed";
+                run.ProcessedAtUtc = DateTime.UtcNow;
+                await holder.SaveChangesAsync();
+                await tx.CommitAsync();
+            });
+        });
+        await lockHeld.Task;
+
+        var approveTask = Task.Run(async () =>
+        {
+            await using var db = _fixture.CreateDb();
+            return await EncashmentController(db, seeded.TenantId, Guid.NewGuid()).PayrollApprove(seeded.RequestId,
+                new EncashmentDecisionRequest("approve while the run is being processed", seeded.RunId), CancellationToken.None);
+        });
+        await Task.WhenAny(approveTask, Task.Delay(TimeSpan.FromSeconds(2)));   // an unlocked check finishes here; a locked one waits
+        release.TrySetResult();
+        await processTask;
+        var result = await approveTask;
+
+        result.Should().BeOfType<ConflictObjectResult>("the run was no longer open when the approval could commit");
+        await using var verify = _fixture.CreateDb();
+        (await verify.LeaveEncashmentRequests.AsNoTracking().SingleAsync(x => x.Id == seeded.RequestId)).Status
+            .Should().Be(LeaveEncashmentStatuses.HRApproved, "nothing was decided");
+        (await verify.PayrollAdjustments.CountAsync(x => x.TenantId == seeded.TenantId && x.SourceId == seeded.RequestId)).Should().Be(0);
+        (await verify.LeaveBalanceTransactions.CountAsync(x => x.TenantId == seeded.TenantId
+            && x.Reference == seeded.RequestId.ToString() && x.TransactionType == "Encashed")).Should().Be(0);
+        (await verify.EmployeeLeaveBalances.AsNoTracking().SingleAsync(x => x.TenantId == seeded.TenantId
+            && x.EmployeeId == seeded.EmployeeId && x.LeaveTypeId == seeded.LeaveTypeId)).Encashed.Should().Be(0m);
     }
 
     /// <summary>Holds every SaveChanges until <c>parties</c> contexts have reached one (or 10 s pass, so a refusal before the

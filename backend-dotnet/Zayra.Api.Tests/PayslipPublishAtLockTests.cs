@@ -141,7 +141,15 @@ public class PayslipPublishAtLockTests
             var web = await WebPayslips(db, tid, e.Id);
             var mobile = await MobilePayslips(db, tid, e.Id);
             web.Should().ContainSingle("the web shows the locked month");
-            mobile.Should().BeEquivalentTo(web, "the phone shows exactly what the web shows: same month, same net");
+            mobile.Should().BeEquivalentTo(web, "the phone shows exactly what the web shows: same month, same gross, same net");
+
+            // Line for line: the web payslip's lines are the published payslip row's lines (the rows the phone reads).
+            var webLines = await WebPayslipLines(db, tid, e.Id);
+            var payslipId = (await db.Payslips.AsNoTracking().SingleAsync(p => p.PayrollRunId == run.Id && p.EmployeeId == e.Id)).Id;
+            var rowLines = (await db.PayslipComponents.AsNoTracking().Where(c => c.PayslipId == payslipId).ToListAsync())
+                .Select(c => (c.ComponentType, c.ComponentName, c.Amount)).ToList();
+            webLines.Should().BeEquivalentTo(rowLines, "the web and the phone itemise the same lines with the same amounts");
+            webLines.Should().Contain(l => l.Type == "Earning").And.Contain(l => l.Type == "Net");
         }
     }
 
@@ -173,26 +181,39 @@ public class PayslipPublishAtLockTests
 
     // ══ Harness ═══════════════════════════════════════════════════════════════════════════════════
 
-    private sealed record Seen(int Year, int Month, decimal Net);
+    private sealed record Seen(int Year, int Month, decimal Net, decimal Gross);
 
     private static async Task<List<Seen>> WebPayslips(ZayraDbContext db, Guid tid, int employeeId)
+    {
+        var res = await WebEss(db, tid, employeeId).Payslips(CancellationToken.None);
+        var rows = (IEnumerable<EssPayslipSummaryDto>)((OkObjectResult)res.Result!).Value!;
+        db.ChangeTracker.Clear();
+        return rows.Select(r => new Seen(r.Year, r.Month, r.NetSalary, r.GrossSalary)).ToList();
+    }
+
+    private static EmployeeSelfServiceController WebEss(ZayraDbContext db, Guid tid, int employeeId)
     {
         var claims = new List<Claim>
         {
             new("tenant_id", tid.ToString()), new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
             new("employee_id", employeeId.ToString()), new("permission", "ess.read"),
         };
-        var ctrl = new EmployeeSelfServiceController(db, new _PlLetters(), new PdfRenderGate(1),
+        return new EmployeeSelfServiceController(db, new _PlLetters(), new PdfRenderGate(1),
             new Zayra.Api.Infrastructure.Leave.LeaveService(db, new Zayra.Api.Infrastructure.Approvals.ApprovalRouter(db)),
             new Zayra.Api.Infrastructure.Attendance.AttendanceService(db, new _PlNotifications(), new _PlHttp()),
             new HrLetterIssuer(db, new _PlLetters(), new NullDocumentStorage()), new NullDocumentStorage())
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")) } },
         };
-        var res = await ctrl.Payslips(CancellationToken.None);
-        var rows = (IEnumerable<EssPayslipSummaryDto>)((OkObjectResult)res.Result!).Value!;
+    }
+
+    private static async Task<List<(string Type, string Name, decimal Amount)>> WebPayslipLines(ZayraDbContext db, Guid tid, int employeeId)
+    {
+        var slipId = (await db.PayrollSlips.AsNoTracking().SingleAsync(s => s.EmployeeId == employeeId)).Id;
+        var res = await WebEss(db, tid, employeeId).PayslipDetail(slipId, CancellationToken.None);
+        var detail = (EssPayslipDetailDto)((OkObjectResult)res.Result!).Value!;
         db.ChangeTracker.Clear();
-        return rows.Select(r => new Seen(r.Year, r.Month, r.NetSalary)).ToList();
+        return detail.Lines.Select(l => (l.Type, l.Name, l.Amount)).ToList();
     }
 
     private static async Task<List<Seen>> MobilePayslips(ZayraDbContext db, Guid tid, int employeeId)
@@ -209,7 +230,8 @@ public class PayslipPublishAtLockTests
         var json = JsonSerializer.SerializeToElement(((OkObjectResult)res).Value);
         db.ChangeTracker.Clear();
         return json.EnumerateArray()
-            .Select(x => new Seen(x.GetProperty("Year").GetInt32(), x.GetProperty("Month").GetInt32(), x.GetProperty("TotalNetSalary").GetDecimal()))
+            .Select(x => new Seen(x.GetProperty("Year").GetInt32(), x.GetProperty("Month").GetInt32(), x.GetProperty("TotalNetSalary").GetDecimal(),
+                x.GetProperty("TotalGrossSalary").GetDecimal()))
             .ToList();
     }
 
