@@ -635,7 +635,7 @@ function RosterTab({ definitions }: RosterTabProps) {
   return (
     <div>
       {/* Week navigation */}
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -714,7 +714,7 @@ function RosterTab({ definitions }: RosterTabProps) {
             )}
             {!loading && employees.map((emp) => (
               <tr key={emp.id} className="group hover:bg-slate-50/60 dark:hover:bg-white/[0.02]">
-                <td className="px-4 py-3">
+                <td className="px-4 py-1">
                   <p className="text-xs font-semibold text-slate-800 dark:text-white">{emp.fullName}</p>
                   <p className="text-caption text-slate-400 dark:text-slate-500">{emp.department}</p>
                 </td>
@@ -722,7 +722,7 @@ function RosterTab({ definitions }: RosterTabProps) {
                   const ds = toDateString(d);
                   const a = assignmentMap.get(`${emp.id}|${ds}`);
                   return (
-                    <td key={ds} className="px-2 py-2 text-center">
+                    <td key={ds} className="px-2 py-1 text-center">
                       {a ? (
                         <div
                           className="group/cell relative inline-flex items-center gap-1 overflow-hidden rounded-lg py-1 ps-2.5 pe-2 text-caption font-semibold text-slate-800 dark:text-slate-100"
@@ -1286,22 +1286,22 @@ export function ShiftsPage() {
   return (
     <div className="space-y-5 p-4 sm:p-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0 flex-1 basis-[22rem]">
           <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Shifts & Rosters')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>
         </div>
         {isAdmin && (
-          <div className="flex items-center gap-2">
-            <ModuleSettingsLink sections={['shiftDefinitions', 'shiftPolicy']} label={msg('Shift settings')} />
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <ModuleSettingsLink sections={['shiftDefinitions', 'shiftPolicy']} label={msg('Shift settings')} className="whitespace-nowrap" />
             <button type="button" onClick={() => setAutoPlanOpen(true)}
-              className="btn-secondary flex items-center gap-1.5 text-sm">
+              className="btn-secondary flex items-center gap-1.5 whitespace-nowrap text-sm">
               <Wand2 className="h-3.5 w-3.5" />
 
               {t('Auto Plan')}
             </button>
             <button type="button" onClick={() => setAiPlanOpen(true)}
-              className="btn-primary flex items-center gap-1.5 text-sm">
+              className="btn-primary flex items-center gap-1.5 whitespace-nowrap text-sm">
               <Wand2 className="h-3.5 w-3.5" />
 
               {t('AI Plan')}
