@@ -148,6 +148,41 @@ public sealed class OfferDispatchPostgresTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task BlacklistingTheCandidate_HoldsAQueuedOffer_SoItIsNeverSent_AndANewQueueIsRefused()
+    {
+        var seed=await Frozen(); await using var db=fixture.CreateDb(); var service=Service(db);
+        var queued=await service.QueueAsync(seed.Actor,seed.OfferId,Request());
+        var candidate=await db.Candidates.SingleAsync(c=>c.TenantId==seed.Actor.TenantId); candidate.Status="Blacklisted"; await db.SaveChangesAsync();
+
+        var held=await new OfferLifecycleService(db,OfferLifecycleServiceTests.Config()).HoldQueuedDispatchesForBlacklistedCandidateAsync(seed.Actor.TenantId,candidate.Id,seed.Actor.UserId,"HR Manager");
+        await service.ProcessAsync(seed.Actor,seed.OfferId,queued.Id);
+
+        held.Should().Be(1); email.Calls.Should().Be(0);
+        (await db.OfferDispatches.AsNoTracking().SingleAsync(d=>d.Id==queued.Id)).Outcome.Should().Be("Cancelled");
+        var offer=await db.OfferLetters.AsNoTracking().SingleAsync(o=>o.Id==seed.OfferId);
+        offer.Status.Should().Be("Draft"); offer.CommunicationOutcome.Should().Be("Cancelled");
+        (await db.JobApplications.AsNoTracking().SingleAsync(a=>a.Id==seed.ApplicationId)).OfferReservationId.Should().BeNull();
+        (await db.OfferLifecycleEvents.CountAsync(e=>e.OfferId==seed.OfferId&&e.EventType=="EmailHeld")).Should().Be(1);
+        (await db.RecruitmentAuditLogs.CountAsync(a=>a.EntityId==seed.OfferId.ToString()&&a.Action=="OfferDispatchHeld")).Should().Be(1);
+        await FluentActions.Awaiting(()=>service.QueueAsync(seed.Actor,seed.OfferId,new OfferEmailRequest(offer.Version,"reviewed-2","Employment offer","Please review your attached offer.","reviewed-sender-v1")))
+            .Should().ThrowAsync<OfferLifecycleException>().Where(e=>e.Code=="candidate_blacklisted");
+    }
+
+    [Fact]
+    public async Task AnOfferQueuedBeforeTheListing_IsNotSentEvenWhenNothingHeldIt()
+    {
+        var seed=await Frozen(); await using var db=fixture.CreateDb(); var service=Service(db);
+        var queued=await service.QueueAsync(seed.Actor,seed.OfferId,Request());
+        var candidate=await db.Candidates.SingleAsync(c=>c.TenantId==seed.Actor.TenantId); candidate.Status="Blacklisted"; await db.SaveChangesAsync();
+
+        await service.ProcessAsync(seed.Actor,seed.OfferId,queued.Id);
+
+        email.Calls.Should().Be(0);
+        (await db.OfferDispatches.AsNoTracking().SingleAsync(d=>d.Id==queued.Id)).Outcome.Should().Be("Failed");
+        (await db.OfferLetters.AsNoTracking().SingleAsync(o=>o.Id==seed.OfferId)).Status.Should().Be("Draft");
+    }
+
+    [Fact]
     public async Task FrozenRecipientAndPdfAreUsedAfterCandidateChanges()
     {
         var seed=await Frozen(); await using var db=fixture.CreateDb(); var service=Service(db);
