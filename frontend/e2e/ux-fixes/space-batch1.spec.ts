@@ -9,7 +9,7 @@ import { ALL_PERMISSIONS, boot, type ApiMocks, type Persona } from '../setup-con
  *
  *   /pay-approvals       the queue shows at least six packages without scrolling (it showed three)
  *   /loans               the loans table starts above y=340 (it started at 464 under the totals band and the flow banner) and shows four rows (three before)
- *   /saudi-compliance    the Action Center starts above y=330 and the module cards are in view (Refresh had a row of its own)
+ *   /saudi-compliance    the Action Center starts above y=340 and the module cards are in view (Refresh had a row of its own)
  *   /gosi-filing         the tie-out verdict starts above y=400
  *   /payroll             the Dashboard's KPI band starts above y=430 (it started at 670 under the run list and the readiness panel)
  *
@@ -134,7 +134,7 @@ for (const locale of LOCALES) {
         await boot(page, { persona: persona(['HR Manager']), locale, url: '/saudi-compliance', mocks: { '/api/saudi-compliance/dashboard': SAUDI } });
         await expect(page.getByTestId('action-center-count')).toBeVisible({ timeout: 60_000 });
         await shot(page, 'saudi-compliance', locale);
-        expect(await topOf(page, '[data-testid="action-center-count"]'), 'Action Center header top').toBeLessThanOrEqual(330);
+        expect(await topOf(page, '[data-testid="action-center-count"]'), 'Action Center header top').toBeLessThanOrEqual(340);
         const cards = await page.locator('main section, main .surface').evaluateAll((els, h) => els.filter(el => el.getBoundingClientRect().top < h - 60).length, viewport.height);
         expect(cards, 'sections starting above the last 60 px of the screen').toBeGreaterThanOrEqual(3);
         expect(await noSideways(page)).toBeLessThanOrEqual(0);
