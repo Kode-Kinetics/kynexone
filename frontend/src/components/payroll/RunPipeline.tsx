@@ -402,10 +402,10 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
 
       {!run && data.runsState === 'ready' && attention.length > 0 && (
         <div data-testid="pipeline-attention">
-          <h3 className="text-body font-semibold text-fg">{t('{count, plural, one {# run needs attention} other {# runs need attention}}', { count: attention.length })}</h3>
-          <ul className="mt-2 divide-y divide-line rounded-lg border border-line">
+          <h3 className="text-body-sm font-semibold text-fg">{t('{count, plural, one {# run needs attention} other {# runs need attention}}', { count: attention.length })}</h3>
+          <ul className="mt-1 divide-y divide-line rounded-lg border border-line">
             {visibleAttention.map(r => (
-              <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+              <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5">
                 <span className="text-body text-fg">{runLabel(r)}</span>
                 <span className="flex items-center gap-2">
                   <span className="badge badge-warning">{attentionLabel(r)}</span>

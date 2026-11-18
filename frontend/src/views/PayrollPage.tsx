@@ -155,12 +155,12 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
   icon: React.ComponentType<{ className?: string }>; color: string;
 }) {
   return (
-    <div className="surface flex items-center gap-4 p-4">
+    <div className="surface flex items-center gap-3 p-3.5">
       <div className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${color}`}>
         <Icon className="h-5 w-5" />
       </div>
       <div className="min-w-0">
-        <p className="text-2xl font-bold tabular-nums text-slate-900 dark:text-white">{value}</p>
+        <p className="whitespace-nowrap text-lg font-bold tabular-nums text-slate-900 2xl:text-xl dark:text-white">{value}</p>
         <p className="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">{label}</p>
         {sub && <p className="text-[10px] text-slate-400 dark:text-slate-500">{sub}</p>}
       </div>
@@ -339,10 +339,18 @@ function PaymentPrerequisitesPanel({ prerequisites, runStatus, onNavigate }: { p
   const hasBlocking = prerequisites.companyBlocking.length > 0 || prerequisites.blocking.length > 0;
   const hasRecommended = prerequisites.companyRecommended.length > 0 || prerequisites.recommended.length > 0;
   const listed = prerequisites.employees.length;
+  // The long "how this is checked" sentence sits inside the employee disclosure when there is one, so the panel's header stays two lines.
+  const checkedNote = (
+    <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500" data-testid="payment-readiness-checked">
+      {prerequisites.attendanceChecked
+        ? t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality, and attendance for this period — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })
+        : t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality (attendance is checked once the period starts) — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })}
+    </p>
+  );
 
   return (
     <section aria-label={t('Payment readiness')} className={`surface overflow-hidden border ${tone.box}`}>
-      <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-4 dark:border-white/10">
+      <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-3 dark:border-white/10">
         {headline.tone === 'clear'
           ? <CheckCircle2 className={`mt-0.5 h-5 w-5 shrink-0 ${tone.icon}`} />
           : settled
@@ -351,11 +359,7 @@ function PaymentPrerequisitesPanel({ prerequisites, runStatus, onNavigate }: { p
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t(headline.titleKey, headline.params)}</h3>
           <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{t(headline.detailKey, headline.params)}</p>
-          <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
-            {prerequisites.attendanceChecked
-              ? t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality, and attendance for this period — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })
-              : t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality (attendance is checked once the period starts) — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })}
-          </p>
+          {listed === 0 && checkedNote}
         </div>
       </div>
 
@@ -395,6 +399,7 @@ function PaymentPrerequisitesPanel({ prerequisites, runStatus, onNavigate }: { p
               ? t('Show each employee ({count}, the first 500 — the counts above include everyone)', { count: listed })
               : t('Show each employee ({count})', { count: listed })}
           </summary>
+          <div className="px-5 pb-2">{checkedNote}</div>
           <div className="max-h-96 overflow-auto">
             <table className="w-full text-xs">
               <thead className="sticky top-0 bg-surface-sunken text-fg-muted">
@@ -691,6 +696,30 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
 
   const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
+  // The KPI band leads the page unless something blocks payment: then the exceptions come first, as before.
+  const blocksPayment = paymentReadinessHeadline(readiness?.paymentPrerequisites, readiness?.payrollRunStatus).tone === 'blocked'
+    || (readiness?.cashAllowanceIssues?.length ?? 0) > 0;
+  const kpiBand = (
+    <>
+      {!loading && overview && (
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <KpiCard label={t('Active Employees')} value={overview.totalActiveEmployees.toLocaleString()} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
+          <KpiCard label={t('Gross Payroll')} value={periodState === 'no-run' ? t('No run') : overviewAmount(overview.totalGrossPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? t('See each company below') : undefined} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label={t('Net Payroll')} value={periodState === 'no-run' ? t('No run') : overviewAmount(overview.totalNetPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? t('See each company below') : undefined} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+          <KpiCard label={t('Locked Runs YTD')} value={summary?.lockedRuns ?? '—'} icon={Lock} color="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-400" />
+        </div>
+      )}
+
+      {loading && (
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {[0, 1, 2, 3].map(i => <div key={i} className="surface h-20 animate-pulse rounded-xl" />)}
+        </div>
+      )}
+
+    </>
+  );
+
+
   return (
     <div className="space-y-5">
       <SettlementRunDutyCard onOpen={() => onNavigate('final-settlement')} />
@@ -756,26 +785,14 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
         <CashAllowanceIssuesPanel issues={readiness.cashAllowanceIssues} />
       )}
 
+      {!blocksPayment && kpiBand}
+
       {/* ── Who can actually be paid (exceptions first) ── */}
       {!loading && readiness?.paymentPrerequisites && (
         <PaymentPrerequisitesPanel prerequisites={readiness.paymentPrerequisites} runStatus={readiness.payrollRunStatus} onNavigate={onNavigate} />
       )}
 
-      {/* ── Summary KPIs ── */}
-      {!loading && overview && (
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <KpiCard label={t('Active Employees')} value={overview.totalActiveEmployees.toLocaleString()} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-          <KpiCard label={t('Gross Payroll')} value={periodState === 'no-run' ? t('No run') : overviewAmount(overview.totalGrossPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? t('See each company below') : undefined} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
-          <KpiCard label={t('Net Payroll')} value={periodState === 'no-run' ? t('No run') : overviewAmount(overview.totalNetPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? t('See each company below') : undefined} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-          <KpiCard label={t('Locked Runs YTD')} value={summary?.lockedRuns ?? '—'} icon={Lock} color="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-400" />
-        </div>
-      )}
-
-      {loading && (
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          {[0, 1, 2, 3].map(i => <div key={i} className="surface h-20 animate-pulse rounded-xl" />)}
-        </div>
-      )}
+      {blocksPayment && kpiBand}
 
       {/* ── Insights Panel ── */}
       <AiInsightsPanel readiness={readiness} />
