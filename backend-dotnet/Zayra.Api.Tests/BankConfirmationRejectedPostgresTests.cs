@@ -87,7 +87,7 @@ public sealed class BankConfirmationRejectedPostgresTests(PostgresFixture fixtur
             var service = new BankConfirmationService(read, new IBankConfirmationParser[] { new GenericCsvBankConfirmationParser() });
             var (later, _) = await service.ImportAsync(tenant, batchId, "later.csv",
                 "wpsReference,amount,valueDate,status\nW2,200,2026-08-02,PAID\n",
-                "generic-csv", new BankConfirmationImportOptions(), Guid.NewGuid(), "Payroll Officer", default);
+                "generic-csv", new BankConfirmationImportOptions(CallerMayRecordPaymentStatus: true), Guid.NewGuid(), "Payroll Officer", default);
             await read.SaveChangesAsync();
             later!.Refused.Should().ContainSingle();
             later.RejectedAfterSettlementAwaitingGlCorrection.Should().Be(200m);

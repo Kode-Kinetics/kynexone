@@ -119,17 +119,30 @@ public static class BankOutcomeLedger
             .OrderByDescending(c => c.ImportedAtUtc).ThenByDescending(c => c.CreatedAtUtc).FirstOrDefault();
 
     /// <summary>
-    /// Amount-mismatch holds still open (CTO ruling N3): a hold closes once a later row for the same record was applied
-    /// (for example with acknowledgeAmountMismatch) or records a person's decision.
+    /// Amount-mismatch holds still open (CTO ruling N3, tightened in wave 1 after final gate Fable P1-1). A hold closes ONLY
+    /// through an explicit decision for the same record, made after it: a line applied with acknowledgeAmountMismatch (the
+    /// differing figure was acknowledged), or a person's decision (a reasoned exit or reversal, each gated by
+    /// payroll.wps_status.update). A later plain line, even PAID at the record's own amount, closes nothing: nobody looked at the
+    /// difference. The hold therefore always has an exit and never clears silently.
     /// </summary>
     public static IReadOnlyList<BankPaymentConfirmation> OpenAmountMismatchHolds(IEnumerable<BankPaymentConfirmation> confirmations)
     {
         var all = confirmations.ToList();
         return all.Where(h => !h.Applied && h.HoldReason == BankOutcomeHolds.AmountMismatch
                               && !all.Any(c => c.PaymentRecordId == h.PaymentRecordId && c.ImportedAtUtc > h.ImportedAtUtc
-                                               && (c.Applied || BankOutcomeHolds.IsPersonDecision(c.HoldReason))))
+                                               && ClosesAmountMismatch(c)))
             .ToList();
     }
+
+    /// <summary>A later row that is an explicit decision on the record: an acknowledged line, a person's decision row, or an
+    /// applied line only a reasoned exit or reversal can produce (a rejection after Paid; a change away from a failed status).</summary>
+    private static bool ClosesAmountMismatch(BankPaymentConfirmation c) =>
+        BankOutcomeHolds.IsPersonDecision(c.HoldReason)
+        || (c.Applied
+            && (c.AmountMismatch
+                || (string.Equals(c.PreviousStatus, PaymentRecordStatuses.Paid, StringComparison.OrdinalIgnoreCase)
+                    && c.Outcome == BankConfirmationOutcomes.Rejected)
+                || ResolvesSwap(c)));
 
     /// <summary>
     /// The one rule for "this batch reads Paid but is not clean" (CTO ruling N4), shared by the batch history, the batch list

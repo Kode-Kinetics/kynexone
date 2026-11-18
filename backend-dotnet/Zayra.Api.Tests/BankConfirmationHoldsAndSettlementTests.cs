@@ -285,7 +285,7 @@ public class BankConfirmationHoldsAndSettlementTests
         using var db = NewDb();
         var w = Seed(db);
         await Import(db, w, "RJCT", "AC01");
-        await Import(db, w, new BankConfirmationImportOptions(AllowReturnReversal: true, ReturnReversalReason: "Bank re-ran the line"),
+        await Import(db, w, new BankConfirmationImportOptions(AllowReturnReversal: true, ReturnReversalReason: "Bank re-ran the line", CallerMayRecordPaymentStatus: true),
             ("W1", 100m, "PAID", null));
         Settle(db, w, DateTime.UtcNow);
         await Import(db, w, "FAILED", "DUPL");
@@ -1158,7 +1158,8 @@ public class BankConfirmationHoldsAndSettlementTests
         using var db = NewDb();
         var w = Seed(db, PaymentRecordStatuses.Rejected);
 
-        var refused = OnlyRefused(await Import(db, w, "PAID"));
+        // The caller may record payment status, so the line is held with an instruction (a caller without it is refused with a 403).
+        var refused = OnlyRefused(await Import(db, w, new BankConfirmationImportOptions(CallerMayRecordPaymentStatus: true), ("W1", 100m, "PAID", null)));
 
         refused.GetProperty("reason").GetString().Should().Be("return_reversal_not_permitted");
         ShouldBeAnInstruction(refused);

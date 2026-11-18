@@ -159,10 +159,10 @@ public class ReturnedFileClaimTests
         var s = Seed(db, 3);
         var service = store.Service(db);
         var (pending, _) = await service.ImportAsync(s.TenantId, s.BatchId, "p.txt",
-            WpsReturnedFileOracle.Build(s.Rows.Select(r => r with { Status = "PENDING" }).ToList()), "wps-returned-file", new(), null, "x", default);
+            WpsReturnedFileOracle.Build(s.Rows.Select(r => r with { Status = "PENDING" }).ToList()), "wps-returned-file", new(), Guid.NewGuid(), "x", default);
         await service.SaveAsync(pending!, default);
 
-        var (paid, refusal) = await service.ImportAsync(s.TenantId, s.BatchId, "q.txt", Paid(s), "wps-returned-file", new(), null, "x", default);
+        var (paid, refusal) = await service.ImportAsync(s.TenantId, s.BatchId, "q.txt", Paid(s), "wps-returned-file", new(), Guid.NewGuid(), "x", default);
         refusal.Should().BeNull();
         await service.SaveAsync(paid!, default);
 
@@ -181,7 +181,7 @@ public class ReturnedFileClaimTests
         using (var failing = store.Db(failSaves: true))
         {
             var service = store.Service(failing);
-            var (result, refusal) = await service.ImportAsync(s.TenantId, s.BatchId, "r.txt", Paid(s), "wps-returned-file", new(), null, "x", default);
+            var (result, refusal) = await service.ImportAsync(s.TenantId, s.BatchId, "r.txt", Paid(s), "wps-returned-file", new(), Guid.NewGuid(), "x", default);
             refusal.Should().BeNull();
             var save = () => service.SaveAsync(result!, default);
             await save.Should().ThrowAsync<DbUpdateException>();
@@ -190,7 +190,7 @@ public class ReturnedFileClaimTests
 
         using var retry = store.Db();
         var again = store.Service(retry);
-        var (second, none) = await again.ImportAsync(s.TenantId, s.BatchId, "r.txt", Paid(s), "wps-returned-file", new(), null, "x", default);
+        var (second, none) = await again.ImportAsync(s.TenantId, s.BatchId, "r.txt", Paid(s), "wps-returned-file", new(), Guid.NewGuid(), "x", default);
         none.Should().BeNull("a failed claim is released, so the same file can be imported again");
         await again.SaveAsync(second!, default);
         second!.PaidApplied.Should().Be(3);
@@ -216,7 +216,7 @@ public class ReturnedFileClaimTests
         var s = Seed(db, 3);
         var service = new BankConfirmationService(db, new IBankConfirmationParser[] { new WpsReturnedFileBankConfirmationParser(statusColumnVerified: true) });
 
-        var act = () => service.ImportAsync(s.TenantId, s.BatchId, "r.txt", Paid(s), "wps-returned-file", new(), null, "x", default);
+        var act = () => service.ImportAsync(s.TenantId, s.BatchId, "r.txt", Paid(s), "wps-returned-file", new(), Guid.NewGuid(), "x", default);
 
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*claim*");
         db.ChangeTracker.HasChanges().Should().BeFalse();
@@ -232,7 +232,7 @@ public class ReturnedFileClaimTests
             new ReturnedFileClaim(new GovernmentExchangeRecorder(() => store.Db())));
         var csv = "EmployeeCode,Status\nEMP0001,PAID\n";
 
-        var (result, _) = await service.ImportAsync(s.TenantId, s.BatchId, "g.csv", csv, "generic-csv", new(), null, "x", default);
+        var (result, _) = await service.ImportAsync(s.TenantId, s.BatchId, "g.csv", csv, "generic-csv", new(), Guid.NewGuid(), "x", default);
         await service.SaveAsync(result!, default);
 
         result!.PaidApplied.Should().Be(1);

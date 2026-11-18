@@ -18,7 +18,10 @@ public sealed record BankConfirmationImportOptions(
     // it resolves and carries its own reason (and the bank's reference where the kind needs one). There is no file-wide
     // switch: an exit that matches no open hold of its kind on its record refuses the whole import.
     // SEAM (wave 2, Setting 3): a company may require a SECOND person to approve an exit. Not built here.
-    IReadOnlyList<BankLineExit>? Exits = null)
+    IReadOnlyList<BankLineExit>? Exits = null,
+// Whether the caller holds payroll.wps_status.update (set by the controller from the caller's permissions; secure by default).
+// Marking a Returned or Rejected salary as Paid again is a payment-status decision, so a file that would do it is refused without it.
+bool CallerMayRecordPaymentStatus = false)
 {
     /// <summary>True when any reasoned exit was asked for.</summary>
     public bool AnyExit => Exits is { Count: > 0 };
@@ -69,6 +72,20 @@ public static class BankLineExitKinds
     public const string NeedsPaymentStatusPermissionCode = "exit_needs_payment_status_permission";
     /// <summary>403: nobody resolves a hold on their own salary.</summary>
     public const string OwnRecordCode = "exit_on_own_payment_record";
+
+    /// <summary>The 403 body for "needs payroll.wps_status.update": an exit, a reversal (allowReturnReversal) and any line that
+    /// would mark a Returned or Rejected salary as Paid all use it, so the three read the same.</summary>
+    public static object NeedsPaymentStatusPermissionBody() => new
+    {
+        error = NeedsPaymentStatusPermissionCode,
+        message = "Resolving a held bank line, or marking a returned or rejected salary as paid again, needs the permission to record "
+                + "payment status (payroll.wps_status.update) as well as the import permission. Ask a person who holds it to do this.",
+        messageAr = "تتطلب معالجة سطر بنكي معلّق، أو إعادة تسجيل راتب مُرتجع أو مرفوض على أنه مدفوع، صلاحية تسجيل حالة الدفع "
+                  + "(payroll.wps_status.update) إضافةً إلى صلاحية الاستيراد. اطلب ذلك من شخص يملكها.",
+    };
+
+    /// <summary>The longest reason an exit or a reversal may carry.</summary>
+    public const int MaxReversalReasonLength = MaxReasonLength;
 }
 
 /// <summary>Per-employee outcome tallies for a batch, as the ledger of record sees them.</summary>
@@ -279,6 +296,9 @@ public sealed class BankConfirmationService
         BankConfirmationImportOptions options, Guid? actorId, string actorName, CancellationToken ct)
     {
         if (ExitShapeRefusal(options) is { } exitShapeRefusal) return (null, exitShapeRefusal);
+        // The reversal reason reaches the sealed audit row: IBAN- and ID-shaped text is masked first, like an exit's own words.
+        if (options.ReturnReversalReason is not null)
+            options = options with { ReturnReversalReason = GovernmentLogScrubber.Mask(options.ReturnReversalReason) };
         // An exit's own words reach the sealed audit row and the response: IBAN- and ID-shaped text is masked first.
         if (options.AnyExit)
             options = options with
@@ -466,18 +486,28 @@ public sealed class BankConfirmationService
         var codeById = employeeCodes.ToDictionary(e => e.Id, e => e.EmployeeCode ?? string.Empty);
         var (exitFor, exitRefusal) = ResolveExits(options, records, priorConfirmations, toApply, codeById);
         if (exitRefusal is not null) return (null, exitRefusal);
-        // Nobody resolves a hold on their own salary (final gate security P2-D): any login linked to the record's employee is refused.
-        foreach (var named in exitFor.Keys)
+        // Marking a Returned or Rejected salary as Paid is a payment-status decision whichever way it is asked for (an exit,
+        // allowReturnReversal, or a plain PAID line): it needs payroll.wps_status.update (wave 1 P1, Fable P1-2 = Security P2-1).
+        var applying = toApply.Where(t => !PaymentRecordStatuses.IsCancelled(t.Record.Status)
+                                          && t.Row.Outcome != BankConfirmationOutcomes.Pending).ToList();
+        if (!options.CallerMayRecordPaymentStatus
+            && applying.Any(t => PaymentRecordStatuses.IsFailed(t.Record.Status) && t.Row.Outcome == BankConfirmationOutcomes.Paid))
+            return (null, new JournalExportRefusal(403, BankLineExitKinds.NeedsPaymentStatusPermissionBody()));
+        // Nobody records a bank outcome on their own salary (final gate security P2-D, widened in wave 1 to EVERY row the import
+        // applies, not only the exits): any login linked to the record's employee is refused.
+        if (await Approvals.SubjectDecisionBar.CallerIsSubjectOfAnyAsync(
+                _db, tenantId, actorId, applying.Select(t => t.Record.EmployeeId).Distinct().ToList(), ct))
         {
-            var subject = records.Single(r => r.Id == named);
-            if (await Approvals.SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, actorId, subject.EmployeeId, ct))
-                return (null, new JournalExportRefusal(403, new
-                {
-                    error = BankLineExitKinds.OwnRecordCode,
-                    message = "You cannot resolve a held bank line on your own salary. Ask another person who may record payment status.",
-                    messageAr = "لا يمكنك معالجة سطر بنكي معلّق على راتبك أنت. اطلب ذلك من شخص آخر مخوّل بتسجيل حالة الدفع.",
-                    paymentRecordId = named,
-                }));
+            Guid? ownRecord = null;
+            foreach (var t in applying)
+                if (await Approvals.SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, actorId, t.Record.EmployeeId, ct)) { ownRecord = t.Record.Id; break; }
+            return (null, new JournalExportRefusal(403, new
+            {
+                error = BankLineExitKinds.OwnRecordCode,
+                message = "You cannot record a bank outcome or resolve a held bank line on your own salary. Ask another person who may record payment status.",
+                messageAr = "لا يمكنك تسجيل نتيجة بنكية أو معالجة سطر بنكي معلّق على راتبك أنت. اطلب ذلك من شخص آخر مخوّل بتسجيل حالة الدفع.",
+                paymentRecordId = ownRecord,
+            }));
         }
 
         // ── 2c. Claim the file before anything is applied (returned-file parser only) ──────────────
@@ -590,13 +620,18 @@ public sealed class BankConfirmationService
                 // Partial credit is real. Overwriting the record's amount-bearing status on a different
                 // figure would silently restate what the employee received.
                 apply = false;
-                hold = "amount_mismatch_held";
+                // A rejection after Paid is the stronger contradiction: it keeps its own hold (and its way out) even when the
+                // amount also differs, so a later PAID line cannot close it (final gate Fable P1-1).
+                var rejectionAfterPaid = string.Equals(previous, PaymentRecordStatuses.Paid, StringComparison.OrdinalIgnoreCase)
+                                         && row.Outcome == BankConfirmationOutcomes.Rejected;
+                hold = rejectionAfterPaid ? BankOutcomeHolds.PaidThenRejected : BankOutcomeHolds.AmountMismatch;
                 result.AmountMismatchesHeld.Add(new
                 {
                     paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
                     recordAmount = record.Amount, confirmedAmount, delta = confirmedAmount - record.Amount,
                     outcome = row.Outcome,
                 });
+                if (rejectionAfterPaid) result.Refused.Add(PaidThenRejectedRefusal(record, row, previous));
             }
             else if (PaymentRecordStatuses.IsFailed(previous) && row.Outcome == BankConfirmationOutcomes.Paid
                      && !options.AllowReturnReversal)
@@ -645,19 +680,7 @@ public sealed class BankConfirmationService
                 // hide an unpaid salary. A contradiction: held for a person.
                 apply = false;
                 hold = BankOutcomeHolds.PaidThenRejected;
-                result.Refused.Add(new
-                {
-                    paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
-                    from = previous, to = row.Outcome, reason = hold,
-                    message = "The bank confirmed this salary as paid and now reports it rejected. Nothing was changed. Check the bank "
-                            + "statement. If the money reached the employee, record 'paid confirmed' with the statement reference. If it "
-                            + "did not, record 'not paid' with a reason and the reference: the salary is then still owed and must be paid in a new payment batch linked to the original batch.",
-                    messageAr = "أكّد البنك دفع هذا الراتب ثم أفاد برفضه. لم يتغير شيء. راجع كشف حساب البنك. إذا وصل المبلغ إلى الموظف "
-                              + "فسجّل «تأكيد الدفع» مع مرجع الكشف. وإذا لم يصل فسجّل «لم يُدفع» مع السبب والمرجع، وسيبقى الراتب مستحقًا "
-                              + "للموظف ويجب دفعه في دفعة دفع جديدة مرتبطة بالدفعة الأصلية.",
-                    // The exit names the screen sends back with the line (machine keys, not part of the sentence).
-                    nextStepCodes = new[] { BankLineExitKinds.AllowPaidToRejected, BankLineExitKinds.ConfirmPaidDespiteRejection },
-                });
+                result.Refused.Add(PaidThenRejectedRefusal(record, row, previous));
             }
             else if (PaymentRecordStatuses.IsFailed(previous) && row.Outcome is BankConfirmationOutcomes.Returned or BankConfirmationOutcomes.Rejected
                      && !string.Equals(previous, row.Outcome, StringComparison.OrdinalIgnoreCase)
@@ -844,6 +867,21 @@ public sealed class BankConfirmationService
         foreach (var h in BankOutcomeLedger.UnresolvedHolds(records, confirmations))
             result.HeldForPerson.Add(BankOutcomeLedger.View(h));
     }
+
+    /// <summary>The refusal line a rejection after Paid reports (the money may have left; a person must check the statement).</summary>
+    private static object PaidThenRejectedRefusal(PayrollPaymentRecord record, BankConfirmationRow row, string previous) => new
+    {
+        paymentRecordId = record.Id, employeeId = record.EmployeeId, row = row.RowNumber,
+        from = previous, to = row.Outcome, reason = BankOutcomeHolds.PaidThenRejected,
+        message = "The bank confirmed this salary as paid and now reports it rejected. Nothing was changed. Check the bank "
+                + "statement. If the money reached the employee, record 'paid confirmed' with the statement reference. If it "
+                + "did not, record 'not paid' with a reason and the reference: the salary is then still owed and must be paid in a new payment batch linked to the original batch.",
+        messageAr = "أكّد البنك دفع هذا الراتب ثم أفاد برفضه. لم يتغير شيء. راجع كشف حساب البنك. إذا وصل المبلغ إلى الموظف "
+                  + "فسجّل «تأكيد الدفع» مع مرجع الكشف. وإذا لم يصل فسجّل «لم يُدفع» مع السبب والمرجع، وسيبقى الراتب مستحقًا "
+                  + "للموظف ويجب دفعه في دفعة دفع جديدة مرتبطة بالدفعة الأصلية.",
+        // The exit names the screen sends back with the line (machine keys, not part of the sentence).
+        nextStepCodes = new[] { BankLineExitKinds.AllowPaidToRejected, BankLineExitKinds.ConfirmPaidDespiteRejection },
+    };
 
     /// <summary>A returned or rejected status as a word in a sentence: the officer never reads the stored enum value.</summary>
     private static string FailedWord(string? status, bool arabic) => status switch

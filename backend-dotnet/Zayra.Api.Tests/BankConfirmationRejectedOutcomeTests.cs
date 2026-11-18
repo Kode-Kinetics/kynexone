@@ -218,7 +218,8 @@ public class BankConfirmationRejectedOutcomeTests
         using var db = NewDb();
         var s = Seed(db, PaymentRecordStatuses.Rejected);
 
-        var refused = await Import(db, s, parserKey, "PAID");
+        // The caller may record payment status: the line is held with an instruction (without it the import is refused with a 403).
+        var refused = await Import(db, s, parserKey, new BankConfirmationImportOptions(CallerMayRecordPaymentStatus: true), ("PAID", null));
 
         s.Record.Status.Should().Be(PaymentRecordStatuses.Rejected);
         refused.Refused.Should().ContainSingle();
@@ -227,7 +228,7 @@ public class BankConfirmationRejectedOutcomeTests
         using var db2 = NewDb();
         var s2 = Seed(db2, PaymentRecordStatuses.Rejected);
         var allowed = await Import(db2, s2, parserKey,
-            new BankConfirmationImportOptions(AllowReturnReversal: true, ReturnReversalReason: "Bank re-ran the line"), ("PAID", null));
+            new BankConfirmationImportOptions(AllowReturnReversal: true, ReturnReversalReason: "Bank re-ran the line", CallerMayRecordPaymentStatus: true), ("PAID", null));
 
         s2.Record.Status.Should().Be(PaymentRecordStatuses.Paid);
         allowed.PaidApplied.Should().Be(1);
@@ -243,7 +244,7 @@ public class BankConfirmationRejectedOutcomeTests
         var s = Seed(db, previous);
 
         var result = await Import(db, s, "generic-csv",
-            new BankConfirmationImportOptions(AllowReturnReversal: true, ReturnReversalReason: "Bank re-ran the line"), (word, null));
+            new BankConfirmationImportOptions(AllowReturnReversal: true, ReturnReversalReason: "Bank re-ran the line", CallerMayRecordPaymentStatus: true), (word, null));
 
         s.Record.Status.Should().Be(previous);
         db.BankPaymentConfirmations.Single().HoldReason.Should().Be(hold);
