@@ -107,10 +107,13 @@ public class ReviewsController : ControllerBase
             .OrderByDescending(r => r.CreatedAtUtc)
             .Skip((page - 1) * pageSize).Take(pageSize)
             .ToListAsync(ct);
-        // The same redaction as GET /{id}: the manager's and HR's notes are for the rating-approver tier.
-        // (AsNoTracking rows — nothing here is written back.)
+        // The same redaction as GET /{id}: the manager's and HR's notes are for the rating-approver tier, and the
+        // employee's own row carries no unpublished result. (AsNoTracking rows — nothing here is written back.)
         if (!HasPermission(RatingApproverPermission))
             foreach (var item in items) { item.ManagerNotes = string.Empty; item.HrNotes = string.Empty; }
+        var callerEmployeeId = await OwnEmployeeIdAsync(scope, tenantId, ct);
+        foreach (var item in items.Where(i => callerEmployeeId is int me && i.EmployeeId == me))
+            WithholdFromSubject(item);
         return Ok(new { items, total, page, pageSize });
     }
 
@@ -168,11 +171,35 @@ public class ReviewsController : ControllerBase
         {
             review.ManagerNotes = string.Empty;
             review.HrNotes = string.Empty;
+            // The audit trail stays readable (who did what, when), but its Reason is the reviewers' text: the
+            // manager review logs the manager's notes and an HR correction its reason (HR's notes) there.
+            foreach (var entry in auditLog) entry.Reason = string.Empty;
         }
         // 360 feedback goes through the ONE projection FeedbackController.List360 also uses, so the two
         // endpoints cannot disagree: anonymous entries only for the approver tier, never with an author or
         // a timestamp, and roles hidden when any anonymous role group is small (Feedback360View).
         var feedback = Feedback360View.Project(feedback360, canViewSensitive);
+
+        // THE EMPLOYEE THE REVIEW IS ABOUT, whatever their tier. Before HR publishes, the scores, the rating, the
+        // calibration and the 360 input are the reviewers' working material; the employee sees their own
+        // self-assessment and the stage. After publication they see the result and its breakdown. The reviewers'
+        // narrative and HR's calibration reasoning are never theirs (unchanged for the notes; now also the
+        // calibration notes and record, and the Reason of every audit row).
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (await OwnEmployeeIdAsync(scope, tenantId, ct) == review.EmployeeId)
+        {
+            var released = WithholdFromSubject(review);
+            calibration = null;
+            // The trail shows them what happened and when; the values and reasons in it (scores before and after a
+            // manager review, a calibration or a correction) are the reviewers' working record.
+            foreach (var entry in auditLog) { entry.Reason = string.Empty; entry.OldValue = string.Empty; entry.NewValue = string.Empty; }
+            if (!released)
+            {
+                breakdown = [];
+                feedback = [];
+                foreach (var c in competencies) { c.ManagerRating = 0m; c.ManagerComments = string.Empty; }
+            }
+        }
 
         return Ok(new { review, template, breakdown, competencies, goals, feedback360 = feedback, auditLog, calibration, appeal });
     }
@@ -639,6 +666,34 @@ public class ReviewsController : ControllerBase
         review.UpdatedAtUtc    = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         return Ok(new { attendanceScore = score });
+    }
+
+    // ── What the employee a review is about may read ────────────────────────────
+
+    /// <summary>Review statuses at which the result has been issued to the employee.</summary>
+    public static readonly string[] ResultReleasedStatuses = ["Published", "Acknowledged", "Appealed", "Closed"];
+
+    /// <summary>Statuses in which the scores on the review are still the employee's own self-assessment (or none).</summary>
+    private static readonly string[] SelfStageStatuses = ["Pending", "SelfAssessmentDue", "SelfAssessmentSubmitted"];
+
+    /// <summary>
+    /// Blanks, on a no-tracking copy, what the employee the review is about does not read: always the reviewers'
+    /// narrative and HR's calibration reasoning; and, until the result is issued (after their own self-assessment
+    /// stage), every score, the rating and the calibration adjustment. Returns whether the result is issued.
+    /// </summary>
+    private static bool WithholdFromSubject(AppraisalReview review)
+    {
+        review.ManagerNotes = string.Empty;
+        review.HrNotes = string.Empty;
+        review.CalibrationNotes = string.Empty;
+        var released = ResultReleasedStatuses.Contains(review.Status);
+        if (!released && !SelfStageStatuses.Contains(review.Status))
+        {
+            review.KpiScore = 0m; review.CompetencyScore = 0m; review.AttendanceScore = 0m;
+            review.ProductivityScore = 0m; review.FeedbackScore = 0m; review.DisciplineScore = 0m;
+            review.FinalScore = 0m; review.FinalRating = string.Empty; review.CalibrationAdjustment = 0m;
+        }
+        return released;
     }
 
     private bool HasPermission(string permission) =>
