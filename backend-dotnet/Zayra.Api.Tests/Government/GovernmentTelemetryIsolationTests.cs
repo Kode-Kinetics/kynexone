@@ -174,5 +174,5 @@ public sealed class GovernmentTelemetryCollection
 internal static class TelemetryDecisions
 {
     public static GovernmentLiveDecision OpenRead(string body, string environment) =>
-        GovernmentLivePolicy.Decide(body, new GovernmentLiveGates(true, true, true, true), environment);
+        GovernmentLivePolicy.Decide(TestScopes.For(environment), body, new GovernmentLiveGates(true, true, true, true));
 }

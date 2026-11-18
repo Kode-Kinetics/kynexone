@@ -62,7 +62,7 @@ public sealed class GovernmentTransportTests
         var http = new GovernmentHttp(new SingleHandlerFactory(new CountingHandler()),
             Config((GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox"), "https://api.bank-sandbox.example.test")));
         UnsealedGovernmentCredential Credential(string env, string? host) =>
-            new(GovernmentBodies.BankAnb, env, GovernmentCredentialKinds.OAuthClient, null, 1, "synthetic", "client", host);
+            new(TestScopes.Tenant, GovernmentBodies.BankAnb, env, GovernmentCredentialKinds.OAuthClient, null, 1, "synthetic", "client", host);
 
         http.RequireBoundTo(Credential("sandbox", "api.bank-sandbox.example.test"), GovernmentBodies.BankAnb, "sandbox");
         var production = () => http.RequireBoundTo(Credential("sandbox", null), GovernmentBodies.BankAnb, "production");
@@ -77,7 +77,7 @@ public sealed class GovernmentTransportTests
             Config((GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox"), "https://api.bank-sandbox.example.test"),
                 (GovernmentHttp.TokenUrlKey(GovernmentBodies.BankAnb, "sandbox"), "https://auth.bank-sandbox.example.test")));
         UnsealedGovernmentCredential Tokened(string tokenHost) =>
-            new(GovernmentBodies.BankAnb, "sandbox", GovernmentCredentialKinds.OAuthClient, null, 1, "synthetic", "client", "api.bank-sandbox.example.test", tokenHost);
+            new(TestScopes.Tenant, GovernmentBodies.BankAnb, "sandbox", GovernmentCredentialKinds.OAuthClient, null, 1, "synthetic", "client", "api.bank-sandbox.example.test", tokenHost);
         withToken.RequireBoundTo(Tokened("auth.bank-sandbox.example.test"), GovernmentBodies.BankAnb, "sandbox");
         var otherTokenHost = () => withToken.RequireBoundTo(Tokened("auth.evil.example.test"), GovernmentBodies.BankAnb, "sandbox");
         otherTokenHost.Should().Throw<GovernmentTransportRefusedException>().Which.Code.Should().Be(GovernmentHttp.CredentialBindingCode);
@@ -91,7 +91,7 @@ public sealed class GovernmentTransportTests
         var handler = new CountingHandler();
         var http = new GovernmentHttp(new SingleHandlerFactory(handler),
             Config((GovernmentHttp.BaseUrlKey(GovernmentBodies.Gosi, "sandbox"), "https://gosi-sandbox.example.test")));
-        var decision = GovernmentLivePolicy.Decide(GovernmentBodies.Gosi, new GovernmentLiveGates(true, true, true, true));
+        var decision = GovernmentLivePolicy.Decide(TestScopes.For("sandbox"), GovernmentBodies.Gosi, new GovernmentLiveGates(true, true, true, true));
         var act = async () => { using var _ = await http.ExchangeAsync(decision, "sandbox", HttpMethod.Get, path, null, null, default); };
         await act.Should().ThrowAsync<GovernmentTransportRefusedException>();
         handler.Calls.Should().Be(0);

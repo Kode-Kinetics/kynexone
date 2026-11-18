@@ -59,6 +59,8 @@ public sealed class GovernmentHttp
     public const string IntentAlreadyUsedCode = "government_intent_already_used";
     /// <summary>A company's own credential carrying another company's intent: refused, nothing sent.</summary>
     public const string IntentCompanyMismatchCode = "government_intent_company_mismatch";
+    /// <summary>A decision, credential or receipt for another tenant or company than the call: refused, nothing sent (E5).</summary>
+    public const string ScopeMismatchCode = "government_scope_mismatch";
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
     /// <summary>Largest response body a gov client will buffer.</summary>
     public const long MaxResponseBytes = 8 * 1024 * 1024;
@@ -116,11 +118,11 @@ public sealed class GovernmentHttp
         handler.MaxResponseHeadersLength = 64; // KB
         handler.PooledConnectionLifetime = TimeSpan.FromMinutes(5);
         handler.ConnectTimeout = TimeSpan.FromSeconds(15);
-        return handler;
-    }
         // E7: no trace context leaves for a government or bank host. The runtime would otherwise add traceparent / tracestate / baggage
         // from the caller's current activity, tying a body's access log to our request (and its ids) for anyone who can read both.
         handler.ActivityHeadersPropagator = null;
+        return handler;
+    }
 
     /// <summary>True when any handler in the chain would follow a redirect (unknown handler types are trusted not to).</summary>
     public static bool FollowsRedirects(HttpMessageHandler? handler)
@@ -149,11 +151,11 @@ public sealed class GovernmentHttp
                     c.Timeout = DefaultTimeout;
                     c.MaxResponseContentBufferSize = MaxResponseBytes;
                 })
-                .RemoveAllLoggers();
-        return services;
                 // E7: nothing that adds telemetry sits on a government client (the Sentry handler adds sentry-trace and baggage headers and
                 // records a span named by the URL, which holds ID numbers). The handlers other registrations add are cleared.
                 .ConfigureAdditionalHttpMessageHandlers((handlers, _) => handlers.Clear())
+                .RemoveAllLoggers();
+        return services;
     }
 
     /// <summary>The allow-listed base URL for a body in an environment, or a refusal.</summary>
@@ -264,6 +266,7 @@ public sealed class GovernmentHttp
         HttpContent content, Action<HttpRequestMessage>? configure, CancellationToken ct)
     {
         RequireBoundTo(credential, decision.Body, credential.Environment);
+        RequireCredentialInScope(decision, credential);
         return GrantTokenAsync(decision, credential.Environment, ResolveTokenPath(decision.Body, credential.Environment), content, configure, ct);
     }
 
@@ -275,9 +278,9 @@ public sealed class GovernmentHttp
         if (!decision.IsOpen)
             throw new GovernmentTransportRefusedException(GovernmentLivePolicy.RefusedCode,
                 $"Live exchange with {decision.Body} is switched off ({decision.ReasonCode}). Nothing was sent.");
-        if (decision.Environment is { } bound && bound != environment)
+        if (decision.Environment != environment)
             throw new GovernmentTransportRefusedException(EnvironmentMismatchCode,
-                $"The decision for {decision.Body} was made for {bound}, not {environment}. Nothing was sent.");
+                $"The decision for {decision.Body} was made for {decision.Environment}, not {environment}. Nothing was sent.");
         if (!IsRead(method) && (!decision.AllowsWrites || decision.Environment is null))
             throw new GovernmentTransportRefusedException(WriteRefusedCode,
                 $"A {method} to {decision.Body} needs a live-write decision with the recorded legal clearance. Nothing was sent.");
@@ -286,6 +289,10 @@ public sealed class GovernmentHttp
         if (requireIntent && (intent is null || intent.Body != decision.Body || intent.Environment != environment))
             throw new GovernmentTransportRefusedException(WriteWithoutIntentCode,
                 $"A {method} to {decision.Body} ({environment}) needs a committed intent for that body and environment. Nothing was sent.");
+        // E5: the intent is the decision's tenant's. (An intent that is not needed but was given is held to the same rule.)
+        if (intent is not null && intent.TenantId != decision.TenantId)
+            throw new GovernmentTransportRefusedException(ScopeMismatchCode,
+                $"The intent for {decision.Body} ({environment}) belongs to another tenant than the decision. Nothing was sent.");
 
         var baseUrl = baseOverride ?? ResolveBaseUrl(decision.Body, environment);
         if (string.IsNullOrEmpty(relativePath) || relativePath[0] != '/' || relativePath.StartsWith("//", StringComparison.Ordinal)
@@ -318,21 +325,45 @@ public sealed class GovernmentHttp
         return response;
     }
 
-    /// <summary>Sends with a credential: the credential must be bound to this body, environment and host first.</summary>
     /// <summary>
-    /// Sends with a credential: the credential must be bound to this body, environment and host first, and a company's own credential
-    /// carries only that company's intent (the receipt's company is bound; security P2-A). INTEGRATOR NOTE: when the decision and the
-    /// credential carry their tenant (E5), also compare <c>intent.TenantId</c> with both here.
+    /// Sends with a credential: the credential must be bound to this body, environment and host first; it and the decision must be for
+    /// the same tenant (and a company's own credential for that company); the receipt must be that tenant's, and a company's own
+    /// credential carries only that company's intent (security P2-A, E5).
     /// </summary>
     public Task<HttpResponseMessage> ExchangeAsync(GovernmentLiveDecision decision, UnsealedGovernmentCredential credential, HttpMethod method,
         string relativePath, HttpContent? content, Action<HttpRequestMessage>? configure, CancellationToken ct,
         GovernmentExchangeIntentReceipt? intent = null, HttpCompletionOption completion = HttpCompletionOption.ResponseContentRead)
     {
         RequireBoundTo(credential, decision.Body, credential.Environment);
+        RequireCredentialInScope(decision, credential);
+        if (intent is not null && intent.TenantId != credential.TenantId)
+            throw new GovernmentTransportRefusedException(ScopeMismatchCode,
+                $"The intent for {decision.Body} ({credential.Environment}) belongs to another tenant than the credential. Nothing was sent.");
         if (intent is not null && credential.CompanyId is { } company && intent.CompanyId != company)
             throw new GovernmentTransportRefusedException(IntentCompanyMismatchCode,
                 $"The intent for {decision.Body} ({credential.Environment}) belongs to another company than the credential. Nothing was sent.");
         return ExchangeAsync(decision, credential.Environment, method, relativePath, content, configure, ct, intent, completion);
+    }
+
+    /// <summary>
+    /// Refuses a decision that was made for another tenant, company or environment than the call (E5). A tenant-wide call (company
+    /// null) takes only a tenant-wide decision, and a company's call only that company's. Public so a gate or channel that is handed a
+    /// decision can check it against its own scope before it acts.
+    /// </summary>
+    public static void RequireFor(GovernmentLiveDecision decision, Guid tenantId, Guid? companyId, string environment)
+    {
+        ArgumentNullException.ThrowIfNull(decision);
+        if (decision.TenantId != tenantId || decision.CompanyId != companyId || decision.Environment != environment)
+            throw new GovernmentTransportRefusedException(ScopeMismatchCode,
+                $"The decision for {decision.Body} was made for another tenant, company or environment than this call. Nothing was sent.");
+    }
+
+    /// <summary>A credential is its tenant's and, when it is one company's own, that company's: it never opens for another decision.</summary>
+    private static void RequireCredentialInScope(GovernmentLiveDecision decision, UnsealedGovernmentCredential credential)
+    {
+        if (credential.TenantId != decision.TenantId || (credential.CompanyId is { } company && company != decision.CompanyId))
+            throw new GovernmentTransportRefusedException(ScopeMismatchCode,
+                $"The credential for {credential.Body} ({credential.Environment}) is for another tenant or company than the decision. Nothing was sent.");
     }
 
     public static bool IsRead(HttpMethod method) => method == HttpMethod.Get || method == HttpMethod.Head;

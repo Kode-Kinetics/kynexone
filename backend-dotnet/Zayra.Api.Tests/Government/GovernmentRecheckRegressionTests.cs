@@ -32,10 +32,10 @@ public sealed class GovernmentRecheckRegressionTests
     [InlineData(GovernmentBodies.Gosi)]
     public void ASandboxWrite_WithAllFourGates_NeedsNoLegalClearance(string body)
     {
-        var sandbox = GovernmentLivePolicy.DecideLiveWrite(Config(), body, AllOpen, "sandbox");
+        var sandbox = GovernmentLivePolicy.DecideLiveWrite(Config(), TestScopes.For("sandbox"), body, AllOpen);
 
         sandbox.AllowsWrites.Should().BeTrue("the sandbox rung (synthetic data) is usable with the four gates");
-        GovernmentLivePolicy.DecideLiveWrite(Config(), body, AllOpen, "production").ReasonCode
+        GovernmentLivePolicy.DecideLiveWrite(Config(), TestScopes.For("production"), body, AllOpen).ReasonCode
             .Should().Be(GovernmentLivePolicy.LiveWritesNeedLegalClearance, "production writes still need the recorded legal opinion");
     }
 

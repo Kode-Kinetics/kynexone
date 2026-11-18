@@ -147,7 +147,7 @@ public sealed class GovernmentReviewRegressionTests : Zayra.Api.Tests.Platform.P
     // ── Transport: writes need a write decision; redirects are refused; one send (security P1-1, P2-1; audit F2, F10) ──
 
     private static GovernmentLiveDecision OpenReadDecision() =>
-        GovernmentLivePolicy.Decide(GovernmentBodies.Gosi, new GovernmentLiveGates(true, true, true, true));
+        GovernmentLivePolicy.Decide(TestScopes.For("sandbox"), GovernmentBodies.Gosi, new GovernmentLiveGates(true, true, true, true));
 
     private static GovernmentHttp Http(HttpMessageHandler handler) => new(new SingleHandlerFactory(handler),
         Config((GovernmentHttp.BaseUrlKey(GovernmentBodies.Gosi, "sandbox"), "https://gosi-sandbox.example.test")));
@@ -225,7 +225,7 @@ public sealed class GovernmentReviewRegressionTests : Zayra.Api.Tests.Platform.P
             : !gates.Credential ? GovernmentLivePolicy.NoCredential
             : null;
 
-        var decision = GovernmentLivePolicy.Decide(body, gates);
+        var decision = GovernmentLivePolicy.Decide(TestScopes.For("sandbox"), body, gates);
 
         decision.IsOpen.Should().Be(expected is null);
         decision.ReasonCode.Should().Be(expected);

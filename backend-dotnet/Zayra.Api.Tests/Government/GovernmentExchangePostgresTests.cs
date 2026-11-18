@@ -189,7 +189,7 @@ public sealed class GovernmentExchangePostgresTests(PostgresFixture fixture)
         var handler = new GovernmentLiveGateTests.CountingHandler();
         var http = new GovernmentHttp(new GovernmentLiveGateTests.SingleHandlerFactory(handler),
             GovernmentLiveGateTests.Config((GovernmentHttp.BaseUrlKey(GovernmentBodies.BankAnb, "sandbox"), "https://bank-sandbox.example.test")));
-        var write = GovernmentLivePolicy.DecideLiveWrite(null, GovernmentBodies.BankAnb, new GovernmentLiveGates(true, true, true, true), "sandbox");
+        var write = GovernmentLivePolicy.DecideLiveWrite(null, TestScopes.For(tenantId, null, "sandbox"), GovernmentBodies.BankAnb, new GovernmentLiveGates(true, true, true, true));
         await using var caller = fixture.CreateDb();
 
         await caller.Database.CreateExecutionStrategy().ExecuteAsync(async () =>

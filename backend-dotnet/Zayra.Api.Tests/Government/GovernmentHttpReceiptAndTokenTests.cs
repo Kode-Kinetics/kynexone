@@ -25,8 +25,9 @@ public sealed class GovernmentHttpReceiptAndTokenTests
         (GovernmentHttp.TokenUrlKey(GovernmentBodies.BankAnb, "sandbox"), TokenOrigin),
         (GovernmentHttp.TokenPathKey(GovernmentBodies.BankAnb, "sandbox"), tokenPath));
 
-    private static GovernmentLiveDecision Write(Microsoft.Extensions.Configuration.IConfiguration config) =>
-        GovernmentLivePolicy.DecideLiveWrite(config, GovernmentBodies.BankAnb, AllOpen, "sandbox");
+    /// <summary>The write decision for the synthetic tenant, tenant-wide or for one company (a decision is for exactly one scope).</summary>
+    private static GovernmentLiveDecision Write(Microsoft.Extensions.Configuration.IConfiguration config, Guid? company = null) =>
+        GovernmentLivePolicy.DecideLiveWrite(config, TestScopes.For(TestScopes.Tenant, company, "sandbox"), GovernmentBodies.BankAnb, AllOpen);
 
     /// <summary>
     /// A committed intent made the only way there is (the recorder) for one company. The recorder refuses an intent with no company
@@ -34,7 +35,7 @@ public sealed class GovernmentHttpReceiptAndTokenTests
     /// </summary>
     private static async Task<GovernmentExchangeIntentReceipt> IntentAsync(Guid? companyId)
     {
-        var tenant = Guid.NewGuid();
+        var tenant = TestScopes.Tenant;
         if (companyId is not { } company)
             return new GovernmentExchangeIntentReceipt(Guid.NewGuid(), tenant, GovernmentBodies.BankAnb, "sandbox", Guid.NewGuid().ToString("N"),
                 new string('a', 64));
@@ -49,7 +50,7 @@ public sealed class GovernmentHttpReceiptAndTokenTests
     }
 
     private static UnsealedGovernmentCredential Credential(Guid? companyId) =>
-        new(GovernmentBodies.BankAnb, "sandbox", GovernmentCredentialKinds.OAuthClient, companyId, 1, "synthetic-secret",
+        new(TestScopes.Tenant, GovernmentBodies.BankAnb, "sandbox", GovernmentCredentialKinds.OAuthClient, companyId, 1, "synthetic-secret",
             "synthetic-client", "bank-sandbox.example.test", "auth.bank-sandbox.example.test");
 
     // ── P2-A: one send per receipt, spent at the transport ─────────────────────────────────────────────
@@ -119,7 +120,7 @@ public sealed class GovernmentHttpReceiptAndTokenTests
         var intentB = await IntentAsync(companyB);
         intentB.CompanyId.Should().Be(companyB);
 
-        var crossed = async () => { using var _ = await http.ExchangeAsync(Write(config), Credential(companyA), HttpMethod.Post, "/payroll/v2", new StringContent("{}"), null, default, intentB); };
+        var crossed = async () => { using var _ = await http.ExchangeAsync(Write(config, companyA), Credential(companyA), HttpMethod.Post, "/payroll/v2", new StringContent("{}"), null, default, intentB); };
 
         var refused = (await crossed.Should().ThrowAsync<GovernmentTransportRefusedException>()).Which;
         refused.Code.Should().Be(GovernmentHttp.IntentCompanyMismatchCode);
@@ -127,7 +128,7 @@ public sealed class GovernmentHttpReceiptAndTokenTests
         intentB.IsSpent.Should().BeFalse();
 
         // The receipt's own company's credential sends it.
-        using (await http.ExchangeAsync(Write(config), Credential(companyB), HttpMethod.Post, "/payroll/v2", new StringContent("{}"), null, default, intentB)) { }
+        using (await http.ExchangeAsync(Write(config, companyB), Credential(companyB), HttpMethod.Post, "/payroll/v2", new StringContent("{}"), null, default, intentB)) { }
         handler.Calls.Should().Be(1);
     }
 
@@ -187,7 +188,7 @@ public sealed class GovernmentHttpReceiptAndTokenTests
         var handler = new CountingHandler();
         var config = Settings();
         var http = new GovernmentHttp(new SingleHandlerFactory(handler), config);
-        var read = GovernmentLivePolicy.Decide(GovernmentBodies.BankAnb, AllOpen, "sandbox");
+        var read = GovernmentLivePolicy.Decide(TestScopes.For("sandbox"), GovernmentBodies.BankAnb, AllOpen);
 
         var grant = async () => { using var _ = await http.GrantTokenAsync(read, Credential(null), new StringContent("x"), null, default); };
 

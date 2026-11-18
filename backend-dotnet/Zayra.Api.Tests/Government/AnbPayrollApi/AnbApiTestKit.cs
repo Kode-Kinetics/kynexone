@@ -81,8 +81,8 @@ internal static class AnbApiTestKit
 
     public static UnsealedGovernmentCredential Credential(string clientId = ClientId, string secret = ClientSecret, int version = 1,
         string environment = "sandbox", Guid? companyId = null, string? baseHost = null, string? tokenHost = null,
-        string kind = GovernmentCredentialKinds.OAuthClient) =>
-        new(GovernmentBodies.BankAnb, environment, kind, companyId ?? TestScope.CompanyId, version, secret, clientId,
+        string kind = GovernmentCredentialKinds.OAuthClient, Guid? tenantId = null) =>
+        new(tenantId ?? TestScope.TenantId, GovernmentBodies.BankAnb, environment, kind, companyId ?? TestScope.CompanyId, version, secret, clientId,
             baseHost ?? (environment == "production" ? "anb-prod.test" : "anb-sandbox.test"),
             tokenHost ?? (environment == "production" ? "anb-prod-auth.test" : "anb-auth.test"));
 

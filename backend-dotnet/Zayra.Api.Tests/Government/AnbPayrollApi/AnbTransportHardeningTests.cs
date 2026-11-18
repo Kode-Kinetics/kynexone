@@ -334,10 +334,25 @@ public class AnbTransportHardeningTests
     public async Task AnotherTenant_NeverReusesThisTenantsToken()
     {
         var handler = new StubAnbHandler(_ => Accepted());
-        var client = Client(handler, out _);
+        // Each tenant's credential carries its own tenant (a credential is never used for another tenant's call).
+        var client = Client(handler, out _, credentials: new MutableCredentials(scope => Credential(tenantId: scope.TenantId)));
         await client.SubmitAsync(Submit(Small), CancellationToken.None);
         await client.SubmitAsync(Submit(Small, scope: TestScope with { TenantId = Guid.NewGuid() }), CancellationToken.None);
         handler.TokenRequests.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task ACredentialOfAnotherTenant_IsRefused_NoTokenRequestAndNoPost()
+    {
+        var handler = new StubAnbHandler(_ => Accepted());
+        var client = Client(handler, out _, credentials: new FixedCredentials(Credential(tenantId: Guid.NewGuid())));
+
+        var outcome = await client.SubmitAsync(Submit(Small), CancellationToken.None);
+
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.CredentialEndpointMismatch);
+        outcome.RequestSent.Should().BeFalse();
+        handler.Requests.Should().BeEmpty();
     }
 
     [Fact]

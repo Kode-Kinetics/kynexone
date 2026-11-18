@@ -161,8 +161,10 @@ public sealed class GatedBankPayrollChannel : IBankPayrollChannel
         : !decision.AllowsWrites ? WriteNotGranted
         : null;
 
+    /// <summary>The decision was made for this bank, this tenant, this company (or tenant-wide, when the call is) and this environment (E5).</summary>
     private bool IsForThisCall(GovernmentLiveDecision decision, BankChannelScope scope) =>
-        decision.Body == Body && decision.Environment is { } environment && environment == scope.Environment;
+        decision.Body == Body && decision.TenantId == scope.TenantId && decision.CompanyId == scope.CompanyId
+        && decision.Environment == scope.Environment;
 
     private async Task<GovernmentLiveDecision?> DecideAsync(BankChannelScope scope, bool write, CancellationToken ct)
     {

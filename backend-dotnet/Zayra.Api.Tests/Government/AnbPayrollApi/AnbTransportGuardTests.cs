@@ -58,7 +58,7 @@ public class AnbTransportGuardTests
         using var provider = Container();
         var transport = new GovernmentHttp(provider.GetRequiredService<IHttpClientFactory>(), config);
         var loopbackCredential = new FixedCredentials(new Zayra.Api.Infrastructure.Government.Credentials.UnsealedGovernmentCredential(
-            GovernmentBodies.BankAnb, "sandbox", Zayra.Api.Models.GovernmentCredentialKinds.OAuthClient, TestScope.CompanyId, 1, ClientSecret, ClientId,
+            TestScope.TenantId, GovernmentBodies.BankAnb, "sandbox", Zayra.Api.Models.GovernmentCredentialKinds.OAuthClient, TestScope.CompanyId, 1, ClientSecret, ClientId,
             "localhost", "localhost"));
         var batch = BuildBatch(2);
         var receipt = Receipt(batch);

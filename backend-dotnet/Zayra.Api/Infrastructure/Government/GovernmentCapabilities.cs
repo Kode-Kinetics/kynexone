@@ -112,13 +112,13 @@ public sealed class GovernmentCapabilitiesService(
     /// that environment: a sandbox credential never opens a production call.
     /// </summary>
     public async Task<GovernmentLiveDecision> DecideAsync(Guid tenantId, Guid? companyId, string body, string environment, CancellationToken ct) =>
-        GovernmentLivePolicy.Decide(configuration, body, await GovernmentOptIn.HasConsentAsync(db, tenantId, body, ct),
-            await credentials.IsUsableAsync(tenantId, companyId, body, environment, ct), environment);
+        GovernmentLivePolicy.Decide(configuration, new GovernmentDecisionScope(tenantId, companyId, environment), body,
+            await GovernmentOptIn.HasConsentAsync(db, tenantId, body, ct), await credentials.IsUsableAsync(tenantId, companyId, body, environment, ct));
 
     /// <summary>The WRITE decision for one body, company and environment: the four gates and the body's legal clearance.</summary>
     public async Task<GovernmentLiveDecision> DecideLiveWriteAsync(Guid tenantId, Guid? companyId, string body, string environment, CancellationToken ct) =>
-        GovernmentLivePolicy.DecideLiveWrite(configuration, body, await GovernmentOptIn.HasConsentAsync(db, tenantId, body, ct),
-            await credentials.IsUsableAsync(tenantId, companyId, body, environment, ct), environment);
+        GovernmentLivePolicy.DecideLiveWrite(configuration, new GovernmentDecisionScope(tenantId, companyId, environment), body,
+            await GovernmentOptIn.HasConsentAsync(db, tenantId, body, ct), await credentials.IsUsableAsync(tenantId, companyId, body, environment, ct));
 
     /// <summary>
     /// Qiwa keeps its own switches (QIWA_USE_LIVE_ADAPTER, Qiwa:PartnerAgreementReference, its own credential table) and now needs
@@ -129,10 +129,10 @@ public sealed class GovernmentCapabilitiesService(
         var consent = await QiwaLiveAdapterPolicy.HasTenantConsentAsync(db, tenantId, ct);
         var credential = await db.QiwaApiCredentials.AsNoTracking()
             .AnyAsync(c => c.TenantId == tenantId && c.Environment == environment && c.ClientId != "" && c.EncryptedClientSecret != "", ct);
-        var write = QiwaLiveAdapterPolicy.DecideLiveWrite(configuration, consent, credential, environment);
-        var read = GovernmentLivePolicy.Decide(GovernmentBodies.Qiwa, new GovernmentLiveGates(
+        var write = QiwaLiveAdapterPolicy.DecideLiveWrite(configuration, tenantId, consent, credential, environment);
+        var read = GovernmentLivePolicy.Decide(new GovernmentDecisionScope(tenantId, null, environment), GovernmentBodies.Qiwa, new GovernmentLiveGates(
             QiwaLiveAdapterPolicy.HasPartnerAgreement(configuration), consent, credential,
-            QiwaLiveAdapterPolicy.LiveRequested(configuration) && GovernmentLivePolicy.OperatorEnabled(configuration, GovernmentBodies.Qiwa)), environment);
+            QiwaLiveAdapterPolicy.LiveRequested(configuration) && GovernmentLivePolicy.OperatorEnabled(configuration, GovernmentBodies.Qiwa)));
         return (read, write);
     }
 

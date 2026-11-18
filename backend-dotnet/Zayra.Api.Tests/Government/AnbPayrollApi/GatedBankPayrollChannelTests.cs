@@ -100,6 +100,52 @@ public class GatedBankPayrollChannelTests
     }
 
     [Fact]
+    public async Task Submit_WithADecisionForAnotherTenant_IsRefused_NothingIsSent()
+    {
+        var batch = BuildBatch(2);
+        var handler = AcceptingBank();
+        var ledger = new RecordingLedger();
+        var gate = new PolicyGate(Settings(), AllOpen) { TenantOverride = Guid.Parse("99999999-9999-9999-9999-999999999999") };
+
+        var outcome = await Gated(handler, gate, ledger).SubmitAsync(Request(batch, Receipt(batch)), CancellationToken.None);
+
+        outcome.Kind.Should().Be(BankSubmitOutcomeKind.Refused);
+        outcome.Code.Should().Be(BankChannelCodes.GateRefused);
+        outcome.Message.Should().Be(GatedBankPayrollChannel.DecisionNotForThisCall);
+        outcome.RequestSent.Should().BeFalse();
+        handler.Requests.Should().BeEmpty("a decision for another tenant opens nothing here");
+    }
+
+    [Theory]
+    [InlineData("99999999-9999-9999-9999-999999999999")]
+    [InlineData(null)] // a tenant-wide decision for a company's call
+    public async Task Submit_WithADecisionForAnotherCompany_OrNoCompany_IsRefused_NothingIsSent(string? company)
+    {
+        var batch = BuildBatch(2);
+        var handler = AcceptingBank();
+        var gate = new PolicyGate(Settings(), AllOpen) { CompanyOverride = company is null ? Guid.Empty : Guid.Parse(company), CompanyIsOverridden = true };
+
+        var outcome = await Gated(handler, gate, new RecordingLedger()).SubmitAsync(Request(batch, Receipt(batch)), CancellationToken.None);
+
+        outcome.Code.Should().Be(BankChannelCodes.GateRefused);
+        outcome.Message.Should().Be(GatedBankPayrollChannel.DecisionNotForThisCall);
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AStatusRead_WithADecisionForAnotherTenant_IsRefused_NothingIsSent()
+    {
+        var handler = new StubAnbHandler(_ => Json(HttpStatusCode.OK, new { }));
+        var gate = new PolicyGate(Settings(), AllOpen) { TenantOverride = Guid.Parse("99999999-9999-9999-9999-999999999999") };
+        var channel = Gated(handler, gate, new RecordingLedger());
+
+        var read = () => channel.GetStatusAsync(TestScope, PayrollId, Binding(BuildBatch(2)), CancellationToken.None);
+
+        (await read.Should().ThrowAsync<BankChannelRefusedException>()).Which.Code.Should().Be(BankChannelCodes.GateRefused);
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Submit_WhenTheGateThrows_FailsClosed()
     {
         var batch = BuildBatch(2);
@@ -387,6 +433,11 @@ internal sealed class PolicyGate(IConfiguration config, GovernmentLiveGates gate
 {
     public bool WriteAsRead { get; init; }
     public string? EnvironmentOverride { get; init; }
+    /// <summary>Make the decision for another tenant or company than the call's (a gate that answers for the wrong scope).</summary>
+    public Guid? TenantOverride { get; init; }
+    public Guid? CompanyOverride { get; init; }
+    /// <summary>When true, <see cref="CompanyOverride"/> replaces the call's company even where it is <see cref="Guid.Empty"/> (meaning tenant-wide, null).</summary>
+    public bool CompanyIsOverridden { get; init; }
     public bool Throw { get; init; }
     /// <summary>Switch the gates while a test runs (the operator's kill switch moving between two calls).</summary>
     public GovernmentLiveGates Gates { get; set; } = gates;
@@ -400,9 +451,11 @@ internal sealed class PolicyGate(IConfiguration config, GovernmentLiveGates gate
         lock (Asked) Asked.Add((write, scope.Environment));
         if (Throw) throw new InvalidOperationException("gate store down");
         var environment = EnvironmentOverride ?? scope.Environment;
+        var decisionScope = new GovernmentDecisionScope(TenantOverride ?? scope.TenantId,
+            CompanyIsOverridden ? (CompanyOverride == Guid.Empty ? null : CompanyOverride) : scope.CompanyId, environment);
         return Task.FromResult(write && !WriteAsRead
-            ? GovernmentLivePolicy.DecideLiveWrite(config, body, Gates, environment)
-            : GovernmentLivePolicy.Decide(body, Gates, environment));
+            ? GovernmentLivePolicy.DecideLiveWrite(config, decisionScope, body, Gates)
+            : GovernmentLivePolicy.Decide(decisionScope, body, Gates));
     }
 }
 

@@ -273,11 +273,12 @@ public sealed partial class AnbPayrollApiClient
     }
 
     /// <summary>
-    /// A credential is used only for ANB, the environment and both hosts it was issued for, as an OAuth client with a client id, and
+    /// A credential is used only for this tenant, ANB, the environment and both hosts it was issued for, as an OAuth client with a client id, and
     /// for the scope's company or tenant-wide. The transport checks the body, environment and hosts again before it sends.
     /// </summary>
     private static bool CredentialFits(UnsealedGovernmentCredential c, Endpoint endpoint, BankChannelScope scope) =>
         c.Body == Body
+        && c.TenantId == scope.TenantId
         && string.Equals(c.Environment, endpoint.Environment, StringComparison.Ordinal)
         && c.Kind == GovernmentCredentialKinds.OAuthClient
         && !string.IsNullOrWhiteSpace(c.ClientIdentifier) && !string.IsNullOrEmpty(c.Secret)
@@ -796,7 +797,7 @@ public sealed partial class AnbPayrollApiClient
     // ── The live gate ───────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Asks the live gate (E4). Returns the decision only when it is open, made for ANB and for exactly this scope's environment, and,
+    /// Asks the live gate (E4). Returns the decision only when it is open, made for ANB and for exactly this scope's tenant, company and environment, and,
     /// for <paramref name="write"/>, carries the write grade (four gates, plus the legal clearance in production). Otherwise the reason,
     /// and no decision: the caller refuses before any socket. A gate that throws fails closed.
     /// </summary>
@@ -819,7 +820,8 @@ public sealed partial class AnbPayrollApiClient
         }
         var refusal = decision is null ? GatedBankPayrollChannel.GateUnavailable
             : !decision.IsOpen ? decision.ReasonCode ?? GatedBankPayrollChannel.GateUnavailable
-            : decision.Body != Body || decision.Environment is null || decision.Environment != scope.Environment
+            : decision.Body != Body || decision.TenantId != scope.TenantId || decision.CompanyId != scope.CompanyId
+              || decision.Environment != scope.Environment
                 ? GatedBankPayrollChannel.DecisionNotForThisCall
             : write && !decision.AllowsWrites ? GatedBankPayrollChannel.WriteNotGranted
             : null;
