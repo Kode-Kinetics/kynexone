@@ -146,9 +146,32 @@ public sealed class BenefitUsageService(ZayraDbContext db, ITenantClock clock)
             decimal Measure(BenefitUsageRequest x) => units ? x.Units ?? 0 : x.Amount ?? 0;
             var per = units ? row.Quantity!.Value : row.Amount!.Value;
             var asked = units ? input.Units!.Value : input.Amount!.Value;
-            if (row.DependantScope != DependantScopes.None || input.DependantId is not null)
-                throw Refuse(BenefitUsageErrors.NotConsumable, "A benefit that covers dependants is requested through its own claim.");
-            var used = counted.Sum(Measure);
+            decimal used;
+            if (row.DependantScope == DependantScopes.None)
+            {
+                if (input.DependantId is not null)
+                    throw Refuse(BenefitUsageErrors.DependantInvalid, "This benefit is the employee's own; it does not cover dependants.", 400);
+                used = counted.Sum(Measure);
+            }
+            else if (input.DependantId is not Guid dependantId)
+            {
+                if (IsEducation(row)) throw Refuse(BenefitUsageErrors.DependantRequired, "Choose the child this claim is for.", 400);
+                used = counted.Where(x => x.DependantId is null).Sum(Measure);
+            }
+            else
+            {
+                var dependant = await db.EmployeeDependents.AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == dependantId && x.EmployeeId == employee.Id && !x.IsDeleted, ct);
+                if (dependant is null || !InScope(row.DependantScope, dependant.Relationship)
+                    || (dependant.DateOfBirth is DateOnly born && born > input.UsageDate))
+                    throw Refuse(BenefitUsageErrors.DependantInvalid,
+                        IsEducation(row) ? "Choose one of the employee's children on file." : "Choose a family member this benefit covers.", 400);
+                // Which dependants use the benefit this period is named by the request, up to the grade's limit.
+                var named = counted.Where(x => x.DependantId is not null).Select(x => x.DependantId!.Value).ToHashSet();
+                if (!named.Contains(dependantId) && row.MaxDependants is short max && named.Count >= max)
+                    throw Refuse(BenefitUsageErrors.DependantCap, $"This benefit covers {max} dependants a period, and {named.Count} are already named.");
+                used = counted.Where(x => x.DependantId == dependantId).Sum(Measure);
+            }
             if (used + asked > per)
                 throw Refuse(BenefitUsageErrors.OverEntitlement, $"Only {Math.Max(0, per - used)} of {per} is left for this period.");
 
@@ -372,7 +395,27 @@ public sealed class BenefitUsageService(ZayraDbContext db, ITenantClock clock)
             var total = per;
             var beneficiaries = new List<BenefitUsageBeneficiaryDto>();
             bool canRequest;
-            canRequest = open && row.DependantScope == DependantScopes.None && per - pending - approved > 0;
+            if (row.DependantScope == DependantScopes.None) canRequest = open && per - pending - approved > 0;
+            else
+            {
+                // That value for each one covered: the employee (not for education) and the dependants in scope on file, up to the limit.
+                var inScope = family.Where(d => d.EmployeeId == employee.Id && InScope(row.DependantScope, d.Relationship)).ToList();
+                var named = counted.Where(c => c.DependantId is not null).Select(c => c.DependantId!.Value).ToHashSet();
+                var covered = row.MaxDependants is short max ? Math.Min(inScope.Count, (int)max) : inScope.Count;
+                total = per * ((IsEducation(row) ? 0 : 1) + covered);
+                if (!IsEducation(row))
+                {
+                    var own = counted.Where(c => c.DependantId is null).Sum(Measure);
+                    beneficiaries.Add(new BenefitUsageBeneficiaryDto(null, employee.FullName, per, own, per - own, own > 0));
+                }
+                foreach (var d in inScope)
+                {
+                    var theirs = counted.Where(c => c.DependantId == d.Id).Sum(Measure);
+                    beneficiaries.Add(new BenefitUsageBeneficiaryDto(d.Id, d.FullName, per, theirs, per - theirs, named.Contains(d.Id)));
+                }
+                var room = row.MaxDependants is not short cap || named.Count < cap;
+                canRequest = open && beneficiaries.Any(b => b.Remaining > 0 && (b.DependantId is null || b.Named || room));
+            }
             var label = labels.GetValueOrDefault(row.PayComponentCode) ?? new ComponentLabel(row.PayComponentCode, row.PayComponentCode);
             result.Add(new BenefitUtilisationDto(employee.Id, employee.FullName, employee.EmployeeCode, row.CompanyId!.Value, row.PayComponentCode,
                 label.En, label.Ar, row.VerificationState, units ? BenefitUsageMeasures.Units : BenefitUsageMeasures.Amount,
