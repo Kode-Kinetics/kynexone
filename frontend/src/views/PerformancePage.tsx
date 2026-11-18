@@ -208,7 +208,7 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
             ))}
           </div>
           <p className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
-            {t('Approved recommendations are sent to Payroll as pending actions — not applied automatically.')}
+            {t('Approved recommendations are a record for HR to act on. Nothing in pay or payroll changes automatically.')}
           </p>
         </div>
 
@@ -1190,8 +1190,8 @@ function CalibrationTab() {
                 {managerStats.filter(m => m.possibleLeniency || m.possibleSeverity).map(m => (
                   <p key={m.managerName} className="text-xs text-amber-700 dark:text-amber-400">
                     {m.possibleLeniency
-                      ? t('{manager}: avg {avg} — Possible leniency (avg > 87)', { manager: m.managerName, avg: m.avgScore })
-                      : t('{manager}: avg {avg} — Possible severity (avg < 48)', { manager: m.managerName, avg: m.avgScore })}
+                      ? t('{manager}: avg {avg} — Possible leniency (avg above 85)', { manager: m.managerName, avg: m.avgScore })
+                      : t('{manager}: avg {avg} — Possible severity (avg below 50)', { manager: m.managerName, avg: m.avgScore })}
                   </p>
                 ))}
               </div>
@@ -1283,7 +1283,7 @@ function RecommendationsTab() {
       </div>
 
       <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400">
-        {t('Approved recommendations are sent to Payroll as pending approved actions. They are not applied automatically — a Payroll manager must process them.')}
+        {t('Approving records the decision only. Nothing in pay or payroll changes automatically: HR applies an approved increment, promotion or bonus through a compensation cycle or an employee change, each with its own approval.')}
       </div>
 
       {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : (
@@ -1824,7 +1824,7 @@ function FeedbackTab() {
             <Field label={t('Feedback *')}><textarea className={inp} rows={4} value={form.content} onChange={e => set('content', e.target.value)} placeholder={t('Share specific, constructive observations…')} /></Field>
             <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={form.isPrivate} onChange={e => set('isPrivate', e.target.checked)} className="rounded" />
-              {t('Private (only visible to you and HR)')}
+              {t('Private (only visible to you)')}
             </label>
             <div className="flex justify-end gap-2">
               <button type="button" className={btn.ghost} onClick={() => setShowCreate(false)}>{t('Cancel')}</button>
