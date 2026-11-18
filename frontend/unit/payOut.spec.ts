@@ -2,12 +2,12 @@ import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  bankResponseBuckets, confirmedResponsePurpose, derivePayOut, payOutLabel, payOutNeedsFile, rejectedFilePurpose, payOutStageState, payOutTone, splitFromRecords,
+  bankResponseBuckets, confirmedResponsePurpose, derivePayOut, settleBlockedNextLine, settleBlockedText, payOutLabel, payOutNeedsFile, rejectedFilePurpose, payOutStageState, payOutTone, splitFromRecords,
   type PayOut, type PayOutInput, type PayOutNextKind, type PayOutStage, type PayOutStatus,
 } from '../src/lib/payOut';
 import { attentionFor, derivePipeline, payOutForRun, type PipelineBatch, type PipelineInput } from '../src/lib/payrollPipeline';
 import { addDays, isSelectableCreditDate, isWeekend, monthGrid, nextWorkingDay, todayInRiyadh } from '../src/lib/creditDate';
-import { LOCALE_DICTS } from '../src/i18n/translations';
+import { LOCALE_DICTS, translate } from '../src/i18n/translations';
 import { bankFileGuide } from '../src/i18n/bankFileGuide';
 import { payrollUx } from '../src/i18n/payrollUx';
 
@@ -74,10 +74,10 @@ const ROWS: Row[] = [
   { name: '5b rejected, may not redo', input: { batches: [sub('Rejected')] }, status: 'rejected', stage: 'response', next: 'prepare_corrected', disabled: true, label: 'Rejected by the bank' },
   { name: '5c all confirmed (records)', input: { batches: [sub('Accepted')], records: records(121, 0, 0) }, status: 'confirmed', stage: 'finished', next: 'settle', disabled: false, label: 'Bank confirmed 121 of 121' },
   { name: '5c all confirmed, no settle permission', input: { batches: [sub('Accepted', { ...ALL_PAID })], can: { ...ALL, settle: false } }, status: 'confirmed', stage: 'finished', next: null, label: 'Bank confirmed every payment' },
-  { name: '5c all answered, some returned', input: { batches: [sub('Accepted')], records: records(118, 3, 0) }, status: 'confirmed', stage: 'response', next: 'settle', disabled: false, label: '3 returned: needs attention' },
+  { name: '5c all answered, some returned', input: { batches: [sub('Accepted')], records: records(118, 3, 0) }, status: 'confirmed', stage: 'response', next: 'settle', disabled: true, label: '3 returned: needs attention' },
   // Without the payment records (run bar, run picker, pipeline): the batch list's unresolved returns decide. Never "confirmed" over a return.
-  { name: '5c accepted, batch list only, 2 returned', input: { batches: [sub('Accepted', { ...ALL_PAID, unresolvedReturns: { count: 2, total: 5000 } })] }, status: 'confirmed', stage: 'response', next: 'settle', disabled: false, label: '2 returned: needs attention' },
-  { name: '5c submitted, batch list only, 1 returned', input: { batches: [sub('Submitted', { ...ALL_PAID, unresolvedReturns: { count: 1, total: 900 } })] }, status: 'confirmed', stage: 'response', next: 'settle', disabled: false, label: '1 returned: needs attention' },
+  { name: '5c accepted, batch list only, 2 returned', input: { batches: [sub('Accepted', { ...ALL_PAID, unresolvedReturns: { count: 2, total: 5000 } })] }, status: 'confirmed', stage: 'response', next: 'settle', disabled: true, label: '2 returned: needs attention' },
+  { name: '5c submitted, batch list only, 1 returned', input: { batches: [sub('Submitted', { ...ALL_PAID, unresolvedReturns: { count: 1, total: 900 } })] }, status: 'confirmed', stage: 'response', next: 'settle', disabled: true, label: '1 returned: needs attention' },
   { name: '5c accepted, batch list only, no returns', input: { batches: [sub('Accepted', { ...ALL_PAID })] }, status: 'confirmed', stage: 'finished', next: 'settle', disabled: false, label: 'Bank confirmed every payment' },
   { name: '5c submitted, batch list only, no returns', input: { batches: [sub('Submitted', { ...ALL_PAID })] }, status: 'confirmed', stage: 'finished', next: 'settle', disabled: false, label: 'Bank confirmed every payment' },
   { name: '5c accepted, returns not reported', input: { batches: [sub('Accepted', { unconfirmedPayments: { count: 0, total: 0 }, confirmationCoverage: 1 })] }, status: 'confirmed', stage: 'response', next: 'settle', disabled: false, label: 'Bank answered every payment' },
@@ -421,5 +421,61 @@ test.describe('one re-pay phrase: a new payment batch linked to the original bat
     const rejected = confirmed([{ status: 'Paid', amount: 100 }, { status: 'Rejected', amount: 40 }]);
     expect(confirmedResponsePurpose(identity, rejected)).toContain('pay them in a new payment batch linked to the original batch');
     expect(confirmedResponsePurpose(arabic, rejected)).toContain(NEW_AR);
+  });
+});
+
+test.describe('settle is not offered while any payment was returned or rejected (W8, API refuses with 422 payment_records_rejected)', () => {
+  const en = (k: string, p?: Record<string, string | number>) => translate('en', k, p);
+  const ar = (k: string, p?: Record<string, string | number>) => translate('ar', k, p);
+  const confirmed = (recs: { status: string; amount: number }[]) => derivePayOut({ run: RUN, batches: [sub('Accepted')], can: ALL, records: recs });
+  const PAID = { status: 'Paid', amount: 100 };
+
+  test('returned only, rejected only, and both: the settle button is there but off, with its reason', () => {
+    for (const recs of [[PAID, { status: 'Returned', amount: 60 }], [PAID, { status: 'Rejected', amount: 40 }], [PAID, { status: 'Returned', amount: 60 }, { status: 'Rejected', amount: 40 }]]) {
+      const p = confirmed(recs);
+      expect(p.next, JSON.stringify(recs)).toMatchObject({ kind: 'settle', disabled: true, reason: 'payments_not_paid' });
+    }
+  });
+
+  test('from the batch list (no records): unresolved returns or rejections switch settle off too', () => {
+    const ret = derivePayOut({ run: RUN, batches: [sub('Accepted', { ...ALL_PAID, unresolvedReturns: { count: 2, total: 5000 } })], can: ALL });
+    const rej = derivePayOut({ run: RUN, batches: [sub('Accepted', { ...ALL_PAID, unresolvedRejections: { count: 1, total: 800 } })], can: ALL });
+    for (const p of [ret, rej]) expect(p.next).toMatchObject({ kind: 'settle', disabled: true, reason: 'payments_not_paid' });
+  });
+
+  test('settle stays on when nothing came back, and when returns are not reported (an older API)', () => {
+    expect(confirmed([PAID]).next).toMatchObject({ kind: 'settle', disabled: false });
+    const notReported = derivePayOut({ run: RUN, batches: [sub('Accepted', { unconfirmedPayments: { count: 0, total: 0 }, confirmationCoverage: 1 })], can: ALL });
+    expect(notReported.next).toMatchObject({ kind: 'settle', disabled: false });
+  });
+
+  test('without the settle permission there is no settle button (unchanged)', () => {
+    const p = derivePayOut({ run: RUN, batches: [sub('Accepted')], can: { ...ALL, settle: false }, records: [PAID, { status: 'Returned', amount: 60 }] });
+    expect(p.next).toBeNull();
+  });
+
+  test('the reason counts the returned and rejected payments, EN and AR, one and many', () => {
+    const one = confirmed([PAID, { status: 'Returned', amount: 60 }]);
+    const many = confirmed([PAID, { status: 'Returned', amount: 60 }, { status: 'Rejected', amount: 40 }, { status: 'Rejected', amount: 40 }]);
+    expect(settleBlockedText(en, one)).toBe('Not settled: 1 payment was returned or rejected by the bank. Pay it in a new payment batch linked to the original batch first.');
+    expect(settleBlockedText(en, many)).toBe('Not settled: 3 payments were returned or rejected by the bank. Pay them in a new payment batch linked to the original batch first.');
+    for (const p of [one, many]) {
+      const text = settleBlockedText(ar, p);
+      expect(text).toContain('دفعة دفع جديدة مرتبطة بالدفعة الأصلية');
+      expect(text).not.toMatch(/[A-Za-z{}]/);
+    }
+  });
+
+  test('the Next line for this state does not say Finance settles after the bank confirms, EN and AR', () => {
+    const p = confirmed([PAID, { status: 'Returned', amount: 60 }]);
+    expect(settleBlockedNextLine(en)).toBe('Next: pay the returned or rejected payments in a new payment batch linked to the original batch. Finance settles after that.');
+    expect(settleBlockedNextLine(ar)).toContain('دفعة دفع جديدة مرتبطة بالدفعة الأصلية');
+    expect(settleBlockedNextLine(en)).not.toContain('after the bank confirms');
+  });
+
+  test('the Bank file guide shows the reason and the Next line from these functions', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '../src/components/payroll/BankFileGuide.tsx'), 'utf8');
+    expect(src).toContain('settleBlockedText');
+    expect(src).toContain('settleBlockedNextLine');
   });
 });

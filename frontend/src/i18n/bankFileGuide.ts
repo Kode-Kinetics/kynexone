@@ -127,6 +127,8 @@ const ar: Record<string, string> = {
   'Next: Record it as submitted once the bank has it.': 'التالي: سجّله كمُرسل بعد أن يتسلّمه البنك.',
   'Next: Bank response — the bank confirms each payment.': 'التالي: تأكيد البنك — يؤكد البنك كل دفعة.',
   'Next: Finance settles the payments after the bank confirms.': 'التالي: تسوّي المالية المدفوعات بعد تأكيد البنك.',
+  'Next: pay the returned or rejected payments in a new payment batch linked to the original batch. Finance settles after that.': 'التالي: ادفع المدفوعات المُعادة أو المرفوضة في دفعة دفع جديدة مرتبطة بالدفعة الأصلية. تسوّي المالية بعد ذلك.',
+  'Not settled: {count, plural, one {# payment was} other {# payments were}} returned or rejected by the bank. Pay {count, plural, one {it} other {them}} in a new payment batch linked to the original batch first.': 'لا يمكن التسوية: {count, plural, one {أعاد البنك دفعة واحدة أو رفضها} other {أعاد البنك # دفعات أو رفضها}}. ادفعها أولًا في دفعة دفع جديدة مرتبطة بالدفعة الأصلية.',
   'Next: fix each problem, then check again.': 'التالي: عالج كل مشكلة ثم افحص مجددًا.',
   'Next: Check employees again on the corrected batch.': 'التالي: فحص الموظفين مجددًا على الدفعة المصحّحة.',
   'Payroll creates the batch next.': 'ينشئ فريق الرواتب الدفعة بعد ذلك.',

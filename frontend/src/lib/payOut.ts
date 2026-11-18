@@ -44,7 +44,9 @@ export type PayOutReason =
   | 'validation_blocked' | 'stale' | 'create_refused'
   | 'no_permission_setup' | 'no_permission_wps' | 'submit_not_allowed' | 'rejected_ask_admin'
   /** The batch total is not the run's net pay minus what is paid outside the file (Finance rule: the file is never created). */
-  | 'tie_mismatch';
+  | 'tie_mismatch'
+  /** The API refuses to settle a batch with any returned or rejected payment (422 payment_records_rejected). */
+  | 'payments_not_paid';
 
 export interface PayOutStep { key: PayOutStepKey; state: PayOutStepState; note: PayOutStepNote; reason?: PayOutReason }
 
@@ -244,8 +246,10 @@ export function derivePayOut(input: PayOutInput): PayOut {
       // Every payment answered. Returned ones are still to be paid in a new payment batch (Payment Tracking), and returns not reported are not known to be
       // zero: only a batch with NO returns is "done".
       const clean = returned === 0 && (rejected ?? 0) === 0;
+      // Finance rule: the API refuses to settle while any payment is returned or rejected, so the button is off until they are paid in a new batch.
+      const notPaid = (returned ?? 0) + (rejected ?? 0) > 0;
       return result('confirmed', batch, [...front, clean ? step('response', 'done', 'confirmed') : step('response', 'current', 'here')],
-        can.settle ? { kind: 'settle', disabled: false } : null, false, counts);
+        can.settle ? (notPaid ? { kind: 'settle', disabled: true, reason: 'payments_not_paid' } : { kind: 'settle', disabled: false }) : null, false, counts);
     }
     return result('submitted', batch, [...front, step('response', 'current', 'waiting')], { kind: 'record_response', disabled: false }, false, counts);
   }
@@ -374,3 +378,15 @@ export function rejectedFilePurpose(t: Translate, reason?: string | null): strin
     ? t('The bank rejected this file: {reason}. Nothing in it is confirmed paid; check the bank statement.', { reason })
     : t('The bank rejected this file. Nothing in it is confirmed paid; check the bank statement.');
 }
+
+/** Payments the bank returned or rejected: settle stays off until they are paid in a new payment batch. */
+export const notPaidCount = (p: PayOut): number => (p.returned ?? 0) + (p.rejected ?? 0);
+
+/** Why "Settle payments" is off: the count, and what to do first. */
+export function settleBlockedText(t: Translate, p: PayOut): string {
+  return t('Not settled: {count, plural, one {# payment was} other {# payments were}} returned or rejected by the bank. Pay {count, plural, one {it} other {them}} in a new payment batch linked to the original batch first.', { count: notPaidCount(p) });
+}
+
+/** The Next line of the Response step while returned or rejected payments are open (instead of "Finance settles after the bank confirms"). */
+export const settleBlockedNextLine = (t: Translate): string =>
+  t('Next: pay the returned or rejected payments in a new payment batch linked to the original batch. Finance settles after that.');
