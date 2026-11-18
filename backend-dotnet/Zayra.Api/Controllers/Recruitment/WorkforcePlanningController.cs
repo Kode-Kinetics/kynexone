@@ -119,6 +119,7 @@ public class WorkforcePlanningController : ControllerBase
     // PATCH /api/recruitment/workforce-planning/{id}/status
     [HttpPatch("{id:guid}/status")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [RefuseHrOfficer]
     public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateStatusRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -144,6 +145,7 @@ public class WorkforcePlanningController : ControllerBase
     // DELETE /api/recruitment/workforce-planning/{id}
     [HttpDelete("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [RefuseHrOfficer]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();

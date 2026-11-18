@@ -803,7 +803,7 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("POST Openings.Close", "HR Officer", HrOfficerHrOperations),
         ("GET RecruitmentReports.AIInsights", "HR Officer", HrOfficerHrOperations),
         ("POST WorkforcePlanning.Create", "HR Officer", HrOfficerRefusedInCode),
-        ("PATCH WorkforcePlanning.UpdateStatus", "HR Officer", HrOfficerHrOperations),
+        ("PATCH WorkforcePlanning.UpdateStatus", "HR Officer", HrOfficerRefusedInCode),
     };
 
     /// <summary>
