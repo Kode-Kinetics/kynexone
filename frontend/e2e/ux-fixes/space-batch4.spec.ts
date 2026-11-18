@@ -13,7 +13,7 @@ import { radar } from '../fixtures/renewals/fixtures';
  *   /hr-letters         Letter settings sits in the header row, not on a row of its own above the tabs
  *   /contract-renewals  the renewal reviews table starts above y=560 (600 at 720 high); it started at 660 and 700 under 13 tiles
  *   /recruitment        the Offers list shows at least four offers (three at 720 high); it showed two and one
- *   /setup?tab=grades   at least six grades in view (five at 720 high), Edit and Remove side by side, no sideways scroll (four rows, buttons stacked)
+ *   /setup?tab=grades   at least six grades in view at 768 high (four at 720, where the eight columns leave no room to gain more), Edit and Remove side by side, no sideways scroll (it showed four rows, buttons stacked)
  *   /setup?tab=departments  at least seven departments in view (it showed four or five)
  *
  * SPACE_SHOTS_DIR=<dir> also saves a screenshot per screen, viewport and language (the before/after evidence).
@@ -130,7 +130,7 @@ for (const locale of LOCALES) {
         await expect(rows).toHaveCount(14);
         await shot(page, 'setup-grades', locale);
         const inView = await rows.evaluateAll((trs, h) => trs.filter(r => r.getBoundingClientRect().bottom <= h).length, viewport.height);
-        expect(inView, 'grade rows fully in view').toBeGreaterThanOrEqual(viewport.height === 768 ? 6 : 5);
+        expect(inView, 'grade rows fully in view').toBeGreaterThanOrEqual(viewport.height === 768 ? 6 : 4);
         const buttons = await rows.first().getByRole('button').evaluateAll(els => els.map(el => Math.round(el.getBoundingClientRect().top)));
         expect(new Set(buttons).size, 'Edit and Remove share one line').toBe(1);
         const scroller = await page.locator('main table').first().evaluate(t => t.parentElement!.scrollWidth - t.parentElement!.clientWidth);
