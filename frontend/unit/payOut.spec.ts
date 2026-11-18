@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import {
-  derivePayOut, payOutLabel, payOutNeedsFile, payOutStageState, payOutTone, splitFromRecords,
+  bankResponseBuckets, confirmedResponsePurpose, derivePayOut, payOutLabel, payOutNeedsFile, payOutStageState, payOutTone, splitFromRecords,
   type PayOut, type PayOutInput, type PayOutNextKind, type PayOutStage, type PayOutStatus,
 } from '../src/lib/payOut';
 import { attentionFor, derivePipeline, payOutForRun, type PipelineBatch, type PipelineInput } from '../src/lib/payrollPipeline';
@@ -200,9 +200,9 @@ test.describe('the facts it reads', () => {
     expect(p.batchId).toBe('b9');
     expect(p.status).toBe('submitted');
   });
-  test('records: Paid and Returned / Rejected answer, Pending waits, Cancelled is out', () => {
+  test('records: Paid, Returned and Rejected answer (Rejected is counted apart, never as returned), Pending waits, Cancelled is out', () => {
     expect(splitFromRecords([{ status: 'Paid', amount: 1 }, { status: 'Rejected', amount: 2 }, { status: 'Returned', amount: 3 }, { status: 'Pending', amount: 4.5 }, { status: 'Cancelled', amount: 9 }]))
-      .toEqual({ paid: 1, returned: 2, waiting: 1, total: 4, paidAmount: 1, returnedAmount: 5, waitingAmount: 4.5, totalAmount: 10.5 });
+      .toEqual({ paid: 1, returned: 1, rejected: 1, waiting: 1, total: 4, paidAmount: 1, returnedAmount: 3, rejectedAmount: 2, waitingAmount: 4.5, totalAmount: 10.5 });
   });
   test('a file that does not tie: step 3 is the blocked one, with the tie-out as its reason, and the pipeline says the same', () => {
     const input: PayOutInput = { run: RUN, batches: [batch()], openBatchId: 'b1', can: ALL, exportFacts: facts({ validation: 'passed', tieDifference: 50 }) };
@@ -220,7 +220,7 @@ test.describe('the facts it reads', () => {
     expect(Math.round(amounts.reduce((s, a) => s + a, 0) * 100) / 100).toBe(129438.9);
     const split = splitFromRecords(amounts.map((amount, i) => ({ amount, status: i < 6 ? 'Paid' : i < 7 ? 'Returned' : 'Pending' })));
     expect(split.totalAmount).toBe(129438.9);
-    expect(Math.round((split.paidAmount + split.returnedAmount + split.waitingAmount) * 100) / 100).toBe(split.totalAmount);
+    expect(Math.round((split.paidAmount + split.returnedAmount + split.rejectedAmount + split.waitingAmount) * 100) / 100).toBe(split.totalAmount);
     expect(split.waitingAmount).toBe(29250);
     // Cents never drift (0.1 + 0.2).
     expect(splitFromRecords([{ status: 'Pending', amount: 0.1 }, { status: 'Pending', amount: 0.2 }]).waitingAmount).toBe(0.3);
@@ -276,5 +276,56 @@ test.describe('the words', () => {
     for (const dict of [bankFileGuide.ar, payrollUx.ar]) {
       for (const [k, v] of Object.entries(dict)) expect(LOCALE_DICTS.ar[k], k).toBe(v);
     }
+  });
+});
+
+/** The same sentence in Arabic: the catalogue entry with its placeholders filled. */
+const arabic = (key: string, params?: Record<string, string | number>) => (LOCALE_DICTS.ar[key] ?? `MISSING AR: ${key}`).replace(/\{(\w+)\}/g, (_, k) => String(params?.[k] ?? `{${k}}`));
+
+test.describe('a bank rejection is never worded as returned (W1)', () => {
+  const REJECTED_EN = 'not paid: rejected by the bank';
+  const REJECTED_AR = 'لم يُدفع: رفضه البنك';
+  const mixed = [{ status: 'Paid', amount: 100 }, { status: 'Rejected', amount: 40 }, { status: 'Rejected', amount: 10 }, { status: 'Returned', amount: 60 }];
+
+  test('Payroll page response buckets (the PayrollPage list): Rejected reads not paid, Returned stays returned, EN and AR', () => {
+    const split = splitFromRecords(mixed);
+    expect(split).toMatchObject({ returned: 1, rejected: 2, returnedAmount: 60, rejectedAmount: 50, total: 4, totalAmount: 210 });
+    for (const [t, rejected, returned] of [[identity, `2 ${REJECTED_EN}`, '1 returned'], [arabic, `2 ${REJECTED_AR}`, '1 مُعادة']] as const) {
+      const rows = bankResponseBuckets(t, split);
+      expect(rows.find(r => r.key === 'rejected'), 'rejected row').toMatchObject({ label: rejected, amount: 50 });
+      expect(rows.find(r => r.key === 'returned'), 'returned row').toMatchObject({ label: returned, amount: 60 });
+      expect(rows.find(r => r.key === 'rejected')!.label).not.toMatch(/returned|مُعادة/);
+    }
+  });
+
+  test('no rejected row when nothing was rejected', () => {
+    expect(bankResponseBuckets(identity, splitFromRecords(records(2, 1, 1))).map(r => r.key)).toEqual(['paid', 'returned', 'waiting']);
+  });
+
+  test('pay-out chip (payOut.ts): a confirmed batch with only rejected lines says not paid, never returned, EN and AR', () => {
+    const p = derivePayOut({ run: RUN, batches: [sub('Accepted')], can: ALL, records: [{ status: 'Paid', amount: 100 }, { status: 'Rejected', amount: 40 }] });
+    expect(p).toMatchObject({ status: 'confirmed', returned: 0, rejected: 1 });
+    expect(payOutLabel(identity, p)).toBe(`1 ${REJECTED_EN}`);
+    expect(payOutLabel(arabic, p)).toBe(`1 ${REJECTED_AR}`);
+    expect(payOutLabel(identity, p)).not.toMatch(/returned/);
+    expect(payOutTone(p)).toBe('warning');
+    expect(confirmedResponsePurpose(identity, p)).not.toMatch(/returned/);
+    expect(confirmedResponsePurpose(arabic, p)).not.toMatch(/المُعادة|مُعادة/);
+  });
+
+  test('pay-out chip: returned and rejected together are both named; returned alone is unchanged', () => {
+    const both = derivePayOut({ run: RUN, batches: [sub('Accepted')], can: ALL, records: mixed });
+    expect(payOutLabel(identity, both)).toBe(`1 returned and 2 ${REJECTED_EN}`);
+    expect(payOutLabel(arabic, both)).toBe(`1 مُعادة و2 ${REJECTED_AR}`);
+    const returnedOnly = derivePayOut({ run: RUN, batches: [sub('Accepted')], can: ALL, records: records(1, 1, 0) });
+    expect(payOutLabel(identity, returnedOnly)).toBe('1 returned: needs attention');
+    expect(payOutLabel(arabic, returnedOnly)).toBe('1 مُعادة: تحتاج إلى معالجة');
+  });
+
+  test('pay-out chip from the batch list: unresolvedRejections is read apart from unresolvedReturns', () => {
+    const p = derivePayOut({ run: RUN, batches: [sub('Accepted', { ...ALL_PAID, unresolvedRejections: { count: 2, total: 800 } })], can: ALL });
+    expect(p).toMatchObject({ status: 'confirmed', returned: 0, rejected: 2 });
+    expect(payOutLabel(identity, p)).toBe(`2 ${REJECTED_EN}`);
+    expect(payOutStageState(p)).not.toBe('done');
   });
 });

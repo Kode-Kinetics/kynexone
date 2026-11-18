@@ -66,7 +66,7 @@ import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
 import { BankFileGuide, useBankHandOver, type BankPanelData, type GuideSlots } from '../components/payroll/BankFileGuide';
 import { BankFileFacts, tieOut } from '../components/payroll/BankFileFacts';
 import { RecordSubmittedDialog } from '../components/payroll/RecordSubmittedDialog';
-import { derivePayOut, pickPayOutBatch, type PayOutStepKey } from '../lib/payOut';
+import { bankResponseBuckets, confirmedResponsePurpose, derivePayOut, pickPayOutBatch, type PayOutStepKey } from '../lib/payOut';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Modal as SideDrawer } from '../components/Modal';
 import { suggestedBatchReference, type BankFlowProgress } from '../lib/bankFileSteps';
@@ -3381,7 +3381,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
             {/* One segment per bucket, sized by its money: green only for what the bank confirmed, red for returned, grey for waiting. */}
             <div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={answered} aria-label={t('Bank response')} className="mt-3 flex h-2 overflow-hidden rounded-full bg-line" data-essential-motion="">
               {split && split.totalAmount > 0 ? ([
-                ['paid', 'bg-success', split.paidAmount], ['returned', 'bg-danger', split.returnedAmount], ['waiting', 'bg-line-strong', split.waitingAmount],
+                ['paid', 'bg-success', split.paidAmount], ['returned', 'bg-danger', split.returnedAmount], ['rejected', 'bg-danger', split.rejectedAmount], ['waiting', 'bg-line-strong', split.waitingAmount],
               ] as const).map(([key, tone, amount]) => amount > 0 && (
                 <div key={key} data-bucket={key} className={`h-full ${tone} transition-[width] duration-base ease-standard`} style={{ width: `${(amount / split.totalAmount) * 100}%` }} data-essential-motion="" />
               )) : (
@@ -3392,11 +3392,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
               <>
                 {/* Each bucket with its money; together they must be the money in the file. */}
                 <dl className="mt-3 space-y-1.5 text-body-sm" data-testid="bank-response-buckets">
-                  {([
-                    ['bg-success', t('{count} confirmed paid', { count: split.paid }), split.paidAmount],
-                    ['bg-danger', t('{count} returned', { count: split.returned }), split.returnedAmount],
-                    ['bg-line-strong', t('{count} waiting', { count: split.waiting }), split.waitingAmount],
-                  ] as const).map(([dot, label, amount]) => (
+                  {bankResponseBuckets(t, split).map(({ tone: dot, label, amount }) => (
                     <div key={label} className="flex items-center justify-between gap-3">
                       <dt className="inline-flex items-center gap-1.5 text-fg"><span aria-hidden="true" className={`h-2.5 w-2.5 rounded ${dot}`} />{label}</dt>
                       <dd className="tabular-nums text-fg"><bdi dir="ltr">{fmtAmt(amount, cur)}</bdi></dd>
@@ -3405,7 +3401,9 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
                 </dl>
                 {fileAmount !== null && (
                   <p className="mt-2 border-t border-line pt-2 text-body-sm text-fg-muted" data-testid="bank-response-tie">
-                    {t('Confirmed + Returned + Waiting = {amount} (file)', { amount: fmtAmt(split.totalAmount, cur) })}
+                    {split.rejected > 0
+                      ? t('Confirmed + Returned + Not paid + Waiting = {amount} (file)', { amount: fmtAmt(split.totalAmount, cur) })
+                      : t('Confirmed + Returned + Waiting = {amount} (file)', { amount: fmtAmt(split.totalAmount, cur) })}
                   </p>
                 )}
                 {gap !== null && Math.abs(gap) >= 0.005 && (
@@ -3483,7 +3481,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
   const responsePurpose = (data: BankPanelData | null | undefined) => {
     switch (payOut.status) {
       case 'rejected': return batchRow?.wpsRejectionReason ? t('The bank rejected this file: {reason}. No one in it was paid.', { reason: batchRow.wpsRejectionReason }) : t('The bank rejected this file. No one in it was paid.');
-      case 'confirmed': return (payOut.returned ?? 0) > 0 ? t('The bank answered every payment. Pay the returned ones again from Payment Tracking.') : t('The bank confirmed every payment.');
+      case 'confirmed': return confirmedResponsePurpose(t, payOut);
       case 'settled': return t('Paid and settled.');
       default: return data?.bankName
         ? t('Submitted to {bank} — waiting for the bank’s confirmation. Record what the bank confirms or returns in Payment Tracking.', { bank: data.bankName })
