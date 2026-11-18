@@ -182,6 +182,9 @@ public class InterviewSchedule : ITenantOwned, ICompanyScopedOperational
     public Guid ApplicationId { get; set; }
     public string InterviewType { get; set; } = "HR Screening";        // HR Screening/Technical/Manager/Panel/Final
     public string InterviewerNames { get; set; } = string.Empty;
+    /// <summary>The logins named on the panel, as a comma-separated list of user ids, resolved when the interview was scheduled. Null on an interview
+    /// scheduled before this existed or whose names matched no single login; membership then falls back to an exact, unambiguous name match.</summary>
+    public string? InterviewerUserIds { get; set; }
     public DateTime ScheduledAt { get; set; }
     public int DurationMinutes { get; set; } = 60;
     public string Mode { get; set; } = "Video";                        // InPerson/Video/Phone

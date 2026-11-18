@@ -224,7 +224,6 @@ public static class LegacyRolePermissionResolver
             ["Requisitions.Update"] = ["recruitment.write", "recruitment.requisition.raise"],
             ["Requisitions.Submit"] = ["recruitment.write", "recruitment.requisition.raise"],
             ["Interviews.SubmitFeedback"] = ["recruitment.write", "recruitment.interview.feedback"],
-            ["Applications.RecordFeedback"] = ["recruitment.write", "recruitment.interview.feedback"],
             ["Interviews.Get"] = ["recruitment.read", "recruitment.interview.feedback"],
         };
 

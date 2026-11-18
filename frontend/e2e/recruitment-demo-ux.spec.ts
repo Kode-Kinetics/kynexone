@@ -210,7 +210,7 @@ for (const locale of ['en', 'ar'] as const) {
       await page.getByRole('button', { name: locale === 'en' ? 'Give feedback' : 'إضافة ملاحظات' }).click();
       await page.locator('textarea').last().fill('Strong fundamentals');
       await page.getByRole('button', { name: locale === 'en' ? 'Send feedback' : 'إرسال الملاحظات' }).click();
-      await expect.poll(() => posts.find(p => p.path === '/api/recruitment/applications/interviews/iv-1/feedback')?.body).toMatchObject({ overallRating: 4, feedbackNotes: 'Strong fundamentals' });
+      await expect.poll(() => posts.find(p => p.path === '/api/recruitment/interviews/iv-1/feedback')?.body).toMatchObject({ overallScore: 4, notes: 'Strong fundamentals' });
     });
   });
 }
