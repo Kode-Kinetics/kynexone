@@ -3433,11 +3433,21 @@ public class EmployeesController : ControllerBase
             return BadRequest(new { error = "reason_too_long", message = "Keep the reason under 1,000 characters." });
 
         var tenantId = RequireTenant();
-        var status = await VisibleDrafts(tenantId).AsNoTracking()
-            .Where(d => d.Id == draftId).Select(d => d.Status)
+        var cancelled = await VisibleDrafts(tenantId).AsNoTracking()
+            .Where(d => d.Id == draftId).Select(d => new { d.Status, d.AcceptedOfferId, d.CreatedByUserId })
             .SingleOrDefaultAsync(cancellationToken);
-        if (status is null) return NotFound();
+        if (cancelled is null) return NotFound();
+        var status = cancelled.Status;
         if (!EmployeeDraftStatuses.IsOpen(status)) return await DraftClosedConflictAsync(tenantId, draftId, status, cancellationToken);
+        // Withdrawing the hire of an accepted offer also undoes the acceptance (the offer is sent again and the seat released), which is the draft
+        // approver's call or the draft's own maker's, not anyone who may merely edit drafts.
+        if (cancelled.AcceptedOfferId is not null && !MayReverseOfferHire(cancelled.CreatedByUserId))
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "offer_hire_withdraw_needs_approver",
+                message = "This hire came from an accepted offer, and withdrawing it also reverses the acceptance and releases the seat. Only a hire approver or the person who recorded the acceptance can do that.",
+                messageAr = "هذا التعيين ناتج عن عرض مقبول، وسحبه يلغي القبول ويُحرّر المقعد أيضًا. يستطيع ذلك فقط معتمِد التعيين أو من سجّل القبول.",
+            });
 
         var moved = await TransitionDraftAsync(tenantId, draftId, EmployeeDraftStatuses.Open,
             s => s.SetProperty(d => d.Status, EmployeeDraftStatuses.Cancelled).SetProperty(d => d.CurrentStep, EmployeeDraftStatuses.Cancelled),
@@ -7737,6 +7747,10 @@ public class EmployeesController : ControllerBase
     private EmployeeListItemDto ToListItem(Employee employee) => new(employee.Id, employee.EmployeeCode, employee.FullName, employee.ArabicName, employee.Department, employee.Designation, employee.Branch, employee.ManagerEmployeeId, employee.Status, employee.ProfileCompletenessScore, employee.VisaExpiryDate, employee.PassportExpiryDate, employee.ReadinessState, employee.ActivationBlockersCount, employee.PublicId);
     private static string FirstNonEmpty(params string[] values) => values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "Unnamed Employee";
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id") ?? throw new UnauthorizedAccessException("Tenant claim missing."));
+    /// <summary>A hire approver (employees.approve) or the person who made the draft may reverse the accepted offer behind it.</summary>
+    private bool MayReverseOfferHire(Guid? draftMaker) =>
+        User.HasClaim("permission", "employees.approve") || (draftMaker is not null && draftMaker == GetUserId());
+
     private string ActorName() => User.FindFirstValue("name") ?? User.Identity?.Name ?? "System";
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant(), Permissions: User.EffectivePermissions());
