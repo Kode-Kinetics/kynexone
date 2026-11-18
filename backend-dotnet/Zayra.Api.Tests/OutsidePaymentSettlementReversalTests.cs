@@ -73,6 +73,26 @@ public class OutsidePaymentSettlementReversalTests
     }
 
     [Fact]
+    public async Task The_employee_themself_may_not_reverse_the_recorded_payment_of_their_own_wage()
+    {
+        var (db, tenant, ops, batchId, cash, settlement, _) = await ArrangeAsync();
+        (await ops.RecordOutsidePayment(batchId, new OutsidePaymentRequest(cash.Id, "Cheque", "CHQ-5"), default))
+            .Should().BeOfType<OkObjectResult>();
+        var self = Guid.NewGuid();
+        cash.UserAccountId = self;
+        await db.SaveChangesAsync();
+
+        var refused = await KsaWpsReviewFixesTests.Payroll(db, tenant, self)
+            .ReverseOutsidePayment(batchId, cash.Id, new PayrollReasonRequest("I never got it"), default);
+
+        var result = refused.Should().BeOfType<ObjectResult>().Which;
+        result.StatusCode.Should().Be(403);
+        result.Value!.GetType().GetProperty("error")!.GetValue(result.Value).Should().Be("subject_is_recorder");
+        (await Reload(db, settlement.Id)).Status.Should().Be(FinalSettlementStatuses.Paid, "nothing was reversed");
+        db.PayrollAuditLogs.Should().NotContain(a => a.Action == "payroll.final_settlement.payment_reversed");
+    }
+
+    [Fact]
     public async Task A_completed_offboarding_is_not_reopened_but_the_audit_row_says_so()
     {
         var (db, _, ops, batchId, cash, settlement, offboarding) = await ArrangeAsync("Completed");
