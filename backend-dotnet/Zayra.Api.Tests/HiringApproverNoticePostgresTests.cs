@@ -30,8 +30,13 @@ public sealed class HiringApproverNoticePostgresTests(PostgresFixture fixture) :
         Guid approver = Guid.NewGuid(), maker = Guid.NewGuid(), outsider = Guid.NewGuid();
         var s = await SeedAsync(extra: (db, tenant) =>
         {
-            var permission = new Permission { Key = "employees.approve", Module = "Employees", Description = "Approve hires" };
-            db.Permissions.Add(permission);
+            // The catalogue row is global and may already exist from another test sharing this database.
+            var permission = db.Permissions.FirstOrDefault(p => p.Key == "employees.approve");
+            if (permission is null)
+            {
+                permission = new Permission { Key = "employees.approve", Module = "Employees", Description = "Approve hires" };
+                db.Permissions.Add(permission);
+            }
             Role NewRole(string name, bool withPermission)
             {
                 var role = new Role { TenantId = tenant, Name = name, NormalizedName = name.ToUpperInvariant(), IsActive = true };
