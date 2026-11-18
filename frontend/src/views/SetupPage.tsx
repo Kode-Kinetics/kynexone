@@ -2460,14 +2460,14 @@ function TableShell({
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {columns.map((col, index) => (
-                  <th key={col || index} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                  <th key={col || index} className="px-3 py-2.5 text-start text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
                     {col ? t(col) : <span className="sr-only">{t('Actions')}</span>}
                   </th>
                 ))}
-                <th className="w-20 px-4 py-3"><span className="sr-only">{t('Actions')}</span></th>
+                <th className="w-20 px-3 py-2.5"><span className="sr-only">{t('Actions')}</span></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
+            <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05] [&_td]:!px-2.5 [&_td]:!py-2 [&_td:last-child]:min-w-[10.5rem]">
               {loading && (
                 <tr>
                   <td colSpan={columns.length + 1} className="py-12 text-center">

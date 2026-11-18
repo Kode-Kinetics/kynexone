@@ -19,9 +19,11 @@ function Tile({ label, definition, count, active, tone, onClick }: {
   const number = tone === 'warn' && count > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-white';
   return (
     <button type="button" onClick={onClick} aria-pressed={active}
-      className={`surface rounded-xl p-3 text-start transition-shadow hover:shadow-soft ${ring}`}>
-      <span className="block text-xs font-semibold text-slate-600 dark:text-slate-300">{label}</span>
-      <span className={`mt-1 block text-2xl font-semibold tracking-tight ${number}`}>{count}</span>
+      className={`surface rounded-xl px-3 py-2.5 text-start transition-shadow hover:shadow-soft ${ring}`}>
+      <span className="flex items-start justify-between gap-2">
+        <span className="block text-xs font-semibold text-slate-600 dark:text-slate-300">{label}</span>
+        <span className={`block text-xl font-semibold leading-none tracking-tight ${number}`}>{count}</span>
+      </span>
       <span className="mt-1 block text-caption leading-snug text-slate-500 dark:text-slate-400">{definition}</span>
     </button>
   );
@@ -87,7 +89,7 @@ export function Radar(props: RadarProps) {
   const allEligibleSelected = eligibleInView.length > 0 && eligibleInView.every((r) => selected.has(r.caseId));
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <section aria-labelledby="renewal-buckets">
         <h2 id="renewal-buckets" className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-200">{t('Contracts ending')}</h2>
         <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
