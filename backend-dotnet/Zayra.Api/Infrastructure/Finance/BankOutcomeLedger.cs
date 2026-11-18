@@ -323,11 +323,11 @@ public static class BankOutcomeMessages
     public static (string En, string Ar) HeldForPerson(string action, int count)
     {
         var settle = action == LedgerSettleAction;
-        var en = $"This batch cannot be {(settle ? "posted to the ledger" : "reconciled")} yet. {count} salary line(s) have a bank answer that a person "
-               + "must decide (for example the bank refused a salary already shown as Paid, or reported a duplicate). Open each line, "
+        var en = $"This batch cannot be {(settle ? "posted to the ledger" : "reconciled")} yet. {count} salary line(s) have a bank answer that a user "
+               + "who may record payment status must decide (for example the bank refused a salary already shown as Paid, or reported a duplicate). Open each line, "
                + "check the bank statement, and record your decision with a reason and the bank's reference.";
         var ar = $"لا يمكن {(settle ? "ترحيل هذه الدفعة إلى الدفاتر" : "مطابقة هذه الدفعة")} بعد. يوجد {count} من سطور الرواتب ردّ البنك عليها "
-               + "يحتاج إلى قرار من موظف مختص (مثل رفض البنك راتبًا ظاهرًا كمدفوع، أو إفادته بوجود دفعة مكررة). افتح كل سطر وراجع كشف حساب البنك، "
+               + "يحتاج إلى قرار من مستخدم مخوّل بتسجيل حالة الدفع (مثل رفض البنك راتبًا ظاهرًا كمدفوع، أو إفادته بوجود دفعة مكررة). افتح كل سطر وراجع كشف حساب البنك، "
                + "ثم سجّل قرارك مع السبب ومرجع البنك.";
         return (en, ar);
     }

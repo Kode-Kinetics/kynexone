@@ -154,6 +154,17 @@ public class BankReasonAndLabelWordingTests
     }
 
     [Fact]
+    public void TheHeldBatchMessage_NamesAUserWhoMayRecordPaymentStatus_NotAPersonOrACompetentEmployee()
+    {
+        foreach (var action in new[] { BankOutcomeMessages.LedgerSettleAction, BankOutcomeMessages.ReconcileAction })
+        {
+            var (en, ar) = BankOutcomeMessages.HeldForPerson(action, 2);
+            en.Should().Contain("a user who may record payment status must decide").And.NotContain("a person must decide");
+            ar.Should().Contain("يحتاج إلى قرار من مستخدم مخوّل بتسجيل حالة الدفع").And.NotContain("موظف مختص");
+        }
+    }
+
+    [Fact]
     public void TheHeldBatchMessage_AsksTheOfficerToCheckTheStatementAndRecordADecision_NeverNamesAnExit()
     {
         foreach (var action in new[] { BankOutcomeMessages.LedgerSettleAction, BankOutcomeMessages.ReconcileAction })
