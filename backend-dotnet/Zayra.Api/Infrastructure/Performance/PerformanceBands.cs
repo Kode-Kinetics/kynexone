@@ -30,8 +30,8 @@ public static class PerformanceBands
     public const decimal DefaultModerateFrom = 60m;
     public const string DefaultVersion = "default-75-60-v1";
 
-    /// <summary>Only appraisals in these statuses are final enough to feed a talent review.</summary>
-    public static readonly string[] EligibleReviewStatuses = ["Published", "Acknowledged", "Closed"];
+    /// <summary>Only appraisals in these statuses are final enough to feed a talent review (<see cref="FinalRatingRule"/>).</summary>
+    public static readonly string[] EligibleReviewStatuses = FinalRatingRule.FinalStatuses;
 
     /// <summary>An appraisal older than this no longer describes current performance: the person is Unrated.</summary>
     public const int MaxReviewAgeMonths = 18;
@@ -73,19 +73,17 @@ public static class PerformanceBands
     };
 
     /// <summary>
-    /// The latest published, acknowledged or closed appraisal of the employee that is not under appeal and is no more
-    /// than <see cref="MaxReviewAgeMonths"/> months old at <paramref name="asOfUtc"/>; null when there is none (Unrated).
+    /// The latest appraisal of the employee whose rating is final (<see cref="FinalRatingRule"/>: published, acknowledged
+    /// or closed, with no open appeal) and is no more than <see cref="MaxReviewAgeMonths"/> months old at
+    /// <paramref name="asOfUtc"/>; null when there is none (Unrated). A review whose appeal was REJECTED counts again:
+    /// the published result stood. (It used to stay Unrated for good, because <c>IsAppealed</c> is never cleared.)
     /// </summary>
     public static async Task<EligibleAppraisal?> LatestEligibleAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateTime asOfUtc,
         CancellationToken ct)
     {
         var oldest = asOfUtc.AddMonths(-MaxReviewAgeMonths);
-        var openAppeals = db.AppraisalAppeals.AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.EmployeeId == employeeId && (a.Status == "Submitted" || a.Status == "UnderReview"))
-            .Select(a => a.ReviewId);
-        var review = await db.AppraisalReviews.AsNoTracking()
-            .Where(r => r.TenantId == tenantId && r.EmployeeId == employeeId && EligibleReviewStatuses.Contains(r.Status)
-                        && !r.IsAppealed && !openAppeals.Contains(r.Id)
+        var review = await FinalRatingRule.FinalReviews(db, tenantId)
+            .Where(r => r.EmployeeId == employeeId
                         && (r.PublishedAt ?? r.UpdatedAtUtc ?? r.CreatedAtUtc) >= oldest
                         && (r.PublishedAt ?? r.UpdatedAtUtc ?? r.CreatedAtUtc) <= asOfUtc)
             .OrderByDescending(r => r.PublishedAt ?? r.UpdatedAtUtc ?? r.CreatedAtUtc)
