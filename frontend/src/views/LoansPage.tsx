@@ -413,7 +413,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
     if ((!applicantId && staff && !mine) || !createForm.loanTypeId || createForm.requestedAmount <= 0) { setError(t('Select the employee, loan type and requested amount first.')); return; }
     setCheckingEligibility(true); setError('');
     try { setEligibility(await loanGovernanceApi.eligibility({ employeeIntId: applicantId, loanTypeId: createForm.loanTypeId, amount: createForm.requestedAmount, installments: createForm.requestedInstallments, repaymentMethod: createForm.repaymentMethod })); setCheckedKey(eligibilityKey); }
-    catch (e) { setError(loanErrorMessage(e, t('Unable to check eligibility.'))); }
+    catch (e) { setError(loanErrorMessage(e, t('Unable to check eligibility.'), locale)); }
     finally { setCheckingEligibility(false); }
   };
 
@@ -427,7 +427,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
 
   const openDetail = async (loan: EmployeeLoan) => {
     setError('');
-    try { const d = await loansApi.get(loan.id); setSelected(d); setDetailTab('schedule'); setDetailModal(true); } catch (e) { setError(loanErrorMessage(e, t('Unable to open loan.'))); }
+    try { const d = await loansApi.get(loan.id); setSelected(d); setDetailTab('schedule'); setDetailModal(true); } catch (e) { setError(loanErrorMessage(e, t('Unable to open loan.'), locale)); }
   };
 
   const createLoan = async () => {
@@ -448,7 +448,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       setCreateModal(false); setSelectedEmployee(null); load();
       onChanged();
     }
-    catch (e) { setError(loanErrorMessage(e, t('Failed to create loan.'))); }
+    catch (e) { setError(loanErrorMessage(e, t('Failed to create loan.'), locale)); }
     finally { setSaving(false); }
   };
 
@@ -467,7 +467,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       onChanged();
       const d = await loansApi.get(selected.loan.id); setSelected(d);
       load();
-    } catch (e) { setError(loanErrorMessage(e, t('Failed to submit decision.'))); }
+    } catch (e) { setError(loanErrorMessage(e, t('Failed to submit decision.'), locale)); }
     finally { setSaving(false); }
   };
 
@@ -481,7 +481,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       onChanged();
       const d = await loansApi.get(selected.loan.id); setSelected(d);
       load();
-    } catch (e) { setError(loanErrorMessage(e, t('Failed to record repayment.'))); }
+    } catch (e) { setError(loanErrorMessage(e, t('Failed to record repayment.'), locale)); }
     finally { setSaving(false); }
   };
 

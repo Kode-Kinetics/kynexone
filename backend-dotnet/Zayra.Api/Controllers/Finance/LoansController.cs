@@ -56,7 +56,7 @@ public partial class LoansController : ControllerBase
         var tid = GetTenantId();
         if (ValidateLoanType(req) is { } invalid) return invalid;
         if (await _db.LoanTypes.AnyAsync(x => x.TenantId == tid && x.Code == req.Code && !x.IsDeleted, ct))
-            return Conflict("Loan type code already exists.");
+            return Conflict(LoanRefusals.Body("loan_type_code_exists", "Loan type code already exists.", "رمز نوع القرض موجود بالفعل."));
         // Codes that differ only in case or punctuation ("Personal", "PERSONAL", "per-sonal") would share one
         // grade-limit code (LOAN_<CODE>) and so one grade grid. Refuse them here, in plain language.
         var facilityCode = GradeLoanLimitResolver.FacilityCodeFor(req.Code);
@@ -245,27 +245,28 @@ public partial class LoansController : ControllerBase
         var uid = GetUserId();
         if (uid == null) return Unauthorized();
         if (!IsMoney(req.RequestedAmount) || req.RequestedInstallments < 1 || req.RequestedInstallments > 600 || req.RequestedAmount < req.RequestedInstallments * .01m)
-            return BadRequest("Amount must be positive with at most two decimal places and cover 1–600 installments of at least 0.01 each.");
-        if (!IsRepaymentMethod(req.RepaymentMethod)) return BadRequest("Invalid repayment method.");
+            return BadRequest(LoanRefusals.Body("loan_amount_invalid", "Amount must be positive with at most two decimal places and cover 1–600 installments of at least 0.01 each.", "يجب أن يكون المبلغ موجبًا وبمنزلتين عشريتين على الأكثر، وأن يغطي من 1 إلى 600 قسط لا يقل كل منها عن 0.01."));
+        if (!IsRepaymentMethod(req.RepaymentMethod)) return BadRequest(LoanRefusals.Body("loan_repayment_method_invalid", "Invalid repayment method.", "طريقة السداد غير صالحة."));
         if (req.EmployeeId == Guid.Empty && !req.EmployeeIntId.HasValue)
         {
             var ownId = await CallerEmployeeIdAsync(ct);
-            if (!ownId.HasValue) return BadRequest("No linked employee account was found.");
+            if (!ownId.HasValue) return BadRequest(LoanRefusals.Body("ess_link_missing", "No linked employee account was found.", "لم يُعثر على سجل موظف مرتبط بحسابك."));
             req = req with { EmployeeIntId = ownId };
         }
         var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, req.EmployeeIntId, ct);
-        if (!identity.IsSuccess) return BadRequest(identity.Error);
+        if (!identity.IsSuccess) return BadRequest(LoanRefusals.Body("loan_employee_not_found", identity.Error ?? "The employee could not be identified.",
+            "تعذر تحديد الموظف المطلوب له القرض."));
         var employee = identity.Employee!;
         var scope = await _scopeService.ResolveAsync(User, tid, ct);
         if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
         if (!IsHrLoanActor() && !IsFinanceActor() && !await IsCallerEmployeeAsync(employee.Id, ct)) return Forbid();
 
         var loanType = await _db.LoanTypes.FirstOrDefaultAsync(x => x.Id == req.LoanTypeId && x.TenantId == tid && !x.IsDeleted, ct);
-        if (loanType == null || !loanType.IsActive) return NotFound("Loan type not found.");
+        if (loanType == null || !loanType.IsActive) return NotFound(LoanRefusals.Body("loan_type_not_found", "Loan type not found.", "نوع القرض غير موجود."));
         if (loanType.RepaymentFrequency is not ("Monthly" or "Weekly" or "BiWeekly" or "Quarterly"))
-            return BadRequest("This loan type has an unsupported repayment frequency.");
+            return BadRequest(LoanRefusals.Body("loan_frequency_unsupported", "This loan type has an unsupported repayment frequency.", "دورية السداد لنوع القرض هذا غير مدعومة."));
         if (req.RepaymentMethod == "PayrollDeduction" && loanType.RepaymentFrequency != "Monthly")
-            return BadRequest("Payroll deduction supports monthly loans. Use separate repayments for this frequency.");
+            return BadRequest(LoanRefusals.Body("loan_payroll_needs_monthly", "Payroll deduction supports monthly loans. Use separate repayments for this frequency.", "الخصم من الراتب متاح للقروض الشهرية فقط. استخدم السداد المنفصل لهذه الدورية."));
         if (!loanType.IsInterestFree || loanType.InterestRate != 0)
             return BadRequest(new { error = LoanEligibilityCodes.InterestNotPermitted, message = LoanEligibilityCodes.InterestNotPermittedText });
         // Evaluated inside the tenant's loan-creation lock (finance.loan-create), so the grade's outstanding
@@ -340,9 +341,9 @@ public partial class LoansController : ControllerBase
             if (loan == null || loan.IsDeleted) return NotFound();
             if (!await CanAccessLoanAsync(loan, ct)) return Forbid();
             if (!IsHrLoanActor()) return Forbid();
-            if (req.StepOrder < 1 || req.ApproverRole is not ("HR Manager" or "HR Director")) return BadRequest("Loan requests require HR approval roles.");
+            if (req.StepOrder < 1 || req.ApproverRole is not ("HR Manager" or "HR Director")) return BadRequest(LoanRefusals.Body("loan_approval_role_invalid", "Loan requests require HR approval roles.", "تتطلب طلبات القروض أدوار اعتماد من الموارد البشرية."));
             if (await _db.LoanApprovals.AnyAsync(x => x.TenantId == tid && x.LoanId == id && (x.StepOrder >= req.StepOrder || x.Status != "Pending"), ct))
-                return Conflict("Append approval steps in increasing order before any decisions are recorded.");
+                return Conflict(LoanRefusals.Body("loan_approval_step_order", "Append approval steps in increasing order before any decisions are recorded.", "أضف خطوات الاعتماد بترتيب تصاعدي قبل تسجيل أي قرار."));
             // A new Pending step on a decided loan resets the "all steps approved" roll-up that
             // DecideApproval uses, which is the back door around the status guard added there.
             // OffersController.AddApproval refuses the same way.
@@ -466,23 +467,23 @@ public partial class LoansController : ControllerBase
         var requiredRole = approval.ApproverRole is "Finance" or "Finance Approver" or "Manager" ? "HR Manager" : approval.ApproverRole;
         if (!User.IsInRole("Admin") && !User.IsInRole(requiredRole)) return Forbid();
         if (await _db.LoanApprovals.AnyAsync(x => x.TenantId == tid && x.LoanId == id && x.StepOrder < approval.StepOrder && x.Status != "Approved", ct))
-            return Conflict("Earlier approval steps must be approved first.");
+            return Conflict(LoanRefusals.Body("loan_earlier_step_pending", "Earlier approval steps must be approved first.", "يجب اعتماد خطوات الاعتماد السابقة أولًا."));
         var amountLimit = loan.ApprovedAmount > 0 ? Math.Min(loan.ApprovedAmount, loan.RequestedAmount) : loan.RequestedAmount;
         var countLimit = loan.ApprovedInstallments > 0 ? Math.Min(loan.ApprovedInstallments, loan.RequestedInstallments) : loan.RequestedInstallments;
         var amount = req.ApprovedAmount ?? amountLimit;
         var installmentCount = req.ApprovedInstallments ?? countLimit;
         if (req.Decision == "Approved" && (!IsMoney(amount) || amount > amountLimit || installmentCount < 1 || installmentCount > countLimit || amount < installmentCount * .01m))
-            return BadRequest("Approved terms must be positive, within requested terms, and allocate at least 0.01 per installment.");
+            return BadRequest(LoanRefusals.Body("loan_approved_terms_invalid", "Approved terms must be positive, within requested terms, and allocate at least 0.01 per installment.", "يجب أن تكون الشروط المعتمدة موجبة وضمن الشروط المطلوبة، وألا يقل كل قسط عن 0.01."));
         if (req.Decision == "Approved" && req.RepaymentStartDate is { } firstDue
             && (firstDue < DateOnly.FromDateTime(DateTime.UtcNow) || firstDue > DateOnly.FromDateTime(DateTime.UtcNow).AddYears(5)))
-            return BadRequest("The first repayment date must be today or within the next five years.");
+            return BadRequest(LoanRefusals.Body("loan_first_repayment_date_invalid", "The first repayment date must be today or within the next five years.", "يجب أن يكون تاريخ أول سداد اليوم أو خلال السنوات الخمس القادمة."));
         if (req.Decision == "Approved")
         {
             await new LoanLifecycleService(_db).RefreshAsync(tid, loan, ct);
             if (loan.ReviewRequired) { await _db.SaveChangesAsync(ct); return Conflict(new { error = "loan_review_required", message = loan.ReviewReason }); }
             var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == loan.EmployeeIntId && !x.IsDeleted, ct);
             var type = await _db.LoanTypes.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == loan.LoanTypeId, ct);
-            if (employee == null || type == null) return Conflict("Employee or loan type requires HR review.");
+            if (employee == null || type == null) return Conflict(LoanRefusals.Body("loan_hr_review_required", "Employee or loan type requires HR review.", "يحتاج الموظف أو نوع القرض إلى مراجعة من الموارد البشرية."));
             var assessment = await new LoanEligibilityService(_db).EvaluateAsync(tid, employee, type, amount, installmentCount,
                 loan.RepaymentMethod, loan.Id, loan.PolicySnapshotJson, ct);
             if (!assessment.Eligible) return BadRequest(new { error = "loan_ineligible", assessment.Reasons, assessment.Codes,

@@ -18,6 +18,7 @@ const ICON: Record<TrackerItem['kind'], { icon: LucideIcon; tone: string }> = {
   hr: { icon: ClipboardList, tone: 'bg-violet-500/10 text-violet-700 dark:text-violet-300' },
   leave: { icon: CalendarOff, tone: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' },
   advance: { icon: Banknote, tone: 'bg-amber-500/10 text-amber-700 dark:text-amber-300' },
+  loan: { icon: Banknote, tone: 'bg-amber-500/10 text-amber-700 dark:text-amber-300' },
 };
 
 const MAX_ROWS = 4;

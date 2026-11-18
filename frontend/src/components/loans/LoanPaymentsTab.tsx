@@ -6,6 +6,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { loanErrorMessage, localDateToday, repaymentMethodLabels } from '../../lib/loanWorkflow';
 import { Modal } from '../Modal';
 import { useT } from '../../hooks/useT';
+import { useLocale } from '../../contexts/LocaleContext';
 import { enumLabel } from '../../i18n/enumLabel';
 import { useFormat } from '../../hooks/useFormat';
 
@@ -23,6 +24,7 @@ function batchAmounts(batch: LoanPaymentBatch) {
 export function LoanPaymentsTab({ onChanged }: { onChanged: () => void }) {
   const { user } = useAuth();
   const t = useT();
+  const { locale } = useLocale();
   const canOperate = user?.roles.some(role => ['Admin', 'Finance'].includes(role)) ?? false;
   const [loans, setLoans] = useState<EmployeeLoan[]>([]);
   const [batches, setBatches] = useState<LoanPaymentBatch[]>([]);
@@ -67,7 +69,7 @@ export function LoanPaymentsTab({ onChanged }: { onChanged: () => void }) {
   const run = async (task: () => Promise<void>) => {
     setSaving(true); setError(''); setNotice('');
     try { await task(); onChanged(); await load(); }
-    catch (e) { setError(loanErrorMessage(e, 'Unable to process this loan payment.')); }
+    catch (e) { setError(loanErrorMessage(e, t('Unable to process this loan payment.'), locale)); }
     finally { setSaving(false); }
   };
 

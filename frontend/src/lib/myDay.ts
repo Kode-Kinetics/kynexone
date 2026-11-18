@@ -7,7 +7,7 @@
 import type { EssDashboard, EssHrRequest } from '../api/ess';
 import type { MessageParams } from '../i18n/translations';
 import type { LeaveRequest } from '../api/leave';
-import type { SalaryAdvance } from '../api/loans';
+import type { EmployeeLoan, SalaryAdvance } from '../api/loans';
 import { enumLabel, normaliseEnumValue } from '../i18n/enumLabel';
 import { ESS_PAYSLIPS_PATH } from './essPayslip';
 import { ESS_LEAVE_PATH, ESS_REQUESTS_PATH, canCancelLeave, hrRequestStatus, splitMinutes, type StatusTone } from './essSelfService';
@@ -99,7 +99,7 @@ export type StepState = 'done' | 'current' | 'todo' | 'problem';
 export interface TrackerStep { key: string; label: string; detail?: string; state: StepState }
 export interface TrackerItem {
   id: string;
-  kind: 'hr' | 'leave' | 'advance';
+  kind: 'hr' | 'leave' | 'advance' | 'loan';
   title: string;
   meta: string;
   statusLabel: string;
@@ -229,6 +229,30 @@ export function advanceItem(a: SalaryAdvance, { t, fx, nowMs }: TrackerCtx, loan
     needsYou: false, steps,
     action: loansPath ? { label: t('Open my loans'), href: loansPath } : undefined,
     sortAt: ts(a.createdAtUtc),
+  };
+}
+
+/** A loan request waiting for approval or for Finance to pay it out: the same steps as a salary advance. */
+export function loanItem(l: EmployeeLoan, { t, fx, nowMs }: TrackerCtx, loansPath: string | null): TrackerItem | null {
+  const paid = !!l.disbursementDate || ['Active', 'Overdue', 'Settled', 'Closed'].includes(l.status);
+  const pending = l.status === 'Pending';
+  const awaitingPayout = l.status === 'Approved' && !paid;
+  const rejected = l.status === 'Rejected' && nowMs - ts(l.createdAtUtc) <= 14 * DAY_MS;
+  if (!pending && !awaitingPayout && !rejected) return null;
+  const steps: TrackerStep[] = [
+    { key: 'sent', label: t('Sent'), detail: fx.date(l.createdAtUtc, 'dayMonth'), state: 'done' },
+    { key: 'approval', label: t('Approval'), state: rejected ? 'problem' : pending ? 'current' : 'done', detail: rejected ? (l.rejectionReason || t('Not approved')) : undefined },
+    { key: 'payout', label: t('Payout'), state: awaitingPayout ? 'current' : 'todo', detail: awaitingPayout ? t('With Finance') : undefined },
+    { key: 'repay', label: t('Repayment'), state: 'todo' },
+  ];
+  return {
+    id: `loan-${l.id}`, kind: 'loan', title: t('Loan request'),
+    meta: t('{reference}, raised on {date}', { reference: l.loanNumber, date: fx.date(l.createdAtUtc, 'dayMonth') }),
+    statusLabel: rejected ? t('Not approved') : pending ? t('Waiting for approval') : t('Approved, waiting for payout'),
+    tone: rejected ? 'rose' : pending ? 'amber' : 'blue',
+    needsYou: false, steps,
+    action: loansPath ? { label: t('Open my loans'), href: loansPath } : undefined,
+    sortAt: ts(l.createdAtUtc),
   };
 }
 
