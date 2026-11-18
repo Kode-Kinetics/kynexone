@@ -293,8 +293,10 @@ function ScoreBreakdown({ components, total }: { components: ScoreComponent[]; t
   );
 }
 
-function OverallScoreCard({ overall, qiwa, wps, gosi, actionCount }: {
+function OverallScoreCard({ overall, qiwa, wps, gosi, actionCount, onRefresh }: {
   overall: OverallSection; qiwa: QiwaSection; wps: WpsSection; gosi: GosiSection;
+  /** Reloads the dashboard. It sits in the card so it does not take a row of its own above it. */
+  onRefresh: () => void;
   /** The number of open actions: the same number the Action Center badge shows, so the page gives one count. */
   actionCount: number;
 }) {
@@ -310,7 +312,7 @@ function OverallScoreCard({ overall, qiwa, wps, gosi, actionCount }: {
                                                    'text-rose-600 dark:text-rose-400';
 
   return (
-    <div className="surface p-5">
+    <div className="surface px-5 py-4">
       <div className="flex flex-wrap items-center gap-5">
         <ScoreRing score={overall.complianceScore} />
         <div className="flex-1 min-w-48">
@@ -318,18 +320,20 @@ function OverallScoreCard({ overall, qiwa, wps, gosi, actionCount }: {
             <p className="text-lg font-semibold text-slate-900 dark:text-white">{t('Compliance Score')}</p>
             <span className={`text-sm font-semibold ${labelCls}`}>{label}</span>
           </div>
-          <p className="mt-0.5 text-xs text-slate-400">
-            {t('Evaluated {lastEvaluatedAt}', { lastEvaluatedAt: fmtDateTime(overall.lastEvaluatedAt) })}
-          </p>
-          {actionCount > 0 && (
-            <p
-              data-testid="urgent-action-count"
-              className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-rose-600 dark:text-rose-400"
-            >
-              <AlertCircle className="h-3.5 w-3.5" />
-              {t('{count, plural, one {# action needs attention} other {# actions need attention}}', { count: actionCount })}
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+            <p className="text-xs text-slate-400">
+              {t('Evaluated {lastEvaluatedAt}', { lastEvaluatedAt: fmtDateTime(overall.lastEvaluatedAt) })}
             </p>
-          )}
+            {actionCount > 0 && (
+              <p
+                data-testid="urgent-action-count"
+                className="flex items-center gap-1.5 text-xs font-semibold text-rose-600 dark:text-rose-400"
+              >
+                <AlertCircle className="h-3.5 w-3.5" />
+                {t('{count, plural, one {# action needs attention} other {# actions need attention}}', { count: actionCount })}
+              </p>
+            )}
+          </div>
           <button
             type="button"
             onClick={() => setShowWorking(v => !v)}
@@ -340,7 +344,7 @@ function OverallScoreCard({ overall, qiwa, wps, gosi, actionCount }: {
             {showWorking ? t('Hide how this is calculated') : t('How is this calculated?')}
           </button>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <ModuleStatusChip
             label="QIWA"
             enabled={qiwa.featureEnabled}
@@ -356,6 +360,13 @@ function OverallScoreCard({ overall, qiwa, wps, gosi, actionCount }: {
             enabled
             score={gosi.readinessPercent}
           />
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-white/[0.04]"
+          >
+            <RefreshCw className="h-3.5 w-3.5" /> {t('Refresh')}
+          </button>
         </div>
       </div>
       {showWorking && <ScoreBreakdown components={overall.scoreBreakdown} total={overall.complianceScore} />}
@@ -382,7 +393,7 @@ function ActionCenter({ items }: { items: ActionItem[] }) {
 
   return (
     <div className="surface overflow-hidden">
-      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-white/[0.07]">
+      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2 dark:border-white/[0.07]">
         <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Action Center')}</h2>
         <span data-testid="action-center-count" className="rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-700 dark:bg-rose-500/20 dark:text-rose-400">
           {items.length}
@@ -392,7 +403,7 @@ function ActionCenter({ items }: { items: ActionItem[] }) {
         {items.map(rawItem => {
           const item = { ...rawItem, ...complianceActionText(t, rawItem) };
           return (
-          <li key={item.id} className="px-4 py-3">
+          <li key={item.id} className="px-4 py-2">
             <div className="flex items-start gap-3">
               <div className="mt-0.5 shrink-0">
                 <SeverityPill severity={item.severity} />
@@ -792,19 +803,9 @@ function DashboardTab() {
   const { overall, qiwa, wps, gosi, actionItems } = data;
 
   return (
-    <div className="space-y-5">
-      <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={load}
-          className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-white/[0.04]"
-        >
-          <RefreshCw className="h-3.5 w-3.5" /> {t('Refresh')}
-        </button>
-      </div>
-
-      {/* Executive Score Card */}
-      <OverallScoreCard overall={overall} qiwa={qiwa} wps={wps} gosi={gosi} actionCount={actionItems.length} />
+    <div className="space-y-3">
+      {/* Executive Score Card (Refresh lives in it) */}
+      <OverallScoreCard overall={overall} qiwa={qiwa} wps={wps} gosi={gosi} actionCount={actionItems.length} onRefresh={load} />
 
       {/* Action Center */}
       <ActionCenter items={actionItems} />
@@ -837,7 +838,7 @@ export function SaudiComplianceDashboard() {
   const [tab, setTab] = useState<Tab>('dashboard');
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-6 w-6 text-sapphire dark:text-cyanAccent" />

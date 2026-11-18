@@ -29,6 +29,8 @@ import { RunReviewPanel } from './RunReviewPanel';
 import { splitRunsByVoided } from '../../lib/runOptions';
 
 const STAGES_PREF_KEY = 'kynexone-payroll-pipeline-stages';
+/** How many runs needing attention the bar names before "Show all" (they sit in the bar's one row). */
+const ATTENTION_INLINE = 3;
 
 /** The tab each stage's name opens (the review stage opens its own panel instead). */
 const STAGE_TAB: Record<Exclude<StageKey, 'review'>, string> = {
@@ -239,7 +241,7 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
   const otherRuns = data.runs.filter(r => !attentionIds.has(r.id));
   // A voided run is not set beside the live ones: it has its own group.
   const { live: liveOtherRuns, voided: voidedRuns } = splitRunsByVoided(otherRuns);
-  const visibleAttention = showAllAttention ? attention : attention.slice(0, 5);
+  const visibleAttention = showAllAttention ? attention : attention.slice(0, ATTENTION_INLINE);
 
   const companyName = (r: PayrollRun) => {
     const c = companies.find(x => x.id === r.companyId);
@@ -314,6 +316,26 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
       <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-2 xl:flex-nowrap">
         <label htmlFor="pipeline-run-picker" className="shrink-0 text-meta text-fg-muted max-md:sr-only">{t('Payroll run')}</label>
         <div className="w-full min-w-0 md:w-auto md:shrink">{picker}</div>
+        {/* With no run chosen, the runs that need someone sit in this same row (one slim bar, not a card of their own): each is a run, what it waits for and Open. */}
+        {!run && data.runsState === 'ready' && attention.length > 0 && (
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5" data-testid="pipeline-attention">
+            <h3 className="shrink-0 text-body-sm font-semibold text-fg">{t('{count, plural, one {# run needs attention} other {# runs need attention}}', { count: attention.length })}</h3>
+            <ul className="flex min-w-0 flex-wrap items-center gap-2">
+              {visibleAttention.map(r => (
+                <li key={r.id} className="flex items-center gap-2 rounded-lg border border-line px-2 py-0.5">
+                  <span className="text-body-sm text-fg">{runLabel(r)}</span>
+                  <span className="badge badge-warning">{attentionLabel(r)}</span>
+                  <Button size="sm" onClick={() => onSelectRun(r.id)}>{t('Open')}</Button>
+                </li>
+              ))}
+            </ul>
+            {attention.length > ATTENTION_INLINE && (
+              <Button size="sm" aria-expanded={showAllAttention} onClick={() => setShowAllAttention(v => !v)}>
+                {showAllAttention ? t('Show fewer') : t('Show all {count} runs', { count: fmt.integer(attention.length) })}
+              </Button>
+            )}
+          </div>
+        )}
         {run && model && (
           <>
             <span className="badge badge-neutral inline-flex shrink-0 items-center gap-1 whitespace-nowrap" data-testid="pipeline-run-status">
@@ -400,27 +422,6 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
       )}
       {missingRun && <p role="status" className="text-body-sm text-warning-fg" data-testid="pipeline-run-missing">{t('The run in this link was not found, so none is selected.')}</p>}
 
-      {!run && data.runsState === 'ready' && attention.length > 0 && (
-        <div data-testid="pipeline-attention">
-          <h3 className="text-body font-semibold text-fg">{t('{count, plural, one {# run needs attention} other {# runs need attention}}', { count: attention.length })}</h3>
-          <ul className="mt-2 divide-y divide-line rounded-lg border border-line">
-            {visibleAttention.map(r => (
-              <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
-                <span className="text-body text-fg">{runLabel(r)}</span>
-                <span className="flex items-center gap-2">
-                  <span className="badge badge-warning">{attentionLabel(r)}</span>
-                  <Button size="sm" onClick={() => onSelectRun(r.id)}>{t('Open')}</Button>
-                </span>
-              </li>
-            ))}
-          </ul>
-          {attention.length > 5 && (
-            <Button size="sm" className="mt-2" aria-expanded={showAllAttention} onClick={() => setShowAllAttention(v => !v)}>
-              {showAllAttention ? t('Show fewer') : t('Show all {count} runs', { count: fmt.integer(attention.length) })}
-            </Button>
-          )}
-        </div>
-      )}
       {!run && data.runsState === 'ready' && data.runs.length === 0 && <p className="text-body-sm text-fg-muted">{t('There are no payroll runs yet. Create one on the Payroll Runs tab.')}</p>}
 
       {run && model && (

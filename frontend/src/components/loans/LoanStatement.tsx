@@ -39,7 +39,7 @@ export function LoanAccountSummary({ mine, version }: { mine: boolean; version: 
     return () => { active = false; };
   }, [mine, version]);
   if (error) return <p role="alert" className="text-sm text-red-600">{error}</p>;
-  return <div className="space-y-3">{totals(loans).map(group => <section key={group.currency} className="surface p-4" aria-label={t('{currency} loan account totals', { currency: fx.currencyLabel(group.currency) })}><h2 className="mb-3 text-sm font-semibold">{t('{currency} loan account', { currency: fx.currencyLabel(group.currency) })}</h2><dl className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">{(['requested', 'approved', 'disbursed', 'repaid', 'outstanding'] as const).map(key => <div key={key}><dt className="text-xs text-slate-500">{t(LABELS[key])}</dt><dd className="mt-1 font-semibold">{fx.plain.money(group[key], group.currency || null)}</dd></div>)}</dl></section>)}</div>;
+  return <div className="space-y-3">{totals(loans).map(group => <section key={group.currency} className="surface flex flex-wrap items-center gap-x-8 gap-y-2 px-4 py-3" aria-label={t('{currency} loan account totals', { currency: fx.currencyLabel(group.currency) })}><h2 className="text-sm font-semibold">{t('{currency} loan account', { currency: fx.currencyLabel(group.currency) })}</h2><dl className="grid min-w-0 flex-1 grid-cols-2 gap-x-6 gap-y-2 md:grid-cols-5">{(['requested', 'approved', 'disbursed', 'repaid', 'outstanding'] as const).map(key => <div key={key}><dt className="text-xs text-slate-500">{t(LABELS[key])}</dt><dd className="mt-0.5 font-semibold tabular-nums">{fx.plain.money(group[key], group.currency || null)}</dd></div>)}</dl></section>)}</div>;
 }
 
 export function LoanStatement({ detail }: { detail: LoanDetail }) {
