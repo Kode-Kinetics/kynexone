@@ -13,7 +13,9 @@ namespace Zayra.Api.Controllers.Recruitment;
 public class CandidatesController : ControllerBase
 {
     private readonly ZayraDbContext _db;
-    public CandidatesController(ZayraDbContext db) => _db = db;
+    private readonly Zayra.Api.Infrastructure.Recruitment.OfferLifecycleService _lifecycle;
+    public CandidatesController(ZayraDbContext db, Zayra.Api.Infrastructure.Recruitment.OfferLifecycleService? lifecycle = null)
+    { _db = db; _lifecycle = lifecycle ?? new(db, new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build()); }
 
     [HttpGet]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
@@ -143,16 +145,45 @@ public class CandidatesController : ControllerBase
 
     [HttpPost("{id:guid}/blacklist")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<IActionResult> Blacklist(Guid id, CancellationToken ct)
+    [Zayra.Api.Infrastructure.Recruitment.RefuseHrOfficer]
+    public async Task<IActionResult> Blacklist(Guid id, CancellationToken ct,
+        [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] BlacklistRequest? req = null)
     {
         var tenantId = this.GetTenantId()!.Value;
+        // Blacklisting shuts a person out of every hiring step, so it needs a written reason and leaves an audit record (who, when, whom, why). The
+        // reason lives on the audit record only; nothing that lists candidates returns it.
+        var reason = req?.Reason?.Trim() ?? string.Empty;
+        if (reason.Length < 10)
+            return BadRequest(new
+            {
+                error = "blacklist_reason_required",
+                message = "Say why this candidate is being blacklisted (at least 10 characters). The reason is kept on the audit record.",
+                messageAr = "اذكر سبب إدراج هذا المرشح في القائمة السوداء (10 أحرف على الأقل). يُحفظ السبب في سجل التدقيق.",
+            });
+        if (reason.Length > 1000) return BadRequest(new { error = "reason_too_long", message = "Keep the reason under 1,000 characters.", messageAr = "اجعل السبب أقل من 1000 حرف." });
         var c = await _db.Candidates.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         if (c is null) return NotFound();
+        if (c.Status == "Blacklisted") return Ok(c);
+        var userId = this.GetUserId();
+        var userName = User.FindFirst("name")?.Value ?? User.Identity?.Name ?? "HR";
+        var previous = c.Status;
         c.Status = "Blacklisted";
+        _db.RecruitmentAuditLogs.Add(new RecruitmentAuditLog
+        {
+            TenantId = tenantId, EntityType = "Candidate", EntityId = c.Id.ToString(), Action = "Blacklisted",
+            PerformedByUserId = userId, PerformedByName = userName,
+            OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { status = previous }),
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { status = "Blacklisted", reason }),
+        });
         await _db.SaveChangesAsync(ct);
+        // Offers of theirs still waiting in the dispatch queue are held, not sent. The listing stands even if holding one of them fails.
+        try { await _lifecycle.HoldQueuedDispatchesForBlacklistedCandidateAsync(tenantId, c.Id, userId ?? Guid.Empty, userName, ct); }
+        catch (Zayra.Api.Infrastructure.Recruitment.OfferLifecycleException) { }
         return Ok(c);
     }
 }
+
+public record BlacklistRequest(string? Reason);
 
 public record CandidateRequest(
     string FirstName, string LastName, string Email, string Phone,

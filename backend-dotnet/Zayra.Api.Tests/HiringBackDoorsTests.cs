@@ -147,13 +147,15 @@ public sealed class HiringBackDoorsTests
     }
 
     [Fact]
-    public async Task FeedbackThroughTheApplicationsRoute_IsAcceptedFromAManagerOnThePanel_AndFromHr()
+    public async Task FeedbackThroughTheApplicationsRoute_IsRefusedForAManagerEvenOnThePanel_AndAcceptedFromHr()
     {
         var (db, tenant, interviewId) = await SeedInterviewAsync();
         await using var _ = db;
 
+        // The route writes the interview's one shared verdict: a panellist gives their own scorecard through the other route.
         (await Applications(db, tenant, "Manager", "Mona Manager").RecordFeedback(interviewId, Feedback, CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+            .Should().BeOfType<ForbidResult>();
+        (await db.InterviewSchedules.AsNoTracking().SingleAsync(i => i.Id == interviewId)).FeedbackNotes.Should().BeEmpty();
         (await Applications(db, tenant, "HR Manager", "Hana HR").RecordFeedback(interviewId, Feedback, CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
     }

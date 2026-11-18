@@ -67,6 +67,9 @@ public sealed partial class OfferLifecycleService
         string? resendReason, CancellationToken ct)
     {
         OfferApplicationBoundary.RequireActive(app);
+        // A blacklisted candidate is sent nothing, however the offer got this far (queued before the listing, or reviewed earlier).
+        if (await CandidateStanding.IsBlacklistedAsync(db, actor.TenantId, app.CandidateId, ct))
+            throw new OfferLifecycleException(CandidateStanding.ErrorCode, CandidateStanding.Message) { MessageAr = CandidateStanding.MessageAr };
         if (offer.SeriesId is null || offer.ArtifactId is null || offer.FrozenAtUtc is null
             || !await db.OfferArtifacts.AnyAsync(a => a.TenantId == actor.TenantId && a.CompanyId == actor.CompanyId
                 && a.Id == offer.ArtifactId && a.OfferId == offer.Id && a.ApplicationId == app.Id && a.State == "Finalized", ct))

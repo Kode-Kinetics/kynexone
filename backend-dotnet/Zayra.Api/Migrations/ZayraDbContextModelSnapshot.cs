@@ -18116,6 +18116,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("interviewer_names");
 
+                    b.Property<string>("InterviewerUserIds")
+                        .HasColumnType("text")
+                        .HasColumnName("interviewer_user_ids");
+
                     b.Property<string>("Location")
                         .IsRequired()
                         .HasColumnType("text")

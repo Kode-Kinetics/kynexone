@@ -226,6 +226,7 @@ public class ApplicationsController : ControllerBase
             ApplicationId = id,
             InterviewType = req.InterviewType,
             InterviewerNames = req.InterviewerNames,
+            InterviewerUserIds = await InterviewPanel.ResolveIdsAsync(_db, tenantId, req.InterviewerNames, null, ct, app.CompanyId),
             ScheduledAt = req.ScheduledAt,
             DurationMinutes = req.DurationMinutes,
             Mode = req.Mode,
@@ -257,8 +258,9 @@ public class ApplicationsController : ControllerBase
         var iv = await _db.InterviewSchedules
             .FirstOrDefaultAsync(i => i.Id == interviewId && i.TenantId == tenantId, ct);
         if (iv is null) return NotFound();
-        // The same assigned-interviewer rule as the other feedback endpoint: a panel-only interviewer writes only on an interview they are named on.
-        if (!InterviewPanel.MayWriteFeedback(User, iv, UserName())) return Forbid();
+        // This route writes the interview's single shared verdict (status, overall rating, recommendation, notes), so it is for HR coordinators only. A
+        // panellist who is a line manager gives their own scorecard through POST interviews/{id}/feedback.
+        if (!InterviewPanel.IsCoordinator(User)) return Forbid();
 
         iv.Status = "Completed";
         iv.OverallRating = req.OverallRating;
