@@ -364,3 +364,10 @@ export function confirmedResponsePurpose(t: Translate, p: PayOut): string {
   if ((p.rejected ?? 0) > 0) return t('The bank answered every payment. Some were rejected by the bank and not paid: check the bank statement, then pay them in a new payment batch.');
   return (p.returned ?? 0) > 0 ? t('The bank answered every payment. Pay the returned ones again from Payment Tracking.') : t('The bank confirmed every payment.');
 }
+
+/** The line under the Response step when the bank rejected the whole file: the bank statement decides what was paid, never "no one". */
+export function rejectedFilePurpose(t: Translate, reason?: string | null): string {
+  return reason
+    ? t('The bank rejected this file: {reason}. Nothing in it is confirmed paid; check the bank statement.', { reason })
+    : t('The bank rejected this file. Nothing in it is confirmed paid; check the bank statement.');
+}

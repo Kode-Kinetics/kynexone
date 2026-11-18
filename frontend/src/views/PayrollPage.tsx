@@ -66,7 +66,7 @@ import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
 import { BankFileGuide, useBankHandOver, type BankPanelData, type GuideSlots } from '../components/payroll/BankFileGuide';
 import { BankFileFacts, tieOut } from '../components/payroll/BankFileFacts';
 import { RecordSubmittedDialog } from '../components/payroll/RecordSubmittedDialog';
-import { bankResponseBuckets, confirmedResponsePurpose, derivePayOut, pickPayOutBatch, type PayOutStepKey } from '../lib/payOut';
+import { bankResponseBuckets, confirmedResponsePurpose, derivePayOut, pickPayOutBatch, rejectedFilePurpose, type PayOutStepKey } from '../lib/payOut';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Modal as SideDrawer } from '../components/Modal';
 import { suggestedBatchReference, type BankFlowProgress } from '../lib/bankFileSteps';
@@ -3480,7 +3480,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
   );
   const responsePurpose = (data: BankPanelData | null | undefined) => {
     switch (payOut.status) {
-      case 'rejected': return batchRow?.wpsRejectionReason ? t('The bank rejected this file: {reason}. No one in it was paid.', { reason: batchRow.wpsRejectionReason }) : t('The bank rejected this file. No one in it was paid.');
+      case 'rejected': return rejectedFilePurpose(t, batchRow?.wpsRejectionReason);
       case 'confirmed': return confirmedResponsePurpose(t, payOut);
       case 'settled': return t('Paid and settled.');
       default: return data?.bankName

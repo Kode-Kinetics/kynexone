@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import {
-  bankResponseBuckets, confirmedResponsePurpose, derivePayOut, payOutLabel, payOutNeedsFile, payOutStageState, payOutTone, splitFromRecords,
+  bankResponseBuckets, confirmedResponsePurpose, derivePayOut, payOutLabel, payOutNeedsFile, rejectedFilePurpose, payOutStageState, payOutTone, splitFromRecords,
   type PayOut, type PayOutInput, type PayOutNextKind, type PayOutStage, type PayOutStatus,
 } from '../src/lib/payOut';
 import { attentionFor, derivePipeline, payOutForRun, type PipelineBatch, type PipelineInput } from '../src/lib/payrollPipeline';
@@ -327,5 +327,20 @@ test.describe('a bank rejection is never worded as returned (W1)', () => {
     expect(p).toMatchObject({ status: 'confirmed', returned: 0, rejected: 2 });
     expect(payOutLabel(identity, p)).toBe(`2 ${REJECTED_EN}`);
     expect(payOutStageState(p)).not.toBe('done');
+  });
+});
+
+test.describe('a rejected file does not claim nobody was paid (W2)', () => {
+  test('EN: nothing in it is confirmed paid, check the bank statement; with and without the bank reason', () => {
+    expect(rejectedFilePurpose(identity, 'Bad IBAN')).toBe('The bank rejected this file: Bad IBAN. Nothing in it is confirmed paid; check the bank statement.');
+    expect(rejectedFilePurpose(identity)).toBe('The bank rejected this file. Nothing in it is confirmed paid; check the bank statement.');
+  });
+  test('AR: the same, with the bank reason kept', () => {
+    expect(rejectedFilePurpose(arabic, 'Bad IBAN')).toBe('رفض البنك هذا الملف: Bad IBAN. لا يوجد فيه ما تأكد دفعه؛ راجع كشف حساب البنك.');
+    expect(rejectedFilePurpose(arabic)).toBe('رفض البنك هذا الملف. لا يوجد فيه ما تأكد دفعه؛ راجع كشف حساب البنك.');
+  });
+  test('no catalogue key still says no one was paid', () => {
+    expect(Object.keys(LOCALE_DICTS.ar).filter(k => /No one in it was paid/.test(k))).toEqual([]);
+    expect(Object.values(LOCALE_DICTS.ar).filter(v => /لم يُدفع لأي أحد/.test(v))).toEqual([]);
   });
 });
