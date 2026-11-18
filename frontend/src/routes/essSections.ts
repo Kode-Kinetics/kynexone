@@ -8,6 +8,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { NavItem } from '../types/ui';
+import { ESS_JOBS_PATH } from '../lib/essJobs';
 
 /**
  * The employee's own workspace at /ess. Every login is an employee first, so these pages live
@@ -53,6 +54,7 @@ export const ESS_SECTIONS: EssSection[] = [
     pages: [
       { label: 'Self-Service', tab: 'Overview', path: ESS_HOME_PATH, hint: 'Your day at a glance: what needs you, your balances and what is coming up.' },
       { label: 'My employee details', tab: 'My details', path: '/ess/onboarding', hint: 'Complete your contact details and share documents securely with HR.' },
+      { label: 'Open positions', tab: 'Open positions', path: ESS_JOBS_PATH, hint: 'The jobs open in your company, and what each one involves.' },
       // LRN (learning opt-in flag): the employee's own training, courses, assessments and certificates.
       { label: 'My learning', tab: 'Learning', path: '/ess/learning', hint: 'The training assigned to you, what to do next, and the certificates you have earned.', requiredFeatureKey: 'learning' },
       // SUC (succession opt-in flag): the employee's own development plan, its actions and the next review.
