@@ -45,8 +45,17 @@ public class KsaStarterTemplateSourcesTests
     {
         var t = Task("WPS and Mudad");
         t.Description.Should().Contain("Mudad window (30 days");
-        t.DescriptionAr.Should().Contain("ارفع ملف الأجور على مُدد ضمن المهلة المحددة (30 يومًا حاليًا)");
+        t.DescriptionAr.Should().Contain("ضمن المهلة المحددة (30 يومًا حاليًا)");
         All(t).Should().NotContain("7 days").And.NotContain("7 أيام");
+    }
+
+    [Fact]
+    public void Mudad_UploadIsAsTheBankOrMudadProcessRequires_AndMudadIsSpelledWithoutDiacritic()
+    {
+        var t = Task("WPS and Mudad");
+        t.Description.Should().Contain("Upload the wage file as your bank or Mudad process requires").And.NotContain("Upload the wage file to Mudad");
+        t.DescriptionAr.Should().Contain("ارفع ملف الأجور وفق ما يتطلبه بنكك أو مدد").And.NotContain("على مُدد");
+        All(t).Should().NotContain("مُدد", because: "Mudad is always spelled مدد, with no diacritic");
     }
 
     [Fact]
