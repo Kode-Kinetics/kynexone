@@ -1,8 +1,8 @@
 import client from './client';
 
 // Benefit utilisation, the way loans work: a request (Pending) that Finance approves or rejects, and the requester may withdraw.
-// HR and Finance: /api/entitlements/usage (read with entitlements.read or payroll.approve; HR requests with entitlements.manage;
-// Finance decides with payroll.approve). Employee: /api/ess/package/usage (own benefits and requests; requests with ess.write).
+// HR and Finance: /api/entitlements/usage (read with entitlements.read or benefits.usage.approve; HR requests with entitlements.manage;
+// Finance decides with benefits.usage.approve). Employee: /api/ess/package/usage (own benefits and requests; requests with ess.write).
 // Dates are ISO yyyy-MM-dd strings. No money moves from any of it.
 
 export type UsageStatus = 'Pending' | 'Approved' | 'Rejected' | 'Cancelled';

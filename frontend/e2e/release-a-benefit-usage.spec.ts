@@ -90,7 +90,8 @@ async function boot(page: Page, locale: Locale, permissions: string[], url: stri
     localStorage.setItem('kynexone-locale-choice-v2', l);
     localStorage.setItem('kynexone.theme', 'light');
   }, [locale]);
-  const finance = permissions.includes('payroll.approve');
+  // A stand-in for a server that still answers canDecide for anyone holding payroll.approve: the screen must not offer the decision on that alone.
+  const finance = permissions.includes('benefits.usage.approve') || permissions.includes('payroll.approve');
   const hr = permissions.includes('entitlements.manage');
   await page.route('**/api/**', (route) => {
     const req = route.request();
@@ -123,7 +124,9 @@ async function boot(page: Page, locale: Locale, permissions: string[], url: stri
 const control = (scope: ReturnType<Page['getByTestId']>, label: string) => scope.getByLabel(label).and(scope.locator('select, input, textarea'));
 
 const HR = ['entitlements.read', 'entitlements.manage'];
-const FINANCE = ['payroll.approve'];
+const FINANCE = ['benefits.usage.approve'];
+// HR Manager holds payroll.approve but not the benefit-usage key: it makes requests, it does not decide them.
+const HR_MANAGER = ['entitlements.read', 'entitlements.manage', 'payroll.approve'];
 const EMPLOYEE = ['ess.read', 'ess.write'];
 const ticketName = (l: Locale) => (l === 'ar' ? 'تذكرة السفر السنوية' : 'Annual air ticket');
 const educationName = (l: Locale) => (l === 'ar' ? 'بدل تعليم الأبناء' : "Children's education allowance");
@@ -207,6 +210,16 @@ for (const locale of ['en', 'ar'] as const) {
       await waiting.getByRole('button', { name: say(locale, 'Approve') }).click();
       await expect.poll(() => calls.length).toBe(1);
       expect(calls[0]).toMatchObject({ path: '/api/entitlements/usage/requests/r-1/decision', body: { decision: 'Approved' } });
+      expect(errors).toEqual([]);
+    });
+
+    test('a user without benefits.usage.approve (HR Manager, who holds payroll.approve) is offered no Approve or Reject', async ({ page }) => {
+      const { errors } = await boot(page, locale, HR_MANAGER, '/benefits/usage');
+      const waiting = page.getByTestId('usage-waiting');
+      await expect(waiting.getByTestId('usage-request')).toContainText('INV-2026-118');
+      await expect(waiting.getByRole('button', { name: say(locale, 'Approve') })).toHaveCount(0);
+      await expect(waiting.getByRole('button', { name: say(locale, 'Reject') })).toHaveCount(0);
+      await expect(waiting.getByText(say(locale, 'Finance decides this. Whoever requested it, and the employee it is for, cannot.'))).toBeVisible();
       expect(errors).toEqual([]);
     });
 

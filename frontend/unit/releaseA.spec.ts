@@ -51,6 +51,11 @@ test('Release A navigation is flag-gated, permission-gated, explained and transl
   }
   expect(navigationItems.filter((i) => i.requiredFeatureKey === RELEASE_A_FLAG).map((i) => i.path).sort()).toEqual([...menuPaths].sort());
 
+  // Benefit usage: Finance decides with its own key. payroll.approve (held by HR Manager) must not open the Finance side of the screen.
+  const usagePermissions = navigationItems.find((i) => i.path === '/benefits/usage')?.requiredPermissions;
+  expect(usagePermissions).toContain('benefits.usage.approve');
+  expect(usagePermissions).not.toContain('payroll.approve');
+
   const essPaths = ['/ess/package', '/ess/deductions'];
   for (const path of essPaths) {
     const page = essPages.find((p) => p.path === path);

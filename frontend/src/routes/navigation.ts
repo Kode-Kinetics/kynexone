@@ -72,8 +72,8 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Benefits', icon: HeartPulse, path: '/benefits', requiredPermissions: ['employees.write'], hiddenWhenFeatureKey: 'release_a' },
       // Release A (release_a opt-in flag): benefits by grade and contract renewals.
       { label: 'Benefits by grade', icon: Layers3, path: '/benefits/by-grade', requiredPermissions: ['entitlements.read'], requiredFeatureKey: 'release_a' },
-      // Benefit utilisation: HR reads and records with entitlements.*, Finance reads and approves with payroll.approve.
-      { label: 'Benefit usage', icon: Layers3, path: '/benefits/usage', requiredPermissions: ['entitlements.read', 'payroll.approve'], requiredFeatureKey: 'release_a' },
+      // Benefit utilisation: HR reads and records with entitlements.*, Finance reads and approves with benefits.usage.approve (a key HR Manager does not hold).
+      { label: 'Benefit usage', icon: Layers3, path: '/benefits/usage', requiredPermissions: ['entitlements.read', 'benefits.usage.approve'], requiredFeatureKey: 'release_a' },
       { label: 'Contract renewals', icon: FileSignature, path: '/contract-renewals', requiredPermissions: ['contracts.renewal.read'], requiredFeatureKey: 'release_a' },
       // CMP (compensation opt-in flag): merit cycles, manager worksheets, pay benchmarks and pay equity.
       { label: 'Merit planning', icon: TrendingUp, path: '/compensation', requiredPermissions: ['compensation.read', 'compensation.plan', 'compensation.manage', 'compensation.approve', 'compensation.benchmarks.manage', 'compensation.equity.read'], requiredFeatureKey: 'compensation' },

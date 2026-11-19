@@ -17,7 +17,7 @@ import { STATUS_TONES, calendarDate, fill, measureText, refusalKey, statusKey } 
  * Benefit usage, the way loans work: for each employee's FIXED contract benefits, what this period allows, what is waiting, what is
  * approved and what is left (education per child as money, tickets as counts). HR requests a use for an employee; Finance approves
  * or rejects it (never their own request, never their own benefit); a Pending request can be withdrawn. Nothing here pays anyone.
- * Behind release_a and entitlements.read or payroll.approve.
+ * Behind release_a and entitlements.read or benefits.usage.approve.
  */
 export function BenefitUsagePage() {
   return (
@@ -160,6 +160,10 @@ export function UsageFigures({ row }: { row: UtilisationRow }) {
 /** One request: what, for whom, the evidence, who asked, and the step the viewer may take (Approve / Reject, Withdraw). */
 function RequestCard({ request: r, onDone }: { request: UsageRequest; onDone: (message: string) => void }) {
   const { t, locale } = useLocale();
+  const { hasPermission } = useAuth();
+  // The server says whether this request may be decided by this person; the controls also need the Finance key of their own
+  // (benefits.usage.approve), which HR Manager does not hold, so a stale or wrong answer never offers HR an approve button.
+  const canDecide = r.canDecide && hasPermission('benefits.usage.approve');
   const [asking, setAsking] = useState<'reject' | 'cancel' | null>(null);
   const [text, setText] = useState('');
   const [error, setError] = useState('');
@@ -204,12 +208,12 @@ function RequestCard({ request: r, onDone }: { request: UsageRequest; onDone: (m
           </div>
         </div>
         : r.status === 'Pending' && <div className="flex flex-wrap items-center gap-2">
-          {r.canDecide && <>
+          {canDecide && <>
             <button type="button" className="btn-primary" disabled={busy} onClick={() => void run(() => benefitUsageApi.decide(r.id, 'Approved'), t('Approved.'))}>{t('Approve')}</button>
             <button type="button" className="btn-secondary" disabled={busy} onClick={() => setAsking('reject')}>{t('Reject')}</button>
           </>}
           {r.canCancel && <button type="button" className="btn-ghost" disabled={busy} onClick={() => setAsking('cancel')}>{t('Withdraw')}</button>}
-          {!r.canDecide && <p className="text-xs text-fg-muted">{t('Finance decides this. Whoever requested it, and the employee it is for, cannot.')}</p>}
+          {!canDecide && <p className="text-xs text-fg-muted">{t('Finance decides this. Whoever requested it, and the employee it is for, cannot.')}</p>}
         </div>}
       {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
     </li>
