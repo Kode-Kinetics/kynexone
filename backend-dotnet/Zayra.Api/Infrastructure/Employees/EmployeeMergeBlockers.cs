@@ -231,6 +231,8 @@ public static class EmployeeMergeBlockers
              "AbsenceRegularizationRequest", "Timesheet", "TimesheetDayReconciliation", "TimesheetEntry", "ShiftAssignment"]),
         ("compliance evidence: consent or acknowledgement proof that stays on the retained (soft-deleted) record; the kept employee simply shows none, which fails safe (consent is asked again)",
             ["BiometricConsent", "EmployeePolicyAcknowledgement"]),
+        ("a request to use a benefit entitlement: version 1 moves no money and records no payment or legal fact; HR re-raises it for the kept employee",
+            ["BenefitUsageRequest"]),
         ("performance, learning and talent records: HR development history, no payment or legal record is held here",
             ["AppraisalAppeal", "AppraisalReview", "ContinuousFeedback", "DevelopmentPlan", "EmployeeGoal", "PerformanceCycleEmployee", "PerformanceImprovementPlan", "ProbationReview",
              "SuccessionNomination", "TalentAssessment", "LearningAssignment", "LearningAttempt",
