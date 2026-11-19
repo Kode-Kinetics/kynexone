@@ -208,6 +208,42 @@ public class BankConfirmationRejectedOutcomeTests
         db.BankPaymentConfirmations.Should().BeEmpty();
     }
 
+    // Two rejected rows for one record, one with an ordinary reason and one DUPL, in either order: the evidence of a duplicate is
+    // never discarded when rows collapse. The safe outcome is the duplicate hold, not Rejected with no hold.
+    [Theory]
+    [InlineData("generic-csv", "AC01", "DUPL")]
+    [InlineData("generic-csv", "DUPL", "AC01")]
+    [InlineData("wps-ack", "AC01", "DUPL")]
+    [InlineData("wps-ack", "DUPL", "AC01")]
+    public async Task TwoRejectedRows_OneOrdinaryAndOneDupl_AreHeldForTheDuplicate_InEitherOrder(string parserKey, string first, string second)
+    {
+        using var db = NewDb();
+        var s = Seed(db);
+
+        var result = await Import(db, s, parserKey, null, ("RJCT", first), ("RJCT", second));
+
+        s.Record.Status.Should().Be("Pending", "a duplicate warning means the original payment may have succeeded");
+        result.RejectedApplied.Should().Be(0);
+        Json(result.HeldForPerson).Should().Contain(BankOutcomeHolds.DuplicateRejection);
+        db.BankPaymentConfirmations.Should().ContainSingle()
+            .Which.HoldReason.Should().Be(BankOutcomeHolds.DuplicateRejection);
+    }
+
+    [Theory]
+    [InlineData("generic-csv")]
+    [InlineData("wps-ack")]
+    public async Task TwoRejectedRows_BothOrdinary_StillCollapseAndReject(string parserKey)
+    {
+        using var db = NewDb();
+        var s = Seed(db);
+
+        var result = await Import(db, s, parserKey, null, ("RJCT", "AC01"), ("RJCT", "AM04"));
+
+        s.Record.Status.Should().Be(PaymentRecordStatuses.Rejected);
+        result.CollapsedDuplicateRows.Should().Be(1);
+        db.BankPaymentConfirmations.Should().ContainSingle().Which.HoldReason.Should().BeNull();
+    }
+
     // ── Transitions ──────────────────────────────────────────────────────────────────────────────
 
     [Theory]

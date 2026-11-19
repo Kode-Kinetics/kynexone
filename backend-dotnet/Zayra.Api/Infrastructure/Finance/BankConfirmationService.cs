@@ -479,7 +479,11 @@ public sealed class BankConfirmationService
                 continue;
             }
             if (g.Count() > 1) result.CollapsedDuplicateRows += g.Count() - 1;
-            toApply.Add(g.OrderBy(x => x.Row.RowNumber).First());
+            // Rows for one record that agree on the outcome can still differ on whether the bank warned of a duplicate. That
+            // evidence is never discarded by collapsing: a duplicate row stands for the record (the safe outcome is the DUPL hold).
+            var ordered = g.OrderBy(x => x.Row.RowNumber).ToList();
+            toApply.Add(ordered.FirstOrDefault(x => BankStatusReasonCatalogue.IsDuplicate(x.Row.ReasonCode, x.Row.ReasonText)) is { Row: not null } dup
+                ? dup : ordered[0]);
         }
 
         // ── 2b. Each exit names one record with an open hold of its kind, whose line is in this file and fits ──
@@ -488,8 +492,11 @@ public sealed class BankConfirmationService
         if (exitRefusal is not null) return (null, exitRefusal);
         // Marking a Returned or Rejected salary as Paid is a payment-status decision whichever way it is asked for (an exit,
         // allowReturnReversal, or a plain PAID line): it needs payroll.wps_status.update (wave 1 P1, Fable P1-2 = Security P2-1).
+        // Every record the import can change is in this set: a non-Pending row, and also any record an exit names, whatever the
+        // outcome word on its line (a Pending DUPL line plus a duplicate exit sets the salary Paid or Rejected). Only a Pending
+        // row with no exit is inert (it records evidence and changes no status).
         var applying = toApply.Where(t => !PaymentRecordStatuses.IsCancelled(t.Record.Status)
-                                          && t.Row.Outcome != BankConfirmationOutcomes.Pending).ToList();
+                                          && (t.Row.Outcome != BankConfirmationOutcomes.Pending || exitFor.ContainsKey(t.Record.Id))).ToList();
         if (!options.CallerMayRecordPaymentStatus
             && applying.Any(t => PaymentRecordStatuses.IsFailed(t.Record.Status) && t.Row.Outcome == BankConfirmationOutcomes.Paid))
             return (null, new JournalExportRefusal(403, BankLineExitKinds.NeedsPaymentStatusPermissionBody()));
