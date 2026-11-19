@@ -707,28 +707,6 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
 
   const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
-  // The KPI band leads the page unless something blocks payment: then the exceptions come first, as before.
-  const blocksPayment = paymentReadinessHeadline(readiness?.paymentPrerequisites, readiness?.payrollRunStatus).tone === 'blocked'
-    || (readiness?.cashAllowanceIssues?.length ?? 0) > 0;
-  const kpiBand = (
-    <>
-      {!loading && overview && (
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <KpiCard label={t('Active Employees')} value={overview.totalActiveEmployees.toLocaleString()} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-          <KpiCard label={t('Gross Payroll')} value={periodState === 'no-run' ? t('No run') : overviewAmount(overview.totalGrossPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? t('See each company below') : undefined} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
-          <KpiCard label={t('Net Payroll')} value={periodState === 'no-run' ? t('No run') : overviewAmount(overview.totalNetPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? t('See each company below') : undefined} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-          <KpiCard label={t('Locked Runs YTD')} value={summary?.lockedRuns ?? '—'} icon={Lock} color="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-400" />
-        </div>
-      )}
-
-      {loading && (
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          {[0, 1, 2, 3].map(i => <div key={i} className="surface h-20 animate-pulse rounded-xl" />)}
-        </div>
-      )}
-
-    </>
-  );
 
 
   return (
@@ -796,14 +774,28 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
         <CashAllowanceIssuesPanel issues={readiness.cashAllowanceIssues} />
       )}
 
-      {!blocksPayment && kpiBand}
-
       {/* ── Who can actually be paid (exceptions first) ── */}
       {!loading && readiness?.paymentPrerequisites && (
         <PaymentPrerequisitesPanel prerequisites={readiness.paymentPrerequisites} runStatus={readiness.payrollRunStatus} onNavigate={onNavigate} />
       )}
 
-      {blocksPayment && kpiBand}
+    <>
+      {!loading && overview && (
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <KpiCard label={t('Active Employees')} value={overview.totalActiveEmployees.toLocaleString()} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
+          <KpiCard label={t('Gross Payroll')} value={periodState === 'no-run' ? t('No run') : overviewAmount(overview.totalGrossPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? t('See each company below') : undefined} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label={t('Net Payroll')} value={periodState === 'no-run' ? t('No run') : overviewAmount(overview.totalNetPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? t('See each company below') : undefined} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+          <KpiCard label={t('Locked Runs YTD')} value={summary?.lockedRuns ?? '—'} icon={Lock} color="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-400" />
+        </div>
+      )}
+
+      {loading && (
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {[0, 1, 2, 3].map(i => <div key={i} className="surface h-20 animate-pulse rounded-xl" />)}
+        </div>
+      )}
+
+    </>
 
       {/* ── Insights Panel ── */}
       <AiInsightsPanel readiness={readiness} />

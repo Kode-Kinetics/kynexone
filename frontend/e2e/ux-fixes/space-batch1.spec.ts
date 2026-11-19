@@ -11,7 +11,7 @@ import { ALL_PERMISSIONS, boot, type ApiMocks, type Persona } from '../setup-con
  *   /loans               the loans table starts above y=340 (it started at 464 under the totals band and the flow banner) and shows four rows (three before)
  *   /saudi-compliance    the Action Center starts above y=340 and the module cards are in view (Refresh had a row of its own)
  *   /gosi-filing         the tie-out verdict starts above y=400
- *   /payroll             the Dashboard's KPI band starts above y=430 (it started at 670 under the run list and the readiness panel)
+ *   /payroll             the Dashboard's totals band starts above y=580, after the readiness panel (it started at 670 under the run list and the readiness panel)
  *
  * SPACE_SHOTS_DIR=<dir> also saves a screenshot per screen, viewport and language (the before/after evidence).
  */
@@ -155,14 +155,15 @@ for (const locale of LOCALES) {
         expect(await noSideways(page)).toBeLessThanOrEqual(0);
       });
 
-      test('/payroll: the Dashboard KPI band starts in the first screenful', async ({ page }) => {
+      test('/payroll: payment readiness leads the Dashboard and the totals band starts in the first screenful', async ({ page }) => {
         await boot(page, { persona: persona(['Admin']), locale, url: '/payroll', mocks: PAYROLL_MOCKS });
         await expect(page.getByTestId('payroll-section-panel')).toBeVisible({ timeout: 60_000 });
         const kpi = page.getByText(translate(locale, 'Gross Payroll'), { exact: true }).first();
         await expect(kpi).toBeVisible({ timeout: 30_000 });
         await shot(page, 'payroll', locale);
         const top = await kpi.evaluate(el => Math.round((el.closest('.surface, [class*="rounded"]') ?? el).getBoundingClientRect().top));
-        expect(top, 'KPI band top').toBeLessThanOrEqual(430);
+        // Payment readiness comes before the totals (a product rule, see ui-truthfulness-state); the band follows it at about 538 at 1366x768.
+        expect(top, 'KPI band top').toBeLessThanOrEqual(580);
         expect(await noSideways(page)).toBeLessThanOrEqual(0);
       });
     });
