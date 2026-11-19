@@ -22,7 +22,10 @@ public sealed partial class GovernmentMigrationTests
         var mine = files.Where(m => m.Groups["name"].Value == Name).ToList();
         mine.Should().ContainSingle($"exactly one {Name} migration exists");
         var id = mine[0].Groups["id"].Value;
-        files.Select(m => m.Groups["id"].Value).Where(other => other != id)
+        // It sorts after every migration that existed when it was added. A migration added later may sort after it, but only
+        // one named here on purpose (the benefit usage ledger), so an older-dated migration cannot slip in unnoticed.
+        string[] addedAfter = ["20261118030000"];
+        files.Select(m => m.Groups["id"].Value).Where(other => other != id && !addedAfter.Contains(other))
             .Should().OnlyContain(other => string.CompareOrdinal(other, id) < 0, "the migration id must sort after every other migration");
 
         var code = File.ReadAllText(Path.Combine(dir, $"{id}_{Name}.cs"));
