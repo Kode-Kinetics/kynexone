@@ -573,6 +573,12 @@ export const feedbackApi = {
 
   list360: (reviewId: string) =>
     client.get(`/api/performance/feedback/360/${reviewId}`).then(r => r.data),
+
+  /** Given as the caller: the API takes the reviewer from the login, so no reviewer id or name is sent. */
+  submit360: (body: {
+    reviewId: string; reviewerRole?: string; isAnonymous: boolean; score: number;
+    strengths?: string; improvements?: string; comments?: string;
+  }) => client.post('/api/performance/feedback/360', { reviewerEmployeeId: 0, reviewerName: '', ...body }).then(r => r.data),
 };
 
 export const analyticsApi = {

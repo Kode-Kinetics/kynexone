@@ -88,7 +88,7 @@ test.describe('Performance — who sees what', () => {
     // HR decisions.
     expect(page).toContain("{r.status === 'FinalApproval' && can.decideRatings && (");
     expect(page).toContain('{can.decideRatings && <OpenAppealsPanel onResolved={load} />}');
-    expect(page).toContain("{p.status === 'Active' && can.decideRatings && (");
+    expect(page).toContain("{['Active', 'Extended'].includes(p.status) && can.decideRatings && (");
     expect(page).toContain("{p.status === 'ManagerReviewed' && can.decideRatings && (");
     // The line manager's steps.
     expect(page).toContain("['SelfAssessmentSubmitted', 'ManagerReview'].includes(r.status) && can.writeReviews && (");
