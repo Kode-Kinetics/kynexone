@@ -4,6 +4,7 @@ import { requireList } from '../lib/listResponse';
 import { fetchAllPages } from '../lib/paging';
 import type { PagedResult } from './organization';
 import type { JournalCosting } from '../lib/payrollCostLock';
+import type { OutstandingLeaveDeductions } from '../lib/settlementExitArrears';
 
 export interface SalaryStructure {
   id: string;
@@ -640,6 +641,8 @@ export interface FinalSettlementResult {
   wagesPaidByRunId: string | null;
   warnings: string[];
   breakdown: FinalSettlementBreakdown[];
+  /** Only on the settlement detail (GET), not on the calculation response. */
+  outstandingLeaveDeductions?: OutstandingLeaveDeductions | null;
 }
 
 export interface FinalSettlementListRow {

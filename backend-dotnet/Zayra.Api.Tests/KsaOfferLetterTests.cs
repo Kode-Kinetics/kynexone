@@ -113,6 +113,8 @@ public sealed class KsaOfferLetterTests
     [InlineData("SA", true)]
     [InlineData("SAU", true)]
     [InlineData("Egyptian", false)]
+    [InlineData("Saudi-born Egyptian", false)]
+    [InlineData("Saudi Arabian", true)]
     [InlineData("", false)]
     [InlineData(null, false)]
     public void SaudiNationalityIsRecognisedInEitherLanguage(string? nationality, bool expected) =>

@@ -5,6 +5,7 @@ import { AlertTriangle, ArrowRight, CheckCircle2, Download, FileUp, Upload, User
 import { Modal } from './Modal';
 import { useLocale } from '../contexts/LocaleContext';
 import { OrgPreviewBody } from './OrgPreviewBody';
+import { csvCell } from '../lib/attendanceImport';
 
 type Translate = ReturnType<typeof useLocale>['t'];
 
@@ -312,11 +313,6 @@ function downloadCsv(content: string, filename: string) {
 }
 
 export { downloadCsv };
-
-function csvCell(value: string | number | undefined): string {
-  const s = String(value ?? '');
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
 
 type ServerErrorPayload = {
   message?: string;
