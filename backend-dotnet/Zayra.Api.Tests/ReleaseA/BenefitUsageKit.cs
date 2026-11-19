@@ -43,11 +43,11 @@ public sealed class BenefitUsageKit : IAsyncDisposable
         new(Seed.TenantId, user ?? HrUser, ["entitlements.read", "entitlements.manage"], c => onlyCompany is null || c == onlyCompany);
 
     public BenefitUsageActor Finance(Guid? user = null, Guid? onlyCompany = null) =>
-        new(Seed.TenantId, user ?? FinanceUser, ["payroll.approve"], c => onlyCompany is null || c == onlyCompany);
+        new(Seed.TenantId, user ?? FinanceUser, ["benefits.usage.approve"], c => onlyCompany is null || c == onlyCompany);
 
     /// <summary>Mohammed himself, holding every key: the subject never decides their own request, whatever their role.</summary>
     public BenefitUsageActor Subject() =>
-        new(Seed.TenantId, Seed.UserId, ["entitlements.read", "entitlements.manage", "payroll.approve"], _ => true);
+        new(Seed.TenantId, Seed.UserId, ["entitlements.read", "entitlements.manage", "benefits.usage.approve"], _ => true);
 
     /// <summary>A frozen row for Mohammed's term, written as the writer would (Verified unless told otherwise).</summary>
     public async Task<EmployeeEntitlement> FreezeAsync(string code, string valueType, short? quantity = null, decimal? amount = null,

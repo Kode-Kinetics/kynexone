@@ -260,7 +260,9 @@ public class AuthSeeder : IAuthSeeder
             "payroll.payment_batch.manage",
             // Company Finance confirms monthly cash allowances (payroll.approve); the list waiting for Finance is on Benefits by grade. Read only:
             // entitlements.manage (edit, publish, add, remove) stays with HR.
-            "entitlements.read"
+            "entitlements.read",
+            // Decides benefit usage requests (HR makes, Finance approves).
+            "benefits.usage.approve"
         }), 4, true, cancellationToken);
 
         // Level 5 — HR Officer: HR operations specialist
@@ -294,7 +296,9 @@ public class AuthSeeder : IAuthSeeder
             // Imports the opening-balance loans and advances (rows that post an opening journal), and no other import section.
             "finance.opening_balances.import",
             // CMP: Finance sees merit budgets and totals and may decide a worksheet step routed to it.
-            "compensation.read", "compensation.approve"
+            "compensation.read", "compensation.approve",
+            // Decides benefit usage requests and reads the queue it decides (no entitlements.read: not the benefits grid or packages).
+            "benefits.usage.approve"
         }), 7, true, cancellationToken);
 
         // Level 8 — Finance Approver: finance approvals
@@ -315,7 +319,9 @@ public class AuthSeeder : IAuthSeeder
             // CMP: the default final step of a merit worksheet (HR Manager → Finance Approver) and the cycle approver.
             "compensation.read", "compensation.approve",
             // Company Finance confirms monthly cash allowances (payroll.approve); the list waiting for Finance is on Benefits by grade. Read only.
-            "entitlements.read"
+            "entitlements.read",
+            // Decides benefit usage requests (HR makes, Finance approves).
+            "benefits.usage.approve"
         }), 8, true, cancellationToken);
 
         // Level 9 — Compliance Officer: compliance and contracts
@@ -497,6 +503,9 @@ public class AuthSeeder : IAuthSeeder
             // Release A — benefits by grade and contract renewals (Admin via backfill; HR Director and HR Manager below)
             ("entitlements.read", "Entitlements", "Read benefits by grade and employee packages"),
             ("entitlements.manage", "Entitlements", "Set benefits by grade and freeze employee packages"),
+            // HR makes a benefit usage request, Finance decides it: a key of its own, so HR Manager (who holds payroll.approve) cannot approve what HR raised.
+            // Existing tenants: migration GrantBenefitUsageApprove (Finance roles), boot backfill (Admin).
+            ("benefits.usage.approve", "Entitlements", "Approve or reject benefit usage requests (Finance; never the requester or the employee it is for)"),
             ("contracts.renewal.read", "Contracts", "Read contract renewal cases and contract chains"),
             ("contracts.renewal.manage", "Contracts", "Run contract renewals: offers, Qiwa evidence and apply"),
             // Recruitment

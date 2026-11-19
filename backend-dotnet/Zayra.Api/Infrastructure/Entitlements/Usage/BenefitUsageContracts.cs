@@ -6,15 +6,16 @@ public sealed record BenefitUsageActor(Guid TenantId, Guid? UserId, IReadOnlyCol
     public bool Has(string permission) => Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
 }
 
-/// <summary>Existing permission keys only. HR requests for an employee with entitlements.manage; the employee requests for
-/// themselves with ess.write; Finance decides with payroll.approve (the key that confirms a cash allowance); HR reads with
-/// entitlements.read and Finance with payroll.approve.</summary>
+/// <summary>HR requests for an employee with entitlements.manage; the employee requests for themselves with ess.write; Finance
+/// decides with benefits.usage.approve, a key of its own that HR Manager and HR Officer do not hold (HR makes, Finance approves).
+/// HR reads with entitlements.read; a Finance approver reads the queue it must decide with benefits.usage.approve, with no other
+/// entitlements access.</summary>
 public static class BenefitUsagePermissions
 {
     public const string Read = "entitlements.read";
     public const string RequestForEmployee = "entitlements.manage";
     public const string RequestForSelf = "ess.write";
-    public const string Decide = "payroll.approve";
+    public const string Decide = "benefits.usage.approve";
 }
 
 /// <summary>A benefit request. <paramref name="RequestId"/> is chosen by the client: a retried submit is the same request.

@@ -37,7 +37,7 @@ public sealed class BenefitUsagePostgresTests(PostgresFixture fixture)
 
     private static BenefitUsageService Service(ZayraDbContext db) => new(db, new FixedTenantClock(Today));
     private BenefitUsageActor Hr(PackageSeed s) => new(s.TenantId, _hr, ["entitlements.read", "entitlements.manage"], _ => true);
-    private static BenefitUsageActor Finance(PackageSeed s, Guid user) => new(s.TenantId, user, ["payroll.approve"], _ => true);
+    private static BenefitUsageActor Finance(PackageSeed s, Guid user) => new(s.TenantId, user, ["benefits.usage.approve"], _ => true);
     private static BenefitUsageRequestInput Ticket(PackageSeed s) =>
         new(Guid.NewGuid(), s.Mohammed.Id, "AIR_TICKET", new DateOnly(2026, 8, 10), 1, null, "BKG-1");
 

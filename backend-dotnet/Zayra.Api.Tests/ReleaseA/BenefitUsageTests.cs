@@ -116,7 +116,7 @@ public sealed class BenefitUsageTests
     {
         await using var k = await BenefitUsageKit.CreateAsync();
         await k.FreezeAsync("AIR_TICKET", GradeEntitlementValueTypes.Quantity, quantity: 2, tier: CoverageTiers.Economy);
-        var both = new BenefitUsageActor(k.Seed.TenantId, k.HrUser, ["entitlements.manage", "payroll.approve"], _ => true);
+        var both = new BenefitUsageActor(k.Seed.TenantId, k.HrUser, ["entitlements.manage", "benefits.usage.approve"], _ => true);
         var request = await k.Service.RequestAsync(both, k.Ticket(), default);
         request.CanDecide.Should().BeFalse();
 
@@ -163,6 +163,34 @@ public sealed class BenefitUsageTests
         (await Refused(() => k.Service.CancelAsync(k.Finance(), request.Id, "x", default))).Code.Should().Be(BenefitUsageErrors.NotAllowed);
         var reader = new BenefitUsageActor(k.Seed.TenantId, Guid.NewGuid(), ["ess.read"], _ => true);
         (await Refused(() => k.Service.UtilisationAsync(reader, null, null, default))).Code.Should().Be(BenefitUsageErrors.NotAllowed);
+    }
+
+    [Fact]
+    public async Task HrWithEveryOtherKey_IncludingPayrollApprove_CannotDecide_OnlyTheBenefitUsageApproveKeyCan()
+    {
+        await using var k = await BenefitUsageKit.CreateAsync();
+        await k.FreezeAsync("AIR_TICKET", GradeEntitlementValueTypes.Quantity, quantity: 2, tier: CoverageTiers.Economy);
+        var request = await k.Service.RequestAsync(k.Hr(), k.Ticket(), default);
+        var hrManager = new BenefitUsageActor(k.Seed.TenantId, Guid.NewGuid(),
+            ["entitlements.read", "entitlements.manage", "payroll.approve", "loans.approve", "approvals.decide"], _ => true);
+
+        (await Refused(() => k.Service.DecideAsync(hrManager, request.Id, "Approved", null, default))).Code.Should().Be(BenefitUsageErrors.NotAllowed);
+        (await Refused(() => k.Service.DecideAsync(hrManager, request.Id, "Rejected", "no", default))).Code.Should().Be(BenefitUsageErrors.NotAllowed);
+        (await k.Service.RequestsAsync(hrManager, null, BenefitUsageStatuses.Pending, default)).Single().CanDecide.Should().BeFalse();
+        (await k.Db.BenefitUsageRequests.SingleAsync()).Status.Should().Be(BenefitUsageStatuses.Pending);
+    }
+
+    [Fact]
+    public async Task Finance_WithOnlyTheBenefitUsageApproveKey_ReadsTheQueue_AndIsOfferedTheDecision()
+    {
+        await using var k = await BenefitUsageKit.CreateAsync();
+        await k.FreezeAsync("AIR_TICKET", GradeEntitlementValueTypes.Quantity, quantity: 2, tier: CoverageTiers.Economy);
+        var request = await k.Service.RequestAsync(k.Hr(), k.Ticket(), default);
+
+        var queue = await k.Service.RequestsAsync(k.Finance(), null, BenefitUsageStatuses.Pending, default);
+
+        queue.Single().Id.Should().Be(request.Id);
+        queue.Single().CanDecide.Should().BeTrue();
     }
 
     // ── Refusals ────────────────────────────────────────────────────────────────────────────────────

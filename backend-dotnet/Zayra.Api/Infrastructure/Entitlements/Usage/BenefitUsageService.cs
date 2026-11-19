@@ -532,7 +532,7 @@ public sealed class BenefitUsageService(ZayraDbContext db, ITenantClock clock)
     {
         if (actor.UserId is not Guid uid || uid == Guid.Empty || !actor.Has(permission))
             throw Refuse(BenefitUsageErrors.NotAllowed, permission == BenefitUsagePermissions.Decide
-                ? "Only Finance (payroll approval) can decide a benefit request."
+                ? "Only Finance (benefit usage approval) can decide a benefit request."
                 : "Only HR (manage employee packages) can request a benefit for an employee.", 403);
     }
 

@@ -23,8 +23,8 @@ public sealed partial class GovernmentMigrationTests
         mine.Should().ContainSingle($"exactly one {Name} migration exists");
         var id = mine[0].Groups["id"].Value;
         // It sorts after every migration that existed when it was added. A migration added later may sort after it, but only
-        // one named here on purpose (the benefit usage ledger), so an older-dated migration cannot slip in unnoticed.
-        string[] addedAfter = ["20261118030000"];
+        // ones named here on purpose (the benefit usage ledger and its approver grant), so an older-dated migration cannot slip in unnoticed.
+        string[] addedAfter = ["20261118030000", "20261118040000"];
         files.Select(m => m.Groups["id"].Value).Where(other => other != id && !addedAfter.Contains(other))
             .Should().OnlyContain(other => string.CompareOrdinal(other, id) < 0, "the migration id must sort after every other migration");
 
