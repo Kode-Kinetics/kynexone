@@ -5,7 +5,8 @@ export const repaymentMethodLabels: Record<LoanRepaymentMethod, string> = {
   BankTransfer: 'Bank transfer', DirectDebit: 'Direct debit', Cash: 'Cash receipt', PayrollDeduction: 'Payroll deduction',
 };
 
-export function loanErrorMessage(error: unknown, fallback: string): string {
+/** The server's refusal in the reader's language: a loan refusal is `{ error, message, messageAr }`, as an advance's is. */
+export function loanErrorMessage(error: unknown, fallback: string, locale?: string): string {
   const response = (error as { response?: { data?: unknown; status?: number } })?.response;
   const data = response?.data;
   if (response?.status === 502 || response?.status === 503 || response?.status === 504) return 'The service is restarting or temporarily unavailable. Wait a minute and try again.';
@@ -13,6 +14,7 @@ export function loanErrorMessage(error: unknown, fallback: string): string {
   if (typeof data === 'string' && data.trim() && !/^\s*<(!doctype|html)/i.test(data)) return isModelBindingText(data) ? fallback : data;
   if (data && typeof data === 'object') {
     const body = data as Record<string, unknown>;
+    if (locale === 'ar' && typeof body.messageAr === 'string' && body.messageAr.trim()) return body.messageAr;
     if (typeof body.detail === 'string') return isModelBindingText(body.detail) ? fallback : body.detail;
     if (typeof body.message === 'string') return isModelBindingText(body.message) ? fallback : body.message;
     if (body.errors && typeof body.errors === 'object') {

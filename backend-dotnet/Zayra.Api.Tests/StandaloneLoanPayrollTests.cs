@@ -150,7 +150,8 @@ public class StandaloneLoanPayrollTests
             Assert.Equal("OnHold", recovered.CollectionStatus);
         }
 
-        // Termination must not silently turn the standalone balance into a salary deduction.
+        // At exit every open loan not on hold is planned for recovery from the final pay, whatever its repayment method
+        // (LoanExitRecoveryTests): a bank-transfer loan left out was paid out and never recovered. A held loan stays out.
         db.GCCComplianceSettings.Add(new GCCComplianceSetting { TenantId = tid, CountryCode = "ARE", EosbEnabled = true });
         db.EmployeeOffboardings.Add(new EmployeeOffboarding
         {
@@ -161,7 +162,7 @@ public class StandaloneLoanPayrollTests
         Assert.IsType<OkObjectResult>(await Controller(db, tid).FinalSettlement(
             new FinalSettlementRequest(employee.Id, new DateOnly(2026, 1, 31), OtherDuesAmount: 5_000m), CancellationToken.None));
         var settlement = await db.EmployeeFinalSettlements.SingleAsync();
-        Assert.Equal(onHold ? 0m : 1_000m, settlement.PlannedLoanRecovery);
+        Assert.Equal(onHold ? 1_500m : 2_500m, settlement.PlannedLoanRecovery);
         Assert.Equal(1_500m, (await db.EmployeeLoans.AsNoTracking().SingleAsync(x => x.Id == standalone.Id)).OutstandingBalance);
         Assert.Equal(onHold ? 1_500m : 1_000m, (await db.EmployeeLoans.AsNoTracking().SingleAsync(x => x.Id == legacy.Id)).OutstandingBalance);
     }

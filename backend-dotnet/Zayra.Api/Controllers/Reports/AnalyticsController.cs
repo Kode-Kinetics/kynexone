@@ -126,12 +126,33 @@ public class AnalyticsController : ControllerBase
         }
 
         // Loans/Advances
+        // Every open loan, Overdue included (still owed, still in 1400). The balance is per currency; the single total is given
+        // only when the book is in one currency, so dirhams are never added to riyals.
         int? activeLoans = null;
         decimal? outstandingLoanBalance = null;
-        if (Shows("financial", ["activeLoans", "outstandingLoanBalance"], DataDomains.Loans))
+        string? loanCurrencyCode = null;
+        object? outstandingLoanBalanceByCurrency = null;
+        if (Shows("financial", ["activeLoans", "outstandingLoanBalance", "loanCurrencyCode", "outstandingLoanBalanceByCurrency"], DataDomains.Loans))
         {
-            activeLoans = await _db.EmployeeLoans.CountAsync(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active", ct);
-            outstandingLoanBalance = await _db.EmployeeLoans.Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active").SumAsync(x => x.OutstandingBalance, ct);
+            var open = await _db.EmployeeLoans.AsNoTracking()
+                .Where(x => x.TenantId == tid && !x.IsDeleted && (x.Status == "Active" || x.Status == "Overdue"))
+                .Select(x => new { x.Currency, x.CompanyId, x.OutstandingBalance })
+                .ToListAsync(ct);
+            var companyIds = open.Where(x => x.CompanyId.HasValue).Select(x => x.CompanyId!.Value).Distinct().ToList();
+            var companyCurrency = companyIds.Count == 0 ? new Dictionary<Guid, string>() : await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tid && companyIds.Contains(c.Id)).ToDictionaryAsync(c => c.Id, c => c.DefaultCurrency, ct);
+            var tenantCurrency = open.Any(x => string.IsNullOrWhiteSpace(x.Currency) && !x.CompanyId.HasValue)
+                ? await _db.ResolveTenantCurrencyAsync(tid, ct) : string.Empty;
+            var groups = open
+                .GroupBy(x => !string.IsNullOrWhiteSpace(x.Currency) ? x.Currency!
+                    : x.CompanyId is Guid c && companyCurrency.TryGetValue(c, out var cc) ? cc : tenantCurrency)
+                .OrderBy(g => g.Key, StringComparer.Ordinal)
+                .Select(g => new { currency = g.Key, amount = Math.Round(g.Sum(x => x.OutstandingBalance), 2), count = g.Count() })
+                .ToList();
+            activeLoans = open.Count;
+            outstandingLoanBalanceByCurrency = groups;
+            loanCurrencyCode = groups.Count == 1 ? groups[0].currency : null;
+            outstandingLoanBalance = groups.Count switch { 0 => 0m, 1 => groups[0].amount, _ => null };
         }
 
         return Ok(new
@@ -143,7 +164,7 @@ public class AnalyticsController : ControllerBase
             payroll,
             compliance = new { visasExpiring, passportsExpiring },
             recruitment = new { openPositions, pendingApplications },
-            financial = new { activeLoans, outstandingLoanBalance },
+            financial = new { activeLoans, outstandingLoanBalance, loanCurrencyCode, outstandingLoanBalanceByCurrency },
             withheld,
             generatedAt = DateTime.UtcNow,
         });

@@ -1,5 +1,6 @@
 'use client';
 
+import { moneyByCurrency } from '../lib/exitDebts';
 import { useCallback, useEffect, useState } from 'react';
 import { apiErrorReason, notifyApiError } from '../api/client';
 import { TransliterateButton } from '../components/TransliterateButton';
@@ -412,7 +413,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
     if ((!applicantId && staff && !mine) || !createForm.loanTypeId || createForm.requestedAmount <= 0) { setError(t('Select the employee, loan type and requested amount first.')); return; }
     setCheckingEligibility(true); setError('');
     try { setEligibility(await loanGovernanceApi.eligibility({ employeeIntId: applicantId, loanTypeId: createForm.loanTypeId, amount: createForm.requestedAmount, installments: createForm.requestedInstallments, repaymentMethod: createForm.repaymentMethod })); setCheckedKey(eligibilityKey); }
-    catch (e) { setError(loanErrorMessage(e, t('Unable to check eligibility.'))); }
+    catch (e) { setError(loanErrorMessage(e, t('Unable to check eligibility.'), locale)); }
     finally { setCheckingEligibility(false); }
   };
 
@@ -426,7 +427,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
 
   const openDetail = async (loan: EmployeeLoan) => {
     setError('');
-    try { const d = await loansApi.get(loan.id); setSelected(d); setDetailTab('schedule'); setDetailModal(true); } catch (e) { setError(loanErrorMessage(e, t('Unable to open loan.'))); }
+    try { const d = await loansApi.get(loan.id); setSelected(d); setDetailTab('schedule'); setDetailModal(true); } catch (e) { setError(loanErrorMessage(e, t('Unable to open loan.'), locale)); }
   };
 
   const createLoan = async () => {
@@ -447,7 +448,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       setCreateModal(false); setSelectedEmployee(null); load();
       onChanged();
     }
-    catch (e) { setError(loanErrorMessage(e, t('Failed to create loan.'))); }
+    catch (e) { setError(loanErrorMessage(e, t('Failed to create loan.'), locale)); }
     finally { setSaving(false); }
   };
 
@@ -466,7 +467,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       onChanged();
       const d = await loansApi.get(selected.loan.id); setSelected(d);
       load();
-    } catch (e) { setError(loanErrorMessage(e, t('Failed to submit decision.'))); }
+    } catch (e) { setError(loanErrorMessage(e, t('Failed to submit decision.'), locale)); }
     finally { setSaving(false); }
   };
 
@@ -480,7 +481,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       onChanged();
       const d = await loansApi.get(selected.loan.id); setSelected(d);
       load();
-    } catch (e) { setError(loanErrorMessage(e, t('Failed to record repayment.'))); }
+    } catch (e) { setError(loanErrorMessage(e, t('Failed to record repayment.'), locale)); }
     finally { setSaving(false); }
   };
 
@@ -1841,6 +1842,12 @@ function AuditReportTab() {
   const { currencyCode } = useTenantSettings();
   const fx = useFormat();
   const fmt = (n: number) => fx.plain.money(n, currencyCode);
+  // A loan-book amount: the single total when the book is in one currency, otherwise one figure per currency.
+  const auditMoney = (audit: { byCurrency?: { currency: string; [k: string]: number | string }[] } & Record<string, unknown>, total: string, part: string) => {
+    const rows = (audit.byCurrency ?? []).map(r => ({ currency: r.currency, amount: Number(r[part] ?? 0) }));
+    if (rows.length > 1) return moneyByCurrency(rows, (n, c) => fx.plain.money(n, c)) ?? '—';
+    return fx.plain.money(Number(audit[total] ?? 0), rows[0]?.currency ?? (audit.currencyCode as string | undefined) ?? currencyCode);
+  };
   const [loanAudit, setLoanAudit] = useState<any>(null);
   const [advanceAudit, setAdvanceAudit] = useState<any>(null);
   const [bonusAudit, setBonusAudit] = useState<any>(null);
@@ -1893,8 +1900,10 @@ function AuditReportTab() {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <SummaryCard label={t('Total Loans')} value={loanAudit.totalLoans} icon={CreditCard} color="text-blue-600 dark:text-blue-400" />
             <SummaryCard label={t('Active')} value={loanAudit.activeLoans} icon={TrendingUp} color="text-emerald-600 dark:text-emerald-400" />
-            <SummaryCard label={t('Total Disbursed')} value={fmt(loanAudit.totalDisbursed)} icon={DollarSign} color="text-sapphire" />
-            <SummaryCard label={t('Outstanding')} value={fmt(loanAudit.totalOutstanding)} icon={AlertTriangle} color="text-amber-600 dark:text-amber-400" />
+            {/* Amounts per currency: a book in several currencies has no single total (the server sends null for it). */}
+            <SummaryCard label={t('Total Disbursed')} value={auditMoney(loanAudit, 'totalDisbursed', 'disbursed')} icon={DollarSign} color="text-sapphire" />
+            <SummaryCard label={t('Outstanding')} value={auditMoney(loanAudit, 'totalOutstanding', 'outstanding')} icon={AlertTriangle} color="text-amber-600 dark:text-amber-400" />
+            {(loanAudit.overdueLoans ?? 0) > 0 && <SummaryCard label={t('Overdue loans')} value={loanAudit.overdueLoans} icon={AlertTriangle} color="text-rose-600 dark:text-rose-400" />}
           </div>
           <div className="surface overflow-hidden">
             <p className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">{t('Reconciliation — Loan Register')}</p>

@@ -1,3 +1,4 @@
+import type { ExitDebt } from '../lib/exitDebts';
 import client from './client';
 import type { SalaryAllowanceView } from '../lib/salaryAllowances';
 import { requireList } from '../lib/listResponse';
@@ -643,6 +644,12 @@ export interface FinalSettlementResult {
   breakdown: FinalSettlementBreakdown[];
   /** Only on the settlement detail (GET), not on the calculation response. */
   outstandingLeaveDeductions?: OutstandingLeaveDeductions | null;
+  /** Every open loan and advance of the leaver at this company, whatever its repayment method (held loans flagged). */
+  openDebts?: ExitDebt[];
+  /** Loan balance on hold: listed, never recovered by the settlement. */
+  heldDebt?: number;
+  /** What this settlement cannot fund; moved to the employee receivable when the settlement is paid. */
+  unrecoveredDebt?: number;
 }
 
 export interface FinalSettlementListRow {

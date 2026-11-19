@@ -21,6 +21,7 @@ import {
   type PayrollCompanySummary, type AIInsight,
   type PayrollRunPopulation, type PayrollPopulationEntry, type PayrollValidationOverrideReport, type AuditIntegrityReport,
 } from '../api/payroll';
+import { ExitDebtsPanel } from '../components/offboarding/ExitDebtsPanel';
 import { identityAuditApi } from '../api/identity';
 import { requestFailureReason } from '../lib/requestFailure';
 import { commonPayrollCurrency, resolvePayrollRunCurrency, totalsByCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
@@ -4950,6 +4951,10 @@ function FinalSettlementTab() {
             );
           })()}
 
+          {result.openDebts && (
+            <ExitDebtsPanel debts={result.openDebts} employeeName={result.employeeName} fallbackCurrency={result.currency}
+              showPlanned unrecovered={result.unrecoveredDebt ?? 0} testId="settlement-open-debts" />
+          )}
           <p className="text-xs text-amber-600 dark:text-amber-400">{t('This is a persisted Draft payable. Review every warning and component before submitting or approving it.')}</p>
           {result.warnings?.map(w => <p key={w} className="text-xs text-amber-600 dark:text-amber-400">{w}</p>)}
         </div>

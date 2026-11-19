@@ -7,7 +7,7 @@ import { ESS_PAYSLIPS_PATH } from '../lib/essPayslip';
 import { ESS_LEAVE_PATH, ESS_OVERTIME_PATH, ESS_REQUESTS_PATH, readSeenReplies } from '../lib/essSelfService';
 import { ESS_DOCUMENTS_PATH } from '../routes/essSections';
 import { essActionsApi, essApi, type EssDashboard, type EssHrRequest, type EssRosterEntry } from '../api/ess';
-import { advancesApi, type SalaryAdvance } from '../api/loans';
+import { advancesApi, loansApi, type EmployeeLoan, type SalaryAdvance } from '../api/loans';
 import type { LeaveRequest, LeaveType } from '../api/leave';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
@@ -20,7 +20,7 @@ import { AskKodyCard, ComingUpCard, QuickActionsCard, type QuickAction } from '.
 import { MyDayRecords } from '../components/ess/myday/MyDayRecords';
 import { MyDayTabs, myDayPanelId, myDayTabId, type MyDayView } from '../components/ess/myday/MyDayTabs';
 import {
-  advanceItem, buildNextStep, dateOnly, dayKey, deriveDay, hrRequestItem, leaveItem, orderTracker,
+  advanceItem, loanItem, buildNextStep, dateOnly, dayKey, deriveDay, hrRequestItem, leaveItem, orderTracker,
   type TrackerItem, type UpcomingEntry,
 } from '../lib/myDay';
 
@@ -43,12 +43,13 @@ interface Secondary {
   hr: EssHrRequest[];
   leave: LeaveRequest[];
   advances: SalaryAdvance[];
+  loans: EmployeeLoan[];
   roster: EssRosterEntry[] | null;
   leaveTypes: LeaveType[];
 }
-type SourceName = 'hr' | 'leave' | 'advances' | 'roster';
+type SourceName = 'hr' | 'leave' | 'advances' | 'loans' | 'roster';
 
-const EMPTY: Secondary = { hr: [], leave: [], advances: [], roster: null, leaveTypes: [] };
+const EMPTY: Secondary = { hr: [], leave: [], advances: [], loans: [], roster: null, leaveTypes: [] };
 
 function MyDaySkeleton() {
   const { t } = useLocale();
@@ -100,11 +101,12 @@ export function EmployeeSelfServicePage() {
     if (!d) return;
     const from = dayKey(new Date());
     const to = dayKey(new Date(Date.now() + 13 * 86_400_000));
-    const names: SourceName[] = ['hr', 'leave', 'advances', 'roster'];
-    const [hr, leave, advances, roster, types] = await Promise.allSettled([
+    const names: SourceName[] = ['hr', 'leave', 'advances', 'loans', 'roster'];
+    const [hr, leave, advances, loans, roster, types] = await Promise.allSettled([
       essApi.hrRequests(),
       essActionsApi.myLeaveRequests(d.profile.employeeId),
       hasPermission('loans.self') ? advancesApi.list({ mine: true, pageSize: 50 }).then((r) => r.items) : Promise.resolve([] as SalaryAdvance[]),
+      hasPermission('loans.self') ? loansApi.list({ mine: true, pageSize: 50 }).then((r) => r.items) : Promise.resolve([] as EmployeeLoan[]),
       essApi.myRoster(from, to),
       essActionsApi.leaveTypes(),
     ]);
@@ -114,10 +116,11 @@ export function EmployeeSelfServicePage() {
       hr: hr.status === 'fulfilled' ? hr.value : prev.hr,
       leave: leave.status === 'fulfilled' ? leave.value : prev.leave,
       advances: advances.status === 'fulfilled' ? advances.value : prev.advances,
+      loans: loans.status === 'fulfilled' ? loans.value : prev.loans,
       roster: roster.status === 'fulfilled' ? roster.value : prev.roster,
       leaveTypes: types.status === 'fulfilled' ? types.value : prev.leaveTypes,
     }));
-    setFailed(names.filter((_, i) => [hr, leave, advances, roster][i].status === 'rejected'));
+    setFailed(names.filter((_, i) => [hr, leave, advances, loans, roster][i].status === 'rejected'));
   }, [hasPermission]);
 
   /** The first load shows the skeleton; every later one keeps the screen and swaps the data in. */
@@ -193,15 +196,16 @@ export function EmployeeSelfServicePage() {
   const fmt = { date: fx.date, dateTime: fx.dateTime, time: fx.time, number: (n: number) => fx.number(n) };
   const ctx = { t, fx: fmt, nowMs };
 
-  // The tracker: open HR requests, waiting (or just decided) leave, and advances waiting on approval or payout.
+  // The tracker: open HR requests, waiting (or just decided) leave, and loans and advances waiting on approval or payout.
   const seen = readSeenReplies(user?.id);
   const open = data.hr.filter((r) => r.responseStatus !== 'Closed' && r.status !== 'Closed');
   const tracker: TrackerItem[] = orderTracker([
     ...open.map((r) => hrRequestItem(r, seen, ctx)),
     ...data.leave.map((l) => leaveItem(l, leaveName, ctx)).filter((x): x is TrackerItem => !!x),
     ...data.advances.map((a) => advanceItem(a, ctx, loansHref)).filter((x): x is TrackerItem => !!x),
+    ...data.loans.map((l) => loanItem(l, ctx, loansHref)).filter((x): x is TrackerItem => !!x),
   ]);
-  const sourceLabels: Record<SourceName, string> = { hr: t('HR requests'), leave: t('Leave requests'), advances: t('Salary advances'), roster: t('Shifts') };
+  const sourceLabels: Record<SourceName, string> = { hr: t('HR requests'), leave: t('Leave requests'), advances: t('Salary advances'), loans: t('Loans'), roster: t('Shifts') };
   const trackerFailed = failed.filter((s) => s !== 'roster').map((s) => sourceLabels[s]);
 
   const day = deriveDay({

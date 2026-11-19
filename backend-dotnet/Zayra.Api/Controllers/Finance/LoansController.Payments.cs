@@ -116,27 +116,27 @@ public partial class LoansController
         if (!IsFinanceActor()) return Forbid();
         if (GetUserId() == null) return Unauthorized();
         if (req.LoanIds == null || req.LoanIds.Length is < 1 or > 200 || req.LoanIds.Distinct().Count() != req.LoanIds.Length)
-            return BadRequest("Select between 1 and 200 distinct approved loans.");
+            return BadRequest(LoanRefusals.Body("loan_batch_selection_invalid", "Select between 1 and 200 distinct approved loans.", "اختر من 1 إلى 200 قرض معتمد مختلف."));
         await LockLoansAsync(req.LoanIds, ct);
         var tid = GetTenantId();
         var loans = await _db.EmployeeLoans.Where(x => x.TenantId == tid && req.LoanIds.Contains(x.Id) && !x.IsDeleted).ToListAsync(ct);
-        if (loans.Count != req.LoanIds.Length) return NotFound("One or more loans are unavailable.");
+        if (loans.Count != req.LoanIds.Length) return NotFound(LoanRefusals.Body("loan_batch_loan_unavailable", "One or more loans are unavailable.", "قرض واحد أو أكثر غير متاح."));
         foreach (var loan in loans)
         {
             if (!await CanAccessLoanAsync(loan, ct)) return Forbid();
             if (await IsLoanBorrowerAsync(loan, GetUserId()!.Value, ct))
-                return BadRequest("Maker-checker control: a loan beneficiary cannot prepare their own payment batch.");
+                return BadRequest(LoanRefusals.Body("subject_cannot_decide", "Maker-checker control: a loan beneficiary cannot prepare their own payment batch.", "ضابط فصل المهام: لا يجوز للمستفيد من القرض إعداد دفعة صرف قرضه."));
             if (loan.Status != "Approved" || loan.IsLockedByPayroll || loan.DisbursementDate.HasValue || !IsMoney(loan.ApprovedAmount) || loan.ApprovedInstallments < 1)
                 return Conflict($"Loan {loan.LoanNumber} is not awaiting disbursement.");
-            if (await DisbursementAlreadyPostedAsync(tid, loan.Id, ct)) return Conflict("A loan already has a disbursement journal.");
+            if (await DisbursementAlreadyPostedAsync(tid, loan.Id, ct)) return Conflict(LoanRefusals.Body("loan_already_disbursed", "A loan already has a disbursement journal.", "يوجد بالفعل قيد صرف لأحد القروض."));
             loan.CompanyId = await ResolveLoanCompanyAsync(tid, loan, ct);
             loan.Currency ??= await GlAccountResolver.ResolveCurrencyAsync(_db, tid, loan.CompanyId, ct);
         }
         if (loans.Any(x => !x.CompanyId.HasValue) || loans.Select(x => x.CompanyId).Distinct().Count() != 1 || loans.Select(x => x.Currency).Distinct().Count() != 1)
-            return BadRequest("A payment batch requires loans from one company and one currency.");
-        if (!IsMoney(loans.Sum(x => x.ApprovedAmount))) return BadRequest("The batch total exceeds the supported amount.");
+            return BadRequest(LoanRefusals.Body("loan_batch_mixed", "A payment batch requires loans from one company and one currency.", "يجب أن تكون قروض دفعة الصرف من شركة واحدة وبعملة واحدة."));
+        if (!IsMoney(loans.Sum(x => x.ApprovedAmount))) return BadRequest(LoanRefusals.Body("loan_batch_total_too_large", "The batch total exceeds the supported amount.", "إجمالي الدفعة يتجاوز المبلغ المسموح به."));
         if (await _db.Set<LoanDisbursementLine>().AnyAsync(x => x.TenantId == tid && req.LoanIds.Contains(x.LoanId) && !x.IsCancelled, ct))
-            return Conflict("A selected loan already belongs to a payment batch. Cancel that batch before selecting it again.");
+            return Conflict(LoanRefusals.Body("loan_already_batched", "A selected loan already belongs to a payment batch. Cancel that batch before selecting it again.", "أحد القروض المختارة مدرج بالفعل في دفعة صرف. ألغِ تلك الدفعة قبل اختياره مرة أخرى."));
         var batch = new LoanDisbursementBatch
         {
             TenantId = tid, CompanyId = loans[0].CompanyId, Currency = loans[0].Currency!,
@@ -147,12 +147,12 @@ public partial class LoansController
         foreach (var loan in loans)
         {
             var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == loan.EmployeeIntId, ct);
-            if (employee == null) return Conflict("An employee record is unavailable.");
+            if (employee == null) return Conflict(LoanRefusals.Body("loan_employee_unavailable", "An employee record is unavailable.", "سجل الموظف غير متاح."));
             var profile = await _db.EmployeePayrollProfiles.FirstOrDefaultAsync(x => x.TenantId == tid && x.EmployeeId == employee.Id, ct);
             var bankName = (string.IsNullOrWhiteSpace(profile?.BankName) ? employee.BankName : profile.BankName).Trim();
             var iban = (string.IsNullOrWhiteSpace(profile?.Iban) ? employee.BankIban : profile.Iban).Replace(" ", "").Trim().ToUpperInvariant();
             if (employee.FullName.Length > 250 || employee.EmployeeCode.Length > 100 || bankName.Length > 250 || iban.Length > 34)
-                return BadRequest("Employee payment details exceed the supported field lengths. Correct the employee record before creating the batch.");
+                return BadRequest(LoanRefusals.Body("loan_bank_details_too_long", "Employee payment details exceed the supported field lengths. Correct the employee record before creating the batch.", "تتجاوز بيانات دفع الموظف الأطوال المسموح بها. صحّح سجل الموظف قبل إنشاء الدفعة."));
             _db.Set<LoanDisbursementLine>().Add(new LoanDisbursementLine
             {
                 TenantId = tid, BatchId = batch.Id, LoanId = loan.Id, Amount = loan.ApprovedAmount,
@@ -174,7 +174,7 @@ public partial class LoansController
         var batch = await _db.Set<LoanDisbursementBatch>().FirstOrDefaultAsync(x => x.TenantId == GetTenantId() && x.Id == batchId, ct);
         if (batch == null) return NotFound();
         if (!await CanAccessBatchAsync(batchId, ct)) return Forbid();
-        if (batch.Status != "Draft") return Conflict("Only draft batches can be approved.");
+        if (batch.Status != "Draft") return Conflict(LoanRefusals.Body("loan_batch_not_draft", "Only draft batches can be approved.", "لا يمكن اعتماد إلا الدفعات المسودة."));
         var selfApproving = batch.CreatedBy == GetUserId();
         // Hold the company's policy lock while the policy decides, so an Admin tightening it cannot commit between
         // this read and the approval. Order: batch reservation, then policy, then loans; policy writers take only the policy lock.
@@ -187,7 +187,7 @@ public partial class LoansController
         {
             var loan = await _db.EmployeeLoans.SingleAsync(x => x.TenantId == GetTenantId() && x.Id == line.LoanId, ct);
             if (await IsLoanBorrowerAsync(loan, GetUserId()!.Value, ct))
-                return BadRequest("Maker-checker control: a loan beneficiary cannot approve their payment batch.");
+                return BadRequest(LoanRefusals.Body("subject_cannot_decide", "Maker-checker control: a loan beneficiary cannot approve their payment batch.", "ضابط فصل المهام: لا يجوز للمستفيد من القرض اعتماد دفعة صرف قرضه."));
         }
         batch.Status = "Approved"; batch.ApprovedBy = GetUserId(); batch.ApprovedAtUtc = DateTime.UtcNow;
         await AuditBatchAsync(batchId, "PaymentBatchApproved", new { batch.Id, batch.BatchNumber }, ct);
@@ -238,7 +238,7 @@ public partial class LoansController
         var batch = await _db.Set<LoanDisbursementBatch>().FirstOrDefaultAsync(x => x.TenantId == GetTenantId() && x.Id == batchId, ct);
         if (batch == null) return NotFound();
         if (!await CanAccessBatchAsync(batchId, ct)) return Forbid();
-        if (batch.Status is not ("Draft" or "Approved")) return Conflict("Only unpaid batches can be cancelled.");
+        if (batch.Status is not ("Draft" or "Approved")) return Conflict(LoanRefusals.Body("loan_batch_already_paid", "Only unpaid batches can be cancelled.", "لا يمكن إلغاء إلا الدفعات غير المدفوعة."));
         var lines = await _db.Set<LoanDisbursementLine>().Where(x => x.TenantId == GetTenantId() && x.BatchId == batchId).ToListAsync(ct);
         await LockLoansAsync(lines.Select(x => x.LoanId), ct);
         batch.Status = "Cancelled";
@@ -254,9 +254,9 @@ public partial class LoansController
         if (!IsFinanceActor()) return Forbid();
         if (GetUserId() == null) return Unauthorized();
         if (!ValidReference(req.Reference) || !ValidPaymentDate(req.PaidDate) || !IsCashMethod(req.PaymentMethod))
-            return BadRequest("Provide a payment reference up to 160 characters, a nonfuture payment date, and a valid payment method.");
+            return BadRequest(LoanRefusals.Body("loan_payment_details_invalid", "Provide a payment reference up to 160 characters, a nonfuture payment date, and a valid payment method.", "أدخل مرجع دفع لا يتجاوز 160 حرفًا وتاريخ دفع غير مستقبلي وطريقة دفع صالحة."));
         if (req.RepaymentStartDate.HasValue && (req.RepaymentStartDate < req.PaidDate || req.RepaymentStartDate > req.PaidDate.AddYears(5)))
-            return BadRequest("The first repayment date must be on or after payment and within five years.");
+            return BadRequest(LoanRefusals.Body("loan_first_repayment_date_invalid", "The first repayment date must be on or after payment and within five years.", "يجب أن يكون تاريخ أول سداد في يوم الدفع أو بعده وخلال خمس سنوات."));
         var tid = GetTenantId();
         var batch = await _db.Set<LoanDisbursementBatch>().FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == batchId, ct);
         if (batch == null) return NotFound();
@@ -266,40 +266,40 @@ public partial class LoansController
         var batchLoanIds = await _db.Set<LoanDisbursementLine>().Where(x => x.TenantId == tid && x.BatchId == batchId).Select(x => x.LoanId).ToListAsync(ct);
         foreach (var batchLoan in await _db.EmployeeLoans.AsNoTracking().Where(x => x.TenantId == tid && batchLoanIds.Contains(x.Id)).ToListAsync(ct))
             if (await IsLoanBorrowerAsync(batchLoan, GetUserId()!.Value, ct))
-                return BadRequest("Maker-checker control: a loan beneficiary cannot confirm payment of their own loan.");
+                return BadRequest(LoanRefusals.Body("subject_cannot_decide", "Maker-checker control: a loan beneficiary cannot confirm payment of their own loan.", "ضابط فصل المهام: لا يجوز للمستفيد من القرض تأكيد صرف قرضه."));
         if (batch.Status == "Paid" && batch.PaymentReference == req.Reference.Trim() && batch.PaidDate == req.PaidDate && batch.PaymentMethod == req.PaymentMethod)
         {
             if (req.RepaymentStartDate.HasValue && await (from line in _db.Set<LoanDisbursementLine>()
                 join loan in _db.EmployeeLoans on line.LoanId equals loan.Id
                 where line.TenantId == tid && line.BatchId == batchId && loan.TenantId == tid && loan.RepaymentStartDate != req.RepaymentStartDate
-                select line.Id).AnyAsync(ct)) return Conflict("This batch was already paid with different repayment dates.");
+                select line.Id).AnyAsync(ct)) return Conflict(LoanRefusals.Body("loan_batch_paid_different_dates", "This batch was already paid with different repayment dates.", "دُفعت هذه الدفعة بالفعل بتواريخ سداد مختلفة."));
             return Ok(await ProjectBatchAsync(batch, ct));
         }
-        if (batch.Status != "Approved") return Conflict("Only approved batches can be confirmed paid.");
+        if (batch.Status != "Approved") return Conflict(LoanRefusals.Body("loan_batch_not_approved", "Only approved batches can be confirmed paid.", "لا يمكن تأكيد دفع إلا الدفعات المعتمدة."));
         if (await PaymentReferenceUsedAsync(tid, batch.CompanyId, req.Reference.Trim(), batchId, null, ct))
-            return Conflict("This payment reference has already been used to confirm another batch.");
-        if (req.PaidDate < DateOnly.FromDateTime(batch.CreatedAtUtc)) return BadRequest("Payment date cannot precede batch creation.");
-        if (await PeriodCloseGuard.IsClosedAsync(_db, tid, batch.CompanyId, req.PaidDate.ToString("yyyy-MM"), ct)) return UnprocessableEntity("The payment accounting period is closed.");
+            return Conflict(LoanRefusals.Body("loan_payment_reference_used", "This payment reference has already been used to confirm another batch.", "استُخدم مرجع الدفع هذا بالفعل لتأكيد دفعة أخرى."));
+        if (req.PaidDate < DateOnly.FromDateTime(batch.CreatedAtUtc)) return BadRequest(LoanRefusals.Body("loan_payment_date_before_batch", "Payment date cannot precede batch creation.", "لا يمكن أن يسبق تاريخ الدفع تاريخ إنشاء الدفعة."));
+        if (await PeriodCloseGuard.IsClosedAsync(_db, tid, batch.CompanyId, req.PaidDate.ToString("yyyy-MM"), ct)) return UnprocessableEntity(LoanRefusals.Body("period_closed", "The payment accounting period is closed.", "الفترة المحاسبية للدفع مقفلة."));
         var lines = await _db.Set<LoanDisbursementLine>().Where(x => x.TenantId == tid && x.BatchId == batchId).ToListAsync(ct);
         if (req.PaymentMethod is "BankTransfer" or "DirectDebit" && lines.Any(x => string.IsNullOrWhiteSpace(x.Iban) || string.IsNullOrWhiteSpace(x.BankName)))
-            return Conflict("Bank payment requires bank details in every approved instruction. Cancel this unpaid batch, update employee bank details, and recreate it.");
+            return Conflict(LoanRefusals.Body("loan_bank_details_missing", "Bank payment requires bank details in every approved instruction. Cancel this unpaid batch, update employee bank details, and recreate it.", "يتطلب الدفع البنكي بيانات بنكية في كل تعليمة معتمدة. ألغِ هذه الدفعة غير المدفوعة وحدّث البيانات البنكية للموظف ثم أنشئها من جديد."));
         await LockLoansAsync(lines.Select(x => x.LoanId), ct);
         var ids = lines.Select(x => x.LoanId).ToArray();
         var loans = await _db.EmployeeLoans.Where(x => x.TenantId == tid && ids.Contains(x.Id) && !x.IsDeleted).ToListAsync(ct);
-        if (loans.Count != lines.Count || lines.Sum(x => x.Amount) != batch.TotalAmount) return Conflict("Batch contents no longer reconcile.");
+        if (loans.Count != lines.Count || lines.Sum(x => x.Amount) != batch.TotalAmount) return Conflict(LoanRefusals.Body("loan_batch_not_reconciled", "Batch contents no longer reconcile.", "محتويات الدفعة لم تعد متطابقة."));
         foreach (var loan in loans)
         {
             var line = lines.Single(x => x.LoanId == loan.Id);
             if (line.IsCancelled || line.Status == "Paid" || loan.Status != "Approved" || loan.IsLockedByPayroll || loan.DisbursementDate.HasValue || loan.ApprovedAmount != line.Amount || loan.CompanyId != batch.CompanyId || loan.Currency != batch.Currency || loan.ApprovedInstallments < 1 || loan.ApprovedAmount < loan.ApprovedInstallments * .01m)
-                return Conflict("A loan no longer matches the approved payment instructions.");
+                return Conflict(LoanRefusals.Body("loan_instruction_mismatch", "A loan no longer matches the approved payment instructions.", "أحد القروض لم يعد مطابقًا لتعليمات الدفع المعتمدة."));
             var payoutIssue = await ValidateLoanPayoutAsync(loan, ct);
             if (payoutIssue != null) return Conflict(payoutIssue);
             if (await DisbursementAlreadyPostedAsync(tid, loan.Id, ct) || await _db.LoanInstallments.AnyAsync(x => x.TenantId == tid && x.LoanId == loan.Id, ct))
-                return Conflict("A selected loan already has disbursement or installment records.");
+                return Conflict(LoanRefusals.Body("loan_already_disbursed", "A selected loan already has disbursement or installment records.", "يوجد بالفعل لأحد القروض المختارة سجلات صرف أو أقساط."));
             if (req.RepaymentStartDate.HasValue && req.RepaymentStartDate < loan.RepaymentStartDate)
-                return BadRequest("The first repayment date cannot be earlier than an approved repayment start date.");
+                return BadRequest(LoanRefusals.Body("loan_first_repayment_date_invalid", "The first repayment date cannot be earlier than an approved repayment start date.", "لا يمكن أن يسبق تاريخ أول سداد تاريخ بدء السداد المعتمد."));
             if (!req.RepaymentStartDate.HasValue && loan.RepaymentStartDate < req.PaidDate)
-                return BadRequest("An approved repayment start date has passed. Provide a later first repayment date when confirming payment.");
+                return BadRequest(LoanRefusals.Body("loan_first_repayment_date_passed", "An approved repayment start date has passed. Provide a later first repayment date when confirming payment.", "انقضى تاريخ بدء السداد المعتمد. أدخل تاريخ أول سداد لاحقًا عند تأكيد الدفع."));
         }
         foreach (var loan in loans)
         {
@@ -319,7 +319,7 @@ public partial class LoansController
         var batch = await _db.Set<LoanDisbursementBatch>().FirstOrDefaultAsync(x => x.TenantId == GetTenantId() && x.Id == batchId, ct);
         if (batch == null) return NotFound();
         if (!await CanAccessBatchAsync(batchId, ct)) return Forbid();
-        if (batch.Status is not ("Approved" or "PartiallyPaid" or "Completed" or "Paid")) return Conflict("Approve the batch before exporting payment instructions.");
+        if (batch.Status is not ("Approved" or "PartiallyPaid" or "Completed" or "Paid")) return Conflict(LoanRefusals.Body("loan_batch_not_approved", "Approve the batch before exporting payment instructions.", "اعتمد الدفعة قبل تصدير تعليمات الدفع."));
         var lines = await _db.Set<LoanDisbursementLine>().Where(x => x.TenantId == GetTenantId() && x.BatchId == batchId && !x.IsCancelled).ToListAsync(ct);
         if (batch.Status is "Approved" or "PartiallyPaid")
         {
@@ -332,7 +332,7 @@ public partial class LoansController
             }
         }
         if (lines.Any(x => string.IsNullOrWhiteSpace(x.Iban) || string.IsNullOrWhiteSpace(x.BankName)))
-            return Conflict("Bank details are missing from the payment instructions. Cancel the unpaid batch, update employee bank details, and recreate it.");
+            return Conflict(LoanRefusals.Body("loan_bank_details_missing", "Bank details are missing from the payment instructions. Cancel the unpaid batch, update employee bank details, and recreate it.", "البيانات البنكية ناقصة في تعليمات الدفع. ألغِ الدفعة غير المدفوعة وحدّث البيانات البنكية للموظف ثم أنشئها من جديد."));
         // F9: the shared guard (also covers tab / CR / "@" after spaces) and quoting; every cell is written quoted as before.
         static string Csv(string value) => Zayra.Api.Application.Common.Csv.Quote(value);
         var csv = new StringBuilder("Batch,Loan ID,Employee Code,Employee,Bank,IBAN,Currency,Amount\r\n");
@@ -349,31 +349,31 @@ public partial class LoansController
         if (!IsFinanceActor()) return Forbid();
         if (GetUserId() == null) return Unauthorized();
         if (!IsMoney(req.Amount) || !ValidReference(req.Reference) || !ValidPaymentDate(req.PaidDate) || !IsCashMethod(req.PaymentMethod))
-            return BadRequest("Provide a positive two-decimal amount, payment reference up to 160 characters, nonfuture payment date, and valid payment method.");
+            return BadRequest(LoanRefusals.Body("loan_repayment_details_invalid", "Provide a positive two-decimal amount, payment reference up to 160 characters, nonfuture payment date, and valid payment method.", "أدخل مبلغًا موجبًا بمنزلتين عشريتين ومرجع دفع لا يتجاوز 160 حرفًا وتاريخ دفع غير مستقبلي وطريقة دفع صالحة."));
         var tid = GetTenantId();
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == id && !x.IsDeleted, ct);
         if (loan == null) return NotFound();
         if (!await CanAccessLoanAsync(loan, ct)) return Forbid();
         if (await IsLoanBorrowerAsync(loan, GetUserId()!.Value, ct))
-            return BadRequest("Maker-checker control: a loan beneficiary cannot record a repayment on their own loan.");
+            return BadRequest(LoanRefusals.Body("subject_cannot_decide", "Maker-checker control: a loan beneficiary cannot record a repayment on their own loan.", "ضابط فصل المهام: لا يجوز للمستفيد من القرض تسجيل سداد على قرضه."));
         var existing = await _db.Set<LoanRepayment>().FirstOrDefaultAsync(x => x.TenantId == tid && x.LoanId == id && x.Reference == req.Reference.Trim(), ct);
         if (existing != null)
             return !existing.IsReversed && existing.Amount == req.Amount && existing.PaidDate == req.PaidDate && existing.PaymentMethod == req.PaymentMethod
                 ? Ok(new { loan = EmployeeLoanDto.Project(loan), repayment = existing })
-                : Conflict("This reference already identifies a different repayment.");
+                : Conflict(LoanRefusals.Body("loan_repayment_reference_used", "This reference already identifies a different repayment.", "هذا المرجع يخص سدادًا آخر بالفعل."));
         if (loan.IsLockedByPayroll)
-            return Conflict("Payroll deduction loans cannot receive standalone repayments.");
-        if (loan.Status is not ("Active" or "Overdue") || !loan.DisbursementDate.HasValue) return Conflict("Only disbursed loans can receive repayments.");
-        if (req.PaidDate < loan.DisbursementDate) return BadRequest("Repayment date cannot precede loan disbursement.");
-        if (req.Amount > loan.OutstandingBalance) return BadRequest("Repayment exceeds the outstanding balance.");
+            return Conflict(LoanRefusals.Body("loan_locked_by_payroll", "Payroll deduction loans cannot receive standalone repayments.", "لا يمكن تسجيل سداد منفصل على قرض يُخصم من الراتب حاليًا."));
+        if (loan.Status is not ("Active" or "Overdue") || !loan.DisbursementDate.HasValue) return Conflict(LoanRefusals.Body("loan_not_disbursed", "Only disbursed loans can receive repayments.", "لا يمكن تسجيل سداد إلا على قرض مصروف."));
+        if (req.PaidDate < loan.DisbursementDate) return BadRequest(LoanRefusals.Body("loan_repayment_before_disbursement", "Repayment date cannot precede loan disbursement.", "لا يمكن أن يسبق تاريخ السداد تاريخ صرف القرض."));
+        if (req.Amount > loan.OutstandingBalance) return BadRequest(LoanRefusals.Body("loan_repayment_exceeds_balance", "Repayment exceeds the outstanding balance.", "مبلغ السداد يتجاوز الرصيد المتبقي."));
         // A payroll-collected loan takes a cash receipt only as a FULL early settlement. A part payment would race the next payroll
         // deduction, which would collect the same instalment again.
         if (loan.RepaymentMethod == "PayrollDeduction" && req.Amount != loan.OutstandingBalance)
-            return Conflict("A payroll-collected loan can only be settled early in full. Record the whole outstanding balance, or let payroll continue to collect it.");
+            return Conflict(LoanRefusals.Body("loan_payroll_partial_settlement", "A payroll-collected loan can only be settled early in full. Record the whole outstanding balance, or let payroll continue to collect it.", "لا يُسدَّد القرض المُحصَّل من الراتب مبكرًا إلا بالكامل. سجّل كامل الرصيد المتبقي، أو اترك الراتب يواصل تحصيله."));
         // An instalment held by a payroll run that has not been locked yet can still be reprocessed or rejected, which restores the
         // balance this receipt is about to settle.
         if (await HasUnfinishedPayrollInstalmentAsync(tid, loan.Id, ct))
-            return Conflict("A payroll run that includes this loan has not been locked yet. Lock or void it before recording a cash settlement.");
+            return Conflict(LoanRefusals.Body("loan_payroll_run_open", "A payroll run that includes this loan has not been locked yet. Lock or void it before recording a cash settlement.", "يوجد مسير رواتب يشمل هذا القرض ولم يُقفل بعد. أقفله أو ألغِه قبل تسجيل سداد نقدي."));
         // A carried-in loan has no disbursement; its opening journal is its booking on the receivable.
         var originalDisbursement = await BookingJournalAsync(loan, ct);
         if (originalDisbursement == null) return Conflict(LoanJournalReconciliationRequired);
@@ -382,22 +382,22 @@ public partial class LoansController
         // payroll run already relieved it for another (legacy) loan, crediting it again would leave an asset in credit.
         if ((await GlControlAccounts.LoadAsync(_db, tid, companyId, originalDisbursement.DebitAccount, ct)).AvailableForRelief < req.Amount)
             return Conflict(LoanJournalReconciliationRequired);
-        if (await PeriodCloseGuard.IsClosedAsync(_db, tid, companyId, req.PaidDate.ToString("yyyy-MM"), ct)) return UnprocessableEntity("The repayment accounting period is closed.");
+        if (await PeriodCloseGuard.IsClosedAsync(_db, tid, companyId, req.PaidDate.ToString("yyyy-MM"), ct)) return UnprocessableEntity(LoanRefusals.Body("period_closed", "The repayment accounting period is closed.", "الفترة المحاسبية للسداد مقفلة."));
         var installments = await _db.LoanInstallments.Where(x => x.TenantId == tid && x.LoanId == id).OrderBy(x => x.DueDate).ThenBy(x => x.InstallmentNumber).ToListAsync(ct);
         if (!string.IsNullOrWhiteSpace(loan.PolicySnapshotJson) && loan.PolicySnapshotJson != "{}")
         {
             LoanPolicy? policy;
             try { policy = JsonSerializer.Deserialize<LoanPolicy>(loan.PolicySnapshotJson); }
-            catch (JsonException) { return Conflict("The stored policy needs HR reconciliation before collecting repayments."); }
+            catch (JsonException) { return Conflict(LoanRefusals.Body("loan_policy_needs_review", "The stored policy needs HR reconciliation before collecting repayments.", "تحتاج السياسة المحفوظة إلى مطابقة من الموارد البشرية قبل تحصيل أي سداد.")); }
             if (policy != null && !policy.AllowEarlySettlement && req.Amount == loan.OutstandingBalance
                 && installments.Any(x => x.DueDate > req.PaidDate && x.AmountDue > x.AmountPaid))
-                return Conflict("Early settlement is not permitted by the approved loan policy.");
+                return Conflict(LoanRefusals.Body("loan_early_settlement_not_allowed", "Early settlement is not permitted by the approved loan policy.", "لا تسمح سياسة القرض المعتمدة بالسداد المبكر."));
         }
         // An instalment a payroll run consumed is settled and is never touched; the receipt goes to the remaining ones only.
         if (installments.Any(x => x.Status == "Waived" || x.AmountPaid < 0 || x.AmountPaid > x.AmountDue)
             || installments.Sum(x => x.AmountDue - x.AmountPaid) != loan.OutstandingBalance
             || req.Amount > installments.Where(x => !x.PayrollRunId.HasValue).Sum(x => x.AmountDue - x.AmountPaid))
-            return Conflict("The repayment schedule needs reconciliation before a receipt can be recorded.");
+            return Conflict(LoanRefusals.Body("loan_schedule_needs_reconciliation", "The repayment schedule needs reconciliation before a receipt can be recorded.", "يحتاج جدول السداد إلى مطابقة قبل تسجيل أي إيصال."));
         var oldBalance = loan.OutstandingBalance;
         var remaining = req.Amount;
         foreach (var installment in installments.Where(x => x.AmountPaid < x.AmountDue && !x.PayrollRunId.HasValue))

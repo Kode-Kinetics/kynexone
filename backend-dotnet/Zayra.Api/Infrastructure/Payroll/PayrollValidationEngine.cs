@@ -850,6 +850,8 @@ public static class PayrollValidationEngine
                 empId);
 
         // ── Rule 15 (KSA): Labour Law Art. 92/93 — DEBT-type deductions ≤ half the wage due ──────
+        // The run (PayrollRunProcessor) already cuts loan and advance instalments to the headroom under this same limit, so on a
+        // processed run this fires only for the other debt-type lines (penalties, damages, negative adjustments).
         // Checked BEFORE Lock so it surfaces here, not on export day. Only debt-type lines count (loan and
         // advance instalments, penalties/fines, damages — WageDeductionClassification); statutory GOSI,
         // absence/loss-of-pay and unpaid leave do not, so a five-paid-day joiner whose GOSI is on the
@@ -870,8 +872,9 @@ public static class PayrollValidationEngine
                 Err(WageDeductionClassification.DeductionsExceedHalfWageCode,
                     $"Employee {slip.EmployeeCode}: loan, advance, penalty and damages deductions ({debt:N2}) are more " +
                     $"than half of the wage due after absence ({wageDue:N2}). Saudi Labour Law Art. 92/93 caps them at 50% " +
-                    "(statutory GOSI is not counted; absence and unpaid leave reduce the wage due). Reschedule the instalment or reduce the " +
-                    "deduction and re-process, or override it citing " + WageDeductionClassification.CapOverrideGrounds +
+                    "(statutory GOSI is not counted; absence and unpaid leave reduce the wage due). The run already keeps loan and advance " +
+                    "instalments within this limit and carries the rest forward, so what is over it is penalties, damages or other " +
+                    "debt-type adjustments: reduce them and re-process, or override it citing " + WageDeductionClassification.CapOverrideGrounds +
                     " and its reference.",
                     slip.EmployeeId);
             }
