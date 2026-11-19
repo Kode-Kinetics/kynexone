@@ -9850,11 +9850,8 @@ public partial class PayrollController : ControllerBase
         var net = Math.Round(gross - deductions, 2);
 
         // Recovery is planned against what the settlement can actually fund, in a fixed order.
-        // For a Saudi entity the run keeps loan and advance recovery within half of the wage due, as every payslip
-        // (PayrollRunProcessor; the settlement's own deductions are not debt-type), so the plan promises no more than that.
-        var ksaSettlement = string.Equals(countryCode, "SAU", StringComparison.OrdinalIgnoreCase) || string.Equals(countryCode, "SA", StringComparison.OrdinalIgnoreCase);
         var recoveryBudget = net;
-        var debtBudget = ksaSettlement ? Math.Min(net, WageDeductionClassification.HalfWageLimit(gross)) : net;
+        var debtBudget = net;
         decimal loanPlan = 0m, advPlan = 0m, rcvPlan = 0m;
         var plannedById = new Dictionary<Guid, decimal>();
         foreach (var l in loans.OrderBy(l => l.Id))

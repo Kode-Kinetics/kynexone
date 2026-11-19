@@ -578,9 +578,6 @@ public sealed class PayrollRunProcessor
 
         // COMPLIANCE: Load active loans and salary advances per employee for EMI deduction
         var loanCompanyId = company.Id;
-        // The one test the validation engine uses for a Saudi legal entity (ISO alpha-3 or alpha-2).
-        var isKsaEntity = string.Equals(company.CountryCode, "SAU", StringComparison.OrdinalIgnoreCase)
-                       || string.Equals(company.CountryCode, "SA", StringComparison.OrdinalIgnoreCase);
         // The leavers whose final settlement this run pays, filled in once the settlements are read below. A leaver's loans and
         // advances are recovered whole from the final pay whatever their repayment start date (see collectableAdvance).
         var settlingEmployeeIds = new List<int>();
@@ -1870,23 +1867,6 @@ public sealed class PayrollRunProcessor
             var advTakenById  = new Dictionary<Guid, decimal>();
             decimal loanEmi = 0m, advEmi = 0m, deferredDebt = 0m;
             var debtBudget = Math.Max(0m, affordable);
-            // ── Saudi Labour Law Art. 92/93: the instalments stay within half of the wage due ─────────────────────────────
-            // The same cap, wage due and debt-type classification the validation rule DEDUCTIONS_EXCEED_HALF_WAGE checks
-            // (WageDeductionClassification), applied where the money is cut: the loan and advance instalments take only the
-            // headroom the month's other debt-type deductions (negative adjustments such as penalties, components pinned to
-            // DED:LOAN) leave under half of the wage due (gross less absence, loss of pay and unpaid leave). What does not fit
-            // is carried forward exactly as an instalment the net cannot fund is (WARN_EMI_DEFERRED_PRORATED_PERIOD), so the run
-            // and the rule agree and the rule fires only for the other debt-type lines. Final settlements included: the
-            // validation rule already applies to their slips. Other countries keep the net-only cap.
-            if (isKsaEntity)
-            {
-                var wageDue = earningsForPeriod - (attendanceDeduction + lopDeduction + leaveDeduction);
-                var otherDebt = empAdjustments.Where(a => a.Amount < 0m).Select(AdjustmentLine)
-                        .Where(l => WageDeductionClassification.IsDebtType(l.Source, l.GlDriverKey, l.Code)).Sum(l => l.Amount)
-                    + configured.Deductions.Where(l => !l.IsEmployerContribution && WageDeductionClassification.IsDebtType(l.Source, l.GlDriverKey, l.Code))
-                        .Sum(l => l.Amount);
-                debtBudget = Math.Min(debtBudget, Math.Max(0m, WageDeductionClassification.HalfWageLimit(wageDue) - otherDebt));
-            }
             foreach (var l in empLoans)
             {
                 // POD-C1 — a leaver's debts are settled from their FINAL payment, so the whole balance is
@@ -2710,8 +2690,7 @@ public sealed class PayrollRunProcessor
         foreach (var (empId, code, name, amount) in deferredEmiEmployees)
             C3Warn("WARN_EMI_DEFERRED_PRORATED_PERIOD", empId,
                 $"{name} ({code}): {amount:N2} of loan/advance instalment could not be funded by this period's net " +
-                (isKsaEntity ? "pay within half of the wage due (Saudi Labour Law Art. 92/93) " : "pay ") +
-                "and was CARRIED FORWARD, not written off. The outstanding balance is unchanged for that " +
+                "pay and was CARRIED FORWARD, not written off. The outstanding balance is unchanged for that " +
                 "portion, so the next run will collect it.");
         foreach (var (empId, code, name, carried, taken) in leaveArrearsCarried)
             C3Warn("LEAVE_ARREARS_CARRIED_FORWARD", empId,
