@@ -1928,6 +1928,9 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
   const [overridableCodes, setOverridableCodes] = useState<string[]>([]);
   const [overriding, setOverriding] = useState<PayrollValidationResult | null>(null);
   const names = useRunEmployeeLabels(runId);
+  // The chosen run's status tells a never-validated Draft from a run with no saved issues.
+  const [runs, setRuns] = useState<PayrollRun[]>([]);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, [runId]);
 
 
   useEffect(() => {
