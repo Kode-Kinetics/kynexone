@@ -28992,6 +28992,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("closed_at_utc");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -29008,6 +29012,10 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("DefaultScorecardTemplateId")
                         .HasColumnType("uuid")
                         .HasColumnName("default_scorecard_template_id");
+
+                    b.Property<Guid?>("DepartmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("department_id");
 
                     b.Property<bool>("Enable360Feedback")
                         .HasColumnType("boolean")

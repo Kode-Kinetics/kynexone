@@ -18,6 +18,10 @@ export interface PerformanceCycle {
   managerReviewDeadline: string | null;
   calibrationDeadline: string | null;
   defaultScorecardTemplateId: string | null;
+  /** The company the cycle appraises (null: the whole tenant, launchable only where there is one company). */
+  companyId?: string | null;
+  /** Optionally, the one department of that company it appraises. */
+  departmentId?: string | null;
   notes: string;
   createdAtUtc: string;
   launchedAtUtc: string | null;
@@ -335,7 +339,18 @@ export const cyclesApi = {
     enableForcedDistribution: boolean; selfAssessmentDeadline?: string;
     managerReviewDeadline?: string; calibrationDeadline?: string;
     defaultScorecardTemplateId?: string; notes?: string;
+    companyId?: string; departmentId?: string;
   }) => client.post<PerformanceCycle>('/api/performance/cycles', body).then(r => r.data),
+
+  /** Edit a Draft cycle (the server refuses any other status). The whole cycle is sent, as on create. */
+  update: (id: string, body: {
+    name: string; cycleType: string; reviewPeriodStart: string; reviewPeriodEnd: string;
+    enableCalibration: boolean; enable360Feedback: boolean; enableSelfAssessment: boolean;
+    enableForcedDistribution: boolean; selfAssessmentDeadline?: string;
+    managerReviewDeadline?: string; calibrationDeadline?: string;
+    defaultScorecardTemplateId?: string; notes?: string;
+    companyId?: string; departmentId?: string;
+  }) => client.put<PerformanceCycle>(`/api/performance/cycles/${id}`, body).then(r => r.data),
 
   launch: (id: string) =>
     client.post<{ cycle: PerformanceCycle; enrolledCount: number }>(`/api/performance/cycles/${id}/launch`).then(r => r.data),
@@ -404,6 +419,8 @@ export const reviewsApi = {
       breakdown: ScoreBreakdown[]; competencies: CompetencyRating[];
       goals: EmployeeGoal[]; feedback360: object[]; auditLog: object[];
       calibration: CalibrationRecord | null; appeal: object | null;
+      /** The KPI score the agreed goals of this cycle give (null when the employee has none in the cycle). */
+      goalKpi: { goalCount: number; totalWeight: number; kpiScore: number } | null;
     }>(`/api/performance/reviews/${id}`).then(r => r.data),
 
   submitSelfAssessment: (id: string, body: {
@@ -442,6 +459,14 @@ export const reviewsApi = {
 
   computeAttendance: (id: string) =>
     client.post<{ attendanceScore: number }>(`/api/performance/reviews/${id}/compute-attendance`).then(r => r.data),
+
+  /** HR (performance.approve): open the manager review without the employee's self-assessment, with a reason. */
+  waiveSelfAssessment: (id: string, reason: string) =>
+    client.post<AppraisalReview>(`/api/performance/reviews/${id}/waive-self-assessment`, { reason }).then(r => r.data),
+
+  /** HR (performance.approve): take an unpublished review out of its cycle (a leaver, a wrong enrolment), with a reason. */
+  exclude: (id: string, reason: string) =>
+    client.post<AppraisalReview>(`/api/performance/reviews/${id}/exclude`, { reason }).then(r => r.data),
 };
 
 export const calibrationApi = {

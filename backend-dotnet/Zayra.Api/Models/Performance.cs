@@ -20,6 +20,8 @@ public class PerformanceCycle : ITenantOwned
     public DateOnly? ManagerReviewDeadline { get; set; }
     public DateOnly? CalibrationDeadline { get; set; }
     public Guid? DefaultScorecardTemplateId { get; set; }
+    public Guid? CompanyId { get; set; }
+    public Guid? DepartmentId { get; set; }
     public string Notes { get; set; } = string.Empty;
     public Guid? CreatedByUserId { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;

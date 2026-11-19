@@ -9,6 +9,9 @@ import { Modal as BaseModal } from '../components/Modal';
 import { ConfirmDialog, type ConfirmState } from '../components/ui/ConfirmDialog';
 import { useAppToast } from '../components/ui/AppToast';
 import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
+import { ReviewHrActions } from '../components/performance/ReviewHrActions';
+import { GoalKpiHint } from '../components/performance/GoalKpiHint';
+import { EditDraftCycle } from '../components/performance/EditDraftCycle';
 import { EmployeeSearchSelect } from '../components/EmployeeSearchSelect';
 import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
@@ -208,7 +211,7 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
             ))}
           </div>
           <p className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
-            {t('Approved recommendations are sent to Payroll as pending actions — not applied automatically.')}
+            {t('Approved recommendations are a record for HR to act on. Nothing in pay or payroll changes automatically.')}
           </p>
         </div>
 
@@ -385,6 +388,7 @@ function CyclesTab() {
               </div>
               <div className="ms-4 flex shrink-0 items-center gap-3">
                 <StatusBadge status={c.status} />
+                {c.status === 'Draft' && can.setUpCycles && <EditDraftCycle cycle={c} onSaved={load} />}
                 {c.status === 'Draft' && can.setUpCycles && (
                   <button type="button" onClick={() => launch(c.id)} disabled={launching === c.id} className={btn.primary}>
                     {launching === c.id ? t('Launching…') : t('Launch')}
@@ -392,6 +396,9 @@ function CyclesTab() {
                 )}
                 {['Active', 'InReview', 'Calibration', 'FinalApproval'].includes(c.status) && can.setUpCycles && (
                   <button type="button" onClick={() => advance(c.id)} className={btn.ghost}>{t('Advance')}</button>
+                )}
+                {c.status === 'Published' && can.setUpCycles && (
+                  <button type="button" onClick={() => void cyclesApi.close(c.id).then(load, e => notifyApiError(e, t('Could not close the cycle.')))} className={btn.ghost}>{t('Close cycle')}</button>
                 )}
               </div>
             </div>
@@ -513,7 +520,14 @@ function ManagerReviewModal({ review, onClose, onSaved }: { review: AppraisalRev
   const [error, setError] = useState('');
   const set = (k: keyof typeof form, v: string) => setForm(f => ({ ...f, [k]: v }));
 
+  const [goalKpi, setGoalKpi] = useState<{ goalCount: number; totalWeight: number; kpiScore: number } | null>(null);
+
   const save = async () => {
+    // Every component is a 0-100 score; a blank is not a zero. The server refuses anything outside 0-100 too.
+    const keys = ['kpiScore', 'competencyScore', 'attendanceScore', 'productivityScore', 'feedbackScore', 'disciplineScore'] as const;
+    if (keys.some(k => form[k].trim() === '' || !(Number(form[k]) >= 0 && Number(form[k]) <= 100))) {
+      setError(t('Every score must be between 0 and 100.')); return;
+    }
     setSaving(true); setError('');
     try {
       await reviewsApi.submitManagerReview(review.id, {
@@ -535,10 +549,11 @@ function ManagerReviewModal({ review, onClose, onSaved }: { review: AppraisalRev
     <Modal title={t('Manager Review — {name}', { name: review.employeeName })} onClose={onClose} wide>
       <div className="space-y-4">
         <p className="text-xs text-slate-500 dark:text-slate-400">{t('Cycle: {name} · Self-assessment: {notes}', { name: review.cycleName, notes: review.selfAssessmentNotes || t('(none)') })}</p>
+        <GoalKpiHint reviewId={review.id} onKpi={k => { setGoalKpi(k); if (k) set('kpiScore', String(k.kpiScore)); }} />
         <div className="grid grid-cols-3 gap-3">
           {[['kpiScore', t('KPI Score (0–100)')], ['competencyScore', t('Competency Score (0–100)')], ['productivityScore', t('Productivity Score (0–100)')],
             ['feedbackScore', t('Feedback Score (0–100)')], ['disciplineScore', t('Discipline Score (0–100)')]] .map(([k, l]) => (
-            <Field key={k} label={l}><input type="number" min={0} max={100} className={inp} value={form[k as keyof typeof form]} onChange={e => set(k as keyof typeof form, e.target.value)} /></Field>
+            <Field key={k} label={l}><input type="number" min={0} max={100} className={inp} value={form[k as keyof typeof form]} readOnly={k === 'kpiScore' && goalKpi != null} onChange={e => set(k as keyof typeof form, e.target.value)} /></Field>
           ))}
           <Field label={t('Attendance Score (0–100)')}>
             <div className="flex gap-2">
@@ -719,6 +734,7 @@ function TeamReviewsTab() {
                 {r.status === 'FinalApproval' && can.decideRatings && (
                   <button type="button" className={btn.primary} onClick={() => publish(r.id)}>{t('Publish')}</button>
                 )}
+                {can.decideRatings && <ReviewHrActions review={r} onDone={load} />}
               </div>
             </div>
           ))}
@@ -738,8 +754,13 @@ function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
   const [form, setForm] = useState({
     title: '', description: '', category: 'KPI',
     kpiType: 'Numeric', measurementUnit: '', baselineValue: '0', targetValue: '', actualValue: '0',
-    weight: '10', priority: 'Medium', startDate: '', dueDate: '',
+    weight: '10', priority: 'Medium', startDate: '', dueDate: '', cycleId: '',
   });
+  // The cycle a goal scores in: its agreed goals make up that review's KPI score (the server computes it).
+  const [cycles, setCycles] = useState<PerformanceCycle[]>([]);
+  useEffect(() => {
+    cyclesApi.listAll().then(all => setCycles(all.filter(c => ['Draft', 'Active', 'InReview'].includes(c.status)))).catch(() => setCycles([]));
+  }, []);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const set = (k: keyof typeof form, v: string) => setForm(f => ({ ...f, [k]: v }));
@@ -759,6 +780,7 @@ function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
         targetValue: Number(form.targetValue), actualValue: Number(form.actualValue),
         weight, priority: form.priority,
         startDate: form.startDate || undefined, dueDate: form.dueDate || undefined,
+        cycleId: form.cycleId || undefined,
       });
       onSaved();
     } catch (e) { setError(goalApiMessage(e, t('Failed to create goal.'))); setSaving(false); }
@@ -769,6 +791,12 @@ function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
       <div className="space-y-4">
         <Field label={t('Employee *')}>
           <EmployeeSearchSelect value={selectedEmployee} onChange={setSelectedEmployee} required />
+        </Field>
+        <Field label={t('Appraisal cycle')} info={t('The appraisal cycle this goal is scored in. Its agreed goals make up the KPI score of the review, and their weights must total 100%.')}>
+          <select className={sel} value={form.cycleId} onChange={e => set('cycleId', e.target.value)}>
+            <option value="">{t('Not part of an appraisal cycle')}</option>
+            {cycles.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
         </Field>
         <Field label={t('Goal Title *')}><input className={inp} value={form.title} onChange={e => set('title', e.target.value)} placeholder={t('Example: Achieve 95% customer satisfaction score')} /></Field>
         <Field label={t('Description')}><textarea className={inp} rows={2} value={form.description} onChange={e => set('description', e.target.value)} /></Field>
@@ -1190,8 +1218,8 @@ function CalibrationTab() {
                 {managerStats.filter(m => m.possibleLeniency || m.possibleSeverity).map(m => (
                   <p key={m.managerName} className="text-xs text-amber-700 dark:text-amber-400">
                     {m.possibleLeniency
-                      ? t('{manager}: avg {avg} — Possible leniency (avg > 87)', { manager: m.managerName, avg: m.avgScore })
-                      : t('{manager}: avg {avg} — Possible severity (avg < 48)', { manager: m.managerName, avg: m.avgScore })}
+                      ? t('{manager}: avg {avg} — Possible leniency (avg above 85)', { manager: m.managerName, avg: m.avgScore })
+                      : t('{manager}: avg {avg} — Possible severity (avg below 50)', { manager: m.managerName, avg: m.avgScore })}
                   </p>
                 ))}
               </div>
@@ -1283,7 +1311,7 @@ function RecommendationsTab() {
       </div>
 
       <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400">
-        {t('Approved recommendations are sent to Payroll as pending approved actions. They are not applied automatically — a Payroll manager must process them.')}
+        {t('Approving records the decision only. Nothing in pay or payroll changes automatically: HR applies an approved increment, promotion or bonus through a compensation cycle or an employee change, each with its own approval.')}
       </div>
 
       {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : (
@@ -1824,7 +1852,7 @@ function FeedbackTab() {
             <Field label={t('Feedback *')}><textarea className={inp} rows={4} value={form.content} onChange={e => set('content', e.target.value)} placeholder={t('Share specific, constructive observations…')} /></Field>
             <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={form.isPrivate} onChange={e => set('isPrivate', e.target.checked)} className="rounded" />
-              {t('Private (only visible to you and HR)')}
+              {t('Private (only visible to you)')}
             </label>
             <div className="flex justify-end gap-2">
               <button type="button" className={btn.ghost} onClick={() => setShowCreate(false)}>{t('Cancel')}</button>

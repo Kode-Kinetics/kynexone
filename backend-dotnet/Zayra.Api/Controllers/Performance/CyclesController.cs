@@ -19,8 +19,9 @@ namespace Zayra.Api.Controllers.Performance;
 ///
 /// <para><b>Scope.</b> Reviews and enrolments are about employees, so they are cut to the caller's employee
 /// scope (<see cref="IDataScopeService"/>), which keeps a company-scoped HR Manager inside their companies.
-/// Cycles themselves have no company: launching, advancing or closing one acts on every company's reviews,
-/// so those transitions are for a group-level (unrestricted) caller only.</para>
+/// A cycle names the company (and optionally the department) it enrols; one with no company enrols the whole
+/// tenant and may only be launched where the tenant has a single company. Launching, advancing or closing a
+/// cycle stays a group-level (unrestricted) step, unchanged.</para>
 /// </summary>
 [ApiController]
 [Route("api/performance/cycles")]
@@ -87,7 +88,7 @@ public class CyclesController : ControllerBase
             c.Id, c.Name, c.CycleType, c.ReviewPeriodStart, c.ReviewPeriodEnd, c.Status,
             c.EnableCalibration, c.Enable360Feedback, c.EnableSelfAssessment,
             c.SelfAssessmentDeadline, c.ManagerReviewDeadline, c.CalibrationDeadline,
-            c.DefaultScorecardTemplateId, c.Notes, c.CreatedAtUtc, c.LaunchedAtUtc,
+            c.DefaultScorecardTemplateId, c.CompanyId, c.DepartmentId, c.Notes, c.CreatedAtUtc, c.LaunchedAtUtc,
             c.PublishedAtUtc, c.ClosedAtUtc,
             EnrolledCount = countMap.GetValueOrDefault(c.Id, 0),
         });
@@ -186,6 +187,8 @@ public class CyclesController : ControllerBase
             ManagerReviewDeadline     = req.ManagerReviewDeadline,
             CalibrationDeadline       = req.CalibrationDeadline,
             DefaultScorecardTemplateId = req.DefaultScorecardTemplateId,
+            CompanyId                 = req.CompanyId,
+            DepartmentId              = req.DepartmentId,
             Notes                     = req.Notes ?? string.Empty,
             CreatedByUserId           = userId,
         };
@@ -218,6 +221,8 @@ public class CyclesController : ControllerBase
         cycle.ManagerReviewDeadline     = req.ManagerReviewDeadline;
         cycle.CalibrationDeadline       = req.CalibrationDeadline;
         cycle.DefaultScorecardTemplateId = req.DefaultScorecardTemplateId;
+        cycle.CompanyId                 = req.CompanyId;
+        cycle.DepartmentId              = req.DepartmentId;
         cycle.Notes                     = req.Notes ?? string.Empty;
         await _db.SaveChangesAsync(ct);
         return Ok(cycle);
@@ -240,6 +245,17 @@ public class CyclesController : ControllerBase
         if (!await _db.PerformanceScorecardTemplates.AsNoTracking().AnyAsync(
                 t => t.Id == cycle.DefaultScorecardTemplateId.Value && t.TenantId == tenantId && t.IsActive, ct))
             return BadRequest(new { message = "The default scorecard template is not active in this tenant." });
+        // WHO IS APPRAISED. A cycle enrols the company it was created for (and its department, when one is chosen).
+        // With no company it used to enrol every active employee of every company in the tenant; that is still what
+        // it does where the tenant has a single company, and is refused where there are several.
+        if (cycle.CompanyId is null
+            && await _db.Companies.AsNoTracking().CountAsync(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted, ct) > 1)
+            return BadRequest(new
+            {
+                error = "cycle_company_required",
+                message = "Choose the company this cycle appraises (edit the draft cycle). Your organisation has several companies, " +
+                          "and a cycle enrols the employees of one.",
+            });
 
         cycle.Status         = "Active";
         cycle.LaunchedAtUtc  = DateTime.UtcNow;
@@ -269,8 +285,9 @@ public class CyclesController : ControllerBase
         };
         if (next is null) return BadRequest(new { message = $"Cannot advance from status {cycle.Status}." });
 
+        // A review HR excluded from the cycle (a leaver, a wrong enrolment) no longer holds it back.
         var reviews = await _db.AppraisalReviews
-            .Where(r => r.TenantId == tenantId && r.CycleId == id)
+            .Where(r => r.TenantId == tenantId && r.CycleId == id && r.Status != ReviewsController.ExcludedStatus)
             .ToListAsync(ct);
         if (reviews.Count == 0)
             return Conflict(new { error = "cycle_has_no_reviews", message = "A performance cycle with no enrolled reviews cannot advance." });
@@ -337,6 +354,18 @@ public class CyclesController : ControllerBase
             && !await _db.PerformanceScorecardTemplates.AsNoTracking()
                 .AnyAsync(t => t.Id == templateId && t.TenantId == tenantId && t.IsActive, ct))
             return "Default scorecard template is not active in this tenant.";
+        if (req.CompanyId is { } companyId
+            && !await _db.Companies.AsNoTracking().AnyAsync(c => c.Id == companyId && c.TenantId == tenantId && !c.IsDeleted, ct))
+            return "The company for this cycle was not found.";
+        if (req.DepartmentId is { } departmentId)
+        {
+            if (req.CompanyId is null) return "Choose the company before a department.";
+            var department = await _db.Departments.AsNoTracking()
+                .Where(d => d.Id == departmentId && d.TenantId == tenantId && !d.IsDeleted)
+                .Select(d => new { d.CompanyId }).FirstOrDefaultAsync(ct);
+            if (department is null) return "The department for this cycle was not found.";
+            if (department.CompanyId is { } owner && owner != req.CompanyId) return "That department belongs to another company.";
+        }
         return null;
     }
 }
@@ -350,4 +379,5 @@ public record CreateCycleRequest(
     bool EnableSelfAssessment, bool EnableForcedDistribution,
     DateOnly? SelfAssessmentDeadline, DateOnly? ManagerReviewDeadline,
     DateOnly? CalibrationDeadline,
-    Guid? DefaultScorecardTemplateId, string? Notes);
+    Guid? DefaultScorecardTemplateId, string? Notes,
+    Guid? CompanyId = null, Guid? DepartmentId = null);

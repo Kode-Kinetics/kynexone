@@ -186,8 +186,12 @@ public class AnalyticsController : ControllerBase
         var pendingActions = new
         {
             SelfAssessmentDue    = await reviews.CountAsync(r => r.Status == "SelfAssessmentDue", ct),
-            ManagerReviewPending = await reviews.CountAsync(r => r.Status == "ManagerReview", ct),
-            CalibrationPending   = await reviews.CountAsync(r => r.Status == "Calibration", ct),
+            // Waiting for the manager: a submitted self-assessment as well as a review with none to wait for.
+            ManagerReviewPending = await reviews.CountAsync(r => r.Status == "ManagerReview" || r.Status == "SelfAssessmentSubmitted", ct),
+            // No review ever has the status "Calibration": calibration is a CYCLE stage, and the reviews HR has to
+            // calibrate are the completed manager reviews of the cycles in it.
+            CalibrationPending   = await reviews.CountAsync(r => r.Status == "ManagerReviewComplete"
+                && _db.PerformanceCycles.Any(c => c.TenantId == tenantId && c.Id == r.CycleId && c.Status == "Calibration"), ct),
             AppealsPending       = await appeals.CountAsync(a => a.Status == "Submitted", ct),
         };
 
