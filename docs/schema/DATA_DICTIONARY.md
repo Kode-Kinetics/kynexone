@@ -818,6 +818,16 @@ the live bridge uses the `ITenantOwned` / `ICompanyScoped` query filters.
 - **Lifecycle** — written only by `IEntitlementWriter` (freeze at activation, renewal Apply, holdover carry); closed at the term's end.
 - **Retention** `S` — labour-law evidence of what was agreed for each term.
 
+### `benefit_usage_requests` — benefit utilisation requests (live bridge, migration `AddBenefitUsageRequests`)
+- **Purpose** — the "used" side of benefit utilisation, shaped like a loan request: one request to use a frozen contract benefit (an education claim for a child, an air ticket, a count or amount of a customer's own `BEN_*` benefit). Utilisation = the frozen `employee_entitlements` row (never today's grade grid) − the Pending and Approved requests in the same benefit period. Moves no money: nothing here reaches payroll, the GL or payables.
+- **Tier** C · **Domain** Entitlements · **RLS** shape (a) + company scope (live bridge: the `ITenantOwned` / `ICompanyScopedOperational` query filters)
+- **Keys** — `id` (client-chosen, so a retried submit is the same request), `company_id` NOT NULL (the frozen row's company), `employee_id` (int `employees.id`, the subject), `entitlement_id` (witness: the frozen row measured against), `benefit_code`, `period_start`/`period_end` (Annual: the contract year from the term start; PerTerm: the term), `usage_date`, `dependant_id` (the child or family member; NULL = the employee), `units` XOR `amount` + `currency`, `academic_year`, `provider_name`, `evidence_reference`, `note`, `status` (`Pending`/`Approved`/`Rejected`/`Cancelled`), `requested_by_user_id`, `created_at_utc`, `decided_by_user_id`, `decided_at_utc`, `decision_reason`
+- **Rel** — `company_id → companies`, `employee_id → employees`, `(tenant, entitlement_id) → employee_entitlements (tenant_id, id)`, `dependant_id → employee_dependents` — all RESTRICT
+- **Constraint** — CHECKs `status` value set, `measure` (exactly one of units/amount, positive), `currency_iff_amount`, `period`, `decided` (Pending ⇔ no decider; decider ⇔ decided time), `reason` (Rejected/Cancelled carry a reason).
+- **Lifecycle** — written only by `BenefitUsageService`, the loan flow: the employee (`ess.write`) or HR for them (`entitlements.manage`) requests (Pending); Finance (`payroll.approve`) approves or rejects through `ApprovalDecisionGuard` (the requester never approves, the subject never decides); the requester (or HR) may withdraw a Pending request (Cancelled). Serialised per employee; every step audited.
+- **Indexes** — `ix_benefit_usage_requests__employee_benefit_period` (utilisation and the remaining check), `ix_benefit_usage_requests__company_status` (the Finance queue, newest first).
+- **Retention** `S` — evidence of what was used against a contract benefit; kept with the frozen row it measures.
+
 ### `employee_salary_allowances` — customer-defined monthly cash allowances (live bridge, migration `20261105235049_CashAllowances`)
 - **Purpose** — the monthly cash allowances (`ALW_*` pay components added in Benefits by grade) one salary record pays, beyond the four fixed slots on `employee_salary_structures`. The live-bridge forerunner of the deferred `employee_salary_components`: QiwaWage cash still lives only on the salary record.
 - **Tier** T · **Domain** Payroll · **RLS** shape (a) (live bridge: the `ITenantOwned` query filter)
