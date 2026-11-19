@@ -21,8 +21,8 @@ namespace Zayra.Api.Tests.Government;
 [Collection("Integration")]
 public sealed class GovernmentCredentialPostgresTests(PostgresFixture fixture)
 {
-    private const string SecretA = "synthetic-secret-pg-0001";
-    private const string SecretB = "synthetic-secret-pg-0002";
+    private const string SecretA = "test-secret-synthetic-pg-0001";
+    private const string SecretB = "test-secret-synthetic-pg-0002";
 
     private static IHttpContextAccessor CompanyUser(Guid tenantId, Guid company) => new HttpContextAccessor
     {

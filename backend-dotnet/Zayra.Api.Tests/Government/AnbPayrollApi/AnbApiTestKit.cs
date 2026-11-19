@@ -33,7 +33,7 @@ internal static class AnbApiTestKit
     public const string ProductionTokenOrigin = "https://anb-prod-auth.test";
     public const string ClientId = "kx-synthetic-client-7f3a";
     public const string ClientSecret = "s3cr3t-SYNTHETIC-do-not-log-91c2";
-    public const string AccessToken = "tok-SYNTHETIC-bearer-55aa77";
+    public const string AccessToken = "test-token-SYNTHETIC-bearer-55aa77";
     public const string PayrollId = "3f2b8c1e-9d4a-4e7b-8a61-0c5d2e9f1a77";
 
     public static readonly BankChannelScope TestScope = new(
