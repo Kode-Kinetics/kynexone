@@ -39,6 +39,8 @@ export const INFO_KEYS = {
   child: 'Each child has the per-child amount a year. Children beyond the grade’s child limit cannot be named until a named child’s request is withdrawn.',
   traveller: 'Each traveller has their own tickets a period. Family members beyond the grade’s limit cannot be named this period.',
   evidence: 'The invoice, receipt or booking number you checked. Finance sees it when deciding.',
+  /** Shown under the page title: approving a use is a record, never a payment. */
+  paysNothing: 'Approving a use only records it against the entitlement and pays nothing. Cash benefits are paid through payroll; loans and bonuses have their own payment batches.',
 };
 
 /** The server's refusal codes, in words the person can act on. */

@@ -74,3 +74,10 @@ test('kinds, ids and figures', () => {
   expect(measureText(2, 'Units', null, 'en')).toBe('2');
   expect(measureText(12500, 'Amount', 'SAR', 'en')).toContain('12,500');
 });
+
+test('the screen says plainly that approving a use pays nothing, and where a payment is made', () => {
+  const note = INFO_KEYS.paysNothing;
+  expect(note).toMatch(/pays nothing|no money/i);
+  expect(note).toMatch(/payroll/i);
+  expect(ARABIC.test(translate('ar', note))).toBe(true);
+});
