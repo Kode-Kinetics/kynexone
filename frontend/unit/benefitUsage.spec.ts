@@ -93,7 +93,7 @@ test('a benefit for family members with none on file says so instead of showing 
 
 test('an amount with up to two decimals is accepted, whatever floating point does with it', () => {
   const money = row({ measure: 'Amount', currency: 'SAR', entitlement: 5000, remaining: 5000, benefitCode: 'MOBILE_ALLOWANCE', dependantScope: 'None', beneficiaries: [] });
-  const base = { ...emptyUsageForm(money), usageDate: '2026-06-01', evidenceReference: 'INV-1' };
+  const base = { ...emptyUsageForm('2026-06-01'), usageDate: '2026-06-01', evidenceReference: 'INV-1' };
   for (const typed of ['19.99', '1.10', '0.07', '100', '2.5', '1234.56']) {
     expect(usageProblems({ ...base, quantity: typed }, money).quantity, typed).toBeUndefined();
   }
