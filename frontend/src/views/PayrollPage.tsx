@@ -61,6 +61,7 @@ import { useLocale } from '../contexts/LocaleContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { currencyForAmount } from '../lib/moneyCurrency';
 import { SectionNav } from '../components/ui/SectionNav';
 import { PayrollSectionHeader, PAYROLL_SECTION_HEADING_ID } from '../components/payroll/PayrollSectionHeader';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
@@ -121,7 +122,9 @@ function useFmtDate() {
 /** An amount with its currency in the viewer's language (Arabic shows the Arabic currency symbol and a bidi-safe order). */
 function useFmtAmt() {
   const fx = useFormat();
-  return useCallback((n: number, currency = 'USD') => fx.money(n, currency), [fx]);
+  const { currencyCode } = useTenantSettings();
+  // No currency of its own (e.g. a run with no payment batch yet) reads in the company's currency, never a dollar sign.
+  return useCallback((n: number, currency?: string | null) => fx.money(n, currencyForAmount(currency, currencyCode)), [fx, currencyCode]);
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

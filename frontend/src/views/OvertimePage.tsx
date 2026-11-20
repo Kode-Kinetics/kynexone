@@ -10,6 +10,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { EmployeePicker } from '../components/EmployeePicker';
 import type { SelectedEmployee } from '../components/EmployeePicker';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { tenantLocalInstantIso } from '../lib/tenantInstant';
+import { tenantToday } from '../lib/attendanceBulkEntry';
 import { useEffect, useLayoutEffect, useState } from 'react';
 import { usePagedList } from '../hooks/usePagedList';
 import { ListWindowFooter } from '../components/ListWindowFooter';
@@ -35,7 +37,6 @@ import { EnumLabel, type EnumName } from '../components/EnumLabel';
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
 const today = new Date().toISOString().slice(0, 10);
-const dt = (date: string, time: string) => new Date(`${date}T${time}:00`).toISOString();
 
 type Translate = (key: string, params?: Record<string, string | number | null | undefined>) => string;
 
@@ -225,10 +226,11 @@ function DashboardTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
 function SubmitOTTab({ selfEmployeeId, canFileForOthers }: { selfEmployeeId?: number; canFileForOthers?: boolean }) {
   const isEmployee = !canFileForOthers;
   const t = useT();
+  const { defaultTimezone } = useTenantSettings();
   const [policies, setPolicies] = useState<OvertimePolicy[]>([]);
   const [otPickedEmp, setOtPickedEmp] = useState<SelectedEmployee | null>(null);
   const [form, setForm] = useState({
-    employeeId: selfEmployeeId ? String(selfEmployeeId) : '', workDate: today, startTime: '18:00', endTime: '20:00',
+    employeeId: selfEmployeeId ? String(selfEmployeeId) : '', workDate: tenantToday(defaultTimezone), startTime: '18:00', endTime: '20:00',
     reason: '', source: 'Manual', policyId: '', typeId: '',
   });
   const [saving, setSaving] = useState(false);
@@ -260,8 +262,8 @@ function SubmitOTTab({ selfEmployeeId, canFileForOthers }: { selfEmployeeId?: nu
         overtimePolicyId: form.policyId || undefined,
         overtimeTypeId: form.typeId || undefined,
         workDate: form.workDate,
-        startTimeUtc: dt(form.workDate, form.startTime),
-        endTimeUtc: dt(form.workDate, form.endTime),
+        startTimeUtc: tenantLocalInstantIso(form.workDate, form.startTime, defaultTimezone),
+        endTimeUtc: tenantLocalInstantIso(form.workDate, form.endTime, defaultTimezone),
         source: form.source,
         reason: form.reason,
       });
@@ -285,14 +287,15 @@ function SubmitOTTab({ selfEmployeeId, canFileForOthers }: { selfEmployeeId?: nu
   const mins = calcMinutes();
 
   return (
-    <div className="max-w-xl space-y-5">
+    <div className="max-w-5xl space-y-5">
+      <div className="grid items-start gap-5 lg:grid-cols-2">
       <div className="surface p-5">
         <p className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">{t('Employee & Date')}</p>
         <div className="space-y-3">
           {isEmployee ? (
             <p className="text-sm text-slate-500 dark:text-slate-400">{t('Submitting overtime for: Employee #{id}', { id: form.employeeId })}</p>
           ) : (
-            <EmployeePicker label={t('Employee *')} required value={otPickedEmp} onChange={setOtPickedEmp} placeholder={t('Search by name or employee code…')} />
+            <EmployeePicker label={t('Employee')} required value={otPickedEmp} onChange={setOtPickedEmp} placeholder={t('Search by name or employee code…')} />
           )}
           <div className="grid grid-cols-2 gap-3">
             <Field label={t('Work Date *')} info={t('The day the overtime was actually worked — not the date you submit the request.')} infoKey="overtime.work_date"><input type="date" aria-label={t('Work date')} className={inp} value={form.workDate} onChange={e => set('workDate', e.target.value)} /></Field>
@@ -327,6 +330,7 @@ function SubmitOTTab({ selfEmployeeId, canFileForOthers }: { selfEmployeeId?: nu
             <textarea className={inp} rows={3} value={form.reason} onChange={e => set('reason', e.target.value)} placeholder={t('Reason for overtime…')} />
           </Field>
         </div>
+      </div>
       </div>
 
       {error && <p className="rounded-lg bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">{error}</p>}
