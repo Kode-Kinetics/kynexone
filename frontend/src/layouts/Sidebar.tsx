@@ -32,6 +32,9 @@ function pathIsActive(pathname: string | null, path: string | undefined, allPath
   return false;
 }
 
+/** The section that stays open and has no collapse control (see toggleGroup). */
+const ALWAYS_OPEN_GROUP = 'Overview';
+
 export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, navigationRestoreTarget }: SidebarProps) {
   const router = useRouter();
   const navigationGuard = useNavigationGuard();
@@ -102,18 +105,18 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
   // Keep the overview shortcuts and the current work area open. One work area at a time keeps
   // every section header visible on laptop screens instead of turning the sidebar into a long page.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
-    () => new Set(['Overview', ...(activeGroupLabel ? [activeGroupLabel] : [])]),
+    () => new Set([ALWAYS_OPEN_GROUP, ...(activeGroupLabel ? [activeGroupLabel] : [])]),
   );
 
   useEffect(() => {
     if (!activeGroupLabel) return;
-    setExpandedGroups(new Set(['Overview', activeGroupLabel]));
+    setExpandedGroups(new Set([ALWAYS_OPEN_GROUP, activeGroupLabel]));
   }, [activeGroupLabel]);
 
   const toggleGroup = (label: string) => {
     setExpandedGroups((prev) => {
-      if (label === 'Overview') return prev;
-      const next = new Set(['Overview']);
+      if (label === ALWAYS_OPEN_GROUP) return prev;
+      const next = new Set([ALWAYS_OPEN_GROUP]);
       if (!prev.has(label)) next.add(label);
       return next;
     });
@@ -222,12 +225,29 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
             const isExpanded = expandedGroups.has(group.label);
             const hasActiveItem = visibleItems.some((item) => isActive(item.path));
             const groupId = `sidebar-group-${group.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+            // The always-open group has nothing to toggle, so its header is a label, not a button that does nothing.
+            const collapsible = group.label !== ALWAYS_OPEN_GROUP;
 
             return (
               <div key={group.label} className={gi > 0 ? 'mt-1' : ''}>
 
                 {/* ── Group header ── */}
-                {!isCollapsed ? (
+                {!collapsible ? (
+                  isCollapsed ? (
+                    <div className="mx-auto mb-1 grid h-4 w-9 place-items-center" aria-hidden="true">
+                      <span className={`block h-px w-5 ${hasActiveItem ? 'bg-sapphire/60 dark:bg-primary-fg/60' : 'bg-slate-300 dark:bg-white/15'}`} />
+                    </div>
+                  ) : (
+                    <p
+                      id={`${groupId}-label`}
+                      className={`mb-0.5 flex min-h-7 w-full items-center px-3 py-1 text-caption font-semibold uppercase tracking-[0.14em] rtl:text-body-sm rtl:normal-case rtl:tracking-normal ${
+                        hasActiveItem ? 'text-sapphire dark:text-primary-fg' : 'text-slate-400 dark:text-slate-600'
+                      }`}
+                    >
+                      {t(group.label)}
+                    </p>
+                  )
+                ) : !isCollapsed ? (
                   <button
                     type="button"
                     onClick={() => toggleGroup(group.label)}
@@ -273,7 +293,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
 
                 {/* Closed sections leave the tab order; clipped controls previously remained focusable. */}
                 {isExpanded && (
-                  <div id={groupId} className="px-2 pb-1">
+                  <div id={groupId} className="px-2 pb-1" {...(!collapsible ? { role: 'group', 'aria-labelledby': `${groupId}-label` } : {})}>
                     <div className="space-y-px">
                       {visibleItems.map((item) => {
                         const Icon = item.icon;

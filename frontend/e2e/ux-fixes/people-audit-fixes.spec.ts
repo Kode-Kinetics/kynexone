@@ -91,3 +91,20 @@ test.describe('keyboard', () => {
     expect(hasOutline || hasRing, JSON.stringify(ring)).toBe(true);
   });
 });
+
+test.describe('sidebar section headers', () => {
+  test('Overview is a label, not a button that does nothing; the other sections announce and toggle', async ({ page }) => {
+    await open(page);
+    const nav = page.locator('aside nav');
+    await expect(nav.getByRole('button', { name: /^Overview$/i })).toHaveCount(0);
+    await expect(nav.getByText('Overview', { exact: true })).toBeVisible();
+    // Its shortcuts stay reachable.
+    await expect(nav.getByRole('button', { name: 'Dashboard' })).toBeVisible();
+    const hr = nav.getByRole('button', { name: /HR & Time/i });
+    await expect(hr).toHaveAttribute('aria-expanded', 'true');
+    await hr.click();
+    await expect(hr).toHaveAttribute('aria-expanded', 'false');
+    await hr.click();
+    await expect(hr).toHaveAttribute('aria-expanded', 'true');
+  });
+});
