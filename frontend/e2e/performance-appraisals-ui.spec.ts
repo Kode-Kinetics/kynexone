@@ -228,7 +228,8 @@ for (const locale of ['en', 'ar'] as const) {
       await page.locator('input[type="date"]').nth(0).fill('2026-01-01');
       await page.locator('input[type="date"]').nth(1).fill('2026-06-30');
       await page.getByRole('button', { name: L('Create Cycle', 'إنشاء دورة') }).click();
-      await expect(page.getByText(L('A cycle cannot be launched without one', 'لا يمكن إطلاق الدورة بدونه')).first()).toBeVisible();
+      // the same sentence is also the field's `i` help text (hidden until hovered), so ask for the visible error alert
+      await expect(page.getByRole('alert').getByText(L('A cycle cannot be launched without one', 'لا يمكن إطلاق الدورة بدونه'))).toBeVisible();
       expect(log.calls.filter(c => c.path === '/api/performance/cycles')).toEqual([]);
       await page.getByTestId('cycle-template').selectOption('tp-2');
       await page.getByRole('button', { name: L('Create Cycle', 'إنشاء دورة') }).click();
@@ -267,7 +268,7 @@ for (const locale of ['en', 'ar'] as const) {
       await expect(drawer.getByTestId('result-score')).toHaveCount(0);
       await expect(drawer.getByText(/82\.5|Exceeds|يفوق/)).toHaveCount(0);
       await expect(drawer.locator('[aria-current="step"]')).toContainText(L('HR calibration', 'معايرة الموارد البشرية'));
-      await expect(drawer.getByRole('button', { name: L('Acknowledge result', 'الإقرار بالنتيجة') })).toHaveCount(0);
+      await expect(page.getByRole('dialog').getByRole('button', { name: L('Acknowledge result', 'الإقرار بالنتيجة') })).toHaveCount(0);
       expect(await noSideScroll(page)).toBe(true);
       await shot(page, `review-withheld-${locale}`);
       expect(log.errors).toEqual([]);
@@ -283,7 +284,7 @@ for (const locale of ['en', 'ar'] as const) {
       await expect(drawer.getByTestId('notes-withheld')).toBeVisible();
       expect(await noSideScroll(page)).toBe(true);
       await shot(page, `review-published-${locale}`);
-      await drawer.getByRole('button', { name: L('Acknowledge result', 'الإقرار بالنتيجة') }).click();
+      await page.getByRole('dialog').getByRole('button', { name: L('Acknowledge result', 'الإقرار بالنتيجة') }).click();
       await expect.poll(() => log.calls.some(c => c.path === '/api/performance/reviews/rv-1/acknowledge')).toBe(true);
       await expect(page.locator('[data-result]')).toContainText(L('You acknowledged your result.', 'أقررتَ بنتيجتك.'));
       expect(log.errors).toEqual([]);
@@ -293,13 +294,13 @@ for (const locale of ['en', 'ar'] as const) {
       const log = await boot(page, { persona: 'employee', locale });
       await page.getByRole('button', { name: L('View result', 'عرض النتيجة') }).click();
       const drawer = page.getByTestId('review-detail');
-      await drawer.getByRole('button', { name: L('Ask HR to review', 'طلب مراجعة من الموارد البشرية') }).click();
+      await page.getByRole('dialog').getByRole('button', { name: L('Ask HR to review', 'طلب مراجعة من الموارد البشرية') }).click();
       await shot(page, `review-appeal-${locale}`);
-      await drawer.getByRole('button', { name: L('Send to HR', 'إرسال إلى الموارد البشرية') }).click();
+      await page.getByRole('dialog').getByRole('button', { name: L('Send to HR', 'إرسال إلى الموارد البشرية') }).click();
       await expect(page.getByTestId('review-detail-error')).toContainText(L('Say what you disagree with', 'اذكر ما تعترض عليه'));
       expect(log.calls.filter(c => c.path.endsWith('/appeal'))).toEqual([]);
-      await drawer.getByLabel(L('What do you disagree with?', 'ما الذي تعترض عليه؟')).fill('A goal I completed was not counted.');
-      await drawer.getByRole('button', { name: L('Send to HR', 'إرسال إلى الموارد البشرية') }).click();
+      await drawer.getByRole('textbox', { name: L('What do you disagree with?', 'ما الذي تعترض عليه؟') }).fill('A goal I completed was not counted.');
+      await page.getByRole('dialog').getByRole('button', { name: L('Send to HR', 'إرسال إلى الموارد البشرية') }).click();
       await expect.poll(() => log.calls.find(c => c.path === '/api/performance/reviews/rv-1/appeal')?.body?.appealReason).toBe('A goal I completed was not counted.');
       await expect(page.getByTestId('appeal-status')).toContainText(L('sent to HR', 'أُرسل إلى الموارد البشرية'));
       await expect(page.locator('[data-result]')).toContainText(L('Your appeal was sent to HR.', 'أُرسل تظلمك إلى الموارد البشرية.'));
@@ -310,9 +311,9 @@ for (const locale of ['en', 'ar'] as const) {
       await boot(page, { persona: 'employee', locale, refuse: { 'POST /api/performance/reviews/rv-1/appeal': [409, { error: 'appeal_already_open', message: 'An appeal is already open for this review.' }] } });
       await page.getByRole('button', { name: L('View result', 'عرض النتيجة') }).click();
       const drawer = page.getByTestId('review-detail');
-      await drawer.getByRole('button', { name: L('Ask HR to review', 'طلب مراجعة من الموارد البشرية') }).click();
-      await drawer.getByLabel(L('What do you disagree with?', 'ما الذي تعترض عليه؟')).fill('Not fair.');
-      await drawer.getByRole('button', { name: L('Send to HR', 'إرسال إلى الموارد البشرية') }).click();
+      await page.getByRole('dialog').getByRole('button', { name: L('Ask HR to review', 'طلب مراجعة من الموارد البشرية') }).click();
+      await drawer.getByRole('textbox', { name: L('What do you disagree with?', 'ما الذي تعترض عليه؟') }).fill('Not fair.');
+      await page.getByRole('dialog').getByRole('button', { name: L('Send to HR', 'إرسال إلى الموارد البشرية') }).click();
       await expect(page.getByTestId('review-detail-error')).toContainText(L('An appeal is already open for this review', 'يوجد تظلم مفتوح لهذا التقييم'));
     });
 
@@ -389,7 +390,7 @@ for (const locale of ['en', 'ar'] as const) {
       const dialog = page.getByTestId('pip-checkin');
       await expect(dialog.getByTestId('checkin-none')).toBeVisible();
       await dialog.getByRole('combobox').selectOption('Deteriorated');
-      await dialog.getByRole('textbox').fill('Missed two deadlines again; support was offered.');
+      await dialog.getByLabel(L('What was discussed', 'ما جرت مناقشته')).fill('Missed two deadlines again; support was offered.');
       expect(await noSideScroll(page)).toBe(true);
       await shot(page, `pip-checkin-${locale}`);
       await page.getByRole('button', { name: L('Save check-in', 'حفظ المتابعة') }).click();
@@ -479,7 +480,9 @@ test.describe('Accessibility of the new screens', () => {
     await boot(page, { persona: 'employee' });
     await page.getByRole('button', { name: 'View result' }).click();
     await expect(page.getByTestId('result-score')).toBeVisible();
+    // The drawer fades and slides in; axe blends the colours of a half-transparent badge with the scrim. Measure the settled screen.
+    await page.evaluate(() => Promise.all(document.getAnimations().map(a => a.finished.catch(() => undefined))));
     const serious = (await new AxeBuilder({ page }).include('[role="dialog"]').analyze()).violations.filter(v => v.impact === 'serious' || v.impact === 'critical');
-    expect(serious.map(v => `${v.id}: ${v.nodes[0]?.html}`)).toEqual([]);
+    expect(serious.map(v => `${v.id}: ${v.nodes[0]?.html} ${v.nodes[0]?.any?.[0]?.message ?? ''}`)).toEqual([]);
   });
 });
