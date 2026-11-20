@@ -7,14 +7,14 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Recruitment;
 
-/// <summary>What an employee sees of an open job opening: display fields only (no pay band, HR owner, requisition, grade, headcount or company).</summary>
+/// <summary>What an employee sees of a job opening that is still hiring: display fields only (no pay band, HR owner, requisition, grade, headcount or company).</summary>
 public sealed record EssJobItemDto(
     Guid Id, string JobCode, string Title, string DepartmentName, string DesignationTitle, string EmploymentType,
     string Location, string Description, string Requirements, string Responsibilities, DateTime? PublishedAtUtc);
 
 public sealed record EssJobPageDto(IReadOnlyList<EssJobItemDto> Items, int Total, int Page, int PageSize);
 
-/// <summary>The employee internal job board: the OPEN openings of the caller's OWN company. Read-only.</summary>
+/// <summary>The employee internal job board: the still-hiring (Open or InProgress) openings of the caller's OWN company. Read-only.</summary>
 public interface IEssJobBoardService
 {
     /// <summary>The caller's own employee id (their login link), or null when the login is not linked to an employee.</summary>
@@ -27,9 +27,11 @@ public sealed class EssJobBoardService(ZayraDbContext db) : IEssJobBoardService
 {
     public const int MaxPageSize = 100;
     public const string OpenStatus = "Open";
+    /// <summary>An opening flips Open to InProgress on its first application while positions remain, so it is still hiring.</summary>
+    public const string InProgressStatus = "InProgress";
 
     private const string BypassReason =
-        "Employee job board: the company filter follows entity-scope claims, so it is replaced by the caller employee's own company, an Open status and the tenant";
+        "Employee job board: the company filter follows entity-scope claims, so it is replaced by the caller employee's own company, a still-hiring status (Open or InProgress) and the tenant";
 
     public Task<int?> ResolveCallerEmployeeAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct) =>
         CallerEmployeeResolver.ResolveAsync(db, caller, tenantId, ct);
@@ -75,14 +77,14 @@ public sealed class EssJobBoardService(ZayraDbContext db) : IEssJobBoardService
     /// IgnoreQueryFilters is intentional (through the sanctioned ScopedBypass helpers, which re-apply the tenant). The global operational company filter follows the caller's entity-scope claims: a
     /// self-service employee normally has no entity-access grant (scope "none", which hides EVERY company-stamped row, their
     /// own company's included), while a group-scope user's filter would show every company and obeys the X-Company-Id
-    /// switcher. Neither describes "my company's open jobs". The board is bounded instead by explicit predicates: this
+    /// switcher. Neither describes "my company's jobs that are hiring". The board is bounded instead by explicit predicates: this
     /// tenant, status Open, and exactly the caller employee's own company (null matches null only). JobOpening has no
     /// soft-delete flag, so there is none to repeat here.
     /// </summary>
     private IQueryable<JobOpening> Visible(Guid tenantId, Guid? companyId) =>
         ScopedBypass.TenantWide(db.JobOpenings, tenantId, BypassReason).AsNoTracking()
             .Where(o => o.TenantId == tenantId
-                && o.Status == OpenStatus
+                && (o.Status == OpenStatus || o.Status == InProgressStatus)
                 && (companyId == null ? o.CompanyId == null : o.CompanyId == companyId));
 
     /// <summary>The caller's employee row, same tenant and not deleted (filters ignored for the same reason as above); null when absent.</summary>

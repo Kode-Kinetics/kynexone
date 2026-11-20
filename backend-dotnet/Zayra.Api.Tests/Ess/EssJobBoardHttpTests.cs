@@ -21,7 +21,7 @@ namespace Zayra.Api.Tests.Ess;
 
 /// <summary>
 /// The employee internal job board (GET api/ess/jobs), through the REAL pipeline (real JWT, real permission gates, real
-/// company query filters). A signed-in employee reads the OPEN openings of their OWN company only, read-only, with a
+/// company query filters). A signed-in employee reads the openings of their OWN company that are still hiring (Open or InProgress), read-only, with a
 /// public-safe projection; the management endpoints stay closed to a plain Employee.
 /// </summary>
 public sealed class EssJobBoardHttpTests(EssJobBoardFixture f) : IClassFixture<EssJobBoardFixture>
@@ -35,18 +35,36 @@ public sealed class EssJobBoardHttpTests(EssJobBoardFixture f) : IClassFixture<E
     // ── Visibility ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Employee_SeesExactlyTheirOwnCompanysOpenOpenings()
+    public async Task Employee_SeesExactlyTheirOwnCompanysStillHiringOpenings()
     {
         var ids = await f.Ids("/api/ess/jobs", "EssA");
-        ids.Should().BeEquivalentTo([f.AOpenNew, f.AOpenOld, f.AOpenUnpublished]);
+        ids.Should().BeEquivalentTo(f.AVisible);
+    }
+
+    [Fact]
+    public async Task Employee_SeesAnInProgressOpening_ThatAlreadyHasApplicants_InTheListAndTheDetail()
+    {
+        // An opening flips Open -> InProgress on its first application while positions remain, so it must stay on the board.
+        (await f.Ids("/api/ess/jobs", "EssA")).Should().Contain(f.AInProgress);
+        var item = await f.Json("/api/ess/jobs/" + f.AInProgress, "EssA");
+        item.GetProperty("id").GetGuid().Should().Be(f.AInProgress);
+        item.GetProperty("jobCode").GetString().Should().Be("JOB-A-INPROGRESS");
+    }
+
+    [Fact]
+    public async Task AnotherCompanysInProgressOpening_StaysHidden_AndTheOtherEmployeeSeesTheirOwn()
+    {
+        (await f.Ids("/api/ess/jobs", "EssA")).Should().NotContain(f.BInProgress);
+        (await f.Status("/api/ess/jobs/" + f.BInProgress, "EssA")).Should().Be(HttpStatusCode.NotFound);
+        (await f.Ids("/api/ess/jobs", "EssB")).Should().BeEquivalentTo([f.BOpen, f.BInProgress]);
+        (await f.Ids("/api/ess/jobs", "EssNull")).Should().NotContain(f.BInProgress);
     }
 
     [Theory]
     [InlineData("AClosed")]
     [InlineData("AOnHold")]
-    [InlineData("AInProgress")]
     [InlineData("ACancelled")]
-    public async Task Employee_DoesNotSeeAnOpeningThatIsNotOpen(string which)
+    public async Task Employee_DoesNotSeeAnOpeningThatIsNoLongerHiring(string which)
     {
         var id = f.Id(which);
         (await f.Ids("/api/ess/jobs", "EssA")).Should().NotContain(id);
@@ -57,7 +75,7 @@ public sealed class EssJobBoardHttpTests(EssJobBoardFixture f) : IClassFixture<E
     public async Task Employee_DoesNotSeeAnotherCompanysOpenOpening_AndTheOtherEmployeeSeesTheirs()
     {
         (await f.Ids("/api/ess/jobs", "EssA")).Should().NotContain(f.BOpen);
-        (await f.Ids("/api/ess/jobs", "EssB")).Should().BeEquivalentTo([f.BOpen]);
+        (await f.Ids("/api/ess/jobs", "EssB")).Should().BeEquivalentTo([f.BOpen, f.BInProgress]);
     }
 
     [Fact]
@@ -72,8 +90,8 @@ public sealed class EssJobBoardHttpTests(EssJobBoardFixture f) : IClassFixture<E
     public async Task GroupScopeUser_LinkedToACompanyAEmployee_SeesOnlyCompanyA()
     {
         var ids = await f.Ids("/api/ess/jobs", "GroupA");
-        ids.Should().BeEquivalentTo([f.AOpenNew, f.AOpenOld, f.AOpenUnpublished]);
-        ids.Should().NotContain([f.BOpen, f.NullCompanyOpen]);
+        ids.Should().BeEquivalentTo(f.AVisible);
+        ids.Should().NotContain([f.BOpen, f.BInProgress, f.NullCompanyOpen]);
     }
 
     [Fact]
@@ -82,15 +100,17 @@ public sealed class EssJobBoardHttpTests(EssJobBoardFixture f) : IClassFixture<E
         // Fails closed or stays on company A; never company B's board.
         using var r = await f.Send("/api/ess/jobs", "GroupA", f.CompanyB);
         var text = await r.Content.ReadAsStringAsync();
-        text.Should().NotContain(f.BOpen.ToString());
+        text.Should().NotContain(f.BOpen.ToString()).And.NotContain(f.BInProgress.ToString());
         (await f.Status("/api/ess/jobs/" + f.BOpen, "GroupA", f.CompanyB)).Should().Be(HttpStatusCode.NotFound);
+        (await f.Status("/api/ess/jobs/" + f.BInProgress, "GroupA", f.CompanyB)).Should().Be(HttpStatusCode.NotFound);
     }
 
     [Fact]
     public async Task TenantWideOpening_IsVisibleOnlyToAnEmployeeWhoseCompanyIsAlsoNull()
     {
-        (await f.Ids("/api/ess/jobs", "EssNull")).Should().BeEquivalentTo([f.NullCompanyOpen]);
-        (await f.Ids("/api/ess/jobs", "EssA")).Should().NotContain(f.NullCompanyOpen);
+        (await f.Ids("/api/ess/jobs", "EssNull")).Should().BeEquivalentTo([f.NullCompanyOpen, f.NullCompanyInProgress]);
+        (await f.Ids("/api/ess/jobs", "EssA")).Should().NotContain([f.NullCompanyOpen, f.NullCompanyInProgress]);
+        (await f.Status("/api/ess/jobs/" + f.NullCompanyInProgress, "EssA")).Should().Be(HttpStatusCode.NotFound);
         (await f.Status("/api/ess/jobs/" + f.NullCompanyOpen, "EssA")).Should().Be(HttpStatusCode.NotFound);
         (await f.Status("/api/ess/jobs/" + f.AOpenNew, "EssNull")).Should().Be(HttpStatusCode.NotFound);
     }
@@ -152,7 +172,7 @@ public sealed class EssJobBoardHttpTests(EssJobBoardFixture f) : IClassFixture<E
     {
         var json = await f.Json("/api/ess/jobs", "EssA");
         json.EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(["items", "total", "page", "pageSize"]);
-        json.GetProperty("total").GetInt32().Should().Be(3);
+        json.GetProperty("total").GetInt32().Should().Be(4);
         json.GetProperty("page").GetInt32().Should().Be(1);
         json.GetProperty("pageSize").GetInt32().Should().Be(25);
         json.GetProperty("items")[0].EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(
@@ -165,7 +185,7 @@ public sealed class EssJobBoardHttpTests(EssJobBoardFixture f) : IClassFixture<E
     [Fact]
     public async Task List_IsOrderedByPublishedDescending_ThenUnpublishedLast()
     {
-        (await f.Ids("/api/ess/jobs", "EssA")).Should().Equal(f.AOpenNew, f.AOpenOld, f.AOpenUnpublished);
+        (await f.Ids("/api/ess/jobs", "EssA")).Should().Equal(f.AOpenNew, f.AInProgress, f.AOpenOld, f.AOpenUnpublished);
     }
 
     [Fact]
@@ -221,6 +241,8 @@ public sealed class EssJobBoardHttpTests(EssJobBoardFixture f) : IClassFixture<E
         beta.GetProperty("total").GetInt32().Should().Be(0);
         var closed = await f.Json("/api/ess/jobs?q=closed", "EssA");
         closed.GetProperty("total").GetInt32().Should().Be(0);
+        foreach (var hidden in new[] { "onhold", "cancelled" })
+            (await f.Json($"/api/ess/jobs?q={hidden}", "EssA")).GetProperty("total").GetInt32().Should().Be(0);
         var none = await f.Json("/api/ess/jobs?q=zzzzzz", "EssA");
         none.GetProperty("total").GetInt32().Should().Be(0);
         none.GetProperty("items").GetArrayLength().Should().Be(0);
@@ -285,7 +307,7 @@ public sealed class EssJobBoardHttpTests(EssJobBoardFixture f) : IClassFixture<E
     {
         // Extra identifiers on the query string are ignored: the caller's own employee decides the company.
         var ids = await f.Ids($"/api/ess/jobs?companyId={f.CompanyB}&employeeId=1&tenantId={f.OtherTenantId}", "EssA");
-        ids.Should().BeEquivalentTo([f.AOpenNew, f.AOpenOld, f.AOpenUnpublished]);
+        ids.Should().BeEquivalentTo(f.AVisible);
     }
 
     // ── The management endpoints stay closed to a plain Employee ────────────────────────────────────────────────────────
@@ -351,11 +373,17 @@ public sealed class EssJobBoardFixture : IAsyncLifetime
     public Guid AOpenOld { get; } = Guid.NewGuid();
     public Guid AOpenUnpublished { get; } = Guid.NewGuid();
     public Guid AClosed { get; } = Guid.NewGuid();
+    public Guid AInProgress { get; } = Guid.NewGuid();
     public Guid BOpen { get; } = Guid.NewGuid();
+    public Guid BInProgress { get; } = Guid.NewGuid();
     public Guid NullCompanyOpen { get; } = Guid.NewGuid();
+    public Guid NullCompanyInProgress { get; } = Guid.NewGuid();
+    /// <summary>What company A's board shows: every opening of the company that is still hiring (Open and InProgress).</summary>
+    public Guid[] AVisible => [AOpenNew, AInProgress, AOpenOld, AOpenUnpublished];
     public Guid OtherTenantOpen { get; } = Guid.NewGuid();
     public Guid OtherTenantSameCompanyIdOpen { get; } = Guid.NewGuid();
     public Guid Id(string name) => name == "AClosed" ? AClosed : _ids[name];
+
 
     public async Task InitializeAsync()
     {
@@ -388,12 +416,15 @@ public sealed class EssJobBoardFixture : IAsyncLifetime
         db.JobOpenings.Add(Opening(AOpenOld, TenantId, CompanyA, "JOB-A-OLD", "Alpha Analyst", "Open", now.AddDays(-5), now.AddDays(-20), dept: "Finance", desig: "Analyst", location: "Jeddah"));
         db.JobOpenings.Add(Opening(AOpenUnpublished, TenantId, CompanyA, "JOB-A-UNP", "Alpha Clerk", "Open", null, now.AddDays(-30), dept: "Admin", desig: "Clerk", location: "Dammam"));
         db.JobOpenings.Add(Opening(AClosed, TenantId, CompanyA, "JOB-A-CLO", "Alpha Closed", "Closed", now.AddDays(-2), now.AddDays(-9)));
-        foreach (var (name, status) in new[] { ("AOnHold", "OnHold"), ("AInProgress", "InProgress"), ("ACancelled", "Cancelled") })
+        foreach (var (name, status) in new[] { ("AOnHold", "OnHold"), ("ACancelled", "Cancelled") })
         {
             var id = Guid.NewGuid();
             _ids[name] = id;
             db.JobOpenings.Add(Opening(id, TenantId, CompanyA, "JOB-A-" + name.ToUpperInvariant(), "Alpha " + status, status, now.AddDays(-3), now.AddDays(-8)));
         }
+        db.JobOpenings.Add(Opening(AInProgress, TenantId, CompanyA, "JOB-A-INPROGRESS", "Alpha InProgress", "InProgress", now.AddDays(-3), now.AddDays(-8)));
+        db.JobOpenings.Add(Opening(BInProgress, TenantId, CompanyB, "JOB-B-INPROGRESS", "Beta InProgress", "InProgress", now.AddDays(-3), now.AddDays(-5), dept: "Beta Dept", location: "Khobar"));
+        db.JobOpenings.Add(Opening(NullCompanyInProgress, TenantId, null, "JOB-N-INPROGRESS", "Tenant Wide InProgress", "InProgress", now.AddDays(-3), now.AddDays(-5), dept: "Shared", location: "Remote"));
         db.JobOpenings.Add(Opening(BOpen, TenantId, CompanyB, "JOB-B-1", "Beta Engineer", "Open", now.AddDays(-1), now.AddDays(-4), dept: "Beta Dept", location: "Khobar"));
         db.JobOpenings.Add(Opening(NullCompanyOpen, TenantId, null, "JOB-N-1", "Tenant Wide Role", "Open", now.AddDays(-1), now.AddDays(-4), dept: "Shared", location: "Remote"));
         db.JobOpenings.Add(Opening(OtherTenantOpen, OtherTenantId, OtherTenantCompany, "JOB-X-1", "Other Tenant Role", "Open", now.AddDays(-1), now.AddDays(-4)));
