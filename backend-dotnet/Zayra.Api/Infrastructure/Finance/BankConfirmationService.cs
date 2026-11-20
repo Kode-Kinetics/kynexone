@@ -533,50 +533,6 @@ public sealed class BankConfirmationService
             result.ReturnedFileClaim = new ReturnedFileClaimTicket(tenantId, claim.ClaimId!.Value, actorId);
         }
 
-        // ── 2b. Each exit names one record with an open hold of its kind, whose line is in this file and fits ──
-        var codeById = employeeCodes.ToDictionary(e => e.Id, e => e.EmployeeCode ?? string.Empty);
-        var (exitFor, exitRefusal) = ResolveExits(options, records, priorConfirmations, toApply, codeById);
-        if (exitRefusal is not null) return (null, exitRefusal);
-        // Marking a Returned or Rejected salary as Paid is a payment-status decision whichever way it is asked for (an exit,
-        // allowReturnReversal, or a plain PAID line): it needs payroll.wps_status.update (wave 1 P1, Fable P1-2 = Security P2-1).
-        var applying = toApply.Where(t => !PaymentRecordStatuses.IsCancelled(t.Record.Status)
-                                          && t.Row.Outcome != BankConfirmationOutcomes.Pending).ToList();
-        if (!options.CallerMayRecordPaymentStatus
-            && applying.Any(t => PaymentRecordStatuses.IsFailed(t.Record.Status) && t.Row.Outcome == BankConfirmationOutcomes.Paid))
-            return (null, new JournalExportRefusal(403, BankLineExitKinds.NeedsPaymentStatusPermissionBody()));
-        // Nobody records a bank outcome on their own salary (final gate security P2-D, widened in wave 1 to EVERY row the import
-        // applies, not only the exits): any login linked to the record's employee is refused.
-        if (await Approvals.SubjectDecisionBar.CallerIsSubjectOfAnyAsync(
-                _db, tenantId, actorId, applying.Select(t => t.Record.EmployeeId).Distinct().ToList(), ct))
-        {
-            Guid? ownRecord = null;
-            foreach (var t in applying)
-                if (await Approvals.SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, actorId, t.Record.EmployeeId, ct)) { ownRecord = t.Record.Id; break; }
-            return (null, new JournalExportRefusal(403, new
-            {
-                error = BankLineExitKinds.OwnRecordCode,
-                message = "You cannot record a bank outcome or resolve a held bank line on your own salary. Ask another person who may record payment status.",
-                messageAr = "لا يمكنك تسجيل نتيجة بنكية أو معالجة سطر بنكي معلّق على راتبك أنت. اطلب ذلك من شخص آخر مخوّل بتسجيل حالة الدفع.",
-                paymentRecordId = ownRecord,
-            }));
-        }
-
-        // ── 2c. Claim the file before anything is applied (returned-file parser only) ──────────────
-        // The claim is written in the ledger's own unit of work and committed before this import applies anything, so a concurrent
-        // import sees it and exactly one wins (unique ledger key). It is never written inside a caller's open transaction: a rollback
-        // there could erase the claim of an import that another request already lost to, so an open transaction is refused here.
-        if (!options.DryRun && parse.ImportKey is { } importKey)
-        {
-            if (_claim is null)
-                throw new InvalidOperationException("returned_file_claim_missing: this format must claim the file in the exchange ledger before applying it.");
-            if (_db.Database.CurrentTransaction is not null)
-                throw new InvalidOperationException("returned_file_claim_in_transaction: the claim must be committed on its own; import outside a transaction.");
-            var claim = await _claim.ClaimAsync(new ReturnedFileClaimRequest(tenantId, run?.CompanyId, paymentBatchId, importKey, hash, actorId), ct);
-            if (!claim.Claimed)
-                return (null, new JournalExportRefusal(409, new { error = claim.RefusalCode, message = claim.Message }));
-            result.ReturnedFileClaim = new ReturnedFileClaimTicket(tenantId, claim.ClaimId!.Value, actorId);
-        }
-
         // ── 3. Apply ───────────────────────────────────────────────────────────────────────────────
         var nowUtc = DateTime.UtcNow;
         foreach (var (row, record, matchedBy) in toApply)
