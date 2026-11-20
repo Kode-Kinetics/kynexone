@@ -56,6 +56,7 @@ BenefitEligibilityRules
 BenefitEnrollments
 BenefitPayrollDeductionLinks
 BenefitPlans
+BenefitUsageRequests
 BiometricConsents
 BonusApprovals
 BonusAuditLogs

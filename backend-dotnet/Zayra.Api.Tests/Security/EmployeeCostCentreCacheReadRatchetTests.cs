@@ -152,6 +152,7 @@ public sealed class EmployeeCostCentreCacheReadRatchetTests
         ["Controllers/OrganizationStructureImportController.cs"] = (4, MasterData),
         ["Controllers/PositionsController.cs"] = (2, MasterData),
         ["Controllers/PlanningController.cs"] = (1, MasterData),
+        ["Controllers/Performance/CyclesController.cs"] = (1, "An appraisal cycle's own department scope (cycle.DepartmentId), not an employee's attribution; moves nobody."),
         ["Infrastructure/Payroll/BonusCostSplit.cs"] = (1, LedgerStamp),
         ["Infrastructure/Payroll/FinalSettlementGlLedger.cs"] = (1, LedgerStamp),
         ["Infrastructure/Payroll/EosbProvisionAccrual.cs"] = (1, LedgerStamp),

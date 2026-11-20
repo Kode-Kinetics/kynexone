@@ -204,7 +204,13 @@ public class TableBudgetRatchetTests
         // table holds an attempt across bodies: wps_file_batches, gosi_filings and qiwa_sync_logs are each one body's domain
         // state. Retention: credentials for the life of the connection (deleted on removal, with the company or by whole-tenant
         // erasure); exchange rows 84 months with the payroll record they evidence (OWNERSHIP_AND_RETENTION.md).
-        DeclaredDbSets().Should().HaveCount(388,
+        // Benefit usage requests (AddBenefitUsageRequests; owner HR / Finance). One table, 388 -> 389. BenefitUsageRequests: one request to use
+        // a fixed contract benefit (education per child, an air ticket, a count or amount) against the employee's frozen entitlement row,
+        // with its requester, Finance decision and state. No existing table can carry it: employee_entitlements is the frozen entitlement
+        // (a pending ask there would read as a change to the contract), loans and advances are money-moving and carry repayment, and
+        // approval_requests has no entitlement or benefit-period witness. The used / left figures are read from these rows; no money
+        // moves and nothing reaches payroll or the GL. Retention: kept with the employee's benefit history; removed by whole-tenant erasure.
+        DeclaredDbSets().Should().HaveCount(389,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }
