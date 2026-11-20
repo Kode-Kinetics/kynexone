@@ -108,3 +108,24 @@ test.describe('sidebar section headers', () => {
     await expect(hr).toHaveAttribute('aria-expanded', 'true');
   });
 });
+
+test.describe('module state never arrives', () => {
+  test('after a wait the page says it could not load and Retry brings the list back', async ({ page }) => {
+    test.setTimeout(120_000);
+    await bootPeopleFixture(page, { count: 14 });
+    // The module catalogue is the first thing the page waits for. Hold every request open (a stalled connection) until told.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    await page.route('**/api/features/**', async (route) => {
+      await gate;
+      await route.fulfill({ json: [] }).catch(() => {});
+    });
+    await page.goto('/people');
+    await expect(page.getByTestId('module-state-slow')).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole('heading', { name: 'This page could not be loaded.' })).toBeVisible();
+    release();
+    await page.getByRole('button', { name: 'Retry' }).click();
+    await expect(page.locator('#employee-1000')).toBeVisible({ timeout: 45_000 });
+    await expect(page.getByTestId('module-state-slow')).toHaveCount(0);
+  });
+});
