@@ -97,6 +97,14 @@ export const emptyUsageForm = (today: string): UsageForm => ({
   benefitCode: '', usageDate: today, quantity: '', dependantId: '', academicYear: '', providerName: '', evidenceReference: '', note: '',
 });
 
+/** Why a family benefit shows nothing to use: the grade covers family members but none is on file (so the entitlement is zero). */
+export function noFamilyNoteKey(row: UtilisationRow): string | null {
+  if (row.dependantScope === 'None' || row.beneficiaries.length > 0) return null;
+  return usageKind(row.benefitCode) === 'education'
+    ? 'No children are on file, so there is nothing to use yet. Add the children on the employee record.'
+    : 'No family members are on file, so there is nothing to use yet. Add them on the employee record.';
+}
+
 /** What is left for the person or child chosen (the whole row when the benefit is the employee's alone). */
 export function leftFor(row: UtilisationRow, dependantId: string): number {
   if (row.beneficiaries.length === 0) return row.remaining;

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import type { UtilisationRow } from '../src/api/benefitUsage';
 import {
-  INFO_KEYS, REFUSAL_KEYS, STATUS_KEYS, emptyUsageForm, leftFor, measureText, newUsageId, refusalKey, statusKey, usageKind, usageProblems,
+  INFO_KEYS, REFUSAL_KEYS, STATUS_KEYS, emptyUsageForm, leftFor, noFamilyNoteKey, measureText, newUsageId, refusalKey, statusKey, usageKind, usageProblems,
 } from '../src/lib/benefitUsage';
 import { releaseASlices } from '../src/i18n/releaseA';
 import { translate } from '../src/i18n/translations';
@@ -80,4 +80,13 @@ test('the screen says plainly that approving a use pays nothing, and where a pay
   expect(note).toMatch(/pays nothing|no money/i);
   expect(note).toMatch(/payroll/i);
   expect(ARABIC.test(translate('ar', note))).toBe(true);
+});
+
+test('a benefit for family members with none on file says so instead of showing an unexplained zero', () => {
+  const education = row({ benefitCode: 'EDUCATION', dependantScope: 'Children', measure: 'Amount', currency: 'SAR', entitlement: 0, remaining: 0, perBeneficiary: 5000, beneficiaries: [], canRequest: false });
+  const key = noFamilyNoteKey(education);
+  expect(key).toBeTruthy();
+  expect(ARABIC.test(translate('ar', key!))).toBe(true);
+  expect(noFamilyNoteKey(row())).toBeNull();
+  expect(noFamilyNoteKey(row({ dependantScope: 'None', maxDependants: null, perBeneficiary: null, beneficiaries: [] }))).toBeNull();
 });

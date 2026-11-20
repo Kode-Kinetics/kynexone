@@ -1,6 +1,11 @@
 export const employeeWorkspace = {
   en: {
     'Back to People': 'Back to People',
+    'Pay & Benefits sections': 'Pay & Benefits sections',
+    'Edit pay details': 'Edit pay details',
+    'Payroll identity, banking, salary package, allowances, deductions, and benefits.': 'Payroll identity, banking, salary package, allowances, deductions, and benefits.',
+    'This panel is not available. The pay and benefits overview is shown instead.': 'This panel is not available. The pay and benefits overview is shown instead.',
+    'View pay and benefits overview': 'View pay and benefits overview',
     'Employee record sections': 'Employee record sections',
     'Personal': 'Personal',
     'Employment': 'Employment',
@@ -54,6 +59,11 @@ export const employeeWorkspace = {
   },
   ar: {
     'Back to People': 'العودة إلى الموظفين',
+    'Pay & Benefits sections': 'أقسام الرواتب والمزايا',
+    'Edit pay details': 'تعديل بيانات الراتب',
+    'Payroll identity, banking, salary package, allowances, deductions, and benefits.': 'هوية الرواتب والبيانات البنكية وباقة الراتب والبدلات والاستقطاعات والمزايا.',
+    'This panel is not available. The pay and benefits overview is shown instead.': 'هذا القسم غير متاح. تُعرض نظرة عامة على الرواتب والمزايا بدلاً منه.',
+    'View pay and benefits overview': 'عرض نظرة عامة على الرواتب والمزايا',
     'Employee record sections': 'أقسام سجل الموظف',
     'Personal': 'المعلومات الشخصية',
     'Employment': 'التوظيف',
