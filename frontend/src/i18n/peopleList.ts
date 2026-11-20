@@ -10,7 +10,6 @@ const ar: Record<string, string> = {
   '{count} employee records': 'عدد سجلات الموظفين: {count}',
   'Former employees — retained for statutory audit': 'الموظفون السابقون — تُحفظ سجلاتهم لأغراض التدقيق النظامي',
   'Employee directory view': 'عرض دليل الموظفين',
-  'Current': 'الحاليون',
   'Ex-Employees': 'الموظفون السابقون',
   'Add Employee': 'إضافة موظف',
 
@@ -28,7 +27,6 @@ const ar: Record<string, string> = {
   'Dismiss': 'إغلاق',
   'Search employees': 'البحث عن موظفين',
   'Search employee code, name, email': 'ابحث برمز الموظف أو الاسم أو البريد الإلكتروني',
-  'Status filter': 'تصفية حسب الحالة',
   'All statuses': 'كل الحالات',
   'Readiness filter': 'تصفية حسب الجاهزية',
   'All readiness': 'كل مستويات الجاهزية',

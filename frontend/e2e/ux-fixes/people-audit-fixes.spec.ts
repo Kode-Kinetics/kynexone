@@ -123,8 +123,10 @@ test.describe('module state never arrives', () => {
     await page.goto('/people');
     await expect(page.getByTestId('module-state-slow')).toBeVisible({ timeout: 60_000 });
     await expect(page.getByRole('heading', { name: 'This page could not be loaded.' })).toBeVisible();
-    release();
+    // Click Retry while the connection is still stalled: releasing first lets the original request answer, the page
+    // recovers on its own and the button detaches mid-click (a race, not a Retry check).
     await page.getByRole('button', { name: 'Retry' }).click();
+    release();
     await expect(page.locator('#employee-1000')).toBeVisible({ timeout: 45_000 });
     await expect(page.getByTestId('module-state-slow')).toHaveCount(0);
   });
@@ -134,11 +136,11 @@ test.describe('Arabic on the People list', () => {
   test('the list, filters, table and shell caption are Arabic, with no English left in them', async ({ page }) => {
     await open(page, 'ar');
     await expect(page.getByRole('button', { name: 'إضافة موظف' })).toBeVisible();
-    await expect(page.getByRole('tab', { name: 'الحاليون' })).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'الحالي' })).toBeVisible();
     await expect(page.getByRole('tab', { name: 'الموظفون السابقون' })).toBeVisible();
     await expect(page.getByText('عدد سجلات الموظفين: 14')).toBeVisible();
     await expect(page.getByRole('checkbox', { name: 'تحديد كل ما في هذه الصفحة' })).toBeVisible();
-    await expect(page.getByRole('combobox', { name: 'تصفية حسب الحالة' })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'تصفية الحالة' })).toBeVisible();
     await expect(page.getByRole('columnheader', { name: 'القسم' })).toBeVisible();
     await expect(page.getByText('منصة إدارة القوى العاملة')).toBeVisible();
     await expect(page.getByText('صفحة 1 من 1')).toBeVisible();
