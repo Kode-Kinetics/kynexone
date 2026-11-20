@@ -48,8 +48,14 @@ public sealed class BenefitUsageService(ZayraDbContext db, ITenantClock clock)
         var query = Requests(actor.TenantId);
         if (employeeId is int id) query = query.Where(x => x.EmployeeId == id);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
-        var rows = (await query.OrderByDescending(x => x.CreatedAtUtc).Take(MaxRows * 2).ToListAsync(ct))
-            .Where(x => actor.CanAccessCompany(x.CompanyId)).Take(MaxRows).ToList();
+        // The caller's company restriction comes BEFORE the limit, so the limit counts only rows the caller may see: a newer backlog in
+        // another company can never push their own requests out of the list. The actor's check is a delegate, so it is applied to the
+        // distinct companies present and the allowed set goes into the query.
+        var present = await query.Select(x => x.CompanyId).Distinct().ToListAsync(ct);
+        var allowed = present.Where(c => c is not null && actor.CanAccessCompany(c)).Select(c => c!.Value).ToList();
+        var includeUnassigned = present.Contains(null) && actor.CanAccessCompany(null);
+        query = query.Where(x => (x.CompanyId != null && allowed.Contains(x.CompanyId.Value)) || (includeUnassigned && x.CompanyId == null));
+        var rows = await query.OrderByDescending(x => x.CreatedAtUtc).Take(MaxRows).ToListAsync(ct);
         return await ToDtosAsync(actor, rows, ct);
     }
 

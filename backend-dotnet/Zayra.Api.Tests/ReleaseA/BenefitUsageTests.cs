@@ -193,6 +193,28 @@ public sealed class BenefitUsageTests
         queue.Single().CanDecide.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task Finance_OfOneCompany_StillSeesItsPendingRequests_WhenMoreThanTheListLimitOfNewerRequestsBelongToAnotherCompany()
+    {
+        await using var k = await BenefitUsageKit.CreateAsync();
+        await k.FreezeAsync("AIR_TICKET", GradeEntitlementValueTypes.Quantity, quantity: 2, tier: CoverageTiers.Economy);
+        var mine = new[] { await k.Service.RequestAsync(k.Hr(), k.Ticket(), default), await k.Service.RequestAsync(k.Hr(), k.Ticket(), default) };
+        // 2,001 newer requests of another company (more than the 2,000 the list reads): a tenant-wide limit applied before the company check would fill with these.
+        var newer = DateTime.UtcNow.AddDays(1);
+        for (var i = 0; i < 2001; i++)
+            k.Db.BenefitUsageRequests.Add(new BenefitUsageRequest
+            {
+                TenantId = k.Seed.TenantId, CompanyId = k.Seed.OtherCompany.Id, EmployeeId = k.Seed.Mohammed.Id, EntitlementId = Guid.NewGuid(),
+                BenefitCode = "AIR_TICKET", PeriodStart = k.Seed.Term.StartDate, PeriodEnd = k.Seed.Term.EndDate!.Value, UsageDate = new DateOnly(2026, 8, 10),
+                Units = 1, Currency = "SAR", RequestedByUserId = Guid.NewGuid(), Status = BenefitUsageStatuses.Pending, CreatedAtUtc = newer.AddSeconds(i),
+            });
+        await k.Db.SaveChangesAsync();
+
+        var queue = await k.Service.RequestsAsync(k.Finance(onlyCompany: k.Seed.Company.Id), null, BenefitUsageStatuses.Pending, default);
+
+        queue.Select(r => r.Id).Should().BeEquivalentTo(mine.Select(r => r.Id));
+    }
+
     // ── Refusals ────────────────────────────────────────────────────────────────────────────────────
 
     [Fact]
