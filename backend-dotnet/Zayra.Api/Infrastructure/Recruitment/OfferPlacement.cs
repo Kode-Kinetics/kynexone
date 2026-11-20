@@ -127,5 +127,58 @@ public static class OfferPlacement
         return new Result(departmentName, designationTitle, null, null);
     }
 
+    private sealed record DepartmentRow(Guid Id, string Code, string NameEn, string NameAr, Guid? CompanyId);
+
+    /// <summary>The department an offer's stored text names: by name first, else by code, the offering company's own row first. Null when nothing
+    /// matches or the match is ambiguous.</summary>
+    private static async Task<DepartmentRow?> FindStoredDepartmentAsync(ZayraDbContext db, Guid tenantId, Guid? companyId, string? stored, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(stored)) return null;
+        var term = stored.Trim();
+        var rows = await ScopedBypass.TenantWide(db.Departments, tenantId,
+                "Display only: the name of the department an offer or hire draft holds, resolved the way activation resolves it, whatever the caller's company scope.")
+            .AsNoTracking().Where(d => !d.IsDeleted && d.IsActive && (d.NameEn.ToLower() == term.ToLower() || d.Code.ToUpper() == term.ToUpper()))
+            .Select(d => new DepartmentRow(d.Id, d.Code, d.NameEn, d.NameAr, d.CompanyId)).ToListAsync(ct);
+        var byName = rows.Where(r => string.Equals(r.NameEn, term, StringComparison.OrdinalIgnoreCase)).ToList();
+        var candidates = byName.Count > 0 ? byName : rows;
+        foreach (var scope in new Func<DepartmentRow, bool>[] { r => companyId != null && r.CompanyId == companyId, r => r.CompanyId == null })
+        {
+            var inScope = candidates.Where(scope).ToList();
+            if (inScope.Count == 1) return inScope[0];
+            if (inScope.Count > 1) return null;
+        }
+        return candidates.Count == 1 ? candidates[0] : null;
+    }
+
+    /// <summary>
+    /// The department as people read it: its name (the Arabic name for an Arabic letter, when it has one), not the code the offer may hold. An offer
+    /// stores the code when a name is shared, so that activation finds the same record; display never changes what is stored. Falls back to the stored
+    /// text when no single department matches.
+    /// </summary>
+    public static async Task<string> DisplayDepartmentAsync(ZayraDbContext db, Guid tenantId, Guid? companyId, string? stored, bool arabic, CancellationToken ct)
+    {
+        var found = await FindStoredDepartmentAsync(db, tenantId, companyId, stored, ct);
+        if (found is null) return stored ?? string.Empty;
+        return arabic && !string.IsNullOrWhiteSpace(found.NameAr) ? found.NameAr : found.NameEn;
+    }
+
+    /// <summary>
+    /// The department text for the hire draft of an accepted offer: the name, but only when activation, which resolves the draft's text by name or
+    /// code within the offer's company, would land on the same department. Otherwise the stored text (the code) is kept, so the hire is never placed
+    /// in a different department than the one the offer named.
+    /// </summary>
+    public static async Task<string> DepartmentForHireDraftAsync(ZayraDbContext db, Guid tenantId, Guid? companyId, string? stored, CancellationToken ct)
+    {
+        var found = await FindStoredDepartmentAsync(db, tenantId, companyId, stored, ct);
+        if (found is null) return stored ?? string.Empty;
+        var landing = await ScopedBypass.TenantWide(db.Departments, tenantId, "Checks which department the hire draft's text resolves to at activation, whatever the caller's company scope.")
+            .AsNoTracking().Where(d => !d.IsDeleted && d.IsActive && (d.NameEn.ToLower() == found.NameEn.ToLower() || d.Code.ToUpper() == found.NameEn.ToUpper()))
+            .Where(d => companyId == null || d.CompanyId == companyId || d.CompanyId == null)
+            .Select(d => new { d.Id, d.CompanyId }).ToListAsync(ct);
+        if (companyId is null && landing.Select(d => d.CompanyId).Where(c => c != null).Distinct().Count() > 1) return stored ?? string.Empty;
+        var first = landing.OrderBy(d => d.CompanyId == null ? 1 : 0).ThenBy(d => d.Id).FirstOrDefault();
+        return first?.Id == found.Id ? found.NameEn : stored ?? string.Empty;
+    }
+
     private static Result Refused(string field, string message) => new(string.Empty, string.Empty, field, message, UnresolvedError);
 }

@@ -11,9 +11,13 @@ namespace Zayra.Api.Infrastructure.Documents.Letters;
 /// </summary>
 public static class OfferLetterClauses
 {
+    /// <summary>The fixed probation paragraph the default Saudi letter carried before it stated the recorded probation. A saved template or draft design that still holds it is read as {{probation_clause}} when its letter is generated again.</summary>
+    public const string LegacyProbationEn = "You will serve a probation period of 90 days from the start date. The period may be extended by written agreement between you and the company, and in all cases the total probation period will not exceed 180 days. Days of Eid al-Fitr, Eid al-Adha and sick leave are not counted within the probation period. During probation either party may end the contract as provided by the Labor Law.";
+    public const string LegacyProbationAr = "تخضعون لفترة تجربة مدتها (90) يومًا من تاريخ المباشرة، ويجوز تمديدها باتفاق خطي بينكم وبين المنشأة، على ألا تتجاوز فترة التجربة في مجموعها (180) يومًا في جميع الأحوال. لا تُحتسب ضمن فترة التجربة أيام عيدي الفطر والأضحى وأيام الإجازة المرضية. ويجوز لأي من الطرفين إنهاء العقد خلال فترة التجربة وفق أحكام نظام العمل.";
+
     /// <summary>The clause tokens this class fills; every one is also a built-in merge field (<see cref="OfferLetterDesign.Tokens"/>).</summary>
     public static readonly string[] Tokens =
-        ["work_location", "contract_term_clause", "notice_period_employer", "notice_period_employee", "gosi_clause", "health_residency_clause", "compensation_lines"];
+        ["work_location", "contract_term_clause", "notice_period_employer", "notice_period_employee", "gosi_clause", "health_residency_clause", "compensation_lines", "probation_clause"];
 
     public static bool IsSaudi(string? nationality)
     {
@@ -23,7 +27,11 @@ public static class OfferLetterClauses
 
     /// <param name="noticeDays">The company's own notice period in days, or null when none is set (the letter then refers to the Labor Law instead of inventing a duration).</param>
     /// <param name="contractTerm">A stated fixed term (for example "12 months"), or null when the contract's term is left to the contract.</param>
-    public static Dictionary<string, string> Values(bool arabic, bool saudi, int? noticeDays, string? workLocation, string? contractTerm)
+    /// <param name="probationMonths">The offer's recorded probation in months; 0 is no probation.</param>
+    /// <param name="probationAtCeiling">True when the Saudi 180-day ceiling applies, so the period is stated as 180 days and cannot be extended.</param>
+    /// <param name="saudiCompany">True for a Saudi employer: only then does the letter quote the Saudi extension and 180-day rules.</param>
+    public static Dictionary<string, string> Values(bool arabic, bool saudi, int? noticeDays, string? workLocation, string? contractTerm,
+        int probationMonths = 3, bool probationAtCeiling = false, bool saudiCompany = true)
     {
         var location = string.IsNullOrWhiteSpace(workLocation) ? (arabic ? "كما هو مبين في العقد" : "as stated in the employment contract") : workLocation.Trim();
         string notice = noticeDays is { } d
@@ -50,7 +58,46 @@ public static class OfferLetterClauses
         {
             ["work_location"] = location, ["contract_term_clause"] = contract, ["notice_period_employer"] = notice, ["notice_period_employee"] = notice,
             ["gosi_clause"] = gosi, ["health_residency_clause"] = health,
+            ["probation_clause"] = ProbationClause(arabic, probationMonths, probationAtCeiling, saudiCompany),
         };
+    }
+
+    /// <summary>The probation as a phrase inside the letter, in the letter's language: "1 month", "3 months", "180 days" (the Saudi ceiling), and in Arabic
+    /// "شهر واحد", "شهران", "(3) أشهر", "(11) شهرًا", "(180) يومًا".</summary>
+    public static string ProbationPeriod(bool arabic, int months, bool atCeiling)
+    {
+        if (months <= 0) return arabic ? "لا يوجد" : "None";
+        if (atCeiling) return arabic ? "(180) يومًا" : "180 days";
+        if (!arabic) return months == 1 ? "1 month" : $"{months.ToString(CultureInfo.InvariantCulture)} months";
+        var n = months.ToString(CultureInfo.InvariantCulture);
+        return months switch { 1 => "شهر واحد", 2 => "شهران", <= 10 => $"({n}) أشهر", _ => $"({n}) شهرًا" };
+    }
+
+    /// <summary>
+    /// The probation paragraph of the letter, from what the offer records. No probation: the employee does not serve one. A Saudi employer at the
+    /// 180-day ceiling: the legal maximum, never extendable. A Saudi employer below it: the recorded period, extendable in writing up to 180 days in
+    /// total. Any other employer: the recorded period, within the maximum its own labour law permits (the Saudi extension rule is not quoted).
+    /// </summary>
+    public static string ProbationClause(bool arabic, int months, bool atCeiling, bool saudiCompany)
+    {
+        if (months <= 0)
+            return arabic ? "لا تخضعون لفترة تجربة، ويكون تعيينكم نهائيًا من تاريخ المباشرة." : "You will not serve a probation period. Your employment is confirmed from the start date.";
+        var period = ProbationPeriod(arabic, months, atCeiling);
+        if (arabic)
+        {
+            var head = $"تخضعون لفترة تجربة مدتها {period} من تاريخ المباشرة";
+            if (!saudiCompany) return head + "، وذلك ضمن الحد الأقصى المقرر في نظام العمل المطبق على علاقة عملكم.";
+            var middle = atCeiling
+                ? "، وهي الحد الأقصى المقرر في نظام العمل ولا يجوز تمديدها."
+                : "، ويجوز تمديدها باتفاق خطي بينكم وبين المنشأة على ألا تتجاوز فترة التجربة في مجموعها (180) يومًا.";
+            return head + middle + " لا تُحتسب ضمن فترة التجربة أيام عيدي الفطر والأضحى وأيام الإجازة المرضية. ويجوز لأي من الطرفين إنهاء العقد خلال فترة التجربة وفق أحكام نظام العمل.";
+        }
+        var english = $"You will serve a probation period of {period} from the start date";
+        if (!saudiCompany) return english + ", within the maximum permitted by the labour law applying to your employment.";
+        var rule = atCeiling
+            ? ". This is the maximum the Labor Law allows and cannot be extended."
+            : ". It may be extended by written agreement between you and the company, provided the total never exceeds 180 days.";
+        return english + rule + " Days of Eid al-Fitr, Eid al-Adha and sick leave are not counted within the probation period. During probation either party may end the contract as provided by the Labor Law.";
     }
 
     /// <summary>One line per pay item the offer actually has: basic, housing and transport always, other allowances only when above zero, then the total.</summary>
@@ -101,7 +148,7 @@ public static class OfferLetterClauses
                 Heading("نوع العقد ومدته"),
                 Text("{{contract_term_clause}}"),
                 Heading("فترة التجربة"),
-                Text("تخضعون لفترة تجربة مدتها (90) يومًا من تاريخ المباشرة، ويجوز تمديدها باتفاق خطي بينكم وبين المنشأة، على ألا تتجاوز فترة التجربة في مجموعها (180) يومًا في جميع الأحوال. لا تُحتسب ضمن فترة التجربة أيام عيدي الفطر والأضحى وأيام الإجازة المرضية. ويجوز لأي من الطرفين إنهاء العقد خلال فترة التجربة وفق أحكام نظام العمل."),
+                Text("{{probation_clause}}"),
                 Heading("ساعات العمل والراحة"),
                 Text("ساعات العمل العادية ثماني (8) ساعات يوميًا أو ثمان وأربعون (48) ساعة أسبوعيًا. وتُخفَّض ساعات العمل في شهر رمضان للموظفين المسلمين إلى ست (6) ساعات يوميًا أو ست وثلاثين (36) ساعة أسبوعيًا. ويوم الجمعة هو يوم الراحة الأسبوعية المدفوعة الأجر ما لم يُحدَّد يوم آخر وفق نظام العمل. وما زاد على هذه الساعات يُعد عملًا إضافيًا يُدفع عنه أجر الساعة مضافًا إليه (50%) من الأجر الأساسي للساعة."),
                 Heading("الأجر"),
@@ -134,7 +181,7 @@ public static class OfferLetterClauses
                 Heading("Contract type and term"),
                 Text("{{contract_term_clause}}"),
                 Heading("Probation"),
-                Text("You will serve a probation period of 90 days from the start date. The period may be extended by written agreement between you and the company, and in all cases the total probation period will not exceed 180 days. Days of Eid al-Fitr, Eid al-Adha and sick leave are not counted within the probation period. During probation either party may end the contract as provided by the Labor Law."),
+                Text("{{probation_clause}}"),
                 Heading("Working hours and rest"),
                 Text("Normal working hours are eight hours a day or 48 hours a week. During Ramadan, working hours for Muslim employees are reduced to six hours a day or 36 hours a week. Friday is the paid weekly rest day unless another day is assigned in line with the Labor Law. Work beyond these hours is overtime and is paid as the hourly wage plus 50% of the basic hourly wage."),
                 Heading("Remuneration"),
