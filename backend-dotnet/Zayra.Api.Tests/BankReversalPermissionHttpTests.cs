@@ -12,6 +12,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Seed;
 using Zayra.Api.Models;
 using Zayra.Api.Tests.Security;
@@ -107,6 +108,46 @@ public sealed class BankReversalPermissionHttpTests(BankReversalHttpFixture f) :
         (await State("W-OK")).Status.Should().Be(PaymentRecordStatuses.Paid);
     }
 
+    /// <summary>A PENDING line that carries reason DUPL plus the named exit: the shape that resolves an open duplicate hold.</summary>
+    private async Task<(HttpStatusCode Status, string Body)> PostDuplicateExit(string user, string wpsReference, string exitKind)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            fileName = $"letter-{Guid.NewGuid():N}.json",
+            rows = new[] { new { wpsReference, amount = 100m, status = "PENDING", reasonCode = "DUPL", valueDate = "2026-07-30", bankReference = Guid.NewGuid().ToString("N") } },
+            exits = new[] { new { kind = exitKind, employeeReference = wpsReference, reason = "test-statement checked", bankReference = "test-stmt-1" } },
+        });
+        var request = new HttpRequestMessage(HttpMethod.Post, Path(false, null))
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", f.Token(user));
+        using var response = await f.Client.SendAsync(request);
+        return (response.StatusCode, await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData("W-DUPL-SELF-ORIG", BankLineExitKinds.ConfirmOriginalPaymentReceived)]
+    [InlineData("W-DUPL-SELF-NOTPAID", BankLineExitKinds.ConfirmDuplicateNotPaid)]
+    public async Task ADuplicateExit_OnAPendingRow_ForTheCallersOwnRecord_IsRefused_AndNothingChanges(string wps, string exitKind)
+    {
+        var before = await State(wps);
+        var (status, body) = await PostDuplicateExit("Self", wps, exitKind);
+        status.Should().Be(HttpStatusCode.Forbidden, body);
+        body.Should().Contain("exit_on_own_payment_record");
+        (await State(wps)).Should().Be(before).And.Be((PaymentRecordStatuses.Pending, 1, before.Audits));
+    }
+
+    [Theory]
+    [InlineData("W-DUPL-OTHER-ORIG", BankLineExitKinds.ConfirmOriginalPaymentReceived, "Paid")]
+    [InlineData("W-DUPL-OTHER-NOTPAID", BankLineExitKinds.ConfirmDuplicateNotPaid, "Rejected")]
+    public async Task ADuplicateExit_OnAPendingRow_ByAKeyHolderWhoIsNotTheSubject_StillSucceeds(string wps, string exitKind, string expected)
+    {
+        var (status, body) = await PostDuplicateExit("ImportAndStatus", wps, exitKind);
+        status.Should().Be(HttpStatusCode.OK, body);
+        (await State(wps)).Status.Should().Be(expected);
+    }
+
     [Fact]
     public async Task AReasonOverFiveHundredCharacters_IsRefused400_AndNothingChanges()
     {
@@ -170,6 +211,10 @@ public sealed class BankReversalHttpFixture : IAsyncLifetime
         ("W-LONG", 9105, PaymentRecordStatuses.Returned),
         ("W-EDGE", 9106, PaymentRecordStatuses.Returned),
         ("W-MASK", 9107, PaymentRecordStatuses.Returned),
+        ("W-DUPL-SELF-ORIG", 0, PaymentRecordStatuses.Pending),
+        ("W-DUPL-SELF-NOTPAID", 0, PaymentRecordStatuses.Pending),
+        ("W-DUPL-OTHER-ORIG", 9110, PaymentRecordStatuses.Pending),
+        ("W-DUPL-OTHER-NOTPAID", 9111, PaymentRecordStatuses.Pending),
     };
 
     public async Task InitializeAsync()
@@ -202,6 +247,18 @@ public sealed class BankReversalHttpFixture : IAsyncLifetime
             });
         await db.SaveChangesAsync();
         BatchId = batch.Id;
+        // The duplicate-hold records already carry the bank's earlier DUPL line, held for a person (an open hold an exit may resolve).
+        foreach (var record in await db.PayrollPaymentRecords.IgnoreQueryFilters().Where(r => r.TenantId == TenantId && r.WpsReference!.StartsWith("W-DUPL-")).ToListAsync())
+            db.BankPaymentConfirmations.Add(new BankPaymentConfirmation
+            {
+                TenantId = TenantId, PaymentBatchId = batch.Id, PaymentRecordId = record.Id, EmployeeId = record.EmployeeId,
+                Outcome = BankConfirmationOutcomes.Rejected, RawOutcome = "RJCT", PreviousStatus = PaymentRecordStatuses.Pending,
+                Applied = false, HoldReason = BankOutcomeHolds.DuplicateRejection, ConfirmedAmount = 100m, RecordAmount = 100m,
+                ReasonCode = "DUPL", MatchedBy = "wps_reference", ImportBatchId = Guid.NewGuid(), SourceFileName = "test-earlier.json",
+                SourceFileHash = $"test-hash-{record.Id:N}", ParserKey = "generic-csv", ImportedByName = "test-officer",
+                ImportedAtUtc = DateTime.UtcNow.AddDays(-1),
+            });
+        await db.SaveChangesAsync();
         await new AuthSeeder(db).EnsureTenantRolesAsync(TenantId, CancellationToken.None);
         foreach (var (key, permissions) in Users) await AddUser(db, key, permissions);
         var self = await db.Users.IgnoreQueryFilters().SingleAsync(u => u.TenantId == TenantId && u.FullName == "Self");
