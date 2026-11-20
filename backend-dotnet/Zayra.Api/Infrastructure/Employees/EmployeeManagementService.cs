@@ -1835,6 +1835,8 @@ public class EmployeeManagementService : IEmployeeManagementService
             .Select(x => new { x.NameEn, x.ManagerEmployeeId })
             .FirstOrDefaultAsync(cancellationToken);
         employee.Department = request.DepartmentId is null ? employee.Department : department?.NameEn ?? employee.Department;
+        var priorDesignationTitle = employee.Designation;
+        var designationTitleChanged = false;
         if (request.DesignationId is not null)
         {
             var designation = await _db.Designations
@@ -1843,6 +1845,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 .FirstOrDefaultAsync(cancellationToken);
             if (designation is not null)
             {
+                designationTitleChanged = !string.Equals(priorDesignationTitle?.Trim(), designation.TitleEn?.Trim(), StringComparison.OrdinalIgnoreCase);
                 employee.Designation = designation.TitleEn;
                 // A designation's default grade fills a grade that was never set. Someone who has started work gets a grade only through an approved grade change.
                 if (employee.ActivatedAtUtc is null && !await Zayra.Api.Application.Employees.EmployeeGradeResolution.HasStartedAsync(_db, employee, cancellationToken))
@@ -1853,7 +1856,14 @@ public class EmployeeManagementService : IEmployeeManagementService
         await Zayra.Api.Application.Employees.EmployeeGradeResolution.SyncTextToGradeIdAsync(_db, tenantId, employee, priorGradeId, cancellationToken);
         // Wave A D3: the cached copy is the RESOLVED code (a Remove used to leave the old override's code behind).
         await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.RefreshCachedCostCentreAsync(_db, tenantId, employee, cancellationToken);
-        employee.JobTitle = Clean(request.JobTitle);
+        // The job title follows a changed designation on an edit, but only when it was blank or still the OLD designation's title:
+        // a title somebody typed differently is theirs and is kept. A new employee (nothing to follow yet) takes what was typed.
+        var sentJobTitle = Clean(request.JobTitle);
+        var isNewEmployee = employee.Id == 0 && _db.Entry(employee).State == EntityState.Detached;
+        employee.JobTitle = !isNewEmployee && designationTitleChanged && !string.IsNullOrWhiteSpace(employee.Designation)
+            && (string.IsNullOrWhiteSpace(sentJobTitle) || string.Equals(sentJobTitle?.Trim(), priorDesignationTitle?.Trim(), StringComparison.OrdinalIgnoreCase))
+            ? employee.Designation
+            : sentJobTitle;
         employee.ManagerEmployeeId = request.ReportingManagerEmployeeId
             ?? await ResolveDepartmentManagerAsync(tenantId, department?.ManagerEmployeeId, cancellationToken)
             ?? (request.DepartmentId is null ? employee.ManagerEmployeeId : null);
