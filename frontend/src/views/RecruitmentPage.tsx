@@ -189,7 +189,7 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
           : (
             <div className="flex flex-wrap items-center gap-2">
               <select aria-label={t('Offer approver')} value={approverId} onChange={e => setApproverId(e.target.value)}
-                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs dark:border-white/10 dark:bg-white/5">
+                className="w-full min-w-0 max-w-md text-ellipsis rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs dark:border-white/10 dark:bg-white/5">
                 <option value="">{t('Choose approver…')}</option>
                 {options.map(o => <option key={o.userId} value={o.userId}>{approverOptionLabel(o)}</option>)}
               </select>
