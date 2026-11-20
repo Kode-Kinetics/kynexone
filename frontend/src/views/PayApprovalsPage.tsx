@@ -3,11 +3,11 @@
 import { isolateLtr, isolateName } from '../lib/bidi';
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, RefreshCw, WalletCards } from 'lucide-react';
+import { Loader2, RefreshCw, Search, WalletCards } from 'lucide-react';
 import { payApprovalsApi, type PayApprovalList } from '../api/payApprovals';
 import { useLocale } from '../contexts/LocaleContext';
 import { useFormat } from '../hooks/useFormat';
-import { maskedAccount } from '../lib/payApprovals';
+import { filterPayApprovals, maskedAccount } from '../lib/payApprovals';
 import { useAuth } from '../contexts/AuthContext';
 
 /** How long the queue waits for the API before offering Reload. */
@@ -21,6 +21,7 @@ export function PayApprovalsPage() {
   const [data, setData] = useState<PayApprovalList | null>(null);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
   const when = (iso: string) => fmt.date(iso);
 
   // A queue request that never answers (a slow API, a connection held up behind others) must end in the retryable error,
@@ -67,10 +68,19 @@ export function PayApprovalsPage() {
       </div>
 
       {data && data.items.length > 0 && (
+        <div className="relative max-w-md">
+          <Search className="pointer-events-none absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+          <input type="search" value={search} onChange={e => setSearch(e.target.value)} data-testid="pay-approvals-search"
+            placeholder={t('Search by name or employee code')} aria-label={t('Search pay packages')}
+            className="h-control-md w-full rounded-lg border border-slate-200 bg-white ps-9 pe-3 text-sm text-slate-900 dark:border-white/10 dark:bg-white/[0.04] dark:text-white" />
+        </div>
+      )}
+
+      {data && data.items.length > 0 && (
         <section aria-labelledby="pay-approvals-heading">
           <h2 id="pay-approvals-heading" className="sr-only">{t('Pay packages awaiting approval')}</h2>
           <ul className="space-y-1.5" data-testid="pay-approvals-list">
-            {data.items.map(item => (
+            {filterPayApprovals(data.items, search).map(item => (
               <li key={item.employeeId} className="grid items-center gap-x-4 gap-y-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 md:grid-cols-[minmax(0,1.2fr)_minmax(0,2.2fr)_auto] dark:border-white/10 dark:bg-white/[0.04]">
                 <div className="min-w-0">
                   <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -92,6 +102,7 @@ export function PayApprovalsPage() {
               </li>
             ))}
           </ul>
+          {search.trim() && filterPayApprovals(data.items, search).length === 0 && <p data-testid="pay-approvals-no-match" className="rounded-lg border border-slate-200 p-4 text-sm text-slate-600 dark:border-white/10 dark:text-slate-300">{t('No pay packages match your search.')}</p>}
           {data.hasMore && <p className="mt-2 text-xs text-slate-500">{t('Only the first 100 are shown. Approve some to see the rest.')}</p>}
         </section>
       )}

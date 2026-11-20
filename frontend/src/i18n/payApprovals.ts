@@ -20,6 +20,8 @@ const ar: Record<string, string> = {
   'Pay approvals': 'موافقات الرواتب',
   'New-hire pay packages waiting for your approval. You see only the figures and bank details needed to decide.': 'حزم رواتب الموظفين الجدد بانتظار موافقتك. تظهر لك فقط الأرقام وبيانات البنك اللازمة للقرار.',
   'No pay packages are waiting for you.': 'لا توجد حزم رواتب بانتظارك.',
+  'Search pay packages': 'البحث في حزم الرواتب',
+  'No pay packages match your search.': 'لا توجد حزم رواتب تطابق بحثك.',
   'Packages you entered yourself are not listed: someone else must approve them.': 'الحزم التي أدخلتها بنفسك لا تظهر هنا: يجب أن يوافق عليها شخص آخر.',
   'Only the first 100 are shown. Approve some to see the rest.': 'تظهر أول 100 حزمة فقط. وافق على بعضها لعرض الباقي.',
   'Pay packages awaiting approval': 'حزم الرواتب بانتظار الموافقة',
