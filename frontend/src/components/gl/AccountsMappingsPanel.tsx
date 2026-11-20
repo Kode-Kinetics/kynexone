@@ -19,6 +19,7 @@ import { BdiMessage } from '../BdiMessage';
 import { msg } from '../../i18n/translations';
 import { WriteBlockedNote } from '../ui/WriteBlockedNote';
 import { useT } from '../../hooks/useT';
+import { glAccountName } from '../../lib/glAccountName';
 import {
   addClassRule,
   apiErrorCode,
@@ -186,14 +187,14 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
   // Accounts a mapping in this scope may point at: own + inherited group defaults (active only).
   const selectableAccounts = useMemo(
     () => [...ownAccounts.filter((a) => a.isActive), ...groupDefaults.filter((a) => a.isActive)],
-    [ownAccounts, groupDefaults],
+    [ownAccounts, groupDefaults, t],
   );
 
   const accountLabel = useCallback(
     (id: string | null) => {
       if (!id) return null;
       const a = [...ownAccounts, ...groupDefaults].find((x) => x.id === id);
-      return a ? `${a.code} — ${a.name}` : null;
+      return a ? `${a.code} — ${glAccountName(t, a.name)}` : null;
     },
     [ownAccounts, groupDefaults],
   );
@@ -618,7 +619,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                       <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">{sideLabel(t, r.side)}</td>
                       <td className="px-3 py-2">
                         <span className="font-mono text-xs">{r.account?.code || '—'}</span>
-                        {r.account?.name && <span className="ms-1 text-xs text-slate-600 dark:text-slate-300">{r.account.name}</span>}
+                        {r.account?.name && <span className="ms-1 text-xs text-slate-600 dark:text-slate-300">{glAccountName(t, r.account.name)}</span>}
                       </td>
                       <td className="px-3 py-2">
                         <Badge tone={src.tone} title={src.hint}>{src.label}</Badge>
@@ -814,7 +815,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                         <td className="px-2 py-2 font-mono text-xs text-slate-600 dark:text-slate-300">
                           {a.externalCode ? <bdi dir="ltr" className="break-all">{a.externalCode}</bdi> : <><span className="text-slate-400" aria-hidden>—</span><span className="sr-only">{t('No ERP account code')}</span></>}
                         </td>
-                        <td className="px-2 py-2"><span data-testid={`cc-acct-name-${a.code}`} dir="auto" title={a.name} className="block overflow-hidden text-ellipsis whitespace-nowrap">{a.name}</span></td>
+                        <td className="px-2 py-2"><span data-testid={`cc-acct-name-${a.code}`} dir="auto" title={glAccountName(t, a.name)} className="block overflow-hidden text-ellipsis whitespace-nowrap">{glAccountName(t, a.name)}</span></td>
                         <td className="px-2 py-2 text-xs text-slate-600 dark:text-slate-300">{accountTypeLabel(t, a.accountType)}</td>
                         <td className="px-2 py-2">
                           {(() => {
@@ -1059,8 +1060,8 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                             {selectableAccounts.map((a) => (
                               <option key={a.id} value={a.id}>
                                 {inCompanyView && a.companyId === null
-                                  ? t('{code} — {name} (group)', { code: a.code, name: a.name })
-                                  : `${a.code} — ${a.name}`}
+                                  ? t('{code} — {name} (group)', { code: a.code, name: glAccountName(t, a.name) })
+                                  : `${a.code} — ${glAccountName(t, a.name)}`}
                               </option>
                             ))}
                           </select>
@@ -1165,8 +1166,8 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                               {selectableAccounts.map((a) => (
                                 <option key={a.id} value={a.id}>
                                   {inCompanyView && a.companyId === null
-                                    ? t('{code} — {name} (group)', { code: a.code, name: a.name })
-                                    : `${a.code} — ${a.name}`}
+                                    ? t('{code} — {name} (group)', { code: a.code, name: glAccountName(t, a.name) })
+                                    : `${a.code} — ${glAccountName(t, a.name)}`}
                                 </option>
                               ))}
                             </select>

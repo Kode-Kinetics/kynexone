@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle2, Info } from 'lucide-react';
 import type { PayrollGLJournal, PostedGlJournal } from '../../api/payroll';
 import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
+import { glAccountName } from '../../lib/glAccountName';
 import { erpAccountingDate, hasCostCentres, journalTitle } from '../../lib/glJournalView';
 import { Badge } from '../gl/glUi';
 
@@ -93,7 +94,7 @@ function JournalBlock({ j, currency }: { j: PostedGlJournal; currency: string })
             {j.entries.map((e, i) => (
               <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                 <td className="break-words px-2 py-2 sm:px-3 text-slate-700 dark:text-slate-300">
-                  <span className="me-2 font-mono text-xs text-slate-500"><bdi>{e.glAccount}</bdi></span>{e.glAccountName}
+                  <span className="me-2 font-mono text-xs text-slate-500"><bdi>{e.glAccount}</bdi></span>{glAccountName(t, e.glAccountName)}
                   {showCostCentre && e.costCentreCode && (
                     <span className="mt-0.5 block text-caption text-slate-500 dark:text-slate-400 sm:hidden">{t('Cost centre')}: <bdi>{e.costCentreCode}</bdi></span>
                   )}
