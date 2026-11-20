@@ -419,11 +419,6 @@ function SetupPanel({ onCancel, onDone, onAlreadyOn }: { onCancel: () => void; o
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<'' | 'ok' | 'failed'>('');
   const [attempt, setAttempt] = useState(0);
-  /**
-   * The one setup request of each attempt. Every run of the effect below (a development re-mount, a language
-   * change) joins this request instead of sending another, so one open panel is one POST /api/auth/mfa/setup.
-   */
-  const setupRequest = useRef<{ attempt: number; promise: ReturnType<typeof authApi.mfaSetup> } | null>(null);
   const secret = secretFrom(uri);
   const headingRef = useFocusOnMount<HTMLHeadingElement>();
   const heading = (
@@ -435,8 +430,7 @@ function SetupPanel({ onCancel, onDone, onAlreadyOn }: { onCancel: () => void; o
   useEffect(() => {
     let cancelled = false;
     setUri(''); setQr(''); setQrFailed(false); setStartError(''); setCode(''); setError(''); setStale(false); setCopied('');
-    if (setupRequest.current?.attempt !== attempt) setupRequest.current = { attempt, promise: authApi.mfaSetup() };
-    setupRequest.current.promise
+    authApi.mfaSetup()
       .then((res) => { if (!cancelled) setUri(res.provisioningUri); })
       .catch((err) => {
         if (cancelled) return;
