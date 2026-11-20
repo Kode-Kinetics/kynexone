@@ -6,6 +6,10 @@ const ar: Record<string, string> = {
   // Navigation entries that had no Arabic.
   'Group Overview': 'نظرة على المجموعة',
   'Insights & Reports': 'التحليلات والتقارير',
+  // Sidebar groups and labels of the 2026-11 regrouping (Talent / Finance / Compliance).
+  'Talent': 'المواهب',
+  'Training & Learning': 'التدريب والتعلّم',
+  'Surveys & Engagement': 'الاستطلاعات والمشاركة',
   'Tax Policies': 'السياسات الضريبية',
   'Parallel Run Variance': 'فروقات التشغيل الموازي',
   'New Hires': 'الموظفون الجدد',
