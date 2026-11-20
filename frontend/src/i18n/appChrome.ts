@@ -83,6 +83,11 @@ const ar: Record<string, string> = {
   'Job Openings': 'الوظائف الشاغرة',
   'Salary Structures': 'هياكل الرواتب',
   'BenefitClaim': 'مطالبات المزايا',
+  // Skip link: the first tab stop of every screen.
+  'Skip to main content': 'انتقل إلى المحتوى الرئيسي',
+  // A page whose module state never arrives (offline, stalled connection).
+  'This page could not be loaded.': 'تعذّر تحميل هذه الصفحة.',
+  'KynexOne is not answering. Check your internet connection, then try again.': 'لا يستجيب KynexOne. تحقّق من اتصالك بالإنترنت ثم أعد المحاولة.',
 };
 
 /** English is the key, except where one English word needs a context-specific key. */

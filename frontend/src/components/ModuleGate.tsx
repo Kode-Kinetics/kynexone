@@ -1,10 +1,15 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
-import { PackageX } from 'lucide-react';
+import { PackageX, WifiOff } from 'lucide-react';
 import Link from 'next/link';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useT } from '../hooks/useT';
+
+/** Module state normally arrives in well under a second; past this the page says so and offers Retry. */
+const MODULE_STATE_SLOW_MS = 8000;
 
 /**
  * Stops a switched-off module's pages from rendering.
@@ -20,7 +25,17 @@ import { useAuth } from '../contexts/AuthContext';
  */
 export function ModuleGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { verdictForPath, isLoading } = useFeatureFlags();
+  const { verdictForPath, isLoading, refresh } = useFeatureFlags();
+  const t = useT();
+  // A request that never answers (offline, a stalled connection) must not leave a spinner for ever.
+  const [slow, setSlow] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    setSlow(false);
+    if (!isLoading) return;
+    const timer = setTimeout(() => setSlow(true), MODULE_STATE_SLOW_MS);
+    return () => clearTimeout(timer);
+  }, [isLoading, attempt]);
   // Setup → Modules needs security.manage (TenantModulesController); nobody else is offered a link that refuses them.
   const { hasPermission } = useAuth();
   const canManageModules = hasPermission('security.manage');
@@ -32,6 +47,21 @@ export function ModuleGate({ children }: { children: React.ReactNode }) {
   // deliberately silences, and only then flipped to the disabled notice. Waiting costs one spinner
   // on first load — the module state is fetched once per session, not per navigation — and removes
   // both the flash and the pointless requests.
+  if (isLoading && slow) {
+    return (
+      <div className="flex min-h-[60vh] flex-col items-center justify-center px-4 text-center" role="alert" data-testid="module-state-slow">
+        <WifiOff className="h-8 w-8 text-slate-400" aria-hidden="true" />
+        <h1 className="mt-4 text-lg font-semibold text-slate-900 dark:text-slate-100">{t('This page could not be loaded.')}</h1>
+        <p className="mt-2 max-w-md text-sm text-slate-600 dark:text-slate-300">
+          {t('KynexOne is not answering. Check your internet connection, then try again.')}
+        </p>
+        <button type="button" className="btn-secondary mt-5" onClick={() => { setAttempt((n) => n + 1); void refresh(); }}>
+          {t('Retry')}
+        </button>
+      </div>
+    );
+  }
+
   if (isLoading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center" aria-busy="true">
