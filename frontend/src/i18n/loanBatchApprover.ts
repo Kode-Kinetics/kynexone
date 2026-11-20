@@ -19,6 +19,10 @@ const ar: Record<string, string> = {
     'تعذّر تحميل إعداد معتمد دفعات الصرف الحالي لنوع القرض هذا. أغلق النموذج وحاول مرة أخرى.',
   'Give the reason you are approving this batch yourself (at least 10 characters). It is kept in the audit trail.':
     'اذكر سبب اعتمادك لهذه الدفعة بنفسك (10 أحرف على الأقل). يُحفظ السبب في سجل التدقيق.',
+  // Where a loan stands once it is in a payment batch, and what the advance payout does.
+  'This loan is in a payment batch. Open Loan Payments to see the batch, and record the payment there after the bank transfer.':
+    'هذا القرض ضمن دفعة صرف. افتح مدفوعات القروض لمعرفة الدفعة، وسجّل الدفع هناك بعد التحويل المصرفي.',
+  'Recording the payout posts the journal and starts repayment on {date}.': 'يؤدي تسجيل الصرف إلى ترحيل القيد المحاسبي وبدء السداد في {date}.',
 };
 
 export const loanBatchApprover = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) };
