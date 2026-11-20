@@ -502,7 +502,7 @@ export function NewHiresPage() {
                   [t('Branch'), review.draft.branch || t('Not set')],
                   [t('Legal entity'), check?.resolvedCompanyName ?? t('Resolved on activation')],
                   [t('Joining date'), fmtDate(review.draft.joiningDate)],
-                  [t('Contract'), review.draft.contractType || t('Not set')],
+                  [t('Contract'), review.draft.contractType ? t(review.draft.contractType) : t('Not set')],
                   [t('Personal email'), review.draft.personalEmail || t('Not set')],
                   [t('Work email'), review.draft.workEmail || t('Not set (no login is created)')],
                   ...(review.draft.salary != null ? [[t('Basic salary (monthly, as offered)'), fx.number(review.draft.salary)]] : []),

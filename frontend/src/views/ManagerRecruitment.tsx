@@ -9,6 +9,7 @@ import { useFormat } from '../hooks/useFormat';
 import { useAuth } from '../contexts/AuthContext';
 import { enumLabel } from '../i18n/enumLabel';
 import { recruitmentAccess } from '../lib/recruitmentAccess';
+import { interviewFeedbackRows, type FeedbackRow } from '../lib/recruitmentFixesC';
 
 /**
  * The Recruitment screen of a line manager, who holds only two narrow keys. Two small jobs and nothing else: raise a requisition for their own
@@ -79,10 +80,11 @@ function MyRequisitions() {
 
   return (
     <section aria-labelledby="my-requisitions-heading" className="rounded-xl border border-slate-200 p-4 dark:border-white/10">
-      <div className="mb-3 flex items-center gap-2">
-        <ClipboardList className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
-        <h2 id="my-requisitions-heading" className="text-base font-semibold text-slate-900 dark:text-white">{t('My requisitions')}</h2>
-        <button type="button" className="btn-primary ms-auto flex items-center gap-1.5 text-sm" onClick={() => setOpen(o => !o)} disabled={departments.length === 0}>
+      {/* On a phone the primary sits full width under the title (one line), beside it from 640px up. */}
+      <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-3">
+        <ClipboardList className="h-4 w-4 shrink-0 text-sapphire dark:text-cyanAccent" />
+        <h2 id="my-requisitions-heading" className="min-w-0 flex-1 text-base font-semibold text-slate-900 dark:text-white">{t('My requisitions')}</h2>
+        <button type="button" className="btn-primary flex w-full items-center justify-center gap-1.5 whitespace-nowrap text-sm sm:ms-auto sm:w-auto" onClick={() => setOpen(o => !o)} disabled={departments.length === 0}>
           <Plus className="h-3.5 w-3.5" />{t('New Requisition')}
         </button>
       </div>
@@ -148,17 +150,36 @@ function MyInterviews() {
   const [form, setForm] = useState({ overallRating: 4, recommendation: 'Proceed', feedbackNotes: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // What this person has already submitted (the API returns a panellist only their own scorecard) and the one-line confirmation after saving.
+  const [mine, setMine] = useState<Record<string, FeedbackRow[]>>({});
+  const [confirmation, setConfirmation] = useState<{ id: string; text: string } | null>(null);
 
   const load = useCallback(async () => {
     try { setItems((await interviewsApi.mine()).items); setLoadError(''); }
     catch (e) { setLoadError(apiErrorReason(e, t('Could not load your interviews.'))); }
   }, [t]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let active = true;
+    const missing = items.filter(i => !(i.id in mine)).slice(0, 30);
+    if (missing.length === 0) return;
+    void Promise.allSettled(missing.map(i => interviewsApi.get(i.id))).then(results => {
+      if (!active) return;
+      setMine(m => { const next = { ...m }; results.forEach((r, n) => { if (r.status === 'fulfilled') next[missing[n].id] = interviewFeedbackRows(r.value.feedbacks ?? []); }); return next; });
+    });
+    return () => { active = false; };
+  }, [items]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const send = async (id: string) => {
     if (!form.feedbackNotes.trim()) { setError(t('Write a short note on the candidate.')); return; }
     setSaving(true); setError('');
-    try { await interviewsApi.recordFeedback(id, form); setOpenId(null); setForm({ overallRating: 4, recommendation: 'Proceed', feedbackNotes: '' }); await load(); }
+    try {
+      const saved = await interviewsApi.recordFeedback(id, form) as { id?: string; interviewerName?: string; submittedAtUtc?: string } | undefined;
+      const row: FeedbackRow = { id: saved?.id ?? `saved-${Date.now()}`, interviewer: saved?.interviewerName ?? '', rating: form.overallRating, recommendation: form.recommendation, notes: form.feedbackNotes.trim(), submittedAtUtc: saved?.submittedAtUtc ?? new Date().toISOString() };
+      setMine(m => ({ ...m, [id]: [row, ...(m[id] ?? [])] }));
+      setConfirmation({ id, text: t('Your feedback on {name} was saved. HR can now see it on the interview.', { name: items.find(i => i.id === id)?.candidateName ?? '' }) });
+      setOpenId(null); setForm({ overallRating: 4, recommendation: 'Proceed', feedbackNotes: '' }); await load();
+    }
     catch (e) { setError(apiErrorReason(e, t('Could not save your feedback.'))); }
     finally { setSaving(false); }
   };
@@ -180,9 +201,21 @@ function MyInterviews() {
               <span className="text-xs text-slate-500 dark:text-slate-400">{f.dateTime(i.scheduledAt)}</span>
               <span className="badge ms-auto">{enumLabel(t, 'Status', i.status)}</span>
               <button type="button" className="btn-secondary text-xs" onClick={() => { setOpenId(openId === i.id ? null : i.id); setError(''); }}>
-                {t('Give feedback')}
+                {(mine[i.id]?.length ?? 0) > 0 ? t('Add more feedback') : t('Give feedback')}
               </button>
             </div>
+            {confirmation?.id === i.id && <p role="status" className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">{confirmation.text}</p>}
+            {(mine[i.id]?.length ?? 0) > 0 && (
+              <div className="mt-2 space-y-1.5 rounded-lg border border-slate-200 p-3 text-xs dark:border-white/10" role="region" aria-label={t('Your feedback')}>
+                <p className="font-semibold text-slate-700 dark:text-slate-200">{t('Your feedback')}</p>
+                {mine[i.id].map(r => (
+                  <div key={r.id} className="text-slate-600 dark:text-slate-300">
+                    <p>{t('Rating')}: {r.rating}/5 · {t('Recommendation')}: {enumLabel(t, 'InterviewRecommendation', r.recommendation)} · {f.dateTime(r.submittedAtUtc)}</p>
+                    {r.notes && <p className="mt-0.5 break-words"><bdi>{r.notes}</bdi></p>}
+                  </div>
+                ))}
+              </div>
+            )}
             {openId === i.id && (
               <div className="mt-3 grid gap-3 rounded-lg bg-slate-50 p-3 sm:grid-cols-2 dark:bg-white/[0.03]">
                 <label className="text-xs font-medium text-slate-600 dark:text-slate-400">{t('Overall rating (1 to 5)')}

@@ -47,4 +47,8 @@ public record OfferLetterTemplateData(
     decimal OtherAllowances,
     decimal GrossSalary,
     int ProbationMonths,
-    string? CurrencyCode = null);
+    string? CurrencyCode = null,
+    string? ContractType = null,
+    int? ContractTermMonths = null,
+    string? CompanyCountryCode = null,
+    DateTime? ResponseDeadlineUtc = null);

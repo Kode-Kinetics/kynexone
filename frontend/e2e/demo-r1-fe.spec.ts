@@ -116,7 +116,7 @@ for (const locale of ['en', 'ar'] as const) {
       await expect(dialog).toContainText(locale === 'ar' ? /١٥|15/ : /15 Dec/);
       await shot(page, `f7-send-dialog-deadline-${locale}`);
       // F10: three choices, and the one picked is what is sent.
-      await dialog.getByRole('button', { name: locale === 'ar' ? 'تسجيل إرسال خارجي' : 'Record external sending', exact: true }).click();
+      await dialog.getByRole('radio', { name: locale === 'ar' ? 'أرسلته بنفسي بالفعل' : 'I already sent it myself', exact: true }).click();
       const channel = dialog.getByLabel(locale === 'ar' ? 'القناة / المصدر' : 'Channel / source');
       await expect(channel.locator('option')).toHaveCount(4); // the prompt and the three channels
       await expect(channel.locator('option[value]:not([value=""])')).toHaveText(locale === 'ar' ? ['البريد الإلكتروني', 'حضورياً', 'أخرى'] : ['Email', 'In person', 'Other']);

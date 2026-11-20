@@ -56,7 +56,7 @@ public sealed class KsaOfferLetterTests
             .And.Contain("fixed-term or indefinite")                       // contract term
             .And.Contain("eight hours a day or 48 hours a week")           // working hours (Art. 98)
             .And.Contain("21 days a year")                                 // annual leave (Art. 109)
-            .And.Contain("will not exceed 180 days")                       // probation ceiling (Art. 53)
+            .And.Contain("never exceeds 180 days")                         // probation ceiling (Art. 53), stated with the recorded probation
             .And.Contain("60 days")                                        // notice from the company's rule
             .And.Contain("Social Insurance")                               // GOSI
             .And.Contain("Qiwa");                                          // contract documentation

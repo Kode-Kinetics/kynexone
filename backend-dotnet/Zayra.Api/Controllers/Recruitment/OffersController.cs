@@ -133,13 +133,17 @@ public class OffersController : ControllerBase
     public async Task<IActionResult> ApproverOptions(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();
-        if (!await _db.OfferLetters.AnyAsync(x => x.Id == id && x.TenantId == tid, ct)) return NotFound();
+        var offerCompany = await _db.OfferLetters.AsNoTracking().Where(x => x.Id == id && x.TenantId == tid).Select(x => new { x.CompanyId }).FirstOrDefaultAsync(ct);
+        if (offerCompany is null) return NotFound();
         var writers = await OfferRules.TermsWritersAsync(_db, tid, id, ct);
         var options = await OfferRules.ApproversWhoCanDecide(_db, tid)
             .Where(u => !writers.Contains(u.Id))
             .OrderBy(u => u.FullName)
             .Select(u => new { u.Id, u.FullName, u.Email, Roles = u.UserRoles.Where(ur => ur.Role != null && ur.Role.IsActive && !ur.Role.IsDeleted).Select(ur => ur.Role!.Name).ToList() })
             .ToListAsync(ct);
+        // Only people who can open this offer: their entity scope must reach the offer's company, or they would get "not found" on the step they are asked to decide.
+        var reach = await OfferRules.UsersWhoReachCompanyAsync(_db, tid, offerCompany.CompanyId, options.Select(u => u.Id).ToList(), ct);
+        options = options.Where(u => reach.Contains(u.Id)).ToList();
         // The role is shown beside the name so two people with similar names can be told apart; the approving roles come first.
         return Ok(options.Select(u => new OfferApproverOption(u.Id, u.FullName, u.Email,
             string.Join(", ", u.Roles.OrderBy(r => OfferRules.ApproverRoleNames.Contains(r, StringComparer.OrdinalIgnoreCase) ? 0 : 1).ThenBy(r => r, StringComparer.Ordinal)))));
@@ -280,7 +284,7 @@ public class OffersController : ControllerBase
         var data = new OfferLetterData(
             CandidateName: offer.CandidateName,
             Position: offer.OfferedJobTitle,
-            Department: offer.OfferedDepartment,
+            Department: await OfferPlacement.DisplayDepartmentAsync(_db, tid, offer.CompanyId, offer.OfferedDepartment, false, ct),
             Salary: offer.GrossSalary,
             Currency: offerCurrency,
             StartDate: offer.StartDate.ToDateTime(TimeOnly.MinValue),

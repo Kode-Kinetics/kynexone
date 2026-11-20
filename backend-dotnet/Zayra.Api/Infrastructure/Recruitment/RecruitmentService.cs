@@ -63,7 +63,17 @@ public class RecruitmentService : IRecruitmentService
     {
         var today = DateTime.UtcNow.ToString("dd MMMM yyyy");
         var startFormatted = d.StartDate.ToString("dd MMMM yyyy");
-        var probationEnd = d.StartDate.AddMonths(d.ProbationMonths).ToString("dd MMMM yyyy");
+        // The probation as the offer records it. A Saudi employer's probation never runs past day 180 (Art. 53), so six months is stated as 180 days.
+        var probationText = d.ProbationMonths <= 0
+            ? "None"
+            : $"{Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ProbationPeriodText(d.CompanyCountryCode, d.StartDate, d.ProbationMonths)} " +
+              $"(ending {Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ProbationEnd(d.CompanyCountryCode, d.StartDate, d.ProbationMonths):dd MMMM yyyy})";
+        // The contract type and the response deadline are the offer's own; an offer that recorded neither reads as permanent, valid for 7 days.
+        var contractTerm = OfferContractTerm.LetterTerm(d.ContractType, d.ContractTermMonths);
+        var employmentType = contractTerm is null ? "Full-Time, Permanent" : $"Full-Time, Fixed-term ({contractTerm})";
+        var validity = d.ResponseDeadlineUtc is { } deadline
+            ? $"until <strong>{deadline:dd MMMM yyyy}</strong>"
+            : "for <strong>7 days</strong> from the date of issue";
         // Stored-XSS defense: every free-text field interpolated into the offer HTML is HTML-encoded.
         // Numerics (:N2) and formatted dates are non-injectable. This document is stored as ContentHtml
         // and can later be served text/html, so encoding here closes the injection sink at the source.
@@ -114,8 +124,8 @@ public class RecruitmentService : IRecruitmentService
     <tr><td width=""40%"">Job Title</td><td><strong>{jobTitle}</strong></td></tr>
     <tr><td>Department</td><td>{department}</td></tr>
     <tr><td>Start Date</td><td>{startFormatted}</td></tr>
-    <tr><td>Employment Type</td><td>Full-Time, Permanent</td></tr>
-    <tr><td>Probation Period</td><td>{d.ProbationMonths} months (ending {probationEnd})</td></tr>
+    <tr><td>Employment Type</td><td>{employmentType}</td></tr>
+    <tr><td>Probation Period</td><td>{probationText}</td></tr>
   </table>
   <h2>Compensation Package</h2>
   <table>
@@ -130,7 +140,7 @@ public class RecruitmentService : IRecruitmentService
   <p>1. Satisfactory reference checks and background verification.</p>
   <p>2. Submission of all required documentation prior to joining.</p>
   <p>3. Compliance with company policies, code of conduct, and applicable labor laws.</p>
-  <p>4. This offer is valid for <strong>7 days</strong> from the date of issue.</p>
+  <p>4. This offer is valid {validity}.</p>
   <p>Please indicate your acceptance by signing and returning this letter to our HR department.</p>
   <div class=""signature-block"">
     <div class=""sig""><div class=""sig-line"">Authorized Signatory<br/>Human Resources</div></div>
@@ -227,7 +237,8 @@ public class RecruitmentService : IRecruitmentService
             PersonalEmail = candidate.Email,
             Phone = candidate.Phone,
             Nationality = candidate.Nationality,
-            Department = offer.OfferedDepartment,
+            // The department as people read it (its name), unless activation would then land on a different department than the one the offer named.
+            Department = await OfferPlacement.DepartmentForHireDraftAsync(_db, tenantId, offer.CompanyId, offer.OfferedDepartment, ct),
             Designation = offer.OfferedJobTitle,
             Grade = hire.Grade,
             EmploymentType = hire.EmploymentType,

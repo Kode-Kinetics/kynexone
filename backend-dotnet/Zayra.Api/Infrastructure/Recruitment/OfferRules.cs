@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Recruitment;
@@ -183,6 +184,36 @@ public static class OfferRules
             && (u.PermissionOverrides.Any(o => o.PermissionKey == key && o.Effect == "Allow" && o.IsActive && (o.ExpiresAtUtc == null || o.ExpiresAtUtc > now))
                 || u.UserRoles.Any(ur => ur.Role != null && ur.Role.IsActive && !ur.Role.IsDeleted && normalized.Contains(ur.Role.NormalizedName)
                     && ur.Role.RolePermissions.Any(rp => rp.Permission != null && rp.Permission.Key == key))));
+    }
+
+    public const string ApproverOutOfScopeError = "offer_approver_out_of_scope";
+    public const string ApproverOutOfScopeMessage =
+        "That person does not have access to this offer's company, so they could not open the offer to decide it. Choose an approver who has access to the company.";
+    public const string ApproverOutOfScopeMessageAr =
+        "لا يملك هذا الشخص صلاحية الوصول إلى شركة هذا العرض، ولذلك لن يتمكن من فتحه واتخاذ القرار. اختر معتمدًا لديه صلاحية الوصول إلى الشركة.";
+
+    /// <summary>
+    /// Of <paramref name="userIds"/>, the people whose entity scope reaches the offer's company: group scope, an all-companies grant, or an active
+    /// grant naming the company. This is the rule the request pipeline applies to the person's own token (an offer outside it is "not found" to them),
+    /// resolved from the same records the token is built from. An offer with no company is reached by group scope only.
+    /// </summary>
+    public static async Task<HashSet<Guid>> UsersWhoReachCompanyAsync(ZayraDbContext db, Guid tenantId, Guid? companyId, IReadOnlyCollection<Guid> userIds, CancellationToken ct)
+    {
+        if (userIds.Count == 0) return [];
+        const string why = "Approver picker and approval request: whether each named person's entity scope reaches the offer's company, whatever the caller's own company scope.";
+        var users = await ScopedBypass.TenantWide(db.Users, tenantId, why).AsNoTracking()
+            .Where(u => userIds.Contains(u.Id)).Include(u => u.EntityAccesses).AsSplitQuery().ToListAsync(ct);
+        var companies = await ScopedBypass.TenantWide(db.Companies, tenantId, why).AsNoTracking()
+            .Where(c => c.IsActive && !c.IsDeleted).Select(c => c.Id).ToListAsync(ct);
+        var reaching = new HashSet<Guid>();
+        foreach (var user in users)
+        {
+            var scope = EntityScopeClaims.Resolve(user.IsGroupScope,
+                user.EntityAccesses.Where(g => g.IsActive).Select(g => new EntityAccessGrant(g.CompanyId, g.Role, g.GrantMode)).ToArray(), companies);
+            if (scope.Mode == EntityScopeModes.Group || (companyId is Guid owner && scope.Mode == EntityScopeModes.Companies && scope.CompanyIds.Contains(owner)))
+                reaching.Add(user.Id);
+        }
+        return reaching;
     }
 
     public static async Task<OfferApproverVerdict> EvaluateApproverAsync(

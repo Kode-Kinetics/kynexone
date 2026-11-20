@@ -185,6 +185,14 @@ export interface RequisitionStats {
 
 // ── API ───────────────────────────────────────────────────────────────────────
 
+/** The body of a requisition create or edit (the same fields as POST api/recruitment/requisitions). */
+export interface RequisitionRequestBody {
+  departmentId?: string; departmentName: string; designationId?: string; designationTitle: string; gradeId?: string;
+  headCount: number; employmentType: string; priority: string; justification: string;
+  requiredSkills: string; minExperienceYears?: number; maxExperienceYears?: number;
+  budgetFrom?: number; budgetTo?: number; targetJoiningDate?: string; requestedByName: string;
+}
+
 export const requisitionsApi = {
   /** The departments the caller may raise a requisition for (their own and any they lead). */
   myDepartments: () =>
@@ -202,6 +210,10 @@ export const requisitionsApi = {
     requiredSkills: string; minExperienceYears?: number; maxExperienceYears?: number;
     budgetFrom?: number; budgetTo?: number; targetJoiningDate?: string; requestedByName: string;
   }) => client.post<ManpowerRequisition>('/api/recruitment/requisitions', body).then(r => r.data),
+
+  /** Edit a Draft or Rejected requisition; the API sets it back to Draft (and clears the rejection reason). */
+  update: (id: string, body: RequisitionRequestBody) =>
+    client.put<ManpowerRequisition>(`/api/recruitment/requisitions/${id}`, body).then(r => r.data),
 
   submit: (id: string) =>
     client.post<ManpowerRequisition>(`/api/recruitment/requisitions/${id}/submit`).then(r => r.data),
