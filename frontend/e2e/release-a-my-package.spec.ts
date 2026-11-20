@@ -58,6 +58,8 @@ async function boot(page: Page, lang: Lang) {
     const json = (b: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(b) });
     if (p === '/api/auth/me') return json(EMPLOYEE);
     if (p === '/api/ess/package') return json(PACKAGE);
+    // "My benefits — used and left" sits under the package and reads its own endpoint; nothing counted to show here.
+    if (p === '/api/ess/package/usage') return json({ benefits: [], requests: [] });
     // release_a is opt-in: an absent key in disabled-keys means the platform switched it on for this tenant.
     if (p === '/api/features/disabled-keys' || p === '/api/features/modules' || p === '/api/notifications') return json([]);
     if (p === '/api/tenant-admin/localization') return json({ defaultTimezone: 'Asia/Riyadh', calendarSystem: 'Gregorian', hijriDatesEnabled: false, currencyCode: 'SAR' });
