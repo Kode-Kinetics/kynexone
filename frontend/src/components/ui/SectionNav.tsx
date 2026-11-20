@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ElementType, type MouseEvent as ReactMouseEvent, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import { X } from 'lucide-react';
+import { ChevronDown, X } from 'lucide-react';
 import { useT } from '../../hooks/useT';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { SetupSettingSearch } from '../setup/SetupSettingSearch';
@@ -89,6 +89,21 @@ export function SectionNav<Id extends string>({ groups, selectedId, currentLabel
   const isPhone = useMediaQuery(SHEET_QUERY);
   const isWide = useMediaQuery(WIDE_QUERY);
   const [query, setQuery] = useState('');
+  // Groups the user folded away. Entries stay mounted (hidden) so the unsaved-changes guard can still replay a click.
+  const collapseKey = `kynexone-${classPrefix}-nav-collapsed-v1`;
+  const [collapsed, setCollapsed] = useState<string[]>([]);
+  useEffect(() => {
+    try { const saved = JSON.parse(window.localStorage.getItem(collapseKey) ?? '[]'); if (Array.isArray(saved)) setCollapsed(saved.filter((x): x is string => typeof x === 'string')); } catch { /* no saved state */ }
+  }, [collapseKey]);
+  const saveCollapsed = (next: string[]) => {
+    setCollapsed(next);
+    try { window.localStorage.setItem(collapseKey, JSON.stringify(next)); } catch { /* storage unavailable */ }
+  };
+  const activeGroupId = groups.find(group => group.items.some(item => item.id === selectedId))?.id ?? null;
+  // The group holding the section on screen is always open, so the current entry is never hidden.
+  const isCollapsed = (groupId: string) => groupId !== activeGroupId && collapsed.includes(groupId);
+  const toggleGroup = (groupId: string) => saveCollapsed(collapsed.includes(groupId) ? collapsed.filter(id => id !== groupId) : [...collapsed, groupId]);
+  const allCollapsed = groups.length > 0 && groups.every(group => group.id === activeGroupId || collapsed.includes(group.id));
   const searchInput = useRef<HTMLInputElement>(null);
   const searching = !!search && query.trim().length > 0;
   const [announcement, setAnnouncement] = useState('');
@@ -233,11 +248,26 @@ export function SectionNav<Id extends string>({ groups, selectedId, currentLabel
               <SetupSettingSearch entries={search.entries} query={query} onQueryChange={setQuery} onOpen={openResult} allAreas={search.allAreas ? { ...search.allAreas, onOpen: () => { openedResult.current = true; search.allAreas!.onOpen(); } } : undefined} inputRef={searchInput} />
             </div>
           )}
+          {!searching && groups.length > 2 && (
+            <div className="col-span-full flex justify-end px-1">
+              <button type="button" data-testid={`${classPrefix}-groups-toggle-all`} onClick={() => saveCollapsed(allCollapsed ? [] : groups.map(group => group.id))}
+                className="rounded-md px-2 py-1 text-xs font-medium text-sapphire hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sapphire dark:text-cyanAccent dark:hover:bg-white/[0.06]">
+                {allCollapsed ? t('Expand all groups') : t('Collapse all groups')}
+              </button>
+            </div>
+          )}
           {groups.map((group, index) => (
             // Hidden, not removed, while a query shows its results: the unsaved-changes guard may replay an entry.
             <div key={group.id} hidden={searching || undefined} className={`${classPrefix}-section-group min-w-0 py-1 xl:py-0.5 ${index > 0 ? 'xl:mt-1 xl:border-t xl:border-slate-200/70 xl:pt-1 xl:dark:border-white/[0.06]' : ''}`}>
-              <p id={`${SETUP_SECTION_LIST_ID}-${group.id}`} className={`px-3 pb-1 pt-1.5 xl:pb-0.5 xl:pt-1 text-[11px] font-semibold uppercase leading-4 tracking-[0.08em] text-slate-500 rtl:normal-case rtl:text-[13px] rtl:tracking-normal dark:text-slate-400`}>{group.label}</p>
-              <ul aria-labelledby={`${SETUP_SECTION_LIST_ID}-${group.id}`} className={`space-y-0.5 xl:space-y-0`}>
+              <p id={`${SETUP_SECTION_LIST_ID}-${group.id}`} className="text-[11px] font-semibold uppercase leading-4 tracking-[0.08em] text-slate-500 rtl:normal-case rtl:text-[13px] rtl:tracking-normal dark:text-slate-400">
+                <button type="button" data-testid={`${classPrefix}-group-toggle-${group.id}`} aria-expanded={!isCollapsed(group.id)} aria-controls={`${SETUP_SECTION_LIST_ID}-${group.id}-items`}
+                  onClick={() => toggleGroup(group.id)}
+                  className="flex min-h-8 w-full items-center justify-between gap-2 rounded-md px-3 pb-1 pt-1.5 text-start uppercase hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sapphire rtl:normal-case dark:hover:bg-white/[0.06] xl:pb-0.5 xl:pt-1">
+                  <span>{group.label}</span>
+                  <ChevronDown aria-hidden="true" className={`h-3.5 w-3.5 shrink-0 transition-transform motion-reduce:transition-none ${isCollapsed(group.id) ? '-rotate-90 rtl:rotate-90' : ''}`} />
+                </button>
+              </p>
+              <ul id={`${SETUP_SECTION_LIST_ID}-${group.id}-items`} aria-labelledby={`${SETUP_SECTION_LIST_ID}-${group.id}`} hidden={isCollapsed(group.id) || undefined} className={`space-y-0.5 xl:space-y-0`}>
                 {group.items.map(({ id, label, icon: Icon, href, status }) => {
                   const active = id === selectedId;
                   const statusId = status ? `${SETUP_SECTION_LIST_ID}-${id}-status` : undefined;
