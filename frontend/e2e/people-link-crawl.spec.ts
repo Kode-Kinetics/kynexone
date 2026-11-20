@@ -128,7 +128,8 @@ for (const locale of LOCALES) {
       test('employee name opens the workspace and Back to People restores the same list, filter, page and anchor', async ({ page }) => {
         const fx = await open(page, { locale, count: 60, width: size.width, height: size.height });
         // Page 2 of 3, filtered to everyone, then open a row.
-        await pagerOf(page).getByRole('button', { name: 'Next', exact: true }).click();
+        // The pager buttons are translated, so the Arabic page names Next in Arabic.
+        await pagerOf(page).getByRole('button', { name: locale === 'ar' ? 'التالي' : 'Next', exact: true }).click();
         await expect(page).toHaveURL(/[?&]page=2\b/);
         await expect(pagerOf(page)).toContainText('2');
         const rowLink = page.locator('#employee-1026');
