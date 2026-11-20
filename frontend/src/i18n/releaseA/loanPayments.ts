@@ -1,8 +1,8 @@
 import type { ReleaseADict } from './types';
 
 /**
- * Loan payments tab (Finance): the separate loan payment batch screen, its modal and its messages. Keys that another file
- * already translates the same way (Close, Back, Status...) are repeated on purpose: a later file wins and the sentence is the same.
+ * Loan payments tab (Finance): the separate loan payment batch screen, its modal and its messages. Keys the base dictionary already
+ * translates (Select, Employee, Paid...) are not repeated: a slice is spread after it, so a different Arabic here would re-word every other screen (unit/i18nSliceNoOverrides.spec.ts).
  */
 const pairs: Array<[string, string]> = [
   ['Separate loan disbursement',
@@ -17,12 +17,8 @@ const pairs: Array<[string, string]> = [
     'القروض المدرجة بالفعل في دفعة صرف تظهر أدناه.'],
   ['Create Payment Batch ({count})',
     'إنشاء دفعة صرف ({count})'],
-  ['Select',
-    'تحديد'],
   ['Loan',
     'القرض'],
-  ['Employee',
-    'الموظف'],
   ['Repayment method',
     'طريقة السداد'],
   ['Approved amount',
@@ -43,8 +39,6 @@ const pairs: Array<[string, string]> = [
     'القروض'],
   ['Instruction total',
     'إجمالي التعليمات'],
-  ['Paid',
-    'المدفوع'],
   ['Remaining',
     'المتبقي'],
   ['Status',
