@@ -187,7 +187,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
   // Accounts a mapping in this scope may point at: own + inherited group defaults (active only).
   const selectableAccounts = useMemo(
     () => [...ownAccounts.filter((a) => a.isActive), ...groupDefaults.filter((a) => a.isActive)],
-    [ownAccounts, groupDefaults, t],
+    [ownAccounts, groupDefaults],
   );
 
   const accountLabel = useCallback(
@@ -196,7 +196,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
       const a = [...ownAccounts, ...groupDefaults].find((x) => x.id === id);
       return a ? `${a.code} — ${glAccountName(t, a.name)}` : null;
     },
-    [ownAccounts, groupDefaults],
+    [ownAccounts, groupDefaults, t],
   );
 
   const draftList = useMemo(() => baseDrafts.map((b) => drafts[b.driverKey] ?? b), [baseDrafts, drafts]);
