@@ -177,7 +177,8 @@ for (const viewport of VIEWPORTS) {
           if (viewport.phone) {
             // The list grows on a phone, so the pager is reached by scrolling the page; it must then be clear of the bottom bar.
             await pager.scrollIntoViewIfNeeded();
-            await expect(pager.getByRole('button', { name: 'Next', exact: true })).toBeInViewport({ ratio: 1 });
+            // The pager buttons are translated (Prev/Next are in the People list dictionary), so the Arabic page names them in Arabic.
+            await expect(pager.getByRole('button', { name: /^(Next|التالي)$/ })).toBeInViewport({ ratio: 1 });
             const hidden = await pager.evaluate(el => { const r = el.getBoundingClientRect(); const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!top && !el.contains(top); });
             expect(hidden, 'the bottom bar covers the pager').toBe(false);
             await shot(page, `${tag}-4-pager`);

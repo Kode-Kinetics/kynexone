@@ -219,6 +219,11 @@ export async function bootPeopleFixture(page: Page, options: PeopleFixtureOption
       { taskId: 't-2', employee: { id: 1001, code: 'EMP-1001', name: 'Employee 02 Al-Harbi', startDate: '2026-12-01' }, title: 'Order laptop', titleAr: null, ownerRole: 'IT', dueDate: '2026-10-01', overdue: true, blocksActivation: false, status: 'Pending', linkSection: null, evidenceRequired: false, evidenceDocumentId: null },
     ] });
 
+    // The employee Benefits panel (Pay & Benefits, panel=benefits): no plans, nothing enrolled, nothing requested.
+    if (path === '/api/compensation/benefits/plans') return reply([]);
+    const benefitPackage = /^\/api\/compensation\/benefits\/employees\/(\d+)\/package$/.exec(path);
+    if (benefitPackage) return reply({ employeeId: Number(benefitPackage[1]), employeeName: `Employee ${Number(benefitPackage[1]) - 999}`, gradeId: null, companyId: null, asOf: '2026-11-20', enrollments: [], additionalRequests: [] });
+
     // Anything else: answer with an empty list (so the screen renders) but record it, so a spec can name the gap.
     fixture.unmocked.push(`${method} ${path}`);
     return reply({ items: [], total: 0, page: 1, pageSize: 100 });

@@ -585,23 +585,23 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
   const rowActions = (r: ManpowerRequisition) => (
     <div className="flex flex-wrap items-center gap-2 md:gap-1">
       {r.status === 'Draft' && (
-        <button type="button" disabled={acting === r.id} onClick={() => submit(r.id)} className="rounded-lg bg-sapphire/10 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-sapphire hover:bg-sapphire/20 disabled:opacity-50 dark:bg-sapphire/20 dark:text-cyanAccent">
+        <button type="button" disabled={acting === r.id} onClick={() => submit(r.id)} className="whitespace-nowrap rounded-lg bg-sapphire/10 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-sapphire hover:bg-sapphire/20 disabled:opacity-50 dark:bg-sapphire/20 dark:text-cyanAccent">
           {t('Submit')}
         </button>
       )}
       {mayDecideRequisition(r, user?.id, canDecide) && (
         <>
-          <button type="button" disabled={acting === r.id} onClick={() => approve(r.id)} className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-emerald-600 hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-500/10 dark:text-emerald-400">{t('Approve')}</button>
-          <button type="button" disabled={acting === r.id} onClick={() => reject(r.id)} className="rounded-lg bg-rose-50 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-rose-600 hover:bg-rose-100 disabled:opacity-50 dark:bg-rose-500/10 dark:text-rose-400">{t('Reject')}</button>
+          <button type="button" disabled={acting === r.id} onClick={() => approve(r.id)} className="whitespace-nowrap rounded-lg bg-emerald-50 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-emerald-600 hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-500/10 dark:text-emerald-400">{t('Approve')}</button>
+          <button type="button" disabled={acting === r.id} onClick={() => reject(r.id)} className="whitespace-nowrap rounded-lg bg-rose-50 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-rose-600 hover:bg-rose-100 disabled:opacity-50 dark:bg-rose-500/10 dark:text-rose-400">{t('Reject')}</button>
         </>
       )}
       {mayEditRejectedRequisition(r, hasRole) && (
-        <button type="button" disabled={acting === r.id} onClick={() => setEditing(r)} className="rounded-lg bg-sapphire/10 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-sapphire hover:bg-sapphire/20 disabled:opacity-50 dark:bg-sapphire/20 dark:text-cyanAccent">
+        <button type="button" disabled={acting === r.id} onClick={() => setEditing(r)} className="whitespace-nowrap rounded-lg bg-sapphire/10 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-sapphire hover:bg-sapphire/20 disabled:opacity-50 dark:bg-sapphire/20 dark:text-cyanAccent">
           {t('Edit and resubmit')}
         </button>
       )}
       {r.status === 'Approved' && (
-        <button type="button" onClick={() => onCreateOpening(r)} className="rounded-lg bg-blue-50 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-blue-600 hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-400">
+        <button type="button" onClick={() => onCreateOpening(r)} className="whitespace-nowrap rounded-lg bg-blue-50 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-blue-600 hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-400">
           {t('Open Job')}
         </button>
       )}

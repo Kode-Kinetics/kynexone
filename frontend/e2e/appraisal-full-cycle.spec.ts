@@ -214,7 +214,7 @@ test('an HR user runs one appraisal cycle from the screen, with the manager and 
   await dialog.getByLabel('Cycle Name *').fill('FY2026 Annual Appraisal');
   await dialog.getByLabel('Period Start *').fill('2026-01-01');
   await dialog.getByLabel('Period End *').fill('2026-12-31');
-  await dialog.getByLabel('Scorecard template').selectOption(TEMPLATE.id);
+  await dialog.getByRole('combobox', { name: 'Scorecard template' }).selectOption(TEMPLATE.id);
   await dialog.getByRole('button', { name: 'Create Cycle' }).click();
   await expect(dialog).toBeHidden();
   expect(s.cycles[0].defaultScorecardTemplateId, 'the form sends the chosen template, or the cycle cannot launch').toBe(TEMPLATE.id);
@@ -289,7 +289,9 @@ test('an HR user runs one appraisal cycle from the screen, with the manager and 
   await as(page, s, 'employee');
   const finalScore = s.reviews[0].finalScore;
   await expect(page.getByText(`Score: ${finalScore} — ${s.reviews[0].finalRating}`)).toBeVisible();
-  await page.getByRole('button', { name: 'Acknowledge' }).click();
+  // The row opens the review; acknowledging is done in the review drawer (the row's own button was replaced by "View result").
+  await page.getByRole('button', { name: 'View result' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Acknowledge result' }).click();
   await expect.poll(() => s.reviews[0].status).toBe('Acknowledged');
   await expect(page.getByText('Acknowledged').first()).toBeVisible();
 

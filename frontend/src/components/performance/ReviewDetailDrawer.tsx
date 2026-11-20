@@ -89,7 +89,11 @@ export function ReviewDetailDrawer({ reviewId, onClose, onChanged }: { reviewId:
 
   return (
     <Modal isOpen title={title} onClose={onClose} closeLabel={t('Close')} size="lg" placement="end" footer={footer}>
-      <div className="space-y-5" data-testid="review-detail">
+      {/* The dialog body scrolls; a scroll region with nothing focusable in it cannot be scrolled from the keyboard, so the region itself takes focus. */}
+      <div
+        className="space-y-5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"
+        data-testid="review-detail" tabIndex={0} role="region" aria-label={title}
+      >
         <p className="text-body text-fg-muted" data-purpose>{t('apr.detail.purpose')}</p>
 
         {failure != null && <LoadFailedNotice error={failure} onRetry={() => void load()} />}
