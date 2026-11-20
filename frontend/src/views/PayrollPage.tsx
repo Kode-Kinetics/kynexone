@@ -100,6 +100,7 @@ import { UncostedApprovalAck, useUncostedAck } from '../components/payroll/Uncos
 import { CostCentreJournalReport } from '../components/payroll/CostCentreJournalReport';
 import { SettlementRunDutyPanel } from '../components/payroll/SettlementRunDutyPanel';
 import { SettlementRunDutyCard } from '../components/payroll/SettlementRunDutyCard';
+import { glAccountName } from '../lib/glAccountName';
 import { msg } from '../i18n/translations';
 import { insightDetail, insightTitle } from '../lib/insightText';
 import { languageLabel } from '../lib/displayLabels';
@@ -4603,7 +4604,7 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
                     {side.entries.map((e, i) => (
                       <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                         <td className="px-3 py-2 font-mono text-xs text-slate-500">{e.glAccount}</td>
-                        <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{e.glAccountName}</td>
+                        <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{glAccountName(t, e.glAccountName)}</td>
                         <td className={`px-3 py-2 text-end font-semibold tabular-nums ${side.color}`}>{fmtAmt(e.amount, journal.currency)}</td>
                       </tr>
                     ))}

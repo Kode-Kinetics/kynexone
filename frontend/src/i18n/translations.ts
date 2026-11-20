@@ -65,6 +65,7 @@ import { payrollAttendance } from './payrollAttendance';
 import { payrollPipeline } from './payrollPipeline';
 import { payrollRecon } from './payrollRecon';
 import { launchPolish } from './launchPolish';
+import { glAccountNames } from './glAccountNames';
 import { polishB } from './polishB';
 import { statusTail } from './statusTail';
 import { complianceActions } from './complianceActions';
@@ -1681,6 +1682,8 @@ const en: Dict = {
   ...payrollRecon.en,
   // Launch polish: payment readiness, compliance, home and offer sentences — see ./launchPolish.
   ...launchPolish.en,
+  // The seeded chart-of-accounts names, so a journal reads in Arabic — see ./glAccountNames.
+  ...glAccountNames.en,
   // Saudi Compliance action items and GOSI findings — see ./complianceActions.
   ...complianceActions.en,
   // Rules-engine findings on the home dashboard — see ./insights.
@@ -3306,6 +3309,7 @@ const ar: Dict = {
   ...payrollPipeline.ar,
   ...payrollRecon.ar,
   ...launchPolish.ar,
+  ...glAccountNames.ar,
   ...complianceActions.ar,
   ...insightsText.ar,
   // Attendance → Exceptions — see ./attendanceExceptions.
