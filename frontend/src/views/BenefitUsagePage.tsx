@@ -11,7 +11,7 @@ import { Field, Input, Textarea } from '../components/ui/Field';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { benefitUsageApi, type UsageRequest, type UtilisationRow } from '../api/benefitUsage';
-import { STATUS_TONES, calendarDate, fill, measureText, refusalKey, statusKey } from '../lib/benefitUsage';
+import { INFO_KEYS, STATUS_TONES, calendarDate, fill, measureText, refusalKey, statusKey } from '../lib/benefitUsage';
 
 /**
  * Benefit usage, the way loans work: for each employee's FIXED contract benefits, what this period allows, what is waiting, what is
@@ -70,6 +70,7 @@ function BenefitUsage() {
     <div className="space-y-6">
       <PageHeader title={t('Benefit usage')}
         purpose={t('See what each employee’s fixed benefits allow this period, what is used and what is left. HR requests a use; Finance approves it.')} />
+      <p className="-mt-4 text-sm text-fg-muted">{t(INFO_KEYS.paysNothing)}</p>
       {notice && <p role="status" className="flex items-center gap-2 rounded-lg bg-success-soft px-3 py-2 text-sm text-success-fg">
         <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />{notice}</p>}
       {loading

@@ -12,6 +12,8 @@ const pairs: Array<[string, string]> = [
     'اطّلع على ما تتيحه مزايا كل موظف الثابتة في هذه الفترة، وما استُخدم منها وما تبقّى. تطلب الموارد البشرية الاستخدام وتعتمده المالية.'],
   ['Education and tickets used and left, per employee: a use is requested and Finance approves it.',
     'التعليم والتذاكر المستخدمة والمتبقية لكل موظف: يُطلب الاستخدام وتعتمده المالية.'],
+  ['Approving a use only records it against the entitlement and pays nothing. Cash benefits are paid through payroll; loans and bonuses have their own payment batches.',
+    'اعتماد الاستخدام يقتصر على تسجيله ضمن الاستحقاق ولا يصرف أي مبلغ. تُصرف المزايا النقدية عبر الرواتب، أما القروض والمكافآت فلكلٍّ منها دفعات صرف خاصة بها.'],
   ['Benefit usage could not be loaded.', 'تعذّر تحميل استخدام المزايا.'],
   ['Waiting for Finance ({n})', 'بانتظار المالية ({n})'],
   ['Entitlement, used and left', 'المستحق والمستخدم والمتبقي'],
