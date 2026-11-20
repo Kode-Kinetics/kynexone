@@ -123,8 +123,8 @@ for (const viewport of VIEWPORTS) {
             return;
           }
           expect(before.scrollHeight, '25 tall rows overflow the bounded region').toBeGreaterThan(before.clientHeight + 100);
-          // The bound: max(20rem, 100dvh - 24rem).
-          expect(before.clientHeight).toBeLessThanOrEqual(Math.max(320, viewport.height - 384) + 1);
+          // The bound: max(20rem, 100dvh - 23rem) (it was 24rem; the tighter header and rows let the list take one rem more).
+          expect(before.clientHeight).toBeLessThanOrEqual(Math.max(320, viewport.height - 368) + 1);
 
           await region.scrollIntoViewIfNeeded();
           const pageY = await page.evaluate(() => window.scrollY);

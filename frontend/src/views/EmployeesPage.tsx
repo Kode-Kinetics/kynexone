@@ -2253,7 +2253,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const isReinstatement = !!selectedEmployee && ['Suspended', 'Offboarded'].includes(selectedEmployee.status);
   const activateGateBlocked = !isReinstatement && activationBlockers > 0;
   return (
-    <div className={createOnly ? 'h-0 overflow-hidden' : 'space-y-5'}>
+    <div className={createOnly ? 'h-0 overflow-hidden' : 'space-y-4'}>
       {confirmDialog}
       {subscriptionBanner && (
         <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-300">
@@ -2354,7 +2354,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         />
       ) : (
       <div className="grid grid-cols-1 gap-5" data-testid="people-directory-full-width">
-        <section className="min-w-0 space-y-4">
+        <section className="min-w-0 space-y-3">
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
               <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -2502,7 +2502,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
 
           <div className="surface overflow-hidden">
             <div
-              className="relative scroll-pt-12 overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sapphire md:max-h-[max(20rem,calc(100dvh-24rem))] md:overscroll-contain"
+              className="relative scroll-pt-12 overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sapphire md:max-h-[max(20rem,calc(100dvh-23rem))] md:overscroll-contain"
               tabIndex={0}
               role="region"
               aria-label={t('Employee list')}
@@ -2511,7 +2511,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               <table className="w-full min-w-[960px] text-sm">
                 <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_0_rgb(241_245_249)] dark:bg-slate-900 dark:shadow-[0_1px_0_0_rgb(255_255_255/0.07)]">
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                    <th className="w-10 px-4 py-2 text-start">
+                    <th className="w-10 px-3 py-2 text-start">
                       <input
                         ref={selectAllRef}
                         type="checkbox"
@@ -2523,11 +2523,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                       />
                     </th>
                     {['Employee'].map((head) => (
-                      <th key={head} className="px-4 py-3 text-start text-xs font-semibold uppercase text-slate-400">{t(head)}</th>
+                      <th key={head} className="px-3 py-2 text-start text-xs font-semibold uppercase text-slate-400">{t(head)}</th>
                     ))}
-                    <th className="px-4 py-3 text-start text-xs font-semibold uppercase text-slate-400">{t('Self-service')}</th>
+                    <th className="px-3 py-2 text-start text-xs font-semibold uppercase text-slate-400">{t('Self-service')}</th>
                     {['Department', 'Designation', 'Branch', 'Status', 'Profile'].map((head) => (
-                      <th key={head} className="px-4 py-3 text-start text-xs font-semibold uppercase text-slate-400">{t(head)}</th>
+                      <th key={head} className="px-3 py-2 text-start text-xs font-semibold uppercase text-slate-400">{t(head)}</th>
                     ))}
                   </tr>
                 </thead>
@@ -2564,7 +2564,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                     const rowSelected = selectAllMatching || selectedIds.has(employee.id);
                     return (
                     <tr key={employee.id} className={`hover:bg-slate-50 dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
                           checked={rowSelected}
@@ -2573,7 +2573,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           aria-label={t('Select {name}', { name: employee.fullName })}
                         />
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-2">
                         <div className="flex items-center gap-3">
                           <Avatar name={employee.fullName} size="sm" />
                           <div>
@@ -2582,7 +2582,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                               href={employeeWorkspaceHref(employee.id, {
                                 returnTo: buildPeopleReturnTo({ ...directoryQuery.state, anchor: `employee-${employee.id}` }),
                               })}
-                              className="-my-1 inline-block rounded py-1 text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
+                              className="-my-1 inline-block whitespace-nowrap rounded py-1 text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
                             >
                               {employee.fullName}
                             </Link>
@@ -2590,7 +2590,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-3" data-testid="access-pill">
+                      <td className="px-3 py-2" data-testid="access-pill">
                         <ThreeStateCell
                           status={employee.status}
                           accessState={employee.accessState}
@@ -2600,11 +2600,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           onReset={canResetAccess && employee.accessState === 'active' ? () => setResetFor({ id: employee.id, name: employee.fullName }) : undefined}
                         />
                       </td>
-                      <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.department || '-'}</td>
-                      <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.designation || '-'}</td>
-                      <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.branch || '-'}</td>
-                      <td className="px-4 py-3"><StatusChip tone={statusTone(employee.status).tone} label={t(employee.status)} /></td>
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{employee.department || '-'}</td>
+                      <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{employee.designation || '-'}</td>
+                      <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{employee.branch || '-'}</td>
+                      <td className="px-3 py-2"><StatusChip tone={statusTone(employee.status).tone} label={t(employee.status)} /></td>
+                      <td className="px-3 py-2">
                         <ReadinessBadge
                           state={employee.readinessState}
                           blockersCount={employee.activationBlockersCount}

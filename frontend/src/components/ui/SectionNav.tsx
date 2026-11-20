@@ -251,7 +251,7 @@ export function SectionNav<Id extends string>({ groups, selectedId, currentLabel
           {!searching && groups.length > 2 && (
             <div className="col-span-full flex justify-end px-1">
               <button type="button" data-testid={`${classPrefix}-groups-toggle-all`} onClick={() => saveCollapsed(allCollapsed ? [] : groups.map(group => group.id))}
-                className="rounded-md px-2 py-1 text-xs font-medium text-sapphire hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sapphire dark:text-cyanAccent dark:hover:bg-white/[0.06]">
+                className="rounded-lg px-2 py-1 text-xs font-medium text-sapphire hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sapphire dark:text-cyanAccent dark:hover:bg-white/[0.06]">
                 {allCollapsed ? t('Expand all groups') : t('Collapse all groups')}
               </button>
             </div>
@@ -262,7 +262,7 @@ export function SectionNav<Id extends string>({ groups, selectedId, currentLabel
               <p id={`${SETUP_SECTION_LIST_ID}-${group.id}`} className="text-[11px] font-semibold uppercase leading-4 tracking-[0.08em] text-slate-500 rtl:normal-case rtl:text-[13px] rtl:tracking-normal dark:text-slate-400">
                 <button type="button" data-testid={`${classPrefix}-group-toggle-${group.id}`} aria-expanded={!isCollapsed(group.id)} aria-controls={`${SETUP_SECTION_LIST_ID}-${group.id}-items`}
                   onClick={() => toggleGroup(group.id)}
-                  className="flex min-h-8 w-full items-center justify-between gap-2 rounded-md px-3 pb-1 pt-1.5 text-start uppercase hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sapphire rtl:normal-case dark:hover:bg-white/[0.06] xl:pb-0.5 xl:pt-1">
+                  className="flex min-h-8 w-full items-center justify-between gap-2 rounded-lg px-3 pb-1 pt-1.5 text-start uppercase hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sapphire rtl:normal-case dark:hover:bg-white/[0.06] xl:pb-0.5 xl:pt-1">
                   <span>{group.label}</span>
                   <ChevronDown aria-hidden="true" className={`h-3.5 w-3.5 shrink-0 transition-transform motion-reduce:transition-none ${isCollapsed(group.id) ? '-rotate-90 rtl:rotate-90' : ''}`} />
                 </button>

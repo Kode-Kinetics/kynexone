@@ -48,17 +48,20 @@ export function ThreeStateCell({ status, accessState, loginEnabled, passwordConf
   return (
     <div className="flex flex-col items-start gap-1" data-testid="three-state-cell">
       {states.needsWorkEmail && <span className="text-xs italic text-slate-500 dark:text-slate-400">{t('Needs work email first')}</span>}
-      <ul className="m-0 flex list-none flex-col items-start gap-1 p-0">
+      {/* The three answers and Reset sign-in share one wrapping row, so a row of the list stays two lines high. */}
+      <ul className="m-0 flex list-none flex-wrap items-center gap-1 p-0">
         {rows.map((row) => (
           <li key={row.label}>
             <span className="sr-only">{t(row.label)}: </span>
             <StatusChip label={t(row.text)} tone={row.tone} icon={row.icon} />
           </li>
         ))}
+        {onReset && states.password === 'password_set' && !states.newCodeLive && states.login !== 'access_stopped' && (
+          <li>
+            <button type="button" onClick={onReset} className="btn-secondary min-h-11 px-2 text-xs md:min-h-6 md:py-0">{t('Reset sign-in')}</button>
+          </li>
+        )}
       </ul>
-      {onReset && states.password === 'password_set' && !states.newCodeLive && states.login !== 'access_stopped' && (
-        <button type="button" onClick={onReset} className="btn-secondary min-h-11 px-2 text-xs md:min-h-7">{t('Reset sign-in')}</button>
-      )}
     </div>
   );
 }
