@@ -1175,6 +1175,37 @@ public class PlatformController : ControllerBase
         {
             return BadRequest(new { code = "geofence_config_invalid", message = string.Join(" ", problems), problems });
         }
+        else if (Zayra.Api.Infrastructure.Government.GovernmentOptIn.IsGovernmentKey(featureKey))
+        {
+            // Sending a customer's data to a government or bank body needs that customer's consent, recorded in THIS request by a
+            // named platform Owner (the selfie precedent). The server stamps who and when; a typed who or when is dropped, and a
+            // stored record is never reused: switching back on needs a fresh one. Disabling is always allowed (an Admin may) and
+            // keeps the record, marked withdrawn.
+            if (req.IsEnabled)
+            {
+                if (!string.Equals(User.FindFirst("platform_role")?.Value, PlatformRoles.Owner, StringComparison.OrdinalIgnoreCase)
+                    || GetPlatformUserId() is not Guid recorder)
+                    return StatusCode(StatusCodes.Status403Forbidden, new
+                    {
+                        code = Zayra.Api.Infrastructure.Government.GovernmentOptIn.OwnerOnlyCode,
+                        message = "Only a platform Owner, signed in with a named account, can switch a government or bank connection on. An Admin can switch it off.",
+                    });
+                if (Zayra.Api.Infrastructure.Government.GovernmentOptIn.RequestProblems(req.ConfigJson) is { Count: > 0 } missingConsent)
+                    return UnprocessableEntity(new
+                    {
+                        code = Zayra.Api.Infrastructure.Government.GovernmentOptIn.ConsentMissingCode,
+                        message = "This connection cannot be switched on without the customer's consent in this request: consent.agreementReference "
+                                  + "and consent.dataCategories (one or more of: " + string.Join(", ", Zayra.Api.Infrastructure.Government.GovernmentOptIn.DataCategories.Order())
+                                  + "). Who recorded it and when are stamped by the server.",
+                        missing = missingConsent,
+                    });
+                effectiveConfig = Zayra.Api.Infrastructure.Government.GovernmentOptIn.Stamp(req.ConfigJson, recorder, PlatformActorEmail(), DateTime.UtcNow);
+            }
+            else
+            {
+                effectiveConfig = Zayra.Api.Infrastructure.Government.GovernmentOptIn.Withdraw(flag?.ConfigJson, DateTime.UtcNow);
+            }
+        }
 
         // A feature that is on by default and has no row yet was ON: the audit's "before" must say so, not the column default.
         var oldEnabled = flag?.IsEnabled ?? PlatformDefaultOnFeatures.IsDefaultOn(featureKey);
@@ -1190,7 +1221,9 @@ public class PlatformController : ControllerBase
 
         object newValues = featureKey == FeatureKeys.SelfieAttendance
             ? (object)new { featureKey, isEnabled = req.IsEnabled, signOffs = SelfieAttendanceConfig.SignOffsForAudit(effectiveConfig), actor = PlatformActorEmail() }
-            : new { featureKey, isEnabled = req.IsEnabled };
+            : Zayra.Api.Infrastructure.Government.GovernmentOptIn.IsGovernmentKey(featureKey)
+                ? new { featureKey, isEnabled = req.IsEnabled, consent = Zayra.Api.Infrastructure.Government.GovernmentOptIn.ConsentForAudit(effectiveConfig), actor = PlatformActorEmail() }
+                : new { featureKey, isEnabled = req.IsEnabled };
         _db.AdminAuditLogs.Add(new AdminAuditLog
         {
             TenantId = tenantId,
@@ -2607,6 +2640,14 @@ public class PlatformController : ControllerBase
                 message = "Selfie attendance is switched on one tenant at a time, with that tenant's DPIA sign-off and "
                           + "KSA data-residency confirmation. Use PUT /api/platform/tenants/{id}/features/selfie_attendance.",
             });
+        // A government or bank connection is switched on one tenant at a time, with that tenant's own consent record.
+        if (Zayra.Api.Infrastructure.Government.GovernmentOptIn.IsGovernmentKey(req.FeatureKey) && req.IsEnabled)
+            return UnprocessableEntity(new
+            {
+                code = Zayra.Api.Infrastructure.Government.GovernmentOptIn.BulkEnableRefusedCode,
+                message = "Government and bank connections are switched on one tenant at a time, with that tenant's recorded consent. "
+                          + "Use PUT /api/platform/tenants/{id}/features/{key}.",
+            });
         // An opt-in feature is a per-tenant rollout decision: never switched ON for every tenant at once. Switching
         // it OFF everywhere stays possible (kill switch), and an explicit tenant list is a deliberate choice.
         if (req.ApplyToAll && req.IsEnabled && OptInFeatures.IsOptIn(req.FeatureKey))
@@ -2650,7 +2691,9 @@ public class PlatformController : ControllerBase
             }
 
             flag.IsEnabled = req.IsEnabled;
-            if (req.ConfigJson is not null) flag.ConfigJson = req.ConfigJson;
+            if (Zayra.Api.Infrastructure.Government.GovernmentOptIn.IsGovernmentKey(req.FeatureKey))
+                flag.ConfigJson = Zayra.Api.Infrastructure.Government.GovernmentOptIn.Withdraw(flag.ConfigJson, DateTime.UtcNow); // bulk is off-only here
+            else if (req.ConfigJson is not null) flag.ConfigJson = req.ConfigJson;
             flag.UpdatedAtUtc = DateTime.UtcNow;
             // Designation-driven access is a kill switch: switching it off takes away every role it granted.
             if (req.FeatureKey == FeatureKeys.DesignationAccess && oldEnabled && !req.IsEnabled)
@@ -4769,6 +4812,10 @@ public class PlatformController : ControllerBase
         [FeatureKeys.SelfieAttendance] = "Enabling needs the recorded DPIA sign-off and KSA data-residency confirmation in ConfigJson.",
         [FeatureKeys.PunchGeofence] = "Enabling needs a geofence configuration (PunchGeofenceConfig) in ConfigJson.",
         [FeatureKeys.DesignationAccess] = "A one-line tenant setting with no console toggle: PUT /api/platform/tenants/{id}/features/designation_access with isEnabled true.",
+        [FeatureKeys.GovQiwaApi] = "A platform Owner enables it with the customer's consent record (agreement, data categories) in ConfigJson; the server stamps who and when (GovernmentOptIn).",
+        [FeatureKeys.GovGosiApi] = "A platform Owner enables it with the customer's consent record (agreement, data categories) in ConfigJson; the server stamps who and when (GovernmentOptIn).",
+        [FeatureKeys.GovMuqeem] = "A platform Owner enables it with the customer's consent record (agreement, data categories) in ConfigJson; the server stamps who and when (GovernmentOptIn).",
+        [FeatureKeys.BankApiAnb] = "A platform Owner enables it with the customer's consent record (agreement, data categories) in ConfigJson; the server stamps who and when (GovernmentOptIn).",
     };
 
     // ── Platform Settings ─────────────────────────────────────────────────────

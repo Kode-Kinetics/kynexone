@@ -225,24 +225,37 @@ public sealed class PeriodHandoffReconciler
                 .Where(c => c.TenantId == tenantId && batchIds.Contains(c.PaymentBatchId)).ToListAsync(ct);
 
         var overall = BankConfirmationService.Coverage(records);
-        if (overall.FailedCount > 0) blockers.Add("unresolved_returned_payments");
+        // Returned (the money came back) and Rejected (the bank refused the instruction) block separately: both mean an employee is unpaid, but
+        // only returned money, and a rejection that arrived after the settlement journal, need the GL correction (C1).
+        if (overall.ReturnedCount > 0) blockers.Add("unresolved_returned_payments");
+        if (overall.RejectedCount > 0) blockers.Add("unpaid_rejected_payments");
         if (overall.UnconfirmedCount > 0) blockers.Add("payments_not_confirmed_by_bank");
+
+        var settledAt = await BankOutcomeLedger.SettledAtAsync(_db, tenantId, batches, ct);
+        var rejectedAfterSettlement = BankOutcomeLedger.RejectedAfterSettlement(records, settledAt);
+        var rejectedAfterSettlementTotal = rejectedAfterSettlement.Sum(r => r.Amount);
+        // Returned money needs the correction only once the settlement journal credited Cash/Bank for it (owner ruling 2026-11-17).
+        var returnedAfterSettlement = BankOutcomeLedger.ReturnedAfterSettlement(records, settledAt);
+        var returnedAfterSettlementTotal = returnedAfterSettlement.Sum(r => r.Amount);
+        var glCorrectionTotal = returnedAfterSettlementTotal + rejectedAfterSettlementTotal;
+        if (glCorrectionTotal > 0m) blockers.Add("gl_correction_awaiting");
+
+        // A line held for a person (a rejection after Paid, a Returned/Rejected swap, a DUPL refusal) keeps the period open
+        // until the person resolves it: a salary must never read Paid while the bank says otherwise (B2).
+        var heldForPerson = BankOutcomeLedger.UnresolvedHolds(records, confirmations);
+        foreach (var hold in heldForPerson) blockers.Add(BankOutcomeHolds.BlockerFor(hold.HoldReason));
+        var blockingHolds = BankOutcomeLedger.BlockingHolds(records, confirmations);
         if (overall.ReconciliationDelta != 0m) blockers.Add("payment_coverage_delta");
 
-        var heldMismatches = confirmations.Count(c => !c.Applied && c.HoldReason == "amount_mismatch_held");
+        // Only OPEN mismatch holds: one closes once a later line for the record was applied or decided (CTO ruling N3).
+        var heldMismatches = BankOutcomeLedger.OpenAmountMismatchHolds(confirmations).Count;
         if (heldMismatches > 0) blockers.Add("amount_mismatch_holdbacks");
 
-        var returnsDetail = records.Where(r => PaymentRecordStatuses.IsFailed(r.Status)).Select(r =>
-        {
-            var latest = confirmations.Where(c => c.PaymentRecordId == r.Id && c.Outcome == BankConfirmationOutcomes.Returned)
-                .OrderByDescending(c => c.ImportedAtUtc).FirstOrDefault();
-            return new
-            {
-                paymentRecordId = r.Id, r.EmployeeId, r.Amount, status = r.Status,
-                reasonCode = latest?.ReasonCode, reasonText = latest?.ReasonText,
-                bankReference = latest?.BankReference, valueDate = latest?.ValueDate,
-            };
-        }).ToList();
+        // The same applied rows the import and the batch history read (final gate P2-1): a held line never speaks for a return.
+        var returned = records.Where(r => string.Equals(r.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase)).ToList();
+        var returnsDetail = returned
+            .Select(r => BankOutcomeLedger.FailedLine(r, BankConfirmationOutcomes.Returned, BankOutcomeLabels.ReturnedMoneyCameBack, confirmations))
+            .ToList();
 
         var payments = new
         {
@@ -256,14 +269,21 @@ public sealed class PeriodHandoffReconciler
                     coverage = cov,
                     // A batch reading Paid with returns or unconfirmed records open is exactly the state
                     // this pod exists to make visible.
-                    presentsCleanButIsNot = b.WpsStatus is WpsStatuses.Paid or WpsStatuses.Reconciled
-                                            && (cov.FailedCount > 0 || cov.UnconfirmedCount > 0),
+                    presentsCleanButIsNot = BankOutcomeLedger.PresentsCleanButIsNot(
+                        b.WpsStatus, cov, blockingHolds.Count(h => own.Any(r => r.Id == h.PaymentRecordId))),
                 };
             }).ToList(),
             coverage = overall,
             returns = returnsDetail,
+            // "Not paid: rejected by bank", each with the bank's reason in plain words. Never under returns.
+            rejections = records.Where(r => string.Equals(r.Status, PaymentRecordStatuses.Rejected, StringComparison.OrdinalIgnoreCase))
+                .Select(r => BankOutcomeLedger.FailedLine(r, BankConfirmationOutcomes.Rejected, BankOutcomeLabels.NotPaidRejectedByBank, confirmations))
+                .ToList(),
+            heldForPerson = heldForPerson.Select(BankOutcomeLedger.View).ToList(),
             amountMismatchHoldbacks = heldMismatches,
-            unmatchedImportRowsLogged = confirmations.Count(c => !c.Applied && c.HoldReason is not null),
+            // A person's reasoned exit is a decision, not a logged line left unapplied.
+            unmatchedImportRowsLogged = confirmations.Count(c => !c.Applied && c.HoldReason is not null
+                                                              && !BankOutcomeHolds.IsPersonDecision(c.HoldReason)),
             confirmationImports = confirmations.Select(c => c.ImportBatchId).Distinct().Count(),
         };
 
@@ -274,10 +294,16 @@ public sealed class PeriodHandoffReconciler
                         && (e.SourceEntityRef == null || !e.SourceEntityRef.StartsWith(Zayra.Api.Infrastructure.Payroll.PaymentBatchExclusions.OutsidePaymentRefPrefix)))
             .Sum(e => e.Amount), scale);
 
-        var returnPeriod = returnsDetail
-            .Select(r => r.valueDate.HasValue ? $"{r.valueDate.Value.Year}-{r.valueDate.Value.Month:D2}" : nowPeriod)
+        var rejectedAfterSettlementIds = rejectedAfterSettlement.Select(r => r.Id).ToHashSet();
+        // Dated from the row that decided the rejection, including a person's confirm_duplicate_not_paid (N1).
+        var rejectionDates = rejectedAfterSettlementIds
+            .Select(id => BankOutcomeLedger.RejectionDecision(id, confirmations)?.ValueDate);
+        var returnDates = returnedAfterSettlement
+            .Select(r => BankOutcomeLedger.LatestApplied(r.Id, BankConfirmationOutcomes.Returned, confirmations)?.ValueDate);
+        var returnPeriod = returnDates.Concat(rejectionDates)
+            .Select(d => d.HasValue ? $"{d.Value.Year}-{d.Value.Month:D2}" : nowPeriod)
             .OrderByDescending(p => p, StringComparer.Ordinal).FirstOrDefault() ?? nowPeriod;
-        var returnPeriodClosed = overall.FailedTotal > 0
+        var returnPeriodClosed = glCorrectionTotal > 0
             && await PeriodCloseGuard.IsClosedAsync(_db, tenantId, filter.CompanyId, returnPeriod, ct);
 
         var postedMinusExported = JournalAmount.Round(postedDr - exportedTotal, scale);
@@ -289,19 +315,40 @@ public sealed class PeriodHandoffReconciler
             settledToGlMinusPaidConfirmed = JournalAmount.Round(settledToGl - overall.PaidTotal, scale),
             unconfirmed = new { overall.UnconfirmedCount, total = JournalAmount.Round(overall.UnconfirmedTotal) },
             // THE GL SEAM, REPORTED NOT POSTED. The B1 net settlement credited Cash/Bank for the whole batch;
-            // a returned payment means that much cash never left. The correction is
+            // a returned payment means that much cash did not reach the employee. The correction is
             // DR Cash-Bank / CR 2100 Salaries Payable for the returned amount, per employee, dated into the
             // return's period and gated by PeriodCloseGuard. This pod does not post it.
             returnedAmountAwaitingGlCorrection = new
             {
-                amount = JournalAmount.Round(overall.FailedTotal),
+                amount = JournalAmount.Round(returnedAfterSettlementTotal),
                 targetPeriod = returnPeriod,
                 targetPeriodClosed = returnPeriodClosed,
                 correction = "DR Cash-Bank / CR 2100 Salaries Payable (per returned employee)",
                 note = returnPeriodClosed
                     ? $"GL period {returnPeriod} is CLOSED — the correction cannot be posted until it is reopened."
-                    : "Not posted by this pod: the correction is a defined seam, awaiting a GlEventTypes.NetSettlementReturn driver.",
+                    : "Not yet posted. Finance must post the correction (debit Cash/Bank, credit Salaries Payable) for this amount in the period the bank's answer arrived.",
+                noteAr = returnPeriodClosed
+                    ? $"الفترة المحاسبية {returnPeriod} مقفلة — لا يمكن ترحيل قيد التصحيح إلا بعد إعادة فتحها."
+                    : "لم يُرحَّل بعد. على الإدارة المالية ترحيل قيد التصحيح (مدين النقدية/البنك، دائن الرواتب المستحقة) بهذا المبلغ في الفترة التي ورد فيها رد البنك.",
             },
+            // C1: the batch's settlement journal was posted BEFORE these rejections arrived, so Cash/Bank was credited for
+            // salaries the bank refused to send. Same correction as returned money; the label stays "Not paid: rejected by bank".
+            rejectedAfterSettlementAwaitingGlCorrection = new
+            {
+                amount = JournalAmount.Round(rejectedAfterSettlementTotal),
+                label = new { en = BankOutcomeLabels.NotPaidRejectedByBank.English, ar = BankOutcomeLabels.NotPaidRejectedByBank.Arabic },
+                targetPeriod = returnPeriod,
+                targetPeriodClosed = returnPeriodClosed,
+                correction = "DR Cash-Bank / CR 2100 Salaries Payable (per rejected employee whose batch was settled first)",
+                note = "Not yet posted. Finance must post the correction (debit Cash/Bank, credit Salaries Payable) for this amount in the period "
+                     + "the bank's answer arrived. A rejection that arrives before the ledger settlement needs no correction: settlement is "
+                     + "refused while any payment is rejected, so no cash was credited for it.",
+                noteAr = "لم يُرحَّل بعد. على الإدارة المالية ترحيل قيد التصحيح (مدين النقدية/البنك، دائن الرواتب المستحقة) بهذا المبلغ في الفترة "
+                       + "التي ورد فيها رد البنك. والرفض الذي يرد قبل تسوية القيد في الدفاتر لا يحتاج إلى تصحيح: فالتسوية تُرفض ما دامت أي دفعة "
+                       + "مرفوضة، لذلك لم تُسجَّل أي نقدية مقابلها.",
+            },
+            // Every rejected salary, settled or not: owed to the employee and not paid by this batch.
+            rejectedAmountNotPaid = new { amount = JournalAmount.Round(overall.RejectedTotal) },
         };
 
         if (postedMinusExported != 0m) blockers.Add("posted_export_delta");

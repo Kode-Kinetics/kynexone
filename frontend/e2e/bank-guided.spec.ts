@@ -363,7 +363,7 @@ test.describe('the reviews\' rules', () => {
     await expect(returned).toContainText('Omar Aldosari');
     await expect(returned).toContainText('14,100.00');
     await expect(returned).toContainText('Account closed');
-    await expect(returned).toContainText('Paying again creates a new payment batch with a new file reference. Never upload this file again.');
+    await expect(returned).toContainText('Pay them in a new payment batch linked to the original batch. It gets a new file reference; never upload this file again.');
     await expect(returned.getByRole('button', { name: 'Open Payment Tracking' })).toBeVisible();
     const step = page.getByTestId('bank-step-body-response');
     await expect(step).toContainText('Settle only payments the bank confirmed.');
@@ -619,7 +619,8 @@ test.describe('fix batch 2: the flow', () => {
     for (const [k, amount] of [['paid', 86088.9], ['returned', 14100], ['waiting', 29250]] as const) {
       expect(Math.abs(await width(k) - whole * amount / file), k).toBeLessThanOrEqual(2);
     }
-    await expect(bar.locator('[data-bucket="returned"]')).toHaveClass(/bg-danger/);
+    // Returned is amber; red is reserved for a bank rejection ("Not paid"), which this fixture has none of.
+    await expect(bar.locator('[data-bucket="returned"]')).toHaveClass(/bg-warning/);
     await expect(bar.locator('[data-bucket="paid"]')).toHaveClass(/bg-success/);
   });
 

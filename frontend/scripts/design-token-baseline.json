@@ -1,17 +1,17 @@
 {
-  "arbitraryFontSize": 128,
+  "arbitraryFontSize": 125,
   "fontSizeBelow11px": 13,
   "rawHexInClassName": 107,
   "grayPalette": 0,
-  "radiusOutsideScale": 28,
+  "radiusOutsideScale": 27,
   "shadow2xl": 3,
   "tintedShadow": 0,
   "fontWeightSprawl": 30,
   "rawDurationClass": 45,
-  "animatePulse": 64,
+  "animatePulse": 63,
   "animatePing": 4,
   "tile3d": 0,
   "borderDashed": 33,
-  "adHocEmptyText": 190,
+  "adHocEmptyText": 188,
   "nativeDialog": 0
 }

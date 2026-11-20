@@ -488,12 +488,12 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
     <>
       <div className="space-y-4">
         {!createModal && !decideModal && !receiptModal && <FormError error={error} />}
-        <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800 dark:bg-blue-900/20 dark:text-blue-200">{t('Request → Approval → Loan Payments → Payment confirmation → Repayment receipts. New loans use separate bank repayments by default.')}</p>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <select value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }} className="select" title={t('Filter by status')}>
             <option value="">{t('All Statuses')}</option>
             {['Pending', 'Approved', 'Active', 'Overdue', 'Settled', 'Rejected', 'Closed'].map((s) => <option key={s} value={s}>{s === 'Approved' ? t('Approved — awaiting payment') : enumLabel(t, 'LoanStatus', s)}</option>)}
           </select>
+          <p data-testid="loan-flow-note" className="min-w-0 flex-1 text-xs text-slate-500 dark:text-slate-400">{t('Request → Approval → Loan Payments → Payment confirmation → Repayment receipts. New loans use separate bank repayments by default.')}</p>
           <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer', notes: '' }); setSelectedEmployee(null); setEligibility(null); setPreview(null); setOfferedTypes(null); setOfferedTypesSettled(false); setRequestException(false); setConsentDocumentId(null); setCheckedKey(''); setError(''); setCreateModal(true); }} className="btn-primary">
             <Plus className="h-4 w-4" /> {t('New Loan Request')}
           </button>
@@ -503,7 +503,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Loan #', 'Employee', 'Type / Repayment', 'Requested', 'Approved', 'Outstanding', 'Installment', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h === '#' || h === '' ? h : t(h)}</th>
+                  <th key={h} className="whitespace-nowrap px-2.5 py-2 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h === '#' || h === '' ? h : t(h)}</th>
                 ))}
               </tr>
             </thead>
@@ -516,15 +516,15 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
                 <tr><td colSpan={10} className="py-12 text-center text-slate-400">{t('No loans found')}</td></tr>
               ) : items.map((l) => (
                 <tr key={l.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03] cursor-pointer" onClick={() => openDetail(l)}>
-                  <td className="px-4 py-3 font-mono text-xs text-slate-500">{l.loanNumber}</td>
-                  <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{l.employeeName}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.loanTypeName}<span className="block text-xs text-slate-500">{t(repaymentMethodLabels[l.repaymentMethod])}</span></td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(l.requestedAmount, l.currency)}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.approvedAmount > 0 ? fmt(l.approvedAmount, l.currency) : '—'}</td>
-                  <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{fmt(l.outstandingBalance, l.currency)}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.installmentAmount > 0 ? fmt(l.installmentAmount, l.currency) : '—'}</td>
-                  <td className="px-4 py-3"><StatusBadge status={l.status} />{l.reviewRequired && <span className="mt-1 block text-xs text-amber-700 dark:text-amber-300">{t('HR review required')}</span>}</td>
-                  <td className="px-4 py-3 text-sapphire text-xs"><button type="button" onClick={e => { e.stopPropagation(); openDetail(l); }} aria-label={`View loan ${l.loanNumber}`}>{t('View →')}</button></td>
+                  <td className="whitespace-nowrap px-2.5 py-2 font-mono text-xs text-slate-500">{l.loanNumber}</td>
+                  <td className="whitespace-nowrap px-2.5 py-2 font-medium text-slate-900 dark:text-white">{l.employeeName}</td>
+                  <td className="px-2.5 py-2 text-slate-600 dark:text-slate-300">{l.loanTypeName}<span className="block text-xs text-slate-500">{t(repaymentMethodLabels[l.repaymentMethod])}</span></td>
+                  <td className="whitespace-nowrap px-2.5 py-2 text-slate-600 dark:text-slate-300">{fmt(l.requestedAmount, l.currency)}</td>
+                  <td className="whitespace-nowrap px-2.5 py-2 text-slate-600 dark:text-slate-300">{l.approvedAmount > 0 ? fmt(l.approvedAmount, l.currency) : '—'}</td>
+                  <td className="whitespace-nowrap px-2.5 py-2 font-semibold text-slate-900 dark:text-white">{fmt(l.outstandingBalance, l.currency)}</td>
+                  <td className="whitespace-nowrap px-2.5 py-2 text-slate-600 dark:text-slate-300">{l.installmentAmount > 0 ? fmt(l.installmentAmount, l.currency) : '—'}</td>
+                  <td className="whitespace-nowrap px-2.5 py-2"><StatusBadge status={l.status} />{l.reviewRequired && <span className="mt-1 block text-xs text-amber-700 dark:text-amber-300">{t('HR review required')}</span>}</td>
+                  <td className="whitespace-nowrap px-2.5 py-2 text-sapphire text-xs"><button type="button" onClick={e => { e.stopPropagation(); openDetail(l); }} aria-label={`View loan ${l.loanNumber}`}>{t('View →')}</button></td>
                 </tr>
               ))}
             </tbody>
@@ -2037,7 +2037,7 @@ export function LoansPage() {
   }, [summaryVersion, activeTab, canViewFinanceModules, companyVersion]);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{ownAccounts ? t('My Loans') : canViewFinanceModules ? t('Loans, Advances & Bonuses') : t('Team Loans')}</h1>

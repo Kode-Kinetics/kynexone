@@ -143,6 +143,8 @@ public static class PrivilegedMfaPolicy
         "organization.costcenter.manage",
         "leave.policy_manage", "leave.cancel", "overtime.policy_manage", "attendance.policy_manage", "notifications.manage", "localization.manage",
         "shifts.write", "shifts.manage", "qiwa.configure", "qiwa.sync",
+        // Government and bank integration credentials: a bank credential can move money.
+        "gov.credentials.manage",
         // Attendance that drives pay.
         "attendance.write", "attendance.delete", "attendance.bulk_import", "attendance.lock",
         // Selfie attendance: opening an employee's stored face image (sensitive personal data under the PDPL).

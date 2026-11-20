@@ -43,9 +43,16 @@ public static class FieldEnvelope
     public static int DekVersionOf(byte[] blob) => blob[1];
     public static byte FormatOf(byte[] blob) => blob[0];
 
-    public static string Open(byte[] dek, byte[] blob, string aad)
+    public static string Open(byte[] dek, byte[] blob, string aad) => Open(dek, blob, aad, MaxLength);
+
+    /// <summary>
+    /// Opens an envelope larger than a catalogued field may be (a government credential such as a private key). Same format,
+    /// same checks; only the upper length bound is the caller's.
+    /// </summary>
+    public static string Open(byte[] dek, byte[] blob, string aad, int maxLength)
     {
-        if (!IsWellFormed(blob)) throw new CryptographicException("Not a field-encryption envelope.");
+        if (!(blob is { Length: >= MinLength } && blob.Length <= maxLength && (blob[0] == FormatV1 || blob[0] == FormatV2) && blob[1] != 0))
+            throw new CryptographicException("Not a field-encryption envelope.");
         var ctLen = blob.Length - HeaderBytes - NonceBytes - TagBytes;
         var pt = new byte[ctLen];
         try

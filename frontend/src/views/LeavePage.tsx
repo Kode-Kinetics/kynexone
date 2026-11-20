@@ -193,16 +193,12 @@ function GroupContextBar({
 }) {
   const t = useT();
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-xl border border-sapphire/20 bg-sapphire/5 px-4 py-2.5 dark:border-cyanAccent/20 dark:bg-cyanAccent/5">
-      <div className="flex items-center gap-1.5 text-xs font-medium text-sapphire dark:text-cyanAccent">
-        <Building2 className="h-3.5 w-3.5" />
-        <span>{t('Group')}</span>
-      </div>
-      <ChevronRight className="h-3.5 w-3.5 text-slate-300 dark:text-white/20" />
+    <div className="flex flex-wrap items-center gap-1.5" data-testid="leave-group-context">
+      <Building2 className="h-3.5 w-3.5 shrink-0 text-sapphire dark:text-cyanAccent" aria-hidden="true" />
       <select
         title={t('Filter by company')}
         aria-label={t('Filter by company')}
-        className={`${sel} w-52 !border-sapphire/30 !bg-white dark:!bg-white/10`}
+        className={`${sel} !w-48 !border-sapphire/30 !bg-white dark:!bg-white/10`}
         value={companyId}
         onChange={e => { onCompanyChange(e.target.value); onBranchChange(''); }}
       >
@@ -213,14 +209,11 @@ function GroupContextBar({
       </select>
       {companyId && branches.length > 0 && (
         <>
-          <ChevronRight className="h-3.5 w-3.5 text-slate-300 dark:text-white/20" />
-          <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-            <GitBranch className="h-3.5 w-3.5" />
-          </div>
+          <GitBranch className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden="true" />
           <select
             title={t('Filter by branch')}
             aria-label={t('Filter by branch')}
-            className={`${sel} w-44 !border-sapphire/30 !bg-white dark:!bg-white/10`}
+            className={`${sel} !w-40 !border-sapphire/30 !bg-white dark:!bg-white/10`}
             value={branchId}
             onChange={e => onBranchChange(e.target.value)}
           >
@@ -240,13 +233,6 @@ function GroupContextBar({
           {t('Clear')}
         </button>
       )}
-      <span className="ms-auto text-caption text-slate-400 dark:text-slate-500">
-        {companyId
-          ? (branchId
-            ? branches.find(b => b.id === branchId)?.nameEn ?? t('Branch')
-            : companies.find(c => c.id === companyId)?.legalNameEn ?? t('Company'))
-          : t('{count, plural, one {# company in group} other {# companies in group}}', { count: companies.length })}
-      </span>
     </div>
   );
 }
@@ -2664,14 +2650,24 @@ export function LeavePage() {
     : t('Apply for leave, track your balance, and view your leave history.');
 
   return (
-    <div className="space-y-5 p-4 sm:p-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
+    <div className="space-y-4 p-4 sm:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0 flex-1 basis-[26rem]">
           <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Leave & Absence Management')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-          <ModuleSettingsLink sections={['leaveTypes', 'leavePolicies', 'holidayCalendars']} label={msg('Leave settings')} />
+          {isAdmin && companies.length > 0 && (
+            <GroupContextBar
+              companies={companies}
+              companyId={companyId}
+              onCompanyChange={setCompanyId}
+              branches={branches}
+              branchId={branchId}
+              onBranchChange={setBranchId}
+            />
+          )}
+          <ModuleSettingsLink sections={['leaveTypes', 'leavePolicies', 'holidayCalendars']} label={msg('Leave settings')} className="whitespace-nowrap" />
           <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
             isAdmin   ? 'bg-sapphire/10 text-sapphire dark:bg-sapphire/20 dark:text-cyanAccent'
             : isManager ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400'
@@ -2681,17 +2677,6 @@ export function LeavePage() {
           </span>
         </div>
       </div>
-
-      {isAdmin && companies.length > 0 && (
-        <GroupContextBar
-          companies={companies}
-          companyId={companyId}
-          onCompanyChange={setCompanyId}
-          branches={branches}
-          branchId={branchId}
-          onBranchChange={setBranchId}
-        />
-      )}
 
       <RovingTabList
         items={visibleTabs.map(({ id, label, icon }) => ({ id, label: t(label), icon }))}

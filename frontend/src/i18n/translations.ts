@@ -11,6 +11,7 @@ import { launchRecruitment } from './launchRecruitment';
 import { managerRecruitment } from './managerRecruitment';
 import { launchNewHires } from './launchNewHires';
 import { essWorkspace } from './essWorkspace';
+import { essJobs } from './essJobs';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { hireWizard } from './hireWizard';
@@ -1656,6 +1657,8 @@ const en: Dict = {
 
   // Self-Service workspace — see ./essWorkspace.
   ...essWorkspace.en,
+  // Self-Service open positions — see ./essJobs.
+  ...essJobs.en,
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.en,
   // Payroll's attendance check before Process — see ./payrollAttendance.
@@ -3273,6 +3276,8 @@ const ar: Dict = {
 
   // Self-Service workspace — see ./essWorkspace.
   ...essWorkspace.ar,
+  // Self-Service open positions — see ./essJobs.
+  ...essJobs.ar,
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.ar,
   // Payroll's attendance check before Process — see ./payrollAttendance.

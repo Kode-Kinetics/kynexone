@@ -26,7 +26,7 @@ const ar: Record<string, string> = {
   'Open the employee and correct their IBAN': 'افتح ملف الموظف وصحّح رقم الآيبان',
   'Required statutory details are missing or expired': 'بيانات نظامية مطلوبة ناقصة أو منتهية الصلاحية',
   'Open the employee and complete their readiness checklist': 'افتح ملف الموظف وأكمل قائمة الجاهزية',
-  'No MOL ID for WPS (Mudad) reporting': 'لا يوجد رقم وزارة الموارد البشرية للإبلاغ عبر نظام حماية الأجور (مُدد)',
+  'No MOL ID for WPS (Mudad) reporting': 'لا يوجد رقم وزارة الموارد البشرية للإبلاغ عبر نظام حماية الأجور (مدد)',
   'Open the employee and add their MOL ID': 'افتح ملف الموظف وأضف رقم وزارة الموارد البشرية',
   'IBAN is not a Saudi account': 'رقم الآيبان ليس لحساب سعودي',
   'Confirm the employee\'s bank account is held in Saudi Arabia': 'تأكد من أن الحساب البنكي للموظف في المملكة العربية السعودية',
@@ -46,8 +46,8 @@ const ar: Record<string, string> = {
   // Bank file status text sent by the API (payroll pipeline, Bank / WPS)
   'Generated (file ready for the bank)': 'تم إنشاء الملف (جاهز لتسليمه للبنك)',
   'Submitted to the bank': 'سُلّم إلى البنك',
-  'Accepted \u2014 evidence attached (not verified by Mudad)': 'مقبول — أُرفق الدليل (لم تتحقق منه منصة مُدد)',
-  'Accepted \u2014 no Mudad evidence on record': 'مقبول — لا يوجد دليل من منصة مُدد',
+  // 'Accepted — evidence attached (not verified by Mudad)' lives once, in launchPayroll.ts.
+  'Accepted \u2014 no Mudad evidence on record': 'مقبول — لا يوجد دليل من منصة مدد',
   // Employee overview (new-hire readiness)
   'Employee overview': 'نظرة عامة على الموظف',
   'Recommended next action': 'الإجراء التالي الموصى به',

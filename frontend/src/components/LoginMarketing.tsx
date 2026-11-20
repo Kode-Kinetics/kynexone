@@ -162,7 +162,7 @@ const ROWS: Row[] = [
     /* 'ANB-format … uncertified', not 'ANB': SaudiBankExportPanel states the layout is not a bank-certified format.
        Kept to two lines on the 8-em drum face; the screen-reader sentence below carries the full wording. */
     items: ['GOSI', 'Nitaqat', 'ANB-format file, uncertified', 'Qiwa data check'],
-    itemsAr: ['التأمينات', 'نطاقات', 'ملف بصيغة البنك العربي، غير معتمد', 'فحص بيانات قوى'],
+    itemsAr: ['التأمينات', 'نطاقات', 'ملف بصيغة البنك العربي الوطني، غير معتمد', 'فحص بيانات قوى'],
     heads: 612,
   },
   {
@@ -244,12 +244,12 @@ const ROWS: Row[] = [
     code: 'WPS',
     kind: 'wide',
     extra: true,
-    name: 'WPS files',
-    nameAr: 'ملفات حماية الأجور',
+    name: 'Wage files',
+    nameAr: 'ملفات الأجور',
     /* AnbConnectCsvGenerator + KsaWageFileRules (Saudi bank file with WPS
        fields), UaeWageProtectionExporter (SIF), QatarWageProtectionExporter */
-    items: ['ANB-format WPS file, uncertified', 'UAE SIF', 'Qatar WPS'],
-    itemsAr: ['ملف أجور بصيغة البنك العربي، غير معتمد', 'ملف SIF الإماراتي', 'حماية الأجور القطري'],
+    items: ['Bank payroll file, uncertified', 'UAE SIF', 'Qatar WPS'],
+    itemsAr: ['ملف رواتب للبنك، غير معتمد', 'ملف SIF الإماراتي', 'حماية الأجور القطري'],
   },
   {
     code: 'EOS',
@@ -401,8 +401,8 @@ const EN: Copy = {
     + 'every Gulf market — an Arabic interface whose layout mirrors rather than '
     + 'only its strings being translated, the Hijri calendar alongside the '
     + 'Gregorian one, and a currency per company inside one group. Six more '
-    + 'capabilities turn past on the drum: wage files (a Saudi bank payroll file '
-    + 'in ANB\'s format with the WPS fields, pending ANB certification, the UAE SIF and Qatar WPS); end-of-service calculated at exit, with '
+    + 'capabilities turn past on the drum: wage files (a Saudi bank payroll file, bank acceptance not verified; the UAE SIF; Qatar WPS); '
+    + 'end-of-service calculated at exit, with '
     + 'final settlement and leave encashment; maker-checker approvals on payroll, '
     + 'leave and HR requests, and delegation; geofenced attendance with shifts, '
     + 'overtime and timesheets; employee self-service on web and mobile for '
@@ -429,7 +429,7 @@ const AR: Copy = {
   colHeads: 'الموظفون',
   totalKey: 'الإجمالي',
   approved: 'معتمد',
-  tableCaption: 'بيانات تجريبية. مسير رواتب توضيحي عبر الدول الثلاث التي لها أنظمة مطبقة: السعودية ٦١٢ موظفاً، الإمارات ٤٣١، قطر ٢٠٥، وإجمالي المجموعة ١٢٤٨ معتمد. الأعداد افتراضية وليست بيانات عملاء. الصفوف الثلاثة الأخيرة ليست دولاً ولا تحمل أعداداً: وهي إمكانات متاحة في كل أسواق الخليج — واجهة عربية بتخطيط معكوس لا مجرد ترجمة، والتقويم الهجري إلى جانب الميلادي، وعملة لكل شركة ضمن مجموعة واحدة. وتدور على الأسطوانة ست إمكانات أخرى: ملفات حماية الأجور للدول الثلاث، واحتساب نهاية الخدمة عند المغادرة، والإعداد والمراجعة لمسير الرواتب، والحضور الجغرافي، والخدمة الذاتية عبر الويب والجوال، ومتابعة انتهاء التأشيرات والإقامات. وتمر كذلك الكويت والبحرين وعُمان مع جهات التأمينات والعمل فيها، دون أعداد موظفين.',
+  tableCaption: 'بيانات تجريبية. مسير رواتب توضيحي عبر الدول الثلاث التي لها أنظمة مطبقة: السعودية ٦١٢ موظفاً، الإمارات ٤٣١، قطر ٢٠٥، وإجمالي المجموعة ١٢٤٨ معتمد. الأعداد افتراضية وليست بيانات عملاء. الصفوف الثلاثة الأخيرة ليست دولاً ولا تحمل أعداداً: وهي إمكانات متاحة في كل أسواق الخليج — واجهة عربية بتخطيط معكوس لا مجرد ترجمة، والتقويم الهجري إلى جانب الميلادي، وعملة لكل شركة ضمن مجموعة واحدة. وتدور على الأسطوانة ست إمكانات أخرى: ملفات الأجور (ملف رواتب للبنك في السعودية لم يُتحقق من قبول البنك له، وملف SIF في الإمارات، وملف حماية الأجور في قطر)، واحتساب نهاية الخدمة عند المغادرة، واعتماد مسير الرواتب بفصل المُعِدّ عن المعتمِد، والحضور الجغرافي، والخدمة الذاتية عبر الويب والجوال، ومتابعة انتهاء التأشيرات والإقامات. وتمر كذلك الكويت والبحرين وعُمان مع جهات التأمينات والعمل فيها، دون أعداد موظفين.',
   switchTo: 'English',
   switchLabel: 'Show this panel in English',
   pause: 'إيقاف',

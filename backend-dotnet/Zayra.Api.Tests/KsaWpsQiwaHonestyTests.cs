@@ -580,7 +580,7 @@ public class KsaWpsQiwaHonestyTests
 
         QiwaLiveAdapterPolicy.Decide(Config((QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true")))
             .Should().Be(QiwaLiveAdapterPolicy.Mode.RefusedLive);
-        QiwaLiveAdapterPolicy.Decide(Config((QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true"), (QiwaLiveAdapterPolicy.PartnerAgreementKey, "MHRSD-QIWA-2026-001")))
+        QiwaLiveAdapterPolicy.Decide(Config((QiwaLiveAdapterPolicy.LiveSwitchEnvVar, "true"), (QiwaLiveAdapterPolicy.PartnerAgreementKey, "test-key-MHRSD-QIWA-2026-001")))
             .Should().Be(QiwaLiveAdapterPolicy.Mode.Live);
         QiwaLiveAdapterPolicy.CredentialFormEnabled(Config()).Should().BeFalse("the credential form is off by default");
     }

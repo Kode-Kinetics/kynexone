@@ -103,10 +103,12 @@ test.describe('browserless UI truthfulness contracts', () => {
       expect(login, `login marketing must not claim ${claim}`).not.toContain(claim);
     }
     // The ANB file is generated in ANB's layout but not certified by the bank (SaudiBankExportPanel says so),
-    // so the login must say "ANB-format … uncertified" (and the full sentence "pending ANB certification"),
-    // never a bare "ANB payroll file".
+    // so the login must say "ANB-format … uncertified", never a bare "ANB payroll file". It must NOT say a certification
+    // is pending: nothing in the product shows one in progress (CTO gate C10). The full sentence says the bank's
+    // acceptance is not verified.
     expect(login).toContain("'ANB-format file, uncertified'");
-    expect(login).toContain('pending ANB certification');
+    expect(login).not.toContain('pending ANB certification');
+    expect(login).toContain('a Saudi bank payroll file, bank acceptance not verified');
     expect(login).not.toContain("'ANB payroll file'");
     expect(login).not.toContain("'ANB file, WPS fields'");
     expect(login).toContain("'Qiwa data check'");

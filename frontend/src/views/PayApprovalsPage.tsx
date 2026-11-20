@@ -38,7 +38,7 @@ export function PayApprovalsPage() {
   useEffect(() => { void load(); }, [load]);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4">
+    <div className="mx-auto max-w-5xl space-y-3">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="flex items-center gap-2 text-xl font-semibold text-slate-900 dark:text-white"><WalletCards className="h-5 w-5 shrink-0" aria-hidden="true" />{t('Pay approvals')}</h1>
@@ -69,25 +69,25 @@ export function PayApprovalsPage() {
       {data && data.items.length > 0 && (
         <section aria-labelledby="pay-approvals-heading">
           <h2 id="pay-approvals-heading" className="sr-only">{t('Pay packages awaiting approval')}</h2>
-          <ul className="space-y-2" data-testid="pay-approvals-list">
+          <ul className="space-y-1.5" data-testid="pay-approvals-list">
             {data.items.map(item => (
-              <li key={item.employeeId} className="rounded-xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-white/[0.04]">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="break-words text-base font-semibold text-slate-900 dark:text-white">{item.name}</p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400"><bdi>{item.employeeCode}</bdi>{item.designation ? ` · ${item.designation}` : ''}{item.companyName ? ` · ${item.companyName}` : ''}</p>
-                  </div>
-                  <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${item.status === 'rejected' ? 'bg-amber-100 text-amber-900 dark:bg-amber-500/20 dark:text-amber-200' : 'bg-sky-100 text-sky-900 dark:bg-sky-500/20 dark:text-sky-200'}`}>
-                    {item.status === 'rejected' ? t('Sent back') : t('Awaiting approval')}
-                  </span>
+              <li key={item.employeeId} className="grid items-center gap-x-4 gap-y-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 md:grid-cols-[minmax(0,1.2fr)_minmax(0,2.2fr)_auto] dark:border-white/10 dark:bg-white/[0.04]">
+                <div className="min-w-0">
+                  <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="break-words text-base font-semibold text-slate-900 dark:text-white">{item.name}</span>
+                    <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${item.status === 'rejected' ? 'bg-amber-100 text-amber-900 dark:bg-amber-500/20 dark:text-amber-200' : 'bg-sky-100 text-sky-900 dark:bg-sky-500/20 dark:text-sky-200'}`}>
+                      {item.status === 'rejected' ? t('Sent back') : t('Awaiting approval')}
+                    </span>
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400"><bdi>{item.employeeCode}</bdi>{item.designation ? ` · ${item.designation}` : ''}{item.companyName ? ` · ${item.companyName}` : ''}</p>
                 </div>
-                <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+                <dl className="grid grid-cols-1 gap-x-4 gap-y-1 text-sm sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.6fr)]">
                   <div><dt className="text-xs text-slate-500 dark:text-slate-400">{t('Gross pay')}</dt><dd className="font-medium" dir="ltr">{fmt.plain.money(item.gross, item.currency)}</dd></div>
                   <div><dt className="text-xs text-slate-500 dark:text-slate-400">{t('Account')}</dt><dd className="font-medium" dir="ltr">{maskedAccount(item.ibanLast4) || '—'}</dd></div>
                   <div><dt className="text-xs text-slate-500 dark:text-slate-400">{t('Entered by')}</dt><dd className="font-medium">{item.enteredBy ? t('{name} on {when}', { name: isolateName(item.enteredBy.name), when: isolateLtr(when(item.enteredBy.atUtc)) }) : '—'}</dd></div>
                 </dl>
-                <div className="mt-3">
-                  <Link className="btn-primary" href={`/pay-approvals/${item.employeeId}`} aria-label={t('Review pay package for {name}', { name: item.name })}>{t('Review')}</Link>
+                <div>
+                  <Link className="btn-primary btn-sm" href={`/pay-approvals/${item.employeeId}`} aria-label={t('Review pay package for {name}', { name: item.name })}>{t('Review')}</Link>
                 </div>
               </li>
             ))}

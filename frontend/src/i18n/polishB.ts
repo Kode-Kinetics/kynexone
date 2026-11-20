@@ -19,7 +19,7 @@ const ar: Record<string, string> = {
   'ANB Connect payroll payment — header.csv + body.csv': 'دفع الرواتب عبر ANB Connect — header.csv + body.csv',
   'Arab National Bank (ANB)': 'البنك العربي الوطني (ANB)',
   'ANB Connect API channel (payroll-payment). Not the ANB corporate-portal WPY upload.': 'قناة ANB Connect البرمجية (دفع الرواتب)، وليست رفع WPY عبر بوابة الشركات في البنك.',
-  'Mudad/bank generic CSV (verify with your bank)': 'ملف CSV عام لمُدد والبنوك (تحقق منه مع بنكك)',
+  'Generic bank CSV (verify with your bank)': 'ملف CSV عام للبنوك (تحقق منه مع بنكك)',
   // Payroll run header and batches
   'Amounts in {currency}': 'المبالغ بعملة {currency}',
   // Candidates, interviews, payslips
@@ -57,7 +57,7 @@ const enums: Record<string, [string, string]> = {
   'enum.Status.Exempted': ['Exempted', 'معفى'],
   'enum.Status.Converted': ['Converted', 'محوّل'],
   'enum.Status.Downloaded': ['Downloaded', 'تم التنزيل'],
-  'enum.Status.Reconciled': ['Reconciled', 'تمت التسوية'],
+  'enum.Status.Reconciled': ['Reconciled', 'تمت المطابقة'],
   'enum.BankAcceptance.SpecificationImplemented': ['Specification implemented; bank acceptance not verified', 'مُنفَّذ وفق المواصفات؛ لم يُتحقق من قبول البنك له'],
   'enum.BankAcceptance.CustomerConfigured': ['Customer-configured layout; bank acceptance not verified', 'تخطيط يضبطه العميل؛ لم يُتحقق من قبول البنك له'],
   'enum.BankBatchType.PAYROLL': ['Payroll', 'رواتب'],

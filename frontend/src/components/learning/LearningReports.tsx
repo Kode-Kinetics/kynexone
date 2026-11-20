@@ -35,6 +35,10 @@ const kpiDefinition: Record<Kpi['key'], string> = {
   pending: msg('Assignments with a completion reported by course content, waiting for HR to verify it before a certificate is issued.'),
 };
 
+/** Display order: the long "Overdue" definition gets a double-width card on the second row. */
+const KPI_ORDER: Kpi['key'][] = ['assigned', 'open', 'completed', 'expiring', 'overdue', 'locked', 'pending'];
+const kpiOrder = (key: Kpi['key']) => { const i = KPI_ORDER.indexOf(key); return i < 0 ? KPI_ORDER.length : i; };
+
 type Drill = { key: Kpi['key']; rows: StatusRow[] | ExpiringRow[] } | null;
 
 /**
@@ -96,7 +100,7 @@ export function LearningReports({ onDrill }: { onDrill: (filter: RecordsFilter) 
       : ['status', { status: summary.kpis.find((k) => k.key === key)?.drillFilter ?? undefined }];
 
   return (
-    <div className="space-y-5" data-testid="learning-reports">
+    <div className="space-y-4" data-testid="learning-reports">
       <p className="text-xs text-slate-500 dark:text-slate-400">
         {summary.scope === 'organization'
           ? t('Showing everyone in the companies you manage, as of {date}.', { date: fx.date(summary.asOf) })
@@ -104,18 +108,18 @@ export function LearningReports({ onDrill }: { onDrill: (filter: RecordsFilter) 
         {' '}{t('Completion rate: {rate} of assignments completed.', { rate: fx.percent(summary.completionRatePercent, 1) })}
       </p>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" role="list" aria-label={t('Learning indicators')}>
-        {summary.kpis.map((kpi) => (
-          <div key={kpi.key} role="listitem" className="wg-card flex flex-col justify-between gap-2 rounded-xl p-4" data-testid={`kpi-${kpi.key}`}>
-            <div>
-              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">{t(kpiLabel[kpi.key])}</p>
-              <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900 dark:text-white">{fx.integer(kpi.value)}</p>
-              <p className="mt-1 text-caption text-slate-500 dark:text-slate-400">{t(kpiDefinition[kpi.key])}</p>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4" role="list" aria-label={t('Learning indicators')}>
+        {[...summary.kpis].sort((x, y) => kpiOrder(x.key) - kpiOrder(y.key)).map((kpi) => (
+          <div key={kpi.key} role="listitem" className={`wg-card flex flex-col gap-1 rounded-xl p-3 ${kpi.key === 'overdue' ? 'sm:col-span-2' : ''}`} data-testid={`kpi-${kpi.key}`}>
+            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">{t(kpiLabel[kpi.key])}</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xl font-semibold tabular-nums text-slate-900 dark:text-white">{fx.integer(kpi.value)}</p>
+              <button type="button" className="btn-secondary shrink-0 text-xs" onClick={() => void openDrill(kpi)} disabled={drillLoading !== null}
+                aria-label={t('Show the {count} records behind "{kpi}"', { count: kpi.value, kpi: t(kpiLabel[kpi.key]) })}>
+                {drillLoading === kpi.key ? t('Loading…') : t('Show the records')}
+              </button>
             </div>
-            <button type="button" className="btn-secondary self-start text-xs" onClick={() => void openDrill(kpi)} disabled={drillLoading !== null}
-              aria-label={t('Show the {count} records behind "{kpi}"', { count: kpi.value, kpi: t(kpiLabel[kpi.key]) })}>
-              {drillLoading === kpi.key ? t('Loading…') : t('Show the records')}
-            </button>
+            <p className="text-caption text-slate-500 dark:text-slate-400">{t(kpiDefinition[kpi.key])}</p>
           </div>
         ))}
       </div>

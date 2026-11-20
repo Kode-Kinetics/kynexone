@@ -37,6 +37,8 @@ export interface RoleDefinition {
 export interface RoleCatalog {
   /** Every permission key AuthSeeder.EnsurePermissions defines, sorted. */
   permissions: string[];
+  /** AuthSeeder.AdminWithheldPermissions, read from the source (never hand-copied), sorted. */
+  adminWithheld: string[];
   roles: RoleDefinition[];
 }
 
@@ -219,11 +221,18 @@ function resolveBundle(role: string, expression: string, catalog: string[], name
   );
 }
 
+/** AuthSeeder.AdminWithheldPermissions: the keys the Admin role is deliberately NOT given. */
+function parseAdminWithheld(source: string): string[] | null {
+  const m = /IReadOnlyList<string>\s+AdminWithheldPermissions\s*=\s*\[([^\]]*)\]\s*;/.exec(source);
+  return m ? [...literals(m[1])].sort() : null;
+}
+
 /** Parse AuthSeeder.cs source text into the catalog. Exported separately so it can be unit-tested. */
 export function parseAuthSeeder(sourceText: string): RoleCatalog {
   const source = stripLineComments(sourceText);
   const permissions = parsePermissionKeys(source);
   const named = parseNamedLists(source);
+  const declaredWithheld = parseAdminWithheld(source);
   const body = methodBody(source, /Task<Role>\s+EnsureTenantRolesAsync\s*\(/, 'EnsureTenantRolesAsync');
 
   const roles: RoleDefinition[] = [];
@@ -246,7 +255,21 @@ export function parseAuthSeeder(sourceText: string): RoleCatalog {
     roles.push({ name, authorityLevel, permissions: [...keys].sort(), unknownKeys: unknown });
   }
   if (roles.length === 0) throw new Error('[role-catalog] EnsureTenantRolesAsync installs no roles the parser recognises.');
-  return { permissions, roles };
+  // The Admin bundle spells the withheld keys out (`x.Key is not "a" and not "b"`); it must withhold exactly the declared list.
+  const admin = roles.find((r) => r.name === 'Admin');
+  const adminWithheld = declaredWithheld ?? [];
+  if (admin) {
+    if (!declaredWithheld) throw new Error('[role-catalog] AuthSeeder no longer declares `IReadOnlyList<string> AdminWithheldPermissions = [ ... ];` (AdminWithheldPermissions).');
+    const granted = new Set(admin.permissions);
+    const actuallyWithheld = permissions.filter((k) => !granted.has(k));
+    if (actuallyWithheld.join('|') !== adminWithheld.filter((k) => permissions.includes(k)).join('|')) {
+      throw new Error(
+        '[role-catalog] AuthSeeder.AdminWithheldPermissions and the Admin role bundle disagree: '
+        + `declared ${adminWithheld.join(', ')}; the bundle withholds ${actuallyWithheld.join(', ')}.`,
+      );
+    }
+  }
+  return { permissions, adminWithheld, roles };
 }
 
 let cached: RoleCatalog | null = null;

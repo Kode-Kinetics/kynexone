@@ -66,7 +66,7 @@ import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
 import { BankFileGuide, useBankHandOver, type BankPanelData, type GuideSlots } from '../components/payroll/BankFileGuide';
 import { BankFileFacts, tieOut } from '../components/payroll/BankFileFacts';
 import { RecordSubmittedDialog } from '../components/payroll/RecordSubmittedDialog';
-import { derivePayOut, pickPayOutBatch, type PayOutStepKey } from '../lib/payOut';
+import { bankResponseBuckets, confirmedResponsePurpose, derivePayOut, pickPayOutBatch, rejectedFilePurpose, type PayOutStepKey } from '../lib/payOut';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Modal as SideDrawer } from '../components/Modal';
 import { suggestedBatchReference, type BankFlowProgress } from '../lib/bankFileSteps';
@@ -155,15 +155,26 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
   icon: React.ComponentType<{ className?: string }>; color: string;
 }) {
   return (
-    <div className="surface flex items-center gap-4 p-4">
+    <div className="surface flex items-center gap-3 p-3.5">
       <div className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${color}`}>
         <Icon className="h-5 w-5" />
       </div>
       <div className="min-w-0">
-        <p className="text-2xl font-bold tabular-nums text-slate-900 dark:text-white">{value}</p>
+        <p className="whitespace-nowrap text-lg font-bold tabular-nums text-slate-900 2xl:text-xl dark:text-white">{value}</p>
         <p className="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">{label}</p>
         {sub && <p className="text-[10px] text-slate-400 dark:text-slate-500">{sub}</p>}
       </div>
+    </div>
+  );
+}
+
+/** One count in a toolbar row (a KpiCard without the second line): the number, then what it counts. */
+function CountChip({ label, value, color }: { label: string; value: string | number; color: string }) {
+  return (
+    <div className="surface flex items-center gap-2 px-3 py-1.5">
+      <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg ${color}`}><AlertTriangle className="h-4 w-4" aria-hidden="true" /></span>
+      <span className="whitespace-nowrap text-base font-bold tabular-nums text-slate-900 dark:text-white">{value}</span>
+      <span className="whitespace-nowrap text-xs text-slate-500 dark:text-slate-400">{label}</span>
     </div>
   );
 }
@@ -339,10 +350,18 @@ function PaymentPrerequisitesPanel({ prerequisites, runStatus, onNavigate }: { p
   const hasBlocking = prerequisites.companyBlocking.length > 0 || prerequisites.blocking.length > 0;
   const hasRecommended = prerequisites.companyRecommended.length > 0 || prerequisites.recommended.length > 0;
   const listed = prerequisites.employees.length;
+  // The long "how this is checked" sentence sits inside the employee disclosure when there is one, so the panel's header stays two lines.
+  const checkedNote = (
+    <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500" data-testid="payment-readiness-checked">
+      {prerequisites.attendanceChecked
+        ? t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality, and attendance for this period — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })
+        : t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality (attendance is checked once the period starts) — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })}
+    </p>
+  );
 
   return (
     <section aria-label={t('Payment readiness')} className={`surface overflow-hidden border ${tone.box}`}>
-      <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-4 dark:border-white/10">
+      <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-3 dark:border-white/10">
         {headline.tone === 'clear'
           ? <CheckCircle2 className={`mt-0.5 h-5 w-5 shrink-0 ${tone.icon}`} />
           : settled
@@ -351,11 +370,7 @@ function PaymentPrerequisitesPanel({ prerequisites, runStatus, onNavigate }: { p
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t(headline.titleKey, headline.params)}</h3>
           <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{t(headline.detailKey, headline.params)}</p>
-          <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
-            {prerequisites.attendanceChecked
-              ? t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality, and attendance for this period — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })
-              : t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality (attendance is checked once the period starts) — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })}
-          </p>
+          {listed === 0 && checkedNote}
         </div>
       </div>
 
@@ -395,6 +410,7 @@ function PaymentPrerequisitesPanel({ prerequisites, runStatus, onNavigate }: { p
               ? t('Show each employee ({count}, the first 500 — the counts above include everyone)', { count: listed })
               : t('Show each employee ({count})', { count: listed })}
           </summary>
+          <div className="px-5 pb-2">{checkedNote}</div>
           <div className="max-h-96 overflow-auto">
             <table className="w-full text-xs">
               <thead className="sticky top-0 bg-surface-sunken text-fg-muted">
@@ -691,6 +707,8 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
 
   const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
+
+
   return (
     <div className="space-y-5">
       <SettlementRunDutyCard onOpen={() => onNavigate('final-settlement')} />
@@ -761,7 +779,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
         <PaymentPrerequisitesPanel prerequisites={readiness.paymentPrerequisites} runStatus={readiness.payrollRunStatus} onNavigate={onNavigate} />
       )}
 
-      {/* ── Summary KPIs ── */}
+    <>
       {!loading && overview && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <KpiCard label={t('Active Employees')} value={overview.totalActiveEmployees.toLocaleString()} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
@@ -776,6 +794,8 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
           {[0, 1, 2, 3].map(i => <div key={i} className="surface h-20 animate-pulse rounded-xl" />)}
         </div>
       )}
+
+    </>
 
       {/* ── Insights Panel ── */}
       <AiInsightsPanel readiness={readiness} />
@@ -1022,7 +1042,7 @@ function SalaryChangesPanel({ onApplied }: { onApplied: () => void }) {
                 {stale.message && <p className="mt-1">{stale.message}</p>}
               </div>
             )}
-            <div className="basis-full space-y-2">
+            <div className="basis-full space-y-2 empty:hidden">
               <SalaryChangeMoney change={r} />
               <SalaryAllowanceComparison current={r.currentAllowances} proposed={r.proposedAllowances} carriedForward={r.allowancesCarriedForward ?? false} currency={r.currency} basic={r.basicSalary} />
             </div>
@@ -1231,10 +1251,10 @@ function EmployeeSalaryTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <input type="number" aria-label={t('Employee ID filter')} placeholder={t('Filter by Employee ID')} className={`${inp} w-52`} value={empIdFilter} onChange={e => setEmpIdFilter(e.target.value)} />
-        <button type="button" className={btn.ghost} onClick={load}>{t('Search')}</button>
-        <button type="button" className={`ms-auto ${btn.primary}`} onClick={() => setShowAssign(true)}><Plus className="h-4 w-4" /> {t('Assign Salary')}</button>
+      <div className="flex flex-wrap items-center gap-3">
+        <input type="number" aria-label={t('Employee ID filter')} placeholder={t('Filter by Employee ID')} className={`${inp} max-w-52`} value={empIdFilter} onChange={e => setEmpIdFilter(e.target.value)} />
+        <button type="button" className={`${btn.ghost} whitespace-nowrap`} onClick={load}>{t('Search')}</button>
+        <button type="button" className={`ms-auto whitespace-nowrap ${btn.primary}`} onClick={() => setShowAssign(true)}><Plus className="h-4 w-4 shrink-0" /> {t('Assign Salary')}</button>
       </div>
       {submitted && (
         <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
@@ -1263,15 +1283,15 @@ function EmployeeSalaryTab() {
                 const gross = a.basicSalary + a.housingAllowance + a.transportAllowance + a.foodAllowance + a.mobileAllowance + a.otherAllowance;
                 return (
                   <tr key={a.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-                    <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{t('Emp #{employeeId}', { employeeId: a.employeeId })}</td>
-                    <td className="px-3 py-2 text-slate-500">{structName(a.salaryStructureId)}</td>
-                    <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{a.basicSalary.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{a.housingAllowance.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{a.transportAllowance.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-end font-semibold text-slate-900 dark:text-white">{gross.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-end text-rose-500">{a.fixedDeduction > 0 ? `(${a.fixedDeduction.toLocaleString()})` : '—'}</td>
-                    <td className="px-3 py-2 text-xs text-slate-400">{fmtDate(a.effectiveDate)}</td>
-                    <td className="px-3 py-2"><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${a.isActive ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500'}`}>{a.isActive ? t('Active') : t('Inactive')}</span></td>
+                    <td className="px-3 py-1.5 font-medium text-slate-900 dark:text-white">{t('Emp #{employeeId}', { employeeId: a.employeeId })}</td>
+                    <td className="px-3 py-1.5 text-slate-500">{structName(a.salaryStructureId)}</td>
+                    <td className="px-3 py-1.5 text-end text-slate-700 dark:text-slate-300">{a.basicSalary.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-end text-slate-700 dark:text-slate-300">{a.housingAllowance.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-end text-slate-700 dark:text-slate-300">{a.transportAllowance.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-end font-semibold text-slate-900 dark:text-white">{gross.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-end text-rose-500">{a.fixedDeduction > 0 ? `(${a.fixedDeduction.toLocaleString()})` : '—'}</td>
+                    <td className="px-3 py-1.5 text-xs text-slate-400">{fmtDate(a.effectiveDate)}</td>
+                    <td className="px-3 py-1.5"><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${a.isActive ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500'}`}>{a.isActive ? t('Active') : t('Inactive')}</span></td>
                   </tr>
                 );
               })}
@@ -1954,24 +1974,24 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
     <div className="space-y-4">
       {/* The run is the run bar's (shared by every Payroll section): no second picker here. */}
       {runId ? (
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <button type="button" className={`${btn.primary} whitespace-nowrap max-sm:min-h-11 max-sm:w-full max-sm:justify-center`} onClick={validate} disabled={loading}>
             {loading ? t('Validating…') : t('Run Validation')}
           </button>
+          {/* The counts share the button's row: one slim toolbar, so the issue list starts in the first screenful. */}
+          {results.length > 0 && (
+            <>
+              <CountChip label={t('Total Issues')} value={results.length} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+              <CountChip label={t('Warnings')} value={warnings.length} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+              <CountChip label={t('Errors')} value={errors.length} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
+            </>
+          )}
         </div>
       ) : <NoRunChosen />}
 
       {error && <div className="rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">{error}</div>}
 
       {runId && <AttendanceReconciliationPanel runId={runId} />}
-
-      {results.length > 0 && (
-        <div className="grid grid-cols-3 gap-4">
-          <KpiCard label={t('Total Issues')} value={results.length} icon={AlertTriangle} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
-          <KpiCard label={t('Warnings')} value={warnings.length} icon={AlertTriangle} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
-          <KpiCard label={t('Errors')} value={errors.length} icon={AlertTriangle} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
-        </div>
-      )}
 
       {(cohortNotRecorded.length > 0 || cohortBlocked.length > 0 || cohortApplied.length > 0 || belowMinimumWage.length > 0) && (
         <div className="surface space-y-2 px-5 py-4" data-testid="gosi-cohort-findings">
@@ -2021,9 +2041,9 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
           </p>
         </div>
       ) : (
-        <div className="surface divide-y divide-slate-100 dark:divide-white/5">
+        <div className="surface divide-y divide-slate-100 dark:divide-white/5" data-testid="validation-results">
           {shown.map(r => (
-            <div key={r.id} className="flex items-start gap-3 px-5 py-4">
+            <div key={r.id} className="flex items-start gap-3 px-5 py-3">
               <div className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${r.severity === 'Error' ? 'bg-rose-500' : r.severity === 'Warning' ? 'bg-amber-500' : 'bg-sky-400'}`} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
@@ -3420,11 +3440,9 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
         {total !== undefined && answered !== undefined && (
           <div className="rounded-xl border border-line p-4" data-testid="bank-response-tracker">
             <p className="text-body font-semibold text-fg">{t('The bank has answered for {answered} of {total} payments', { answered, total })}</p>
-            {/* One segment per bucket, sized by its money: green only for what the bank confirmed, red for returned, grey for waiting. */}
-            <div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={answered} aria-label={t('Bank response')} className="mt-3 flex h-2 overflow-hidden rounded-full bg-line" data-essential-motion="">
-              {split && split.totalAmount > 0 ? ([
-                ['paid', 'bg-success', split.paidAmount], ['returned', 'bg-danger', split.returnedAmount], ['waiting', 'bg-line-strong', split.waitingAmount],
-              ] as const).map(([key, tone, amount]) => amount > 0 && (
+            {/* One segment per bucket, sized by its money: green only for what the bank confirmed, amber for returned, red for rejected, grey for waiting. */}
+            <div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={answered} aria-label={t('Bank response')} className="mt-3 flex h-2 gap-px overflow-hidden rounded-full bg-line" data-essential-motion="">
+              {split && split.totalAmount > 0 ? bankResponseBuckets(t, split).map(({ key, tone, amount }) => amount > 0 && (
                 <div key={key} data-bucket={key} className={`h-full ${tone} transition-[width] duration-base ease-standard`} style={{ width: `${(amount / split.totalAmount) * 100}%` }} data-essential-motion="" />
               )) : (
                 <div data-bucket="answered" className="h-full bg-primary transition-[width] duration-base ease-standard" style={{ width: `${pct}%` }} data-essential-motion="" />
@@ -3434,11 +3452,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
               <>
                 {/* Each bucket with its money; together they must be the money in the file. */}
                 <dl className="mt-3 space-y-1.5 text-body-sm" data-testid="bank-response-buckets">
-                  {([
-                    ['bg-success', t('{count} confirmed paid', { count: split.paid }), split.paidAmount],
-                    ['bg-danger', t('{count} returned', { count: split.returned }), split.returnedAmount],
-                    ['bg-line-strong', t('{count} waiting', { count: split.waiting }), split.waitingAmount],
-                  ] as const).map(([dot, label, amount]) => (
+                  {bankResponseBuckets(t, split).map(({ tone: dot, label, amount }) => (
                     <div key={label} className="flex items-center justify-between gap-3">
                       <dt className="inline-flex items-center gap-1.5 text-fg"><span aria-hidden="true" className={`h-2.5 w-2.5 rounded ${dot}`} />{label}</dt>
                       <dd className="tabular-nums text-fg"><bdi dir="ltr">{fmtAmt(amount, cur)}</bdi></dd>
@@ -3447,7 +3461,9 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
                 </dl>
                 {fileAmount !== null && (
                   <p className="mt-2 border-t border-line pt-2 text-body-sm text-fg-muted" data-testid="bank-response-tie">
-                    {t('Confirmed + Returned + Waiting = {amount} (file)', { amount: fmtAmt(split.totalAmount, cur) })}
+                    {split.rejected > 0
+                      ? t('Confirmed + Returned + Not paid + Waiting = {amount} (file)', { amount: fmtAmt(split.totalAmount, cur) })
+                      : t('Confirmed + Returned + Waiting = {amount} (file)', { amount: fmtAmt(split.totalAmount, cur) })}
                   </p>
                 )}
                 {gap !== null && Math.abs(gap) >= 0.005 && (
@@ -3476,7 +3492,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
                 </li>
               ))}
             </ul>
-            <p className="mt-2 text-meta text-fg-muted">{t('Paying again creates a new payment batch with a new file reference. Never upload this file again.')}</p>
+            <p className="mt-2 text-meta text-fg-muted">{t('Pay them in a new payment batch linked to the original batch. It gets a new file reference; never upload this file again.')}</p>
             {onNavigate && <button type="button" className="mt-2 text-body-sm font-medium text-primary underline-offset-2 hover:underline" onClick={() => onNavigate('payment-tracking')}>{t('Open Payment Tracking')}</button>}
           </div>
         )}
@@ -3507,7 +3523,7 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
       <ol className="space-y-3">
         {[
           [t('The bank pays and answers for each payment'), null],
-          [t('Record the bank’s response'), t('Record the bank’s response in Payment Tracking: confirmed, returned or rejected. Paying again creates a new payment batch with a new file reference. Never upload this file again.')],
+          [t('Record the bank’s response'), t('Record the bank’s response in Payment Tracking: confirmed, returned or rejected. Pay them in a new payment batch linked to the original batch. It gets a new file reference; never upload this file again.')],
           [t('Finance settles the payments'), t('Settle only payments the bank confirmed. Settling posts the net-pay settlement to the ledger and needs the payment settlement permission.')],
         ].map(([title, body], i) => (
           <li key={i} className="flex gap-3">
@@ -3524,8 +3540,8 @@ function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext 
   );
   const responsePurpose = (data: BankPanelData | null | undefined) => {
     switch (payOut.status) {
-      case 'rejected': return batchRow?.wpsRejectionReason ? t('The bank rejected this file: {reason}. No one in it was paid.', { reason: batchRow.wpsRejectionReason }) : t('The bank rejected this file. No one in it was paid.');
-      case 'confirmed': return (payOut.returned ?? 0) > 0 ? t('The bank answered every payment. Pay the returned ones again from Payment Tracking.') : t('The bank confirmed every payment.');
+      case 'rejected': return rejectedFilePurpose(t, batchRow?.wpsRejectionReason);
+      case 'confirmed': return confirmedResponsePurpose(t, payOut);
       case 'settled': return t('Paid and settled.');
       default: return data?.bankName
         ? t('Submitted to {bank} — waiting for the bank’s confirmation. Record what the bank confirms or returns in Payment Tracking.', { bank: data.bankName })
@@ -4497,12 +4513,8 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
 
   return (
     <div className="space-y-4">
-      <div className="surface p-4">
-        <p className="text-xs text-slate-500 dark:text-slate-400">
-          {t('Double-entry GL journal generated from processed payroll earnings and deductions. Use this to post payroll to your accounting system.')}
-        </p>
-      </div>
-      <div className="flex items-center gap-3">
+      {/* The picker, the button and the one-line explanation share a row (the explanation was a card of its own above them). */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <select aria-label={t('Select payroll run for GL journal')} data-testid="cc-lock-run-select" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">{t('Select payroll run…')}</option>
           <RunSelectOptions runs={runs} />
@@ -4510,6 +4522,9 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
         <button type="button" className={btn.primary} onClick={() => void load()} disabled={!runId || loading}>
           <BookOpen className="h-4 w-4" /> {loading ? t('Loading…') : t('Generate Journal')}
         </button>
+        <p className="min-w-56 flex-1 text-xs text-slate-500 dark:text-slate-400">
+          {t('Double-entry GL journal generated from processed payroll earnings and deductions. Use this to post payroll to your accounting system.')}
+        </p>
       </div>
       {runsError && <LoadError message={runsError} onRetry={loadRuns} />}
       {journalError && <LoadError message={journalError} onRetry={() => void load()} />}
@@ -4535,17 +4550,17 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
       {journal && !journal.costing?.enabled && !(journal.isPosted && (journal.journals?.length ?? 0) > 0) && (
         <div className="space-y-4">
           <div className="grid grid-cols-3 gap-4">
-            <div className="surface p-4">
+            <div className="surface px-4 py-2.5">
               <p className="text-xs text-slate-400">{t('Period')}</p>
-              <p className="text-lg font-bold text-slate-900 dark:text-white">{journal.period}</p>
+              <p className="text-base font-bold text-slate-900 dark:text-white">{journal.period}</p>
             </div>
-            <div className="surface p-4">
+            <div className="surface px-4 py-2.5">
               <p className="text-xs text-slate-400">{t('Total Debits')}</p>
-              <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalDebits, journal.currency)}</p>
+              <p className="text-base font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalDebits, journal.currency)}</p>
             </div>
-            <div className="surface p-4">
+            <div className="surface px-4 py-2.5">
               <p className="text-xs text-slate-400">{t('Total Credits')}</p>
-              <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalCredits, journal.currency)}</p>
+              <p className="text-base font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalCredits, journal.currency)}</p>
             </div>
           </div>
 
@@ -4823,22 +4838,22 @@ function FinalSettlementTab() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <SettlementRunDutyPanel settlements={settlements} onChanged={() => void loadSettlements()} />
       {confirmDialog}
-      <div className="surface p-4">
-        <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Final Settlement Lifecycle')}</p>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          {t('Calculate and save a Draft payable, submit it, approve the GL accrual, disburse it through an off-cycle payroll run, then settle the accepted payment batch.')}
-        </p>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          {t('Approval needs a second person: whoever calculated, recalculated or submitted a settlement cannot approve it.')}
-        </p>
-        <p className="mt-2 text-sm font-semibold text-sapphire dark:text-cyanAccent">{t('Outstanding approved/disbursing payable: {toLocaleString}', { toLocaleString: outstandingTotal.toLocaleString('en-US', { minimumFractionDigits: 2 }) })}</p>
+      <div className="surface flex flex-wrap items-start justify-between gap-x-6 gap-y-1 px-4 py-3">
+        <div className="min-w-0 flex-1 basis-80">
+          <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Final Settlement Lifecycle')}</p>
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+            {t('Calculate and save a Draft payable, submit it, approve the GL accrual, disburse it through an off-cycle payroll run, then settle the accepted payment batch.')}{' '}
+            {t('Approval needs a second person: whoever calculated, recalculated or submitted a settlement cannot approve it.')}
+          </p>
+        </div>
+        <p className="shrink-0 text-sm font-semibold text-sapphire dark:text-cyanAccent">{t('Outstanding approved/disbursing payable: {toLocaleString}', { toLocaleString: outstandingTotal.toLocaleString('en-US', { minimumFractionDigits: 2 }) })}</p>
       </div>
 
-      <div className="surface p-5 space-y-4">
-        <div className="grid grid-cols-2 gap-4">
+      <div className="surface space-y-3 p-4">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-3 lg:grid-cols-4">
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Employee ID *')}</label>
             <input type="number" className={inp} placeholder="e.g. 1" value={form.employeeId} onChange={e => setForm(f => ({ ...f, employeeId: e.target.value }))} />

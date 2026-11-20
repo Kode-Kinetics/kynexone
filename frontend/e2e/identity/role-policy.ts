@@ -1,4 +1,4 @@
-import type { RoleCatalog } from './role-catalog';
+import { loadRoleCatalog, type RoleCatalog } from './role-catalog';
 
 /**
  * Separation-of-duties POLICY for the tenant system roles.
@@ -57,14 +57,12 @@ const confinedTo = (
   },
 });
 
-/** AuthSeeder.AdminWithheldPermissions: the keys the Admin role is NOT given by default (review 3). */
-// Mirrors AuthSeeder.AdminWithheldPermissions. SUC: succession is HR-confidential (who is on whose slate, the 9-box), so
-// Admin — the technical role — does not get slate reading, assessing or calibrating by default (SUC_DESIGN §0).
-// Mirrors AuthSeeder.AdminWithheldPermissions. SUC (F2): Admin keeps only succession.read, positions.manage and pools.manage.
-export const ADMIN_WITHHELD: string[] = [
-  'attendance.evidence.view', 'succession.nominate', 'succession.assess', 'succession.calibrate', 'succession.slates.read',
-  'succession.slates.manage', 'succession.devplans.read', 'succession.devplans.manage', 'succession.reports.read', 'succession.self',
-];
+/**
+ * AuthSeeder.AdminWithheldPermissions: the keys the Admin role is NOT given by default (review 3; succession is HR-confidential;
+ * gov.credentials.manage is given to no built-in role). READ from AuthSeeder.cs, never a hand-kept copy: a copy drifted when
+ * gov.credentials.manage was withheld and the policy then reported "Admin lacks" a key that is withheld on purpose.
+ */
+export const ADMIN_WITHHELD: string[] = loadRoleCatalog().adminWithheld;
 
 export const ROLE_POLICY: PolicyRule[] = [
   {

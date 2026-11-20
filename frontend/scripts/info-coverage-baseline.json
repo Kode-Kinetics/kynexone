@@ -1,7 +1,7 @@
 {
  "totals": {
-  "withInfo": 22,
-  "noInfo": 0,
+  "withInfo": 32,
+  "noInfo": 6,
   "withoutInfo": 410
  },
  "files": {
@@ -19,6 +19,11 @@
    "withInfo": 4,
    "noInfo": 0,
    "withoutInfo": 16
+  },
+  "src/components/attendance/AttendanceRecordPanel.tsx": {
+   "withInfo": 2,
+   "noInfo": 3,
+   "withoutInfo": 0
   },
   "src/components/compensation/BenchmarksPanel.tsx": {
    "withInfo": 0,
@@ -95,6 +100,21 @@
    "noInfo": 0,
    "withoutInfo": 18
   },
+  "src/components/payroll/RecordSubmittedDialog.tsx": {
+   "withInfo": 0,
+   "noInfo": 2,
+   "withoutInfo": 0
+  },
+  "src/components/payroll/SaudiBankExportPanel.tsx": {
+   "withInfo": 2,
+   "noInfo": 0,
+   "withoutInfo": 0
+  },
+  "src/components/setup/DesignationAccessRolesField.tsx": {
+   "withInfo": 1,
+   "noInfo": 0,
+   "withoutInfo": 0
+  },
   "src/components/succession/CalibrationPanel.tsx": {
    "withInfo": 0,
    "noInfo": 0,
@@ -120,6 +140,11 @@
    "noInfo": 0,
    "withoutInfo": 4
   },
+  "src/views/AttendancePage.tsx": {
+   "withInfo": 2,
+   "noInfo": 1,
+   "withoutInfo": 0
+  },
   "src/views/employees/EmployeePersonalSection.tsx": {
    "withInfo": 0,
    "noInfo": 0,
@@ -131,7 +156,7 @@
    "withoutInfo": 14
   },
   "src/views/LeavePage.tsx": {
-   "withInfo": 9,
+   "withInfo": 10,
    "noInfo": 0,
    "withoutInfo": 48
   },
@@ -140,13 +165,18 @@
    "noInfo": 0,
    "withoutInfo": 11
   },
+  "src/views/MyOpenPositionsPage.tsx": {
+   "withInfo": 1,
+   "noInfo": 0,
+   "withoutInfo": 0
+  },
   "src/views/OvertimePage.tsx": {
    "withInfo": 5,
    "noInfo": 0,
    "withoutInfo": 18
   },
   "src/views/PayrollPage.tsx": {
-   "withInfo": 4,
+   "withInfo": 5,
    "noInfo": 0,
    "withoutInfo": 9
   },

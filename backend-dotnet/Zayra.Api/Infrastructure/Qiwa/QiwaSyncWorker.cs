@@ -5,6 +5,8 @@ using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Operations;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Government;
+
 namespace Zayra.Api.Infrastructure.Qiwa;
 
 /// <summary>
@@ -28,6 +30,7 @@ public sealed class QiwaSyncWorker : BackgroundService
     private readonly IDataProtectionProvider _protectionProvider;
     private readonly ILogger<QiwaSyncWorker> _log;
     private readonly WorkerHeartbeatReporter? _heartbeat;
+    private readonly Microsoft.Extensions.Configuration.IConfiguration? _configuration;
 
     public QiwaSyncWorker(
         IServiceScopeFactory scopeFactory,
@@ -35,8 +38,10 @@ public sealed class QiwaSyncWorker : BackgroundService
         QiwaOAuthTokenCache tokenCache,
         IDataProtectionProvider protectionProvider,
         ILogger<QiwaSyncWorker> log,
-        WorkerHeartbeatReporter? heartbeat = null)
+        WorkerHeartbeatReporter? heartbeat = null,
+        Microsoft.Extensions.Configuration.IConfiguration? configuration = null)
     {
+        _configuration = configuration;
         _scopeFactory = scopeFactory;
         _adapter = adapter;
         _tokenCache = tokenCache;
@@ -157,13 +162,51 @@ public sealed class QiwaSyncWorker : BackgroundService
             var credential = await db.QiwaApiCredentials.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(c => c.TenantId == tenantId, ct);
 
-            // Acquire / reuse token for this tenant.
-            string? token = _tokenCache.TryGet(tenantId);
+            // Acquire / reuse token for this tenant, in its environment, under its current credential (security R8:
+            // the cache used to be keyed by tenant only, so a token survived an environment change or a rotation).
+            var environment = connection?.Environment ?? credential?.Environment ?? "sandbox";
+            var tokenKey = TokenKey(tenantId, environment, credential);
+
+            // The live gate for THIS tenant (agreement, the tenant's consent record, a credential, the operator switch and the
+            // legal clearance), read on every pass. A live adapter is never asked while it is closed; the simulator ignores it.
+            var decision = QiwaLiveAdapterPolicy.DecideLiveWrite(_configuration, tenantId,
+                await QiwaLiveAdapterPolicy.HasTenantConsentAsync(db, tenantId, ct),
+                credential is { } qiwaCredential && !string.IsNullOrWhiteSpace(qiwaCredential.ClientId) && !string.IsNullOrWhiteSpace(qiwaCredential.EncryptedClientSecret),
+                GovernmentEnvironments.IsKnown(environment) ? environment : GovernmentEnvironments.Sandbox);
+            // A TRANSIENT closed gate (the operator's kill switch, a tenant not yet opted in, a missing production clearance) leaves
+            // the queue Pending, exactly like a switched-off qiwa_integration module: re-opening the gate resumes it. Only a
+            // configuration fault (no agreement, no credential, mismatched environments) dead-letters.
+            if (_adapter.IsLiveIntegration && !decision.IsOpen && TransientGateReasons.Contains(decision.ReasonCode ?? string.Empty))
+            {
+                _log.LogInformation("QiwaSyncWorker: live Qiwa calls are paused for tenant {TenantId} ({ReasonCode}); the queue is kept.", tenantId, decision.ReasonCode);
+                continue;
+            }
+            var environmentMismatch = _adapter.IsLiveIntegration
+                && connection?.Environment is { } connectionEnvironment && credential?.Environment is { } credentialEnvironment
+                && !string.Equals(connectionEnvironment, credentialEnvironment, StringComparison.Ordinal);
+            if (_adapter.IsLiveIntegration && (!decision.IsOpen || environmentMismatch))
+            {
+                var reasonCode = environmentMismatch ? EnvironmentMismatchReason : decision.ReasonCode;
+                var reason = $"{GovernmentLivePolicy.RefusedCode}: {reasonCode}";
+                _log.LogWarning("QiwaSyncWorker: live Qiwa calls are refused for tenant {TenantId} ({ReasonCode}).", tenantId, reasonCode);
+                foreach (var log in group)
+                {
+                    if (!await TryClaimAsync(db, log, now, ct)) continue;
+                    log.ErrorMessage     = reason;
+                    log.Status           = QiwaSyncLogStatuses.DeadLetter;
+                    log.DeadLetterReason = reason;
+                    log.CompletedAtUtc   = now;
+                    Audit(db, tenantId, "qiwa.sync_live_refused", log.EmployeeId, new { syncLogId = log.Id, reasonCode });
+                }
+                await db.SaveChangesAsync(ct);
+                continue;
+            }
+
+            string? token = _tokenCache.TryGet(tokenKey);
             if (token is null)
             {
                 var clientId     = credential?.ClientId;
                 var clientSecret = SafeUnprotect(protector, credential?.EncryptedClientSecret);
-                var environment  = connection?.Environment ?? credential?.Environment ?? "sandbox";
 
                 // Validate credentials before calling the adapter.
                 // Missing or un-decryptable secrets are a non-retryable configuration
@@ -208,9 +251,9 @@ public sealed class QiwaSyncWorker : BackgroundService
                 // C# flow analysis via [NotNullWhen(false)] on IsNullOrWhiteSpace gives the
                 // compiler proof that clientSecret cannot be null — CS8604 is resolved
                 // without null-forgiving operators.
-                token = await _adapter.AcquireAccessTokenAsync(clientId, clientSecret, environment, ct);
+                token = await _adapter.AcquireAccessTokenAsync(decision, clientId, clientSecret, ct);
                 if (token is not null)
-                    _tokenCache.Set(tenantId, token, credential?.TokenExpiresAtUtc is { } e
+                    _tokenCache.Set(tokenKey, token, credential?.TokenExpiresAtUtc is { } e
                         ? (int)Math.Max(60, (e - DateTime.UtcNow).TotalSeconds)
                         : (int?)null);
             }
@@ -218,7 +261,7 @@ public sealed class QiwaSyncWorker : BackgroundService
             foreach (var log in group)
             {
                 if (!await TryClaimAsync(db, log, DateTime.UtcNow, ct)) continue;
-                await ProcessLogAsync(db, connection, token, log, tenantId, ct);
+                await ProcessLogAsync(db, connection, token, decision, log, tenantId, ct);
             }
 
             if (connection is not null)
@@ -230,8 +273,16 @@ public sealed class QiwaSyncWorker : BackgroundService
         }
     }
 
+    /// <summary>The token cache key: tenant, the Qiwa body, the tenant's environment and the credential's version.</summary>
+    public static GovernmentTokenCacheKey TokenKey(Guid tenantId, string environment, QiwaApiCredential? credential) =>
+        new(tenantId, GovernmentBodies.Qiwa, environment, CredentialVersion(credential));
+
+    /// <summary>Changes whenever the tenant's Qiwa credential is saved again, so a cached token never outlives it.</summary>
+    internal static string CredentialVersion(QiwaApiCredential? credential) =>
+        credential is null ? "none" : $"{credential.Id:N}:{(credential.UpdatedAtUtc ?? credential.CreatedAtUtc).Ticks}";
+
     private async Task ProcessLogAsync(
-        ZayraDbContext db, QiwaTenantConnection? connection, string? token,
+        ZayraDbContext db, QiwaTenantConnection? connection, string? token, GovernmentLiveDecision decision,
         QiwaSyncLog log, Guid tenantId, CancellationToken ct)
     {
         // SYSTEM CONTEXT: tenant scope intentionally bypassed; explicit TenantId and IsDeleted
@@ -301,13 +352,44 @@ public sealed class QiwaSyncWorker : BackgroundService
             establishmentId, employee.WorkLocationId, employee.ContractReference);
 
         QiwaApiResult result;
+        Guid? ledgerId = null;
         try
         {
-            result = await _adapter.PushEmployeeAsync(token, payload, log.Id, ct);
+            // A live push is announced first: an intent committed in the ledger on its own (never inside this pass's unsaved work),
+            // whose receipt is the only thing that lets the transport send. A new key per claim keeps Qiwa's retry behaviour; the
+            // sync-log id stays the Idempotency-Key Qiwa sees.
+            GovernmentExchangeIntentReceipt? intent = null;
+            if (_adapter.IsLiveIntegration)
+            {
+                var recorded = await new GovernmentExchangeRecorder(_scopeFactory).BeginAsync(new GovernmentExchangeAttempt(
+                    tenantId, employee.CompanyId, GovernmentBodies.Qiwa, "employee.push", GovernmentExchangeChannels.Api,
+                    $"{log.Id:N}:{log.LastRetriedAtUtc?.Ticks ?? 0}", GovernmentExchangeStates.Attempted,
+                    new Zayra.Api.Application.Auth.RequestContext(null, "qiwa-sync-worker", null, tenantId), _adapter,
+                    Environment: decision.Environment, SubjectType: "Employee", SubjectId: employee.Id.ToString()), ct);
+                intent = recorded.Receipt;
+                ledgerId = recorded.Exchange.Id;
+            }
+            result = await _adapter.PushEmployeeAsync(decision, token, payload, log.Id, ct, intent);
         }
         catch (Exception ex)
         {
             result = new QiwaApiResult(false, "EXCEPTION", ex.Message, null);
+        }
+
+        if (ledgerId is { } exchangeId)
+        {
+            // The outcome of the announced push, recorded on its own as well. Completed is a live-only claim (the recorder checks).
+            try
+            {
+                await new GovernmentExchangeRecorder(_scopeFactory).UpdateAsync(tenantId, exchangeId, new GovernmentExchangeOutcome(
+                    result.Success && _adapter.IsLiveIntegration ? GovernmentExchangeStates.Completed : GovernmentExchangeStates.Failed,
+                    new Zayra.Api.Application.Auth.RequestContext(null, "qiwa-sync-worker", null, tenantId),
+                    ErrorCode: result.ErrorCode, Completed: true), ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log.LogWarning("QiwaSyncWorker: the ledger outcome of exchange {ExchangeId} was not recorded ({ErrorType}).", exchangeId, ex.GetType().Name);
+            }
         }
 
         log.LastRetriedAtUtc = DateTime.UtcNow;
@@ -360,11 +442,29 @@ public sealed class QiwaSyncWorker : BackgroundService
         else
         {
             var error = $"{result.ErrorCode}: {result.ErrorMessage}";
+            // A refusal before sending (gate, host allow-list, environment) cannot heal by retrying: dead-letter it now.
+            if (result.ErrorCode is { } code && RefusedBeforeSending.Contains(code)) log.RetryCount = Math.Max(log.RetryCount, log.MaxRetries - 1);
             FailOrDeadLetter(db, log, employee, tenantId, error, result.ErrorCode);
             if (connection is not null && result.ErrorCode is "NETWORK_ERROR" or "NO_TOKEN")
                 connection.Status = QiwaConnectionStatuses.ApiError;
         }
     }
+
+    /// <summary>Closed-gate reasons that are a pause, not a fault: the queue stays Pending.</summary>
+    private static readonly HashSet<string> TransientGateReasons = new(StringComparer.Ordinal)
+    {
+        GovernmentLivePolicy.OperatorDisabled, GovernmentLivePolicy.TenantNotOptedIn, GovernmentLivePolicy.LiveWritesNeedLegalClearance,
+    };
+
+    public const string EnvironmentMismatchReason = "qiwa_connection_and_credential_environment_differ";
+
+    /// <summary>Codes meaning the call was refused before (or instead of) sending; retrying cannot change them.</summary>
+    private static readonly HashSet<string> RefusedBeforeSending = new(StringComparer.Ordinal)
+    {
+        GovernmentLivePolicy.RefusedCode, GovernmentHttp.HostRefusedCode, GovernmentHttp.WriteRefusedCode, GovernmentHttp.RedirectRefusedCode,
+        GovernmentHttp.EnvironmentMismatchCode, GovernmentHttp.CredentialBindingCode, LiveQiwaApiAdapter.EnvironmentRequiredCode,
+        QiwaLiveAdapterPolicy.RefusedCode,
+    };
 
     private static async Task<bool> TryClaimAsync(
         ZayraDbContext db, QiwaSyncLog candidate, DateTime claimedAtUtc, CancellationToken ct)

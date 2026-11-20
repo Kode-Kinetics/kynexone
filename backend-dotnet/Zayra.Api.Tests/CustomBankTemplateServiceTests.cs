@@ -223,7 +223,7 @@ public class CustomBankTemplateServiceTests
         var w = await ArrangeAsync();
         var r = await w.Tpl.ProposeAsync(w.Tenant, w.Company, Maker, null, new CustomBankTemplateProposal { StarterId = CustomBankTemplateStarters.GenericCsv }, default);
         r.Value!.State.Should().Be("PendingApproval");
-        r.Value.Name.Should().Be("Mudad/bank generic CSV (verify with your bank)");
+        r.Value.Name.Should().Be("Generic bank CSV (verify with your bank)");
         r.Value.AcceptanceStatus.Should().Contain("not-verified");
         CustomBankTemplateStarters.All.Should().OnlyContain(s => s.VerifyWithBank && s.AcceptanceStatus.Contains("not-verified"));
         CustomBankTemplateStarters.All.Select(s => s.Id).Should().Equal(CustomBankTemplateStarters.GenericCsv);   // no invented per-bank formats
