@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import type { UtilisationRow } from '../src/api/benefitUsage';
 import {
-  INFO_KEYS, REFUSAL_KEYS, STATUS_KEYS, emptyUsageForm, leftFor, measureText, newUsageId, refusalKey, statusKey, usageKind, usageProblems,
+  INFO_KEYS, REFUSAL_KEYS, STATUS_KEYS, emptyUsageForm, leftFor, noFamilyNoteKey, measureText, newUsageId, refusalKey, statusKey, usageKind, usageProblems,
 } from '../src/lib/benefitUsage';
 import { releaseASlices } from '../src/i18n/releaseA';
 import { translate } from '../src/i18n/translations';
@@ -73,4 +73,13 @@ test('kinds, ids and figures', () => {
   expect(newUsageId()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   expect(measureText(2, 'Units', null, 'en')).toBe('2');
   expect(measureText(12500, 'Amount', 'SAR', 'en')).toContain('12,500');
+});
+
+test('a benefit for family members with none on file says so instead of showing an unexplained zero', () => {
+  const education = row({ benefitCode: 'EDUCATION', dependantScope: 'Children', measure: 'Amount', currency: 'SAR', entitlement: 0, remaining: 0, perBeneficiary: 5000, beneficiaries: [], canRequest: false });
+  const key = noFamilyNoteKey(education);
+  expect(key).toBeTruthy();
+  expect(ARABIC.test(translate('ar', key!))).toBe(true);
+  expect(noFamilyNoteKey(row())).toBeNull();
+  expect(noFamilyNoteKey(row({ dependantScope: 'None', maxDependants: null, perBeneficiary: null, beneficiaries: [] }))).toBeNull();
 });

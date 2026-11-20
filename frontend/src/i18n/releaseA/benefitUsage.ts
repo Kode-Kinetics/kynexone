@@ -22,6 +22,8 @@ const pairs: Array<[string, string]> = [
   ['Nothing matches the search', 'لا توجد نتائج مطابقة للبحث'],
   ['Search: {text}', 'البحث: {text}'],
   ['Left to use', 'المتبقي'],
+  ['No children are on file, so there is nothing to use yet. Add the children on the employee record.', 'لا يوجد أطفال مسجلون، لذلك لا شيء متاح للاستخدام بعد. أضف الأطفال في سجل الموظف.'],
+  ['No family members are on file, so there is nothing to use yet. Add them on the employee record.', 'لا يوجد أفراد أسرة مسجلون، لذلك لا شيء متاح للاستخدام بعد. أضفهم في سجل الموظف.'],
   ['{amount} waiting for Finance', '{amount} بانتظار المالية'],
   ['{name}: {left} left of {cap}', '{name}: متبقٍّ {left} من {cap}'],
   ['{name} (employee)', '{name} (الموظف)'],

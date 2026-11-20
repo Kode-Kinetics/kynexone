@@ -11,7 +11,7 @@ import { Field, Input, Textarea } from '../components/ui/Field';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { benefitUsageApi, type UsageRequest, type UtilisationRow } from '../api/benefitUsage';
-import { STATUS_TONES, calendarDate, fill, measureText, refusalKey, statusKey } from '../lib/benefitUsage';
+import { STATUS_TONES, calendarDate, fill, measureText, noFamilyNoteKey, refusalKey, statusKey } from '../lib/benefitUsage';
 
 /**
  * Benefit usage, the way loans work: for each employee's FIXED contract benefits, what this period allows, what is waiting, what is
@@ -152,6 +152,7 @@ export function UsageFigures({ row }: { row: UtilisationRow }) {
         <p className="text-xs text-fg-muted">{row.beneficiaries.map((b) => fill(t('{name}: {left} left of {cap}'), {
           name: b.dependantId ? b.name : fill(t('{name} (employee)'), { name: b.name }), left: m(b.remaining), cap: m(b.cap) })).join(' · ')}</p>
       )}
+      {noFamilyNoteKey(row) && <p className="text-xs text-fg-muted">{t(noFamilyNoteKey(row)!)}</p>}
       {row.verificationState !== 'Verified' && <Badge tone="warning"><AlertTriangle className="me-1 inline h-3 w-3" aria-hidden="true" />{t('Not confirmed against the contract')}</Badge>}
     </div>
   );
