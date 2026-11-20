@@ -120,7 +120,7 @@ const pairs: Array<[string, string]> = [
   ['Payment date',
     'تاريخ الدفع'],
   ['Bank reference',
-    'المرجع البنكي'],
+    'مرجع البنك'],
   ['Defer first repayment date (optional)',
     'تأجيل تاريخ أول سداد (اختياري)'],
   ['Leave blank to keep each approved schedule. If payment was delayed past an approved first repayment date, choose a later date for affected loans.',

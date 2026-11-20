@@ -63,7 +63,7 @@ export function LoanPaymentsTab({ onChanged }: { onChanged: () => void }) {
       setSelectedIds([]);
     } catch (e) { setLoadFailed(true); setError(loanErrorMessage(e, t('Unable to load loan payments.'), locale)); }
     finally { setLoading(false); }
-  }, []);
+  }, [locale, t]);
   useEffect(() => { void load(); }, [load]);
 
   const run = async (task: () => Promise<void>) => {
