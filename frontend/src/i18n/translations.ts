@@ -83,6 +83,7 @@ import { payrollRules } from './payrollRules';
 import { heldPay } from './heldPay';
 import { gradePackage } from './gradePackage';
 import { appChrome } from './appChrome';
+import { peopleList } from './peopleList';
 import { removalSafety } from './removalSafety';
 import { companyStructure } from './companyStructure';
 import { dailyA } from './dailyA';
@@ -129,6 +130,7 @@ const en: Dict = {
   ...removalSafety.en,
   ...companyStructure.en,
   ...appChrome.en,
+  ...peopleList.en,
   ...dailyA.en,
   ...attendanceBulk.en,
   ...attendanceDashboard.en,
@@ -1747,6 +1749,7 @@ const ar: Dict = {
   ...removalSafety.ar,
   ...companyStructure.ar,
   ...appChrome.ar,
+  ...peopleList.ar,
   ...dailyA.ar,
   ...attendanceBulk.ar,
   ...attendanceDashboard.ar,

@@ -347,7 +347,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, navi
             <Avatar name={user?.fullName ?? 'User'} size="xs" />
             <div className="text-start">
               <p className="text-xs font-semibold leading-tight text-slate-900 dark:text-white">{user?.fullName ?? 'User'}</p>
-              <p className="text-caption leading-tight text-slate-500 dark:text-slate-400">{primaryRole(user?.roles) ?? 'Member'}</p>
+              <p className="text-caption leading-tight text-slate-500 dark:text-slate-400">{t(primaryRole(user?.roles) ?? 'Member')}</p>
             </div>
           </button>
           {userMenuOpen && (

@@ -129,3 +129,25 @@ test.describe('module state never arrives', () => {
     await expect(page.getByTestId('module-state-slow')).toHaveCount(0);
   });
 });
+
+test.describe('Arabic on the People list', () => {
+  test('the list, filters, table and shell caption are Arabic, with no English left in them', async ({ page }) => {
+    await open(page, 'ar');
+    await expect(page.getByRole('button', { name: 'إضافة موظف' })).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'الحاليون' })).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'الموظفون السابقون' })).toBeVisible();
+    await expect(page.getByText('عدد سجلات الموظفين: 14')).toBeVisible();
+    await expect(page.getByRole('checkbox', { name: 'تحديد كل ما في هذه الصفحة' })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'تصفية حسب الحالة' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'القسم' })).toBeVisible();
+    await expect(page.getByText('منصة إدارة القوى العاملة')).toBeVisible();
+    await expect(page.getByText('صفحة 1 من 1')).toBeVisible();
+    const table = page.getByTestId('employee-list-scroll');
+    for (const english of ['Department', 'Designation', 'Branch', 'Status', 'Profile', 'Prev', 'Next']) {
+      await expect(table.getByText(english, { exact: true }), english).toHaveCount(0);
+    }
+    const header = page.locator('h1').first().locator('xpath=..');
+    await expect(header).not.toContainText('employee records');
+    await expect(page.getByText('Workforce Platform')).toHaveCount(0);
+  });
+});

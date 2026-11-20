@@ -1,6 +1,7 @@
 'use client';
 
 import { AlertCircle, AlertTriangle, CheckCircle2, Clock, HelpCircle } from 'lucide-react';
+import { useLocale } from '../contexts/LocaleContext';
 
 // Four tones, one per distinct commercial meaning. Green is reserved for "nothing left to do":
 //   red    = Blocked                       → "can't activate yet"       → "Incomplete · N"
@@ -38,7 +39,9 @@ export interface ReadinessBadgeProps {
   title?: string;
 }
 
-function resolve(state: string, blockersCount: number, expiring?: boolean): {
+type Translate = ReturnType<typeof useLocale>['t'];
+
+function resolve(state: string, blockersCount: number, expiring: boolean | undefined, t: Translate): {
   tone: Tone;
   Icon: typeof CheckCircle2;
   label: string;
@@ -48,8 +51,8 @@ function resolve(state: string, blockersCount: number, expiring?: boolean): {
     return {
       tone: 'rose',
       Icon: AlertTriangle,
-      label: blockersCount > 0 ? `Incomplete · ${blockersCount}` : 'Incomplete',
-      hint: 'Cannot be activated yet — open the checklist to see what is missing',
+      label: blockersCount > 0 ? t('Incomplete · {count}', { count: blockersCount }) : t('Incomplete'),
+      hint: t('Cannot be activated yet — open the checklist to see what is missing'),
     };
   }
   if (state === 'NeedsAttention') {
@@ -58,20 +61,20 @@ function resolve(state: string, blockersCount: number, expiring?: boolean): {
     return {
       tone: 'amber',
       Icon: AlertCircle,
-      label: blockersCount > 0 ? `Needs attention · ${blockersCount}` : 'Needs attention',
-      hint: 'Can be activated, but items are still outstanding — open the checklist',
+      label: blockersCount > 0 ? t('Needs attention · {count}', { count: blockersCount }) : t('Needs attention'),
+      hint: t('Can be activated, but items are still outstanding — open the checklist'),
     };
   }
   if (expiring) {
     return {
       tone: 'amber',
       Icon: Clock,
-      label: 'Renewal due',
-      hint: 'A required ID or document is expiring soon or has expired',
+      label: t('Renewal due'),
+      hint: t('A required ID or document is expiring soon or has expired'),
     };
   }
   if (state === 'Ready') {
-    return { tone: 'emerald', Icon: CheckCircle2, label: 'Ready', hint: 'Nothing outstanding' };
+    return { tone: 'emerald', Icon: CheckCircle2, label: t('Ready'), hint: t('Nothing outstanding') };
   }
   // Unknown, new or missing state — we were not told this employee is ready, so we never say
   // they are. Neutral slate + its own wording, so a new server state degrades visibly rather
@@ -79,13 +82,14 @@ function resolve(state: string, blockersCount: number, expiring?: boolean): {
   return {
     tone: 'slate',
     Icon: HelpCircle,
-    label: 'Not evaluated',
-    hint: 'Readiness could not be determined for this employee — open the checklist',
+    label: t('Not evaluated'),
+    hint: t('Readiness could not be determined for this employee — open the checklist'),
   };
 }
 
 export function ReadinessBadge({ state, blockersCount, expiring, onClick, title }: ReadinessBadgeProps) {
-  const { tone, Icon, label, hint } = resolve(state, blockersCount, expiring);
+  const { t } = useLocale();
+  const { tone, Icon, label, hint } = resolve(state, blockersCount, expiring, t);
   const base = `inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${toneClasses[tone]}`;
 
   if (onClick) {

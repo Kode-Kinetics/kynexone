@@ -1,6 +1,7 @@
 'use client';
 
 import { useId } from 'react';
+import { useLocale } from '../contexts/LocaleContext';
 
 interface LogoProps {
   /** Render only the mark (no wordmark text). */
@@ -15,6 +16,7 @@ interface LogoProps {
  * Deliberately flat-with-a-hint-of-depth so it stays sharp at 24–28px.
  */
 export function Logo({ collapsed, size = 'md', theme = 'light' }: LogoProps) {
+  const { t } = useLocale();
   const dim = size === 'xl' ? 56 : size === 'lg' ? 44 : size === 'sm' ? 30 : 38;
   const inverse = theme === 'dark';
   const uid = useId().replace(/:/g, '');
@@ -72,7 +74,7 @@ export function Logo({ collapsed, size = 'md', theme = 'light' }: LogoProps) {
             Kynex<span className={inverse ? 'text-cyan-300' : 'text-blue-600 dark:text-cyan-300'}>One</span>
           </p>
           <p className={`truncate text-caption font-medium tracking-wide ${inverse ? 'text-white/55' : 'text-slate-400'}`}>
-            Workforce Platform
+            {t('Workforce Platform')}
           </p>
         </div>
       )}

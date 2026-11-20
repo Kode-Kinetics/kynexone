@@ -397,7 +397,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                     {user?.fullName ?? 'User'}
                   </p>
                   <p className="truncate text-caption text-slate-400 dark:text-slate-500">
-                    {primaryRole(user?.roles) ?? 'Member'}
+                    {t(primaryRole(user?.roles) ?? 'Member')}
                   </p>
                 </div>
                 <button
