@@ -83,6 +83,8 @@ const ar: Record<string, string> = {
   'Job Openings': 'الوظائف الشاغرة',
   'Salary Structures': 'هياكل الرواتب',
   'BenefitClaim': 'مطالبات المزايا',
+  // Skip link: the first tab stop of every screen.
+  'Skip to main content': 'انتقل إلى المحتوى الرئيسي',
 };
 
 /** English is the key, except where one English word needs a context-specific key. */

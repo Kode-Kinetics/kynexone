@@ -2481,7 +2481,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
 
           <div className="surface overflow-hidden">
             <div
-              className="relative scroll-pt-12 overflow-auto md:max-h-[max(20rem,calc(100dvh-24rem))] md:overscroll-contain"
+              className="relative scroll-pt-12 overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sapphire md:max-h-[max(20rem,calc(100dvh-24rem))] md:overscroll-contain"
               tabIndex={0}
               role="region"
               aria-label={t('Employee list')}
@@ -2490,14 +2490,14 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               <table className="w-full min-w-[960px] text-sm">
                 <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_0_rgb(241_245_249)] dark:bg-slate-900 dark:shadow-[0_1px_0_0_rgb(255_255_255/0.07)]">
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                    <th className="w-10 px-4 py-3 text-start">
+                    <th className="w-10 px-4 py-2 text-start">
                       <input
                         ref={selectAllRef}
                         type="checkbox"
                         checked={selectAllMatching || allPageSelected}
                         onChange={toggleHeader}
                         disabled={loading || employees.length === 0}
-                        className="h-4 w-4 accent-sapphire align-middle disabled:opacity-40"
+                        className="h-6 w-6 accent-sapphire align-middle disabled:opacity-40"
                         aria-label="Select all on this page"
                       />
                     </th>
@@ -2548,7 +2548,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           type="checkbox"
                           checked={rowSelected}
                           onChange={() => toggleRow(employee.id)}
-                          className="h-4 w-4 accent-sapphire align-middle"
+                          className="h-6 w-6 accent-sapphire align-middle"
                           aria-label={`Select ${employee.fullName}`}
                         />
                       </td>
@@ -2561,7 +2561,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                               href={employeeWorkspaceHref(employee.id, {
                                 returnTo: buildPeopleReturnTo({ ...directoryQuery.state, anchor: `employee-${employee.id}` }),
                               })}
-                              className="rounded text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
+                              className="-my-1 inline-block rounded py-1 text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
                             >
                               {employee.fullName}
                             </Link>

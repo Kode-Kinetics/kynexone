@@ -233,7 +233,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                     onClick={() => toggleGroup(group.label)}
                     aria-expanded={isExpanded}
                     aria-controls={groupId}
-                    className={`group/hdr mb-0.5 flex w-full items-center justify-between rounded-lg px-3 py-1 transition-all duration-150 ${
+                    className={`group/hdr mb-0.5 flex min-h-7 w-full items-center justify-between rounded-lg px-3 py-1 transition-all duration-150 ${
                       isExpanded
                         ? 'hover:bg-slate-100/70 dark:hover:bg-white/[0.04]'
                         : 'hover:bg-slate-100/70 dark:hover:bg-white/[0.04]'
@@ -353,7 +353,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                 type="button"
                 aria-label={t('Sign out')}
                 onClick={(event) => handleLogout(event.currentTarget)}
-                className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
               >
                 <LogOut className="h-3.5 w-3.5" />
               </button>
@@ -384,7 +384,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                   type="button"
                   aria-label={t('Sign out')}
                   onClick={(event) => handleLogout(event.currentTarget)}
-                  className="grid h-6 w-6 shrink-0 place-items-center rounded-lg text-slate-300 hover:bg-rose-50 hover:text-rose-500 dark:text-slate-600 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-300 hover:bg-rose-50 hover:text-rose-500 dark:text-slate-600 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
                 >
                   <LogOut className="h-3.5 w-3.5" />
                 </button>

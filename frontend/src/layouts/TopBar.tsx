@@ -281,7 +281,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, navi
         type="button"
         aria-label="Open command search"
         onClick={onOpenSearch}
-        className="flex h-8 w-8 shrink-0 items-center justify-center gap-2.5 rounded-lg border border-slate-200 bg-slate-50/80 text-start text-sm transition hover:border-line-strong hover:bg-surface-sunken sm:w-auto sm:max-w-md sm:flex-1 sm:shrink sm:justify-start sm:px-3 dark:border-white/[0.08] dark:bg-white/[0.04] dark:hover:bg-white/[0.07]"
+        className="flex h-control-md w-control-md shrink-0 items-center justify-center gap-2.5 rounded-lg border border-slate-200 bg-slate-50/80 text-start text-sm transition hover:border-line-strong hover:bg-surface-sunken sm:w-auto sm:max-w-md sm:flex-1 sm:shrink sm:justify-start sm:px-3 dark:border-white/[0.08] dark:bg-white/[0.04] dark:hover:bg-white/[0.07]"
       >
         <svg className="h-3.5 w-3.5 shrink-0 text-slate-400" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5" />
@@ -294,7 +294,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, navi
       <LanguageSwitcher />
       <CompanySwitcher />
 
-      <div className="ms-auto flex shrink-0 items-center gap-1.5">
+      <div className="ms-auto flex shrink-0 items-center gap-2">
         {canOpenSetup && (
           <Link
             href="/setup"
