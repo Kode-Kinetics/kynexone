@@ -66,7 +66,7 @@ public sealed record OfferDetailDto(Zayra.Api.Models.OfferLetter Offer, OfferArt
     string OriginalProvenance, IReadOnlyList<Zayra.Api.Models.OfferApproval> Approvals,
     IReadOnlyDictionary<string, OfferActionCapability> Capabilities, IReadOnlyList<OfferHistoryItem> Revisions,
     IReadOnlyList<string> ChangedFields, string CommunicationOutcome,
-    System.Text.Json.JsonElement? CompensationSnapshot, System.Text.Json.JsonElement? DesignSnapshot);
+    System.Text.Json.JsonElement? CompensationSnapshot, System.Text.Json.JsonElement? DesignSnapshot, string OfferedDepartmentName = "");
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record OfferDraftInput(long ExpectedVersion, long? ReviewedPolicyVersion,
     DateOnly StartDate, DateTime? ResponseDeadline, int ProbationMonths, string RecipientEmail,

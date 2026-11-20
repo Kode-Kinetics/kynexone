@@ -64,9 +64,36 @@ public sealed class OfferDraftHandoffFixTests(PostgresFixture fixture)
         var seed = await SeedWithDepartmentCodeAsync("ALM-DAIRY-KSA-OPS", ("ALM-DAIRY-KSA-OPS", "Operations"));
         await using var db = fixture.CreateDb();
         var workspace = await new OfferHistoryQueryService(db, new(db, OfferLifecycleServiceTests.Config(false))).WorkspaceAsync(seed.Actor, seed.OfferId);
-        workspace!.Offer.OfferedDepartment.Should().Be("Operations");
+        workspace!.OfferedDepartmentName.Should().Be("Operations");
+        workspace.Offer.OfferedDepartment.Should().Be("ALM-DAIRY-KSA-OPS", "the editable value is what is stored, never the display name");
         await using var verify = fixture.CreateDb();
         (await verify.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == seed.OfferId)).OfferedDepartment.Should().Be("ALM-DAIRY-KSA-OPS");
+    }
+
+    [Fact]
+    public async Task Saving_an_unrelated_change_from_the_workspace_payload_keeps_the_offer_in_the_second_of_two_same_named_departments()
+    {
+        var seed = await OfferLifecycleTestData.SeedAsync(fixture);
+        await using (var setup = fixture.CreateDb())
+        {
+            setup.Departments.Add(new Department { TenantId = seed.Actor.TenantId, CompanyId = seed.Actor.CompanyId, Code = "OPS-A", NameEn = "Operations", NameAr = "Operations", IsActive = true });
+            setup.Departments.Add(new Department { TenantId = seed.Actor.TenantId, CompanyId = seed.Actor.CompanyId, Code = "OPS-B", NameEn = "Operations", NameAr = "Operations", IsActive = true });
+            setup.Designations.Add(new() { TenantId = seed.Actor.TenantId, TitleEn = "Engineer", Code = "ENG" });
+            var draft = await setup.OfferLetters.SingleAsync(o => o.Id == seed.OfferId);
+            draft.Status = "Draft"; draft.SentAtUtc = null; draft.OfferedDepartment = "OPS-B";
+            await setup.SaveChangesAsync();
+        }
+        await using var db = fixture.CreateDb();
+        var workspace = await new OfferHistoryQueryService(db, new(db, OfferLifecycleServiceTests.Config(false))).WorkspaceAsync(seed.Actor, seed.OfferId);
+        workspace!.OfferedDepartmentName.Should().Be("Operations");
+        // The browser copies the editable value from the payload and sends it back with one unrelated change (probation).
+        await new OfferLifecycleService(db, OfferLifecycleServiceTests.Config()).SaveDraftAsync(seed.Actor, seed.OfferId,
+            new(workspace.Offer.Version, 0, new(2027, 1, 1), DateTime.UtcNow.AddDays(7), 4, "candidate@example.invalid",
+                workspace.Offer.OfferedJobTitle, workspace.Offer.OfferedDepartment, BasicSalary: 1000, AdoptLegacy: true));
+        await using var verify = fixture.CreateDb();
+        var saved = await verify.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == seed.OfferId);
+        saved.ProbationMonths.Should().Be(4);
+        saved.OfferedDepartment.Should().Be("OPS-B", "an unrelated save must not move the offer to the other same-named department");
     }
 
     [Fact]

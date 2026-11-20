@@ -79,12 +79,12 @@ public sealed class OfferHistoryQueryService(ZayraDbContext db, OfferLifecycleSe
             nameof(offer.ContractType), nameof(offer.ContractTermMonths), nameof(offer.RecipientEmail), nameof(offer.CandidateName), nameof(offer.OfferedJobTitle), nameof(offer.OfferedDepartment),
             nameof(offer.CompensationSnapshotJson), nameof(offer.DesignSnapshotJson) }.Where(name =>
                 !Equals(typeof(OfferLetter).GetProperty(name)!.GetValue(previous), typeof(OfferLetter).GetProperty(name)!.GetValue(offer))).ToArray();
-        // The offer may hold its department's code; the workspace shows the name. ReadAsync returns an untracked copy and the
-        // changed-field comparison above has already used the stored values, so this changes what is shown, never what is stored.
-        offer.OfferedDepartment = await OfferPlacement.DisplayDepartmentAsync(db, actor.TenantId, offer.CompanyId, offer.OfferedDepartment, false, ct);
+        var departmentName = await OfferPlacement.DisplayDepartmentAsync(db, actor.TenantId, offer.CompanyId, offer.OfferedDepartment, false, ct);
+        // The offer keeps its stored placement value (the department's code when a name is shared); the name is a separate display field,
+        // so a save that echoes the payload resolves to the same department.
         return new(offer, artifact is null ? null : new(artifact.Id, artifact.Sha256, artifact.SizeBytes, artifact.Provenance, offer.FrozenAtUtc, offer.Version),
             Provenance(offer), approvals, capabilities, revisions.Select(Item).ToArray(), changed, Communication(offer),
-            SavedSnapshot(offer.CompensationSnapshotJson), SavedSnapshot(offer.DesignSnapshotJson));
+            SavedSnapshot(offer.CompensationSnapshotJson), SavedSnapshot(offer.DesignSnapshotJson), departmentName);
     }
 
     public async Task<OfferPage<OfferLifecycleEvent>> EventsAsync(OfferActor actor, Guid offerId, int page = 1, int pageSize = 20, CancellationToken ct = default)
