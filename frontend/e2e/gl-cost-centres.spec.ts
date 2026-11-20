@@ -41,14 +41,22 @@ interface Options {
   presetNothingToChange?: boolean;
   /** Every readiness check is ok. */
   allClear?: boolean;
+  /**
+   * The name a company typed for account 5001. The 35 seeded account names are translated to Arabic (glAccountNames.ts), so a
+   * test about how a LATIN name is cut or isolated inside Arabic text must use a name the company typed, not a seeded one.
+   */
+  basicName?: string;
 }
+
+const SEEDED_BASIC = 'Basic Salary Expense';
+const TYPED_LATIN = 'Field Crew Pay Expense';
 
 interface Recorded { method: string; path: string; search: string; body: unknown }
 
 function seedAccounts(options: Options): Account[] {
   const done = !!options.presetNothingToChange;
   return [
-    { id: 'acc-5001', companyId: null, code: '5001', name: 'Basic Salary Expense', accountType: 'Expense', isActive: true, costCenterRule: 'Required' },
+    { id: 'acc-5001', companyId: null, code: '5001', name: options.basicName ?? SEEDED_BASIC, accountType: 'Expense', isActive: true, costCenterRule: 'Required' },
     { id: 'acc-5002', companyId: null, code: '5002', name: 'Housing Allowance Expense', accountType: 'Expense', isActive: true, costCenterRule: done ? 'Required' : 'Optional' },
     { id: 'acc-2100', companyId: null, code: '2100', name: 'Salaries Payable', accountType: 'Liability', isActive: true, costCenterRule: 'NotAllowed' },
     { id: 'acc-1400', companyId: null, code: '1400', name: 'Employee Loans Receivable', accountType: 'Asset', isActive: true, costCenterRule: done ? 'NotAllowed' : 'Optional' },
@@ -96,12 +104,12 @@ function clearReadiness(companyId: string, options: Options, enabled: boolean) {
   return { ...r, checks: r.checks.map((c) => ({ ...c, severity: 'ok', count: 0, sample: [] })), smallCellExposure: { count: 0, threshold: 3 } };
 }
 
-function mappingRows(companyId: string | null) {
+function mappingRows(companyId: string | null, basicName = SEEDED_BASIC) {
   const inherited = companyId !== null;
   return [
     {
       driverKey: 'EARN:BASIC', label: 'Basic salary', category: 'Earning', accountType: 'Expense', allowedAccountTypes: ['Expense'],
-      defaultAccount: '5001 — Basic Salary Expense', mappedAccountId: 'acc-5001', segmentCostCenterId: null, inherited,
+      defaultAccount: `5001 — ${basicName}`, mappedAccountId: 'acc-5001', segmentCostCenterId: null, inherited,
       classRules: [{ functionalClass: 'SELLING', accountId: 'acc-5002', inherited }],
     },
     {
@@ -206,7 +214,7 @@ async function boot(page: Page, options: Options = {}, initialUrl?: string) {
     if (p.startsWith('/api/finance/gl/accounts/')) return route.fulfill({ status: 204 });
 
     // ── GL: mappings, drivers, routing ──
-    if (p === '/api/finance/gl/mappings' && method === 'GET') return reply(mappingRows(companyId));
+    if (p === '/api/finance/gl/mappings' && method === 'GET') return reply(mappingRows(companyId, options.basicName));
     if (p === '/api/finance/gl/mappings' && method === 'PUT') {
       if (ctl.mappingRefusal) return reply(ctl.mappingRefusal.body, ctl.mappingRefusal.status);
       return reply({ count: Array.isArray(body) ? body.length : Array.isArray(body?.mappings) ? body.mappings.length : 0, changed: 1, removed: 0 });
@@ -878,9 +886,10 @@ test('a long account name is cut with an ellipsis and keeps its full text in a t
 
 test('AR 1280: a Latin account name is cut at its end, never its beginning, and the title keeps the whole name', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
-  await boot(page, { locale: 'ar', groupMode: true });
+  // A name the company typed in Latin letters (a seeded name would now be translated, which is its own check below).
+  await boot(page, { locale: 'ar', groupMode: true, basicName: TYPED_LATIN });
   const name = tid(page, 'cc-acct-name-5001');
-  await expect(name).toHaveAttribute('title', 'Basic Salary Expense');
+  await expect(name).toHaveAttribute('title', TYPED_LATIN);
   const view = await name.evaluate((el) => {
     const text = el.firstChild as Text;
     const first = document.createRange();
@@ -890,9 +899,16 @@ test('AR 1280: a Latin account name is cut at its end, never its beginning, and 
     const box = el.getBoundingClientRect();
     return { direction: getComputedStyle(el).direction, firstCharInside: f.left >= box.left - 0.5 && f.right <= box.right + 0.5, firstChar: text.data[0] };
   });
-  expect(view.firstChar).toBe('B');
+  expect(view.firstChar).toBe('F');
   expect(view.direction).toBe('ltr');
   expect(view.firstCharInside).toBe(true);
+});
+
+test('AR: a seeded account name is shown in Arabic (the seeded chart names are translated)', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await boot(page, { locale: 'ar', groupMode: true });
+  await expect(tid(page, 'cc-acct-name-5001')).toHaveText('مصروف الراتب الأساسي');
+  await expect(tid(page, 'cc-acct-name-5002')).toHaveText('مصروف بدل السكن');
 });
 
 for (const locale of ['en', 'ar'] as const) {
@@ -929,13 +945,13 @@ test('AR 1280: the account and fixed cost centre selects start at the code, beca
 });
 
 test('AR: the mapping sub-line keeps each interpolated account code and name in its own isolated run (bdi), and the text is unchanged', async ({ page }) => {
-  await boot(page, { locale: 'ar' });
+  await boot(page, { locale: 'ar', basicName: TYPED_LATIN });
   // Company view, inheriting the group mapping: two accounts in one Arabic sentence.
   const line = tid(page, 'cc-map-fallback-EARN:BASIC');
-  await expect(line).toHaveText('الحساب الاحتياطي 5001 — Basic Salary Expense · يرث 5001 — Basic Salary Expense');
+  await expect(line).toHaveText(`الحساب الاحتياطي 5001 — ${TYPED_LATIN} · يرث 5001 — ${TYPED_LATIN}`);
   const runs = line.locator('bdi');
   await expect(runs).toHaveCount(2);
-  await expect(runs.first()).toHaveText('5001 — Basic Salary Expense');
+  await expect(runs.first()).toHaveText(`5001 — ${TYPED_LATIN}`);
   // The isolate is a bdi element, not a control character in the text.
   expect(await line.evaluate((el) => /[\u2066-\u2069\u200e\u200f]/.test(el.textContent ?? ''))).toBe(false);
   // One account: one run.
