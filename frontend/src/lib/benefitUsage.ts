@@ -122,7 +122,8 @@ export function usageProblems(form: UsageForm, row: UtilisationRow | undefined):
   const kind = usageKind(row.benefitCode);
   if (!form.quantity.trim() || !Number.isFinite(value) || value <= 0) problems.quantity = row.measure === 'Units' ? 'Enter how many, more than zero.' : 'Enter an amount more than zero.';
   else if (row.measure === 'Units' && !Number.isInteger(value)) problems.quantity = 'Enter a whole number.';
-  else if (row.measure === 'Amount' && Math.round(value * 100) !== value * 100) problems.quantity = 'Use at most two decimals.';
+  // Checked on the typed text, never by multiplying: 19.99 * 100 is 1998.9999999999998 in floating point.
+  else if (row.measure === 'Amount' && !/^\d+([.,]\d{1,2})?$/.test(form.quantity.trim().replace(/\s/g, ''))) problems.quantity = 'Use at most two decimals.';
   else if (value > leftFor(row, form.dependantId)) problems.quantity = 'That is more than is left for this period.';
   if (kind === 'education' && !form.dependantId) problems.dependantId = 'Choose the child this claim is for.';
   if (kind === 'education' && !form.academicYear.trim()) problems.academicYear = 'Give the academic year the fees are for.';
