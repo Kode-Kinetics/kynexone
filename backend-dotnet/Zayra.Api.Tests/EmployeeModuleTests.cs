@@ -310,6 +310,71 @@ public class EmployeeModuleTests
             .Which.Message.Should().Contain("IBAN ***7519 is invalid: wrong checksum").And.NotContain(badIban);
     }
 
+    // Job title follows the designation on an edit: blank, or still the OLD designation's title, moves to the new designation's
+    // title; a title somebody typed differently is theirs and is kept.
+    [Theory]
+    [InlineData(null, "Senior Analyst")]
+    [InlineData("", "Senior Analyst")]
+    [InlineData("Analyst", "Senior Analyst")]
+    [InlineData("  analyst ", "Senior Analyst")]
+    [InlineData("Team Lead", "Team Lead")]
+    public async Task UpdateEmployee_ChangingDesignation_JobTitleFollowsOnlyWhenBlankOrTheOldDesignationTitle(string? sentJobTitle, string expected)
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var analyst = new Designation { TenantId = tenantId, Code = "AN", TitleEn = "Analyst", IsActive = true };
+        var senior = new Designation { TenantId = tenantId, Code = "SA", TitleEn = "Senior Analyst", IsActive = true };
+        db.Designations.AddRange(analyst, senior);
+        await db.SaveChangesAsync();
+        var service = new Zayra.Api.Infrastructure.Employees.EmployeeManagementService(
+            db, new AuditService(db), new FakeDocumentStorage(), TestNotifications.For(db));
+        var context = new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId);
+        EmployeeCreateRequest Request(Guid designationId, string? jobTitle) => new(
+            EmployeeCode: "EMP-JT-1", ManualEmployeeCode: true, EnglishName: "Job Title Case", ArabicName: null, PreferredName: null,
+            Gender: "Male", DateOfBirth: null, Nationality: "Pakistani", MaritalStatus: null, PersonalEmail: null,
+            WorkEmail: null, MobileNumber: null, ProfilePhotoUrl: null, CompanyId: null, BranchId: null, DepartmentId: null,
+            DesignationId: designationId, GradeId: null, CostCenterId: null, JobTitle: jobTitle, ReportingManagerEmployeeId: null,
+            SecondLevelManagerEmployeeId: null, EmploymentType: "Full-Time", ContractType: "Unlimited",
+            JoiningDate: new DateTime(2026, 7, 14, 0, 0, 0, DateTimeKind.Utc), ConfirmationDate: null, ProbationStartDate: null,
+            ProbationEndDate: null, NoticePeriodDays: null, WorkLocation: null, PayrollGroup: null, ShiftPolicyCode: null,
+            LeavePolicyCode: null, AttendancePolicyCode: null, PayrollProfile: null, SalaryBreakdown: null, ComplianceRecords: null);
+
+        var created = await service.CreateAsync(tenantId, Request(analyst.Id, null), context, CancellationToken.None);
+        await service.UpdateAsync(tenantId, created.Id, Request(senior.Id, sentJobTitle), context, CancellationToken.None);
+
+        var saved = await db.Employees.SingleAsync(x => x.Id == created.Id);
+        saved.Designation.Should().Be("Senior Analyst");
+        saved.JobTitle.Should().Be(expected);
+    }
+
+    // Saving the same designation again never rewrites a job title.
+    [Fact]
+    public async Task UpdateEmployee_SameDesignation_KeepsABlankJobTitleBlank()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var analyst = new Designation { TenantId = tenantId, Code = "AN", TitleEn = "Analyst", IsActive = true };
+        db.Designations.Add(analyst);
+        await db.SaveChangesAsync();
+        var service = new Zayra.Api.Infrastructure.Employees.EmployeeManagementService(
+            db, new AuditService(db), new FakeDocumentStorage(), TestNotifications.For(db));
+        var context = new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "tests", Guid.NewGuid(), tenantId);
+        EmployeeCreateRequest Request() => new(
+            EmployeeCode: "EMP-JT-2", ManualEmployeeCode: true, EnglishName: "Job Title Same", ArabicName: null, PreferredName: null,
+            Gender: "Male", DateOfBirth: null, Nationality: "Pakistani", MaritalStatus: null, PersonalEmail: null,
+            WorkEmail: null, MobileNumber: null, ProfilePhotoUrl: null, CompanyId: null, BranchId: null, DepartmentId: null,
+            DesignationId: analyst.Id, GradeId: null, CostCenterId: null, JobTitle: null, ReportingManagerEmployeeId: null,
+            SecondLevelManagerEmployeeId: null, EmploymentType: "Full-Time", ContractType: "Unlimited",
+            JoiningDate: new DateTime(2026, 7, 14, 0, 0, 0, DateTimeKind.Utc), ConfirmationDate: null, ProbationStartDate: null,
+            ProbationEndDate: null, NoticePeriodDays: null, WorkLocation: null, PayrollGroup: null, ShiftPolicyCode: null,
+            LeavePolicyCode: null, AttendancePolicyCode: null, PayrollProfile: null, SalaryBreakdown: null, ComplianceRecords: null);
+
+        var created = await service.CreateAsync(tenantId, Request(), context, CancellationToken.None);
+        await service.UpdateAsync(tenantId, created.Id, Request(), context, CancellationToken.None);
+
+        (await db.Employees.SingleAsync(x => x.Id == created.Id)).JobTitle.Should().BeNullOrEmpty();
+    }
+
     [Fact]
     public async Task CreateEmployee_WithDepartmentHead_AutoAssignsLineManagerAndReportingLine()
     {

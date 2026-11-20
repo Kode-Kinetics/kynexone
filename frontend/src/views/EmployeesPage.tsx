@@ -11,6 +11,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { useFormat } from '../hooks/useFormat';
 import { describeApiError } from '../lib/apiError';
+import { bulkFailureMessage, countCannotActivateYet } from '../lib/employeeBulk';
 import { ExEmployeesTable } from './ExEmployeesTable';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { ReadinessBadge, hasExpiringId } from '../components/ReadinessBadge';
@@ -383,6 +384,9 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const selectAllRef = useRef<HTMLInputElement | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // The directory itself failed to load (as opposed to any other message on the page): only then is the record count "unavailable".
+  const [listLoadFailed, setListLoadFailed] = useState(false);
+  const lastGoodTotalRef = useRef<number | null>(null);
   const [actionNotice, setActionNotice] = useState('');
   const [selectionNotice, setSelectionNotice] = useState('');
   const [subscriptionBanner, setSubscriptionBanner] = useState('');
@@ -636,6 +640,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     const query = employeeQueryRef.current;
     setLoading(true);
     setError('');
+    setListLoadFailed(false);
     // Never leave stale employee rows or counts visible while the new server
     // result is pending (or after it fails).
     setEmployees([]);
@@ -657,10 +662,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         // "Everyone" is the default list's total (leavers excluded), not the sum of the chips.
         void employeesApi.list({ page: 1, pageSize: 1 }).then((r) => setEveryoneCount(r.total)).catch(() => setEveryoneCount(null));
         setTotal(res.total);
+        lastGoodTotalRef.current = res.total;
         // Remembered so a selection that spans pages still knows each person's self-service state.
         for (const item of res.items) seenRowsRef.current.set(item.id, item);
       },
-      onError: () => setError('Could not load employees from the API.'),
+      onError: () => { setError('Could not load employees from the API.'); setListLoadFailed(true); },
       onSettled: () => setLoading(false),
     });
   }, [employeeLoadGate]);
@@ -744,6 +750,12 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const somePageSelected = pageIds.some((id) => selectedIds.has(id));
   const selectionCount = selectAllMatching ? total : selectedIds.size;
   const hasSelection = selectionCount > 0;
+  // A hint from the list data only (never a server call); an "all matching" pick spans rows the page has not seen, so it gets none.
+  const activateHint = (() => {
+    if (selectAllMatching) return { blocked: 0, total: 0 };
+    const known = [...selectedIds].map((id) => seenRowsRef.current.get(id)).filter((row): row is EmployeeListItem => !!row);
+    return { blocked: countCannotActivateYet(known).blocked, total: selectedIds.size };
+  })();
   // Not under a Self-service filter: the bulk API's "all matching" filter has no access state, so it
   // would resolve a different set than the one on screen.
   const canOfferSelectAllMatching = allPageSelected && !selectAllMatching && total > selectedIds.size && !accessFilter;
@@ -829,7 +841,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         setError(`The set of matching employees changed (now ${data.actual}, you selected ${data.expected}). The list has been refreshed — review and try again.`);
         await load();
       } else {
-        setError(data?.message ?? 'The bulk action could not be completed.');
+        // A failed call leaves the loaded list, its count and the selection exactly as they were.
+        setError(bulkFailureMessage(e, action));
       }
     } finally {
       setBulkBusy(false);
@@ -2240,7 +2253,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const isReinstatement = !!selectedEmployee && ['Suspended', 'Offboarded'].includes(selectedEmployee.status);
   const activateGateBlocked = !isReinstatement && activationBlockers > 0;
   return (
-    <div className={createOnly ? 'h-0 overflow-hidden' : 'space-y-5'}>
+    <div className={createOnly ? 'h-0 overflow-hidden' : 'space-y-4'}>
       {confirmDialog}
       {subscriptionBanner && (
         <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-300">
@@ -2253,7 +2266,9 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
           <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Employee Management')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
             {view === 'current'
-              ? loading ? t('Loading employee records…') : error ? t('Employee records unavailable') : t('{count} employee records', { count: total })
+              ? loading ? t('Loading employee records…')
+                : listLoadFailed ? (lastGoodTotalRef.current === null ? t('Employee records unavailable') : t('Employee records unavailable · last known count {count}', { count: lastGoodTotalRef.current }))
+                  : t('{count} employee records', { count: total })
               : t('Former employees — retained for statutory audit')}
           </p>
         </div>
@@ -2339,7 +2354,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         />
       ) : (
       <div className="grid grid-cols-1 gap-5" data-testid="people-directory-full-width">
-        <section className="min-w-0 space-y-4">
+        <section className="min-w-0 space-y-3">
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
               <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -2451,6 +2466,12 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             </div>
           )}
 
+          {canBulkActivate && activateHint.blocked > 0 && (
+            <p role="status" data-testid="bulk-activate-hint" className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+              {t('{blocked} of {total} selected cannot be activated yet (missing details or pay approval)', { blocked: activateHint.blocked, total: activateHint.total })}
+            </p>
+          )}
+
           {bulkResult && (
             <div className="rounded-lg border border-slate-200 bg-white/70 p-3 text-sm dark:border-white/10 dark:bg-white/[0.03]">
               <div className="mb-1.5 flex items-start justify-between gap-3">
@@ -2481,7 +2502,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
 
           <div className="surface overflow-hidden">
             <div
-              className="relative scroll-pt-12 overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sapphire md:max-h-[max(20rem,calc(100dvh-24rem))] md:overscroll-contain"
+              className="relative scroll-pt-12 overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sapphire md:max-h-[max(20rem,calc(100dvh-23rem))] md:overscroll-contain"
               tabIndex={0}
               role="region"
               aria-label={t('Employee list')}
@@ -2490,7 +2511,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               <table className="w-full min-w-[960px] text-sm">
                 <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_0_rgb(241_245_249)] dark:bg-slate-900 dark:shadow-[0_1px_0_0_rgb(255_255_255/0.07)]">
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                    <th className="w-10 px-4 py-2 text-start">
+                    <th className="w-10 px-3 py-2 text-start">
                       <input
                         ref={selectAllRef}
                         type="checkbox"
@@ -2502,11 +2523,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                       />
                     </th>
                     {['Employee'].map((head) => (
-                      <th key={head} className="px-4 py-3 text-start text-xs font-semibold uppercase text-slate-400">{t(head)}</th>
+                      <th key={head} className="px-3 py-2 text-start text-xs font-semibold uppercase text-slate-400">{t(head)}</th>
                     ))}
-                    <th className="px-4 py-3 text-start text-xs font-semibold uppercase text-slate-400">{t('Self-service')}</th>
+                    <th className="px-3 py-2 text-start text-xs font-semibold uppercase text-slate-400">{t('Self-service')}</th>
                     {['Department', 'Designation', 'Branch', 'Status', 'Profile'].map((head) => (
-                      <th key={head} className="px-4 py-3 text-start text-xs font-semibold uppercase text-slate-400">{t(head)}</th>
+                      <th key={head} className="px-3 py-2 text-start text-xs font-semibold uppercase text-slate-400">{t(head)}</th>
                     ))}
                   </tr>
                 </thead>
@@ -2543,7 +2564,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                     const rowSelected = selectAllMatching || selectedIds.has(employee.id);
                     return (
                     <tr key={employee.id} className={`hover:bg-slate-50 dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
                           checked={rowSelected}
@@ -2552,7 +2573,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           aria-label={t('Select {name}', { name: employee.fullName })}
                         />
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-2">
                         <div className="flex items-center gap-3">
                           <Avatar name={employee.fullName} size="sm" />
                           <div>
@@ -2561,7 +2582,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                               href={employeeWorkspaceHref(employee.id, {
                                 returnTo: buildPeopleReturnTo({ ...directoryQuery.state, anchor: `employee-${employee.id}` }),
                               })}
-                              className="-my-1 inline-block rounded py-1 text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
+                              className="-my-1 inline-block whitespace-nowrap rounded py-1 text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
                             >
                               {employee.fullName}
                             </Link>
@@ -2569,7 +2590,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-3" data-testid="access-pill">
+                      <td className="px-3 py-2" data-testid="access-pill">
                         <ThreeStateCell
                           status={employee.status}
                           accessState={employee.accessState}
@@ -2579,11 +2600,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           onReset={canResetAccess && employee.accessState === 'active' ? () => setResetFor({ id: employee.id, name: employee.fullName }) : undefined}
                         />
                       </td>
-                      <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.department || '-'}</td>
-                      <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.designation || '-'}</td>
-                      <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.branch || '-'}</td>
-                      <td className="px-4 py-3"><StatusChip tone={statusTone(employee.status).tone} label={t(employee.status)} /></td>
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{employee.department || '-'}</td>
+                      <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{employee.designation || '-'}</td>
+                      <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{employee.branch || '-'}</td>
+                      <td className="px-3 py-2"><StatusChip tone={statusTone(employee.status).tone} label={t(employee.status)} /></td>
+                      <td className="px-3 py-2">
                         <ReadinessBadge
                           state={employee.readinessState}
                           blockersCount={employee.activationBlockersCount}

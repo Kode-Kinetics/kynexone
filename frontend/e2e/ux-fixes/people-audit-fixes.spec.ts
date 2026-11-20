@@ -51,6 +51,33 @@ test.describe('hit areas', () => {
   });
 });
 
+test.describe('list density', () => {
+  // The Self-Service column used to stack three chips and the Reset button, so rows were about 110 px and a laptop
+  // screen showed three people. Now the chips and Reset share one wrapping row, cells are tighter and the list may take
+  // four more rem: five rows on a Mac. The 1060 px table cannot hold eight columns with the chips on one line, so the
+  // assertion is four with slack: CI renders with a wider fallback font than a Mac (chips wrap earlier there).
+  test('at 1366x768 at least four employee rows are fully visible in the list without scrolling', async ({ page }) => {
+    await page.setViewportSize({ width: 1366, height: 768 });
+    await bootPeopleFixture(page, { count: 25 });
+    await page.goto('/people');
+    await expect(page.locator('#employee-1000')).toBeVisible({ timeout: 45_000 });
+    const region = page.getByTestId('employee-list-scroll');
+    const regionBox = (await region.boundingBox())!;
+    const head = (await region.locator('thead').boundingBox())!;
+    const rows = region.locator('tbody tr');
+    let fullyVisible = 0;
+    for (let i = 0; i < await rows.count(); i++) {
+      const box = (await rows.nth(i).boundingBox())!;
+      if (box.y >= head.y + head.height - 1 && box.y + box.height <= regionBox.y + regionBox.height + 1) fullyVisible++;
+    }
+    expect(fullyVisible, `rows fully visible (list ${Math.round(regionBox.height)} px high)`).toBeGreaterThanOrEqual(4);
+    // The three status chips and Reset sign-in share one wrapping row: two lines at most, never stacked one per line.
+    const cell = page.getByTestId('three-state-cell').first();
+    const chips = await cell.locator('li').evaluateAll((els) => els.slice(0, 3).map((el) => Math.round(el.getBoundingClientRect().top)));
+    expect(new Set(chips).size, JSON.stringify(chips)).toBeLessThanOrEqual(2);
+  });
+});
+
 test.describe('keyboard', () => {
   test('the first Tab stop is a skip link that moves focus to the page content', async ({ page }) => {
     await open(page);
