@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal, flushSync } from 'react-dom';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import {
   Plus, ChevronLeft, Users, Briefcase, ClipboardList, UserPlus,
   CheckCircle, Clock, XCircle, ChevronRight, X, Star, Send,
@@ -52,6 +52,8 @@ import { OfferLetterDesigner } from '../components/OfferLetterDesigner';
 import { yearsLabel } from '../lib/displayLabels';
 import { checklistOptionLabel } from '../lib/checklistLabel';
 import { offerApprovalNote } from '../lib/offerDisplay';
+import { approverPickerBlock } from '../lib/offerWorkspaceState';
+import { interviewStartIsPast, interviewFeedbackRows, applicationDir, type FeedbackRow } from '../lib/recruitmentFixesC';
 import { OfferHistoryRegister } from '../components/recruitment/OfferHistoryRegister';
 import { OfferPolicySettings } from '../components/recruitment/OfferPolicySettings';
 import { offerWorkspacePath } from '../api/offerLifecycle';
@@ -59,6 +61,7 @@ import { useNavigationBlocker } from '../hooks/useNavigationBlocker';
 import { downloadOfferFile } from '../api/offerTemplates';
 import { useNavigationGuard } from '../contexts/NavigationGuardContext';
 import { StatusChip } from '../components/StatusChip';
+import { Modal } from '../components/Modal';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { usePagedList } from '../hooks/usePagedList';
 import { requestFailureReason } from '../lib/requestFailure';
@@ -67,18 +70,27 @@ import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
 import { useFormat } from '../hooks/useFormat';
+import { useMediaQuery } from '../hooks/useMediaQuery';
+import { DateTimePicker } from '../components/ui/DateParts';
 import { enumLabel } from '../i18n/enumLabel';
 import { EmployeeSearchSelect, type EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { useConfirm } from '../components/ui/useConfirm';
 import { OrgRowActions, ShowTurnedOffToggle, useOrgRowRemoval } from '../components/setup/OrgRowActions';
 import { msg } from '../i18n/translations';
+import { HScrollRegion } from '../components/recruitment/HScrollRegion';
+import { useBlacklistCandidate } from '../components/recruitment/useBlacklistCandidate';
+import { timelineNote } from '../lib/applicationNote';
+import { canBlacklistCandidate, isBlacklisted, refusalReason, stageMoveBlock } from '../lib/recruitmentBlacklist';
+import { useLocale } from '../contexts/LocaleContext';
 import { useOfferLetterT } from '../i18n/offerLetter';
 import { useOfferLifecycleT } from '../i18n/offerLifecycle';
-import { raisedByViewer } from '../lib/requisitionDecision';
+import { mayCloseOpening, mayDecideRequisition, mayEditRejectedRequisition } from '../lib/requisitionDecision';
+import { isManagerRecruitmentUser, recruitmentAccess } from '../lib/recruitmentAccess';
+import { ManagerRecruitment } from './ManagerRecruitment';
 import { endOfLocalDayInstant, localInputToInstant } from '../lib/localDateTime';
 import { policyTaskDescription, policyTaskForm, policyTaskProblem, readPolicyFormDraft, retainPolicyFormDraft, type PolicyFormDraftBundle, type PolicyTemplateTaskForm } from '../lib/policyFormDrafts';
 import {
-  HIRE_THROUGH_OFFER_HINT, assessmentScoreLabel, assessmentScoreMax, canRecordAssessmentResult,
+  HIRE_THROUGH_OFFER_HINT, assessmentScoreMax, canRecordAssessmentResult,
   canSendOffer, nextPipelineStage, offerCreationFailure, parseAssessmentScore,
   OFFER_NEXT_ACTION_TEXT, canRequestApproval, offerNextAction, applicationStageChanges, approverOptionLabel, advanceNeedsOverrideReason,
 } from '../lib/recruitmentJourney';
@@ -120,12 +132,14 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
   const stateNote = offer ? offerApprovalNote(offer.status, context?.sendBlockedReason) : null;
   const showRequest = !!offer && !!context && !context.myPendingStepId && !context.canSend
     && canRequestApproval(offer.status, approvals) && (context.required || approvals.length > 0);
+  // While a step waits for its decision nobody else can be asked: the picker gives way to the reason.
+  const pickerBlock = offer ? approverPickerBlock(offer.status, approvals) : null;
 
   useEffect(() => {
-    if (!showRequest || options !== null) return;
+    if (!showRequest || pickerBlock || options !== null) return;
     // Only HR Managers and Admins may configure approval; anyone else simply sees no picker.
     offersApi.approverOptions(offerId).then(setOptions).catch(() => setOptions([]));
-  }, [showRequest, options, offerId]);
+  }, [showRequest, pickerBlock, options, offerId]);
 
   if (!offer || !context) return null;
   if (!context.required && approvals.length === 0 && !showRequest) return null;
@@ -181,13 +195,14 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
           </div>
         </div>
       )}
-      {showRequest && options !== null && (
+      {showRequest && pickerBlock && <p role="status" className="text-xs text-slate-500 dark:text-slate-400">{t(pickerBlock)}</p>}
+      {showRequest && !pickerBlock && options !== null && (
         options.length === 0
           ? <p className="text-xs text-slate-500 dark:text-slate-400">{t('No one else can approve this offer yet: it needs an active HR Manager or Admin who did not write it.')}</p>
           : (
             <div className="flex flex-wrap items-center gap-2">
               <select aria-label={t('Offer approver')} value={approverId} onChange={e => setApproverId(e.target.value)}
-                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs dark:border-white/10 dark:bg-white/5">
+                className="w-full min-w-0 max-w-md text-ellipsis rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs dark:border-white/10 dark:bg-white/5">
                 <option value="">{t('Choose approver…')}</option>
                 {options.map(o => <option key={o.userId} value={o.userId}>{approverOptionLabel(o)}</option>)}
               </select>
@@ -365,15 +380,20 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
 
 // ── Create Requisition Modal ───────────────────────────────────────────────────
 
-interface CreateReqModalProps { onClose: () => void; onSaved: () => void; }
+/** `requisition` set: edit a rejected requisition (the form starts filled from it) and send it again. */
+interface CreateReqModalProps { onClose: () => void; onSaved: () => void; requisition?: ManpowerRequisition | null; }
 
-function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
+function CreateReqModal({ onClose, onSaved, requisition }: CreateReqModalProps) {
   const t = useT();
   const { currencyCode } = useTenantSettings();
   const [form, setForm] = useState({
-    departmentId: '', designationId: '', gradeId: '', headCount: 1, employmentType: 'Full-Time',
-    priority: 'Medium', justification: '', requiredSkills: '', minExperienceYears: '',
-    maxExperienceYears: '', budgetFrom: '', budgetTo: '', targetJoiningDate: '', requestedByName: '',
+    departmentId: requisition?.departmentId ?? '', designationId: requisition?.designationId ?? '', gradeId: requisition?.gradeId ?? '',
+    headCount: requisition?.headCount ?? 1, employmentType: requisition?.employmentType ?? 'Full-Time',
+    priority: requisition?.priority ?? 'Medium', justification: requisition?.justification ?? '', requiredSkills: requisition?.requiredSkills ?? '',
+    minExperienceYears: requisition?.minExperienceYears != null ? String(requisition.minExperienceYears) : '',
+    maxExperienceYears: requisition?.maxExperienceYears != null ? String(requisition.maxExperienceYears) : '',
+    budgetFrom: requisition?.budgetFrom != null ? String(requisition.budgetFrom) : '', budgetTo: requisition?.budgetTo != null ? String(requisition.budgetTo) : '',
+    targetJoiningDate: requisition?.targetJoiningDate ? requisition.targetJoiningDate.slice(0, 10) : '', requestedByName: requisition?.requestedByName ?? '',
   });
   const [catalogue, setCatalogue] = useState<CatalogueOptions>({ departments: [], designations: [], grades: [] });
   const departmentName = catalogue.departments.find(d => d.id === form.departmentId)?.name ?? '';
@@ -381,6 +401,18 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
   const [error, setError] = useState('');
   const [budgetCheck, setBudgetCheck] = useState<HeadcountCheckResult | null>(null);
   const set = (k: keyof typeof form, v: string | number) => setForm(f => ({ ...f, [k]: v }));
+  // The shared Modal puts focus on its close button; a form starts on its first field (the choices are disabled until their lists load).
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const listsLoaded = catalogue.departments.length > 0;
+  useEffect(() => {
+    if (!listsLoaded) return;
+    const frame = requestAnimationFrame(() => {
+      const root = bodyRef.current;
+      if (!root || (document.activeElement && root.contains(document.activeElement) && !(document.activeElement instanceof HTMLButtonElement))) return;
+      root.querySelector<HTMLElement>('input:not([disabled]), select:not([disabled]), textarea:not([disabled])')?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [listsLoaded]);
 
   // Budget-aware: check the requested headcount against the department's approved establishment.
   useEffect(() => {
@@ -399,6 +431,15 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
     }
     setSaving(true);
     setError('');
+    if (requisition) {
+      // Editing a rejected requisition: save it (the API sets it back to Draft), then send it for approval again.
+      try { await requisitionsApi.update(requisition.id, requisitionRequestBody(form, catalogue)); }
+      catch (e) { setError(apiErrorReason(e, t('Failed to create requisition.'))); setSaving(false); return; }
+      try { await requisitionsApi.submit(requisition.id); }
+      catch (e) { window.dispatchEvent(new CustomEvent('zayra:error', { detail: `${t('Your changes were saved as a draft, but sending the requisition for approval failed. Use Submit on the list to send it.')} ${apiErrorReason(e, '')}`.trim() })); }
+      onSaved();
+      return;
+    }
     try {
       await requisitionsApi.create(requisitionRequestBody(form, catalogue));
       onSaved();
@@ -408,23 +449,30 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
     }
   };
 
-  return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="flex w-full max-w-lg flex-col rounded-2xl border border-slate-200 bg-white shadow-e3 max-h-[90vh] dark:border-white/10 dark:bg-surface">
-        <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-white/10">
-          <h3 className="font-semibold text-slate-900 dark:text-white">{t('New Manpower Requisition')}</h3>
-          <button type="button" aria-label={t('Close')} onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+  // The shared Modal: role=dialog with a name, focus moves in and back to the opener, Tab is trapped, Esc closes.
+  return (
+    <Modal
+      isOpen
+      title={requisition ? t('Edit Requisition {number}', { number: requisition.requisitionNumber }) : t('New Manpower Requisition')}
+      onClose={onClose}
+      closeLabel={t('Close')}
+      footer={<>
+        <button type="button" className="btn-secondary text-sm" onClick={onClose}>{t('Cancel')}</button>
+        <button type="button" className="btn-primary text-sm" onClick={save} disabled={saving}>{saving ? t('Saving…') : requisition ? t('Save and resubmit') : t('Create Requisition')}</button>
+      </>}
+    >
+      <div ref={bodyRef}>
           <div className="space-y-3">
-            <CatalogueFields
-              idPrefix="requisition"
-              value={{ departmentId: form.departmentId, designationId: form.designationId, gradeId: form.gradeId }}
-              onLoaded={setCatalogue}
-              onChange={(v, options) => { setCatalogue(options); setForm(f => ({ ...f, ...v })); }}
-            />
-            <div className="grid grid-cols-3 gap-3">
+            {/* Department, designation and grade stack one per row on a phone, so a designation name is not cut off. */}
+            <div className="max-sm:[&>div>.grid]:grid-cols-1">
+              <CatalogueFields
+                idPrefix="requisition"
+                value={{ departmentId: form.departmentId, designationId: form.designationId, gradeId: form.gradeId }}
+                onLoaded={setCatalogue}
+                onChange={(v, options) => { setCatalogue(options); setForm(f => ({ ...f, ...v })); }}
+              />
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Head Count')}</label>
                 <input type="number" className="input w-full" min={1} value={form.headCount} onChange={e => set('headCount', Number(e.target.value))} aria-label={t('Head count')} />
@@ -479,15 +527,8 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
             </div>
             {error && <p className="text-xs text-rose-500">{error}</p>}
           </div>
-        </div>
-
-        <div className="flex shrink-0 justify-end gap-2 border-t border-slate-100 px-6 py-4 dark:border-white/10">
-          <button type="button" className="btn-secondary text-sm" onClick={onClose}>{t('Cancel')}</button>
-          <button type="button" className="btn-primary text-sm" onClick={save} disabled={saving}>{saving ? t('Saving…') : t('Create Requisition')}</button>
-        </div>
       </div>
-    </div>,
-    document.body
+    </Modal>
   );
 }
 
@@ -496,12 +537,13 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
 function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerRequisition) => void }) {
   // Approving or rejecting a requisition is `recruitment.approve` on the API (RequisitionsController).
   // A Recruiter holds recruitment.read/write only, so these buttons only ever returned 403 for them.
-  const { user, hasPermission } = useAuth();
+  const { user, hasPermission, hasRole } = useAuth();
   const canDecide = hasPermission('recruitment.approve');
   const t = useT();
   const { ask, dialog: confirmDialog } = useConfirm();
   const [statusFilter, setStatusFilter] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<ManpowerRequisition | null>(null);
   const [acting, setActing] = useState<string | null>(null);
 
   // One page at a time with the server's total. The count already came from the total, but the
@@ -539,22 +581,81 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
     finally { setActing(null); }
   };
 
+  // The row's actions, shared by the table (from 768 px) and the card list (a phone), so both offer exactly the same.
+  const rowActions = (r: ManpowerRequisition) => (
+    <div className="flex flex-wrap items-center gap-2 md:gap-1">
+      {r.status === 'Draft' && (
+        <button type="button" disabled={acting === r.id} onClick={() => submit(r.id)} className="whitespace-nowrap rounded-lg bg-sapphire/10 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-sapphire hover:bg-sapphire/20 disabled:opacity-50 dark:bg-sapphire/20 dark:text-cyanAccent">
+          {t('Submit')}
+        </button>
+      )}
+      {mayDecideRequisition(r, user?.id, canDecide) && (
+        <>
+          <button type="button" disabled={acting === r.id} onClick={() => approve(r.id)} className="whitespace-nowrap rounded-lg bg-emerald-50 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-emerald-600 hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-500/10 dark:text-emerald-400">{t('Approve')}</button>
+          <button type="button" disabled={acting === r.id} onClick={() => reject(r.id)} className="whitespace-nowrap rounded-lg bg-rose-50 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-rose-600 hover:bg-rose-100 disabled:opacity-50 dark:bg-rose-500/10 dark:text-rose-400">{t('Reject')}</button>
+        </>
+      )}
+      {mayEditRejectedRequisition(r, hasRole) && (
+        <button type="button" disabled={acting === r.id} onClick={() => setEditing(r)} className="whitespace-nowrap rounded-lg bg-sapphire/10 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-sapphire hover:bg-sapphire/20 disabled:opacity-50 dark:bg-sapphire/20 dark:text-cyanAccent">
+          {t('Edit and resubmit')}
+        </button>
+      )}
+      {r.status === 'Approved' && (
+        <button type="button" onClick={() => onCreateOpening(r)} className="whitespace-nowrap rounded-lg bg-blue-50 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-blue-600 hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-400">
+          {t('Open Job')}
+        </button>
+      )}
+    </div>
+  );
+  const emptyMessage = t('No requisitions found.');
+  // A rejected requisition says why (the API returns the approver's reason on the record).
+  const rejectionNote = (r: ManpowerRequisition) => r.status === 'Rejected' && r.rejectionReason
+    ? <p className="mt-1 text-xs text-rose-700 dark:text-rose-300">{t('Reason: {reason}', { reason: r.rejectionReason })}</p>
+    : null;
+
   return (
     <div>
       {confirmDialog}
-      <div className="mb-4 flex items-center gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <select className="select w-44" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} aria-label={t('Filter by status')}>
           <option value="">{t('All Statuses')}</option>
           {[msg('Draft'), msg('Submitted'), msg('PendingApproval'), msg('Approved'), msg('Rejected'), msg('Converted')].map(s => <option value={s} key={s}>{enumLabel(t, 'Status', s)}</option>)}
         </select>
         <span className="ms-auto text-xs text-slate-500 dark:text-slate-400">{t('{total} requisitions', { total })}</span>
-        <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={() => setCreateOpen(true)}>
+        <button type="button" className="btn-primary flex items-center gap-1.5 whitespace-nowrap text-sm" onClick={() => setCreateOpen(true)}>
           <Plus className="h-3.5 w-3.5" />{t('New Requisition')}
         </button>
       </div>
 
       {list.error != null && <LoadFailure what={t('Requisitions')} error={list.error} />}
       <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-white/10">
+        {/* A phone gets a card list: the table is about 700 px wide and its actions sat off-screen. */}
+        <div className="md:hidden">
+          {loading && <div className="py-10 text-center"><div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>}
+          {!loading && list.error == null && items.length === 0 && <p className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">{emptyMessage}</p>}
+          {!loading && items.length > 0 && (
+            <ul aria-label={t('Requisitions list')} className="divide-y divide-slate-100 dark:divide-white/[0.06]">
+              {items.map(r => (
+                <li key={r.id} className="space-y-2 px-4 py-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-medium text-slate-800 dark:text-slate-200"><bdi>{r.designationTitle}</bdi></p>
+                      <p className="font-mono text-xs text-slate-500 dark:text-slate-400"><bdi>{r.requisitionNumber}</bdi> · {ago(r.createdAtUtc, t)}</p>
+                    </div>
+                    <ToneChip {...reqStatusTone(r.status)} />
+                  </div>
+                  <p className="text-xs text-slate-600 dark:text-slate-400">
+                    <bdi>{r.departmentName}</bdi> · {t('Count')}: <span className="font-semibold text-slate-800 dark:text-slate-200">{r.headCount}</span>
+                    {' '}<span className={`rounded-lg px-2 py-0.5 font-medium ${PRIORITY_COLORS[r.priority] ?? ''}`}>{t(r.priority)}</span>
+                  </p>
+                  {rejectionNote(r)}
+                  {rowActions(r)}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="hidden overflow-x-auto md:block">
         <table className="min-w-full text-sm">
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-white/10 dark:bg-white/[0.03]">
             <tr>
@@ -565,7 +666,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
             {loading && <tr><td colSpan={7} className="py-10 text-center"><div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>}
-            {!loading && list.error == null && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">{t('No requisitions found.')}</td></tr>}
+            {!loading && list.error == null && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">{emptyMessage}</td></tr>}
             {!loading && items.map(r => (
               <tr key={r.id} className="hover:bg-slate-50/60 dark:hover:bg-white/[0.02]">
                 <td className="px-4 py-3 font-mono text-xs text-slate-600 dark:text-slate-400">{r.requisitionNumber}</td>
@@ -578,40 +679,32 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
                 <td className="px-4 py-3">
                   <span className={`rounded-lg px-2 py-0.5 text-xs font-medium ${PRIORITY_COLORS[r.priority] ?? ''}`}>{t(r.priority)}</span>
                 </td>
-                <td className="px-4 py-3"><ToneChip {...reqStatusTone(r.status)} /></td>
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-1">
-                    {r.status === 'Draft' && (
-                      <button type="button" disabled={acting === r.id} onClick={() => submit(r.id)} className="rounded-lg bg-sapphire/10 px-2.5 py-1 text-xs font-medium text-sapphire hover:bg-sapphire/20 disabled:opacity-50 dark:bg-sapphire/20 dark:text-cyanAccent">
-                        {t('Submit')}
-                      </button>
-                    )}
-                    {canDecide && (r.status === 'Submitted' || r.status === 'PendingApproval') && (
-                      <>
-                        {!raisedByViewer(r, user?.id) && <button type="button" disabled={acting === r.id} onClick={() => approve(r.id)} className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600 hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-500/10 dark:text-emerald-400">{t('Approve')}</button>}
-                        <button type="button" disabled={acting === r.id} onClick={() => reject(r.id)} className="rounded-lg bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-100 disabled:opacity-50 dark:bg-rose-500/10 dark:text-rose-400">{t('Reject')}</button>
-                      </>
-                    )}
-                    {r.status === 'Approved' && (
-                      <button type="button" onClick={() => onCreateOpening(r)} className="rounded-lg bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-600 hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-400">
-                        {t('Open Job')}
-                      </button>
-                    )}
-                  </div>
+                  <ToneChip {...reqStatusTone(r.status)} />
+                  {rejectionNote(r)}
                 </td>
+                <td className="px-4 py-3">{rowActions(r)}</td>
               </tr>
             ))}
           </tbody>
         </table>
+        </div>
         <ListWindowFooter shown={items.length} total={list.total} noun="requisitions" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} requisitions', { shown: items.length, total: list.total ?? items.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
       </div>
 
       {createOpen && <CreateReqModal onClose={() => setCreateOpen(false)} onSaved={() => { setCreateOpen(false); load(); }} />}
+      {editing && <CreateReqModal requisition={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
     </div>
   );
 }
 
 // ── Create Job Opening Modal ───────────────────────────────────────────────────
+
+/** The API's fixed refusals when an opening is created from a requisition, read in the page language (other server text passes through). */
+const OPENING_REFUSALS: readonly string[] = [msg('This requisition already has an opening.'), msg('Only an approved requisition can be opened as a job.')];
+function openingRefusalText(t: (key: string) => string, reason: string): string {
+  return OPENING_REFUSALS.includes(reason) ? t(reason) : reason;
+}
 
 function CreateOpeningModal({ requisition, onClose, onSaved }: {
   requisition: ManpowerRequisition | null; onClose: () => void; onSaved: () => void;
@@ -665,17 +758,21 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
         location: form.location, assignedHrName: form.assignedHrName,
       });
       onSaved();
-    } catch (e) { setError(apiErrorReason(e, t('Failed to create opening.'))); setSaving(false); }
+    } catch (e) { setError(openingRefusalText(t, apiErrorReason(e, t('Failed to create opening.')))); setSaving(false); }
   };
 
-  return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="flex w-full max-w-lg flex-col rounded-2xl border border-slate-200 bg-white shadow-e3 max-h-[90vh] dark:border-white/10 dark:bg-surface">
-        <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-white/10">
-          <h3 className="font-semibold text-slate-900 dark:text-white">{requisition ? t('New Job Opening from {number}', { number: requisition.requisitionNumber }) : t('New Job Opening')}</h3>
-          <button type="button" aria-label={t('Close')} onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+  return (
+    <Modal
+      isOpen
+      title={requisition ? t('New Job Opening from {number}', { number: requisition.requisitionNumber }) : t('New Job Opening')}
+      onClose={onClose}
+      closeLabel={t('Close')}
+      footer={<>
+        <button type="button" className="btn-secondary text-sm" onClick={onClose}>{t('Cancel')}</button>
+        <button type="button" className="btn-primary text-sm" onClick={save} disabled={saving}>{saving ? t('Saving…') : t('Create Opening')}</button>
+      </>}
+    >
+      <div>
           <div className="space-y-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Job Title *')}</label>
@@ -734,14 +831,8 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
             </div>
             {error && <p className="text-xs text-rose-500">{error}</p>}
           </div>
-        </div>
-        <div className="flex shrink-0 justify-end gap-2 border-t border-slate-100 px-6 py-4 dark:border-white/10">
-          <button type="button" className="btn-secondary text-sm" onClick={onClose}>{t('Cancel')}</button>
-          <button type="button" className="btn-primary text-sm" onClick={save} disabled={saving}>{saving ? t('Saving…') : t('Create Opening')}</button>
-        </div>
       </div>
-    </div>,
-    document.body
+    </Modal>
   );
 }
 
@@ -771,18 +862,16 @@ function RecruitmentAiModal({ openings, onClose }: { openings: JobOpening[]; onC
     : r === 'Maybe' ? 'bg-amber-50 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400'
     : 'bg-rose-50 text-rose-500 dark:bg-rose-500/10 dark:text-rose-400';
 
-  return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="flex max-h-[88vh] w-full max-w-2xl flex-col rounded-2xl border border-slate-200 bg-white shadow-e3 dark:border-white/10 dark:bg-surface">
-        <div className="flex shrink-0 items-start justify-between border-b border-slate-100 px-6 py-4 dark:border-white/10">
-          <div>
-            <h3 className="flex items-center gap-1.5 font-semibold text-slate-900 dark:text-white"><Sparkles className="h-4 w-4 text-sapphire dark:text-cyanAccent" /> {t('Recruitment AI Tools')}</h3>
-            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{t('Advisory only — AI assists, it never auto-rejects or hires.')}</p>
-          </div>
-          <button type="button" aria-label={t('Close')} onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+  return (
+    <Modal
+      isOpen
+      size="lg"
+      title={t('Recruitment AI Tools')}
+      onClose={onClose}
+      closeLabel={t('Close')}
+      headerContent={<p className="border-b border-line px-4 py-2 text-xs text-slate-500 dark:text-slate-400 sm:px-5">{t('Advisory only — AI assists, it never auto-rejects or hires.')}</p>}
+    >
+      <div>
           <div className="flex flex-wrap items-end gap-3">
             <div className="min-w-[220px] flex-1">
               <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Job opening')}</label>
@@ -843,10 +932,8 @@ function RecruitmentAiModal({ openings, onClose }: { openings: JobOpening[]; onC
               ))}
             </div>
           )}
-        </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   );
 }
 
@@ -864,10 +951,26 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(!!requisitionToOpen);
   const [aiOpen, setAiOpen] = useState(false);
+  const { hasRole } = useAuth();
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const [closing, setClosing] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
     openingsApi.listAll().then(setItems).catch(() => {}).finally(() => setLoading(false));
+  };
+
+  // POST api/recruitment/openings/{id}/close marks the opening Closed and leaves its applications alone (Admin and HR Manager only).
+  const closeOpening = async (o: JobOpening) => {
+    const ok = await confirm({
+      title: t('Close this opening?'),
+      message: t('{title} is marked as closed. Applications already received are not deleted.', { title: o.title }),
+      confirmLabel: t('Close opening'),
+    });
+    if (!ok) return;
+    setClosing(o.id);
+    try { await openingsApi.close(o.id); load(); } catch (e) { notifyApiError(e); }
+    finally { setClosing(null); }
   };
 
   useEffect(() => { load(); }, []);
@@ -901,11 +1004,11 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {!loading && items.map(o => (
+          <div key={o.id} className="surface group flex flex-col transition hover:border-sapphire/30 hover:shadow-md dark:hover:border-cyanAccent/20">
           <button
-            key={o.id}
             type="button"
             onClick={() => onSelectOpening(o)}
-            className="surface group flex flex-col gap-3 p-5 text-start transition hover:border-sapphire/30 hover:shadow-md dark:hover:border-cyanAccent/20"
+            className="flex flex-1 flex-col gap-3 p-5 text-start"
           >
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
@@ -930,6 +1033,14 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
               </div>
             </div>
           </button>
+          {mayCloseOpening(o, hasRole) && (
+            <div className="flex justify-end border-t border-slate-100 px-5 py-2 dark:border-white/[0.06]">
+              <button type="button" disabled={closing === o.id} onClick={() => closeOpening(o)} className="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50 max-md:min-h-11 max-md:px-4 dark:bg-white/10 dark:text-slate-200">
+                {t('Close opening')}
+              </button>
+            </div>
+          )}
+          </div>
         ))}
       </div>
 
@@ -942,6 +1053,7 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
       )}
 
       {aiOpen && <RecruitmentAiModal openings={items} onClose={() => setAiOpen(false)} />}
+      {confirmDialog}
     </div>
   );
 }
@@ -986,8 +1098,16 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   };
   useEffect(() => { load(); }, [id]);
 
+  // Blacklisting is offered only to the roles the API allows (Admin, HR Manager); the API refuses everyone else.
+  const { hasRole } = useAuth();
+  const mayBlacklist = canBlacklistCandidate(hasRole);
+  const blacklistAction = useBlacklistCandidate(() => { load(); onRefresh(); });
+  const moveBlockedId = useId();
+
   const app = detail?.application;
   if (!app) return null;
+  const candidateBlacklisted = isBlacklisted(detail?.candidate);
+  const moveBlock = stageMoveBlock(detail?.candidate);
 
   // Offer -> Hired is not a stage move: accepting the offer hires and creates the employee record.
   const nextStage = nextPipelineStage(app.stage);
@@ -1081,35 +1201,36 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
 
   // Portalled to <body>: inside <main> the drawer shares the page's stacking context, which sits under the
   // sticky top bar, so its header (name + close) was hidden behind it.
-  return createPortal(
-    <div className="fixed inset-0 z-50 flex">
-      <div className="flex-1 bg-black/40" onClick={() => navigationGuard.run('application-close', onClose)} />
-      <div className="flex h-full w-full max-w-lg flex-col overflow-hidden border-s border-slate-200 bg-white dark:border-white/10 dark:bg-surface">
-        {/* Header */}
-        <div className="flex items-start gap-3 border-b border-slate-200 p-5 dark:border-white/10">
-          <div className="flex-1 min-w-0">
-            <p className="truncate font-semibold text-slate-900 dark:text-white">{app.candidateName}</p>
-            <p className="text-xs text-slate-500 dark:text-slate-400">{app.jobTitle}</p>
-            <div className="mt-2 flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold text-white" style={{ backgroundColor: STAGE_COLORS[app.stage] ?? '#64748b' }}>
-                {enumLabel(t, 'RecruitmentStage', app.stage)}
-              </span>
-              {app.status !== 'Active' && (
-                <span className="rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">{enumLabel(t, 'Status', app.status)}</span>
-              )}
-            </div>
-          </div>
-          <button type="button" aria-label={t('Close')} onClick={() => navigationGuard.run('application-close', onClose)} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
+  // A real dialog (the shared Modal, docked to the inline-end edge like the Self-Service detail panel): named by the candidate, focus moves in
+  // and returns to the card, Tab stays inside, Esc and the scrim close it (through the unsaved-changes guard).
+  return (
+    <Modal isOpen title={app.candidateName} onClose={() => navigationGuard.run('application-close', onClose)} placement="end" size="md" closeLabel={t('Close')}
+      headerContent={<>
+        {/* Job and standing */}
+        <div data-testid="drawer-standing" className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-4 py-3 sm:px-5 dark:border-white/10">
+          <p className="min-w-0 text-xs text-slate-500 dark:text-slate-400">{app.jobTitle}</p>
+          <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold text-white" style={{ backgroundColor: STAGE_COLORS[app.stage] ?? '#64748b' }}>
+            {enumLabel(t, 'RecruitmentStage', app.stage)}
+          </span>
+          {app.status !== 'Active' && (
+            <span className="rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">{enumLabel(t, 'Status', app.status)}</span>
+          )}
+          {candidateBlacklisted && (
+            <span className="rounded-full bg-danger-soft px-2.5 py-0.5 text-xs font-semibold text-danger-fg">{t('Blacklisted')}</span>
+          )}
         </div>
 
         {/* Stage advance/reject actions */}
         {app.status === 'Active' && app.stage !== 'Hired' && (
-          <div className="flex gap-2 border-b border-slate-100 px-5 py-3 dark:border-white/[0.06]">
+          <div className="flex flex-wrap gap-2 border-b border-slate-100 px-4 py-3 sm:px-5 dark:border-white/[0.06]">
             {nextStage && !overrideNeeded && (
-              <button type="button" disabled={!!acting} onClick={doAdvance}
-                className="flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:opacity-50">
-                <ArrowRight className="h-3.5 w-3.5" />{t('Move to {nextStage}', { nextStage })}
+              <button type="button" disabled={!!acting || !!moveBlock} onClick={doAdvance} aria-describedby={moveBlock ? moveBlockedId : undefined}
+                className="flex items-center gap-1.5 rounded-lg border border-transparent bg-sapphire px-3 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:cursor-not-allowed disabled:border-line disabled:bg-surface-sunken disabled:text-fg-muted disabled:opacity-100 disabled:hover:bg-surface-sunken">
+                <ArrowRight className="h-3.5 w-3.5 rtl:-scale-x-100" />{t('Move to {nextStage}', { nextStage: enumLabel(t, 'RecruitmentStage', nextStage) })}
               </button>
+            )}
+            {moveBlock && (
+              <p id={moveBlockedId} className="w-full text-xs text-danger-fg">{t(moveBlock)}</p>
             )}
             {nextStage && overrideNeeded && (
               <div className="flex w-full flex-col gap-2">
@@ -1130,7 +1251,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
             )}
             <div className="flex items-center gap-1.5 rounded-lg border border-rose-200 px-2 py-1 dark:border-rose-500/30">
               <input className="w-28 bg-transparent text-xs text-slate-600 outline-none placeholder:text-slate-400 dark:text-slate-300" placeholder={t('Reject reason…')} value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
-              <button type="button" disabled={!rejectReason.trim() || !!acting} onClick={doReject} className="text-xs font-medium text-rose-500 hover:text-rose-600 disabled:opacity-40">{t('Reject')}</button>
+              <button type="button" disabled={!rejectReason.trim() || !!acting} onClick={doReject} className="rounded px-1.5 text-xs font-medium text-danger-fg hover:underline disabled:cursor-not-allowed disabled:bg-surface-sunken disabled:text-fg-muted disabled:no-underline">{t('Reject')}</button>
             </div>
           </div>
         )}
@@ -1138,12 +1259,25 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
         {/* Candidate info */}
         {detail.candidate && (
           <div className="border-b border-slate-100 px-5 py-3 dark:border-white/[0.06]">
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-              <div><span className="text-slate-400">{t('Email')} </span><span className="text-slate-700 dark:text-slate-300">{detail.candidate.email}</span></div>
-              <div><span className="text-slate-400">{t('Phone')} </span><span className="text-slate-700 dark:text-slate-300">{detail.candidate.phone || '—'}</span></div>
-              <div><span className="text-slate-400">{t('Experience')} </span><span className="text-slate-700 dark:text-slate-300">{yearsLabel(t, detail.candidate.totalExperienceYears)}</span></div>
-              <div><span className="text-slate-400">{t('Source')} </span><span className="text-slate-700 dark:text-slate-300">{t(detail.candidate.source)}</span></div>
-            </div>
+            {/* Each fact is a term over its value, so a label never runs into the value beside it (in either direction). */}
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+              {([
+                [t('Email'), detail.candidate.email],
+                [t('Phone'), detail.candidate.phone || '—'],
+                [t('Experience'), yearsLabel(t, detail.candidate.totalExperienceYears)],
+                [t('Source'), t(detail.candidate.source)],
+              ] as const).map(([term, value]) => (
+                <div key={term} className="min-w-0">
+                  <dt className="text-meta text-fg-muted">{term}</dt>
+                  <dd className="mt-0.5 break-words text-slate-700 dark:text-slate-300">{value}</dd>
+                </div>
+              ))}
+            </dl>
+            {mayBlacklist && !candidateBlacklisted && (
+              <button type="button" className="btn-secondary mt-2 text-xs text-danger-fg" onClick={() => void blacklistAction.blacklist({ id: detail.candidate!.id, name: app.candidateName })}>
+                {t('Blacklist')}
+              </button>
+            )}
           </div>
         )}
 
@@ -1157,9 +1291,9 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
             </button>
           ))}
         </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto px-5 py-4">
+      </>}>
+        {/* Content (the dialog body scrolls) */}
+        <div>
           {/* Timeline */}
           {tab === 'timeline' && (
             <div>
@@ -1183,7 +1317,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                             <bdi>{enumLabel(t, 'RecruitmentStage', change.to)}</bdi>
                           </p>
                         )}
-                        {note && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{note}</p>}
+                        {note && <p dir="auto" className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{timelineNote(note, t)}</p>}
                         {ev.performedByName && <p className="text-caption text-slate-400">{t('By {performedByName}', { performedByName: ev.performedByName })}</p>}
                       </div>
                     </div>
@@ -1317,9 +1451,8 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
             </div>
           )}
         </div>
-      </div>
-    </div>,
-    document.body,
+        {blacklistAction.dialog}
+    </Modal>
   );
 }
 
@@ -1335,6 +1468,12 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [selectedCandidateId, setSelectedCandidateId] = useState('');
   const [adding, setAdding] = useState(false);
+  // The API's refusal (already applied, blacklisted, opening closed) is shown inside the dialog, which stays open and usable.
+  const [addError, setAddError] = useState('');
+  // The kanban rows carry no candidate standing: the blacklisted people come from the existing candidates list (status filter) so a card can mark them.
+  const [blacklistedIds, setBlacklistedIds] = useState<Set<string>>(new Set());
+  const { locale } = useLocale();
+  const selectId = useId();
 
   const load = () => {
     setLoading(true);
@@ -1342,6 +1481,7 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
       .then(r => { setKanban(r.stages); setRejected(r.rejected); })
       .catch(() => {})
       .finally(() => setLoading(false));
+    candidatesApi.listAll({ status: 'Blacklisted' }).then(all => setBlacklistedIds(new Set(all.map(c => c.id)))).catch(() => {});
   };
 
   useEffect(() => { load(); }, [opening.id]);
@@ -1350,13 +1490,15 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
     const all = await candidatesApi.listAll({ status: 'Active' }).catch(() => [] as Candidate[]);
     setCandidates(all);
     setSelectedCandidateId(all[0]?.id ?? '');
+    setAddError('');
     setAddModalOpen(true);
   };
 
   const addCandidate = async () => {
     if (!selectedCandidateId) return;
-    setAdding(true);
-    try { await applicationsApi.apply(opening.id, selectedCandidateId); setAddModalOpen(false); load(); } catch { /**/ }
+    setAdding(true); setAddError('');
+    try { await applicationsApi.apply(opening.id, selectedCandidateId); setAddModalOpen(false); load(); }
+    catch (e) { setAddError(refusalReason(e, t('Could not add this candidate to the pipeline. Try again.'), t, locale)); }
     finally { setAdding(false); }
   };
 
@@ -1365,7 +1507,7 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
   return (
     <div className="flex h-full flex-col">
       {/* Breadcrumb header */}
-      <div className="mb-4 flex items-center gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
         <button type="button" onClick={onBack} className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200">
           <ChevronLeft className="h-4 w-4" />{t('Job Openings')}
         </button>
@@ -1381,12 +1523,13 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
       {loading ? (
         <div className="flex justify-center py-12"><div className="h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>
       ) : (
-        <div className="flex gap-3 overflow-x-auto pb-4">
+        <HScrollRegion label={t('Hiring stages, scrolls sideways')} earlierLabel={t('Show earlier stages')} laterLabel={t('Show later stages')} className="flex gap-3 pb-4">
           {kanban.map(col => (
-            <div key={col.stage} className="flex w-56 shrink-0 flex-col gap-2">
+            <div key={col.stage} className="flex w-56 shrink-0 snap-start flex-col gap-2">
               <div className="flex items-center gap-2 px-1">
                 <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: STAGE_COLORS[col.stage] ?? '#64748b' }} />
-                <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">{col.stage}</p>
+                {/* The stage name is a data key (what the API sends and takes): translated for display only. */}
+                <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">{enumLabel(t, 'RecruitmentStage', col.stage)}</p>
                 <span className="ms-auto rounded-full bg-slate-100 px-1.5 py-0.5 text-caption font-medium text-slate-500 dark:bg-white/10 dark:text-slate-400">{col.applications.length}</span>
               </div>
               <div className="flex flex-col gap-2 rounded-xl border border-slate-200/70 bg-slate-50 p-2 dark:border-white/[0.06] dark:bg-white/[0.02]" style={{ minHeight: 120 }}>
@@ -1398,12 +1541,13 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
                     className="rounded-lg border border-slate-200 bg-white p-3 text-start shadow-sm transition hover:border-sapphire/30 hover:shadow-md dark:border-white/10 dark:bg-white/[0.04] dark:hover:border-cyanAccent/20"
                   >
                     <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{app.candidateName}</p>
+                    {blacklistedIds.has(app.candidateId) && <span className="mt-1 inline-block rounded-full bg-danger-soft px-2 py-0.5 text-caption font-semibold text-danger-fg">{t('Blacklisted')}</span>}
                     <p className="mt-0.5 text-caption text-slate-400 dark:text-slate-500">{app.candidateEmail}</p>
                     <p className="mt-1.5 text-caption text-slate-400 dark:text-slate-500">{ago(app.stageChangedAtUtc ?? app.appliedAtUtc, t)}</p>
                   </button>
                 ))}
                 {col.applications.length === 0 && (
-                  <p className="py-4 text-center text-caption text-slate-300 dark:text-slate-700">{t('No candidates')}</p>
+                  <p className="py-4 text-center text-caption text-fg-muted">{t('No candidates')}</p>
                 )}
               </div>
             </div>
@@ -1411,7 +1555,7 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
 
           {/* Rejected column */}
           {rejected.length > 0 && (
-            <div className="flex w-44 shrink-0 flex-col gap-2">
+            <div className="flex w-44 shrink-0 snap-start flex-col gap-2">
               <div className="flex items-center gap-2 px-1">
                 <div className="h-2.5 w-2.5 rounded-full bg-rose-400" />
                 <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">{t('Rejected')}</p>
@@ -1421,35 +1565,28 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
                 {rejected.map(app => (
                   <div key={app.id} className="rounded-lg border border-rose-100 bg-white px-3 py-2 dark:border-rose-500/10 dark:bg-white/[0.03]">
                     <p className="text-caption font-medium text-rose-600 dark:text-rose-400">{app.candidateName}</p>
-                    <p className="text-caption text-slate-400">{app.stage}</p>
+                    <p className="text-caption text-slate-400">{enumLabel(t, 'RecruitmentStage', app.stage)}</p>
                   </div>
                 ))}
               </div>
             </div>
           )}
-        </div>
+        </HScrollRegion>
       )}
 
       {/* Add candidate modal */}
-      {addModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-96 rounded-2xl border border-slate-200 bg-white p-6 shadow-e3 dark:border-white/10 dark:bg-surface">
-            <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Add Candidate to Pipeline')}</h3>
-              <button type="button" aria-label={t('Close')} onClick={() => setAddModalOpen(false)} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
-            </div>
-            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Select Candidate')}</label>
-            <select className="select w-full" value={selectedCandidateId} onChange={e => setSelectedCandidateId(e.target.value)} aria-label={t('Select candidate')}>
-              {candidates.map(c => <option key={c.id} value={c.id}>{c.fullName || `${c.firstName} ${c.lastName}`} — {c.currentJobTitle}</option>)}
-            </select>
-            {candidates.length === 0 && <p className="mt-2 text-xs text-rose-500">{t('No candidates in talent pool. Add candidates first.')}</p>}
-            <div className="mt-4 flex justify-end gap-2">
-              <button type="button" className="btn-secondary text-sm" onClick={() => setAddModalOpen(false)}>{t('Cancel')}</button>
-              <button type="button" className="btn-primary text-sm" disabled={adding || !selectedCandidateId} onClick={addCandidate}>{adding ? t('Adding…') : t('Add to Pipeline')}</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <Modal isOpen={addModalOpen} title={t('Add Candidate to Pipeline')} onClose={() => setAddModalOpen(false)} closeDisabled={adding} closeLabel={t('Close')} size="sm"
+        footer={<>
+          <button type="button" className="btn-secondary text-sm" onClick={() => setAddModalOpen(false)} disabled={adding}>{t('Cancel')}</button>
+          <button type="button" className="btn-primary text-sm" disabled={adding || !selectedCandidateId} onClick={addCandidate}>{adding ? t('Adding…') : t('Add to Pipeline')}</button>
+        </>}>
+        <label htmlFor={selectId} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Select Candidate')}</label>
+        <select id={selectId} className="select w-full" value={selectedCandidateId} onChange={e => { setSelectedCandidateId(e.target.value); setAddError(''); }} aria-label={t('Select candidate')}>
+          {candidates.map(c => <option key={c.id} value={c.id}>{c.fullName || `${c.firstName} ${c.lastName}`} — {c.currentJobTitle}</option>)}
+        </select>
+        {candidates.length === 0 && <p className="mt-2 text-xs text-rose-500">{t('No candidates in talent pool. Add candidates first.')}</p>}
+        {addError && <p role="alert" className="mt-3 text-xs text-danger-fg">{addError}</p>}
+      </Modal>
 
       {selectedAppId && (
         <ApplicationDrawer
@@ -1466,6 +1603,7 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
 
 function AddCandidateModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const t = useT();
+  const { locale } = useLocale();
   const [form, setForm] = useState({
     firstName: '', lastName: '', email: '', phone: '', currentJobTitle: '',
     currentCompany: '', totalExperienceYears: 0, educationLevel: 'Bachelor',
@@ -1482,20 +1620,19 @@ function AddCandidateModal({ onClose, onSaved }: { onClose: () => void; onSaved:
       await candidatesApi.create({ ...form });
       onSaved();
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? t('Failed to add candidate.'));
+      // The API's own sentence (a duplicate email, say), in the reader's language.
+      setError(refusalReason(err, t('Failed to add candidate.'), t, locale));
       setSaving(false);
     }
   };
 
-  return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="flex w-full max-w-md flex-col rounded-2xl border border-slate-200 bg-white shadow-e3 max-h-[90vh] dark:border-white/10 dark:bg-surface">
-        <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-white/10">
-          <h3 className="font-semibold text-slate-900 dark:text-white">{t('Add to Talent Pool')}</h3>
-          <button type="button" aria-label={t('Close')} onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+  // A real dialog (the shared Modal): named, focus in and returned to the opener, Tab trapped, Esc closes.
+  return (
+    <Modal isOpen title={t('Add to Talent Pool')} onClose={onClose} closeDisabled={saving} closeLabel={t('Close')} size="sm"
+      footer={<>
+        <button type="button" className="btn-secondary text-sm" onClick={onClose} disabled={saving}>{t('Cancel')}</button>
+        <button type="button" className="btn-primary text-sm" disabled={saving} onClick={save}>{saving ? t('Adding…') : t('Add Candidate')}</button>
+      </>}>
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('First Name *')}</label><input className="input w-full" placeholder={t('First name')} aria-label={t('First name')} value={form.firstName} onChange={e => set('firstName', e.target.value)} /></div>
@@ -1526,16 +1663,9 @@ function AddCandidateModal({ onClose, onSaved }: { onClose: () => void; onSaved:
             </div>
             <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Nationality')}</label><input className="input w-full" placeholder={t('For example: Saudi')} aria-label={t('Nationality')} value={form.nationality} onChange={e => set('nationality', e.target.value)} /></div>
             <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Resume / CV URL')} <span className="text-slate-400 font-normal">{t('(LinkedIn, Google Drive, etc.)')}</span></label><input type="url" className="input w-full" placeholder="https://…" value={form.resumeUrl} onChange={e => set('resumeUrl', e.target.value)} /></div>
-            {error && <p className="text-xs text-rose-500">{error}</p>}
+            {error && <p role="alert" className="text-xs text-danger-fg">{error}</p>}
           </div>
-        </div>
-        <div className="flex shrink-0 justify-end gap-2 border-t border-slate-100 px-6 py-4 dark:border-white/10">
-          <button type="button" className="btn-secondary text-sm" onClick={onClose}>{t('Cancel')}</button>
-          <button type="button" className="btn-primary text-sm" disabled={saving} onClick={save}>{saving ? t('Adding…') : t('Add Candidate')}</button>
-        </div>
-      </div>
-    </div>,
-    document.body
+    </Modal>
   );
 }
 
@@ -1556,6 +1686,11 @@ function CandidatesTab() {
   const total = list.total ?? items.length;
   const load = () => { void list.reload(); };
 
+  // Blacklisting is offered only to the roles the API allows (Admin, HR Manager).
+  const { hasRole } = useAuth();
+  const mayBlacklist = canBlacklistCandidate(hasRole);
+  const blacklistAction = useBlacklistCandidate(load);
+
   useEffect(() => { load(); }, []);
 
   const onSearch = (q: string) => {
@@ -1567,8 +1702,8 @@ function CandidatesTab() {
 
   return (
     <div>
-      <div className="mb-4 flex items-center gap-3">
-        <input className="input w-72" placeholder={t('Search name, email, title…')} value={search} onChange={e => onSearch(e.target.value)} />
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <input className="input w-full sm:w-72" placeholder={t('Search name, email, title…')} value={search} onChange={e => onSearch(e.target.value)} />
         <span className="ms-auto text-xs text-slate-500 dark:text-slate-400">{t('{total} candidates', { total })}</span>
         <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={() => setAddOpen(true)}>
           <Plus className="h-3.5 w-3.5" />{t('Add Candidate')}
@@ -1576,42 +1711,58 @@ function CandidatesTab() {
       </div>
 
       <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-white/10">
-        <table className="min-w-full text-sm">
-          <thead className="border-b border-slate-200 bg-slate-50 dark:border-white/10 dark:bg-white/[0.03]">
-            <tr>
+        {/* From 768px a table; on a phone each row is a card (the table's parts stack), so nothing is clipped or scrolls sideways. */}
+        <table className="block w-full text-sm md:table md:min-w-full">
+          <thead className="sr-only border-b border-slate-200 bg-slate-50 md:not-sr-only md:table-header-group dark:border-white/10 dark:bg-white/[0.03]">
+            <tr className="md:table-row">
               {[t('Name'), t('Title / Company'), t('Experience'), t('Education'), t('Source'), 'CV', t('Applied')].map(h => (
                 <th key={h} className="px-4 py-3 text-start text-xs font-semibold text-slate-500 dark:text-slate-400">{h}</th>
               ))}
+              <th className="px-4 py-3 text-start text-xs font-semibold text-slate-500 dark:text-slate-400"><span className="sr-only">{t('Actions')}</span></th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
-            {loading && <tr><td colSpan={7} className="py-10 text-center"><div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>}
-            {!loading && list.error == null && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">{t('No candidates yet. Add your first candidate to the talent pool.')}</td></tr>}
-            {!loading && items.map(c => (
-              <tr key={c.id} className="hover:bg-slate-50/60 dark:hover:bg-white/[0.02]">
-                <td className="px-4 py-3">
-                  <p className="font-medium text-slate-800 dark:text-slate-200">{c.fullName || `${c.firstName} ${c.lastName}`}</p>
-                  <p className="text-xs text-slate-400 dark:text-slate-500">{c.email}</p>
+          <tbody className="block divide-y divide-slate-100 md:table-row-group dark:divide-white/[0.06]">
+            {loading && <tr className="block md:table-row"><td colSpan={8} className="block w-full py-10 text-center md:table-cell"><div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>}
+            {!loading && list.error == null && items.length === 0 && <tr className="block md:table-row"><td colSpan={8} className="block w-full px-4 py-10 text-center text-sm text-slate-400 md:table-cell dark:text-slate-500">{t('No candidates yet. Add your first candidate to the talent pool.')}</td></tr>}
+            {!loading && items.map(c => {
+              const name = c.fullName || `${c.firstName} ${c.lastName}`;
+              return (
+              <tr key={c.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 hover:bg-slate-50/60 md:table-row md:p-0 dark:hover:bg-white/[0.02]">
+                <td className="block w-full min-w-0 md:table-cell md:w-auto md:px-4 md:py-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="font-medium text-slate-800 dark:text-slate-200">{name}</p>
+                    {isBlacklisted(c) && <span className="rounded-full bg-danger-soft px-2 py-0.5 text-caption font-semibold text-danger-fg">{t('Blacklisted')}</span>}
+                  </div>
+                  <p className="break-all text-xs text-slate-400 dark:text-slate-500">{c.email}</p>
                 </td>
-                <td className="px-4 py-3">
+                <td className="block w-full min-w-0 md:table-cell md:w-auto md:px-4 md:py-3">
                   <p className="text-slate-700 dark:text-slate-300">{c.currentJobTitle || '—'}</p>
                   <p className="text-xs text-slate-400 dark:text-slate-500">{c.currentCompany || ''}</p>
                 </td>
-                <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{yearsLabel(t, c.totalExperienceYears)}</td>
-                <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{c.educationLevel ? t(c.educationLevel) : '—'}</td>
-                <td className="px-4 py-3">
+                <td className="block text-xs text-slate-600 md:table-cell md:px-4 md:py-3 md:text-sm dark:text-slate-400">{yearsLabel(t, c.totalExperienceYears)}</td>
+                <td className="block text-xs text-slate-600 md:table-cell md:px-4 md:py-3 md:text-sm dark:text-slate-400">{c.educationLevel ? t(c.educationLevel) : '—'}</td>
+                <td className="block md:table-cell md:px-4 md:py-3">
                   <span className="rounded-lg bg-slate-100 px-2 py-0.5 text-xs text-slate-600 dark:bg-white/10 dark:text-slate-400">{t(c.source)}</span>
                 </td>
-                <td className="px-4 py-3">
+                <td className="block md:table-cell md:px-4 md:py-3">
                   {c.resumeUrl ? (
                     <a href={c.resumeUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs font-medium text-sapphire hover:underline dark:text-cyanAccent">
                       <FileText className="h-3.5 w-3.5" />{t('View CV')}
                     </a>
                   ) : <span className="text-xs text-slate-300 dark:text-slate-600">—</span>}
                 </td>
-                <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{c.applicationCount ?? 0}</td>
+                <td className="block text-xs text-slate-500 md:table-cell md:px-4 md:py-3 md:text-sm dark:text-slate-400">
+                  <span className="md:hidden">{t('Applied')}: </span>{c.applicationCount ?? 0}
+                </td>
+                <td className="block w-full md:table-cell md:w-auto md:px-4 md:py-3">
+                  {mayBlacklist && !isBlacklisted(c) && (
+                    <button type="button" aria-label={t('Blacklist {name}', { name })} className="btn-secondary whitespace-nowrap text-xs text-danger-fg"
+                      onClick={() => void blacklistAction.blacklist({ id: c.id, name })}>{t('Blacklist')}</button>
+                  )}
+                </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
         <ListWindowFooter shown={items.length} total={list.total} noun="candidates" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} candidates', { shown: items.length, total: list.total ?? items.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
@@ -1619,6 +1770,7 @@ function CandidatesTab() {
       {list.error != null && <LoadFailure what={t('Candidates')} error={list.error} />}
 
       {addOpen && <AddCandidateModal onClose={() => setAddOpen(false)} onSaved={() => { setAddOpen(false); load(); }} />}
+      {blacklistAction.dialog}
     </div>
   );
 }
@@ -1769,6 +1921,10 @@ function InterviewsTab() {
   const [schedSaving, setSchedSaving] = useState(false);
   const [schedError, setSchedError] = useState('');
   const [cancelling, setCancelling] = useState<string | null>(null);
+  const { confirm: confirmCancel, dialog: cancelDialog } = useConfirm();
+  // Panel feedback is read on demand per interview (GET interviews/{id}/feedback, HR roles only), so the list stays one request.
+  const [feedbackOpen, setFeedbackOpen] = useState<Record<string, boolean>>({});
+  const [feedbackById, setFeedbackById] = useState<Record<string, { loading: boolean; error: boolean; rows: FeedbackRow[] }>>({});
   const [completingId, setCompletingId] = useState<string | null>(null);
   const [completionSaving, setCompletionSaving] = useState(false);
   const [completionError, setCompletionError] = useState('');
@@ -1797,6 +1953,8 @@ function InterviewsTab() {
     if (!schedForm.applicationId || !schedForm.interviewerNames || !schedForm.scheduledAt) {
       setSchedError(t('Application, interviewers and scheduled date/time are required.')); return;
     }
+    // The API accepts a past start; the screen does not, so a typo in the year or day cannot book an interview that already happened.
+    if (interviewStartIsPast(schedForm.scheduledAt)) { setSchedError(''); return; }
     setSchedSaving(true); setSchedError('');
     try {
       await interviewsApi.schedule({ ...schedForm, scheduledAt: localInputToInstant(schedForm.scheduledAt), durationMinutes: Number(schedForm.durationMinutes) });
@@ -1805,6 +1963,28 @@ function InterviewsTab() {
       load();
     } catch { setSchedError(t('Failed to schedule interview.')); }
     finally { setSchedSaving(false); }
+  };
+
+  const pastStart = interviewStartIsPast(schedForm.scheduledAt);
+
+  const toggleFeedback = async (id: string) => {
+    const open = !feedbackOpen[id];
+    setFeedbackOpen(s => ({ ...s, [id]: open }));
+    if (!open || feedbackById[id]?.rows) return;
+    setFeedbackById(s => ({ ...s, [id]: { loading: true, error: false, rows: [] } }));
+    try { const rows = interviewFeedbackRows(await interviewsApi.getFeedback(id)); setFeedbackById(s => ({ ...s, [id]: { loading: false, error: false, rows } })); }
+    catch { setFeedbackById(s => ({ ...s, [id]: { loading: false, error: true, rows: [] } })); }
+  };
+
+  const askCancelInterview = async (iv: ExtInterviewSchedule) => {
+    const who = iv.candidateName || applicationById.get(iv.applicationId)?.candidateName || '';
+    const ok = await confirmCancel({
+      title: t('Cancel this interview?'),
+      message: t('The {interviewType} interview with {name} on {dateTime} will be marked as cancelled. You can schedule a new one afterwards.', { interviewType: t(iv.interviewType), name: who, dateTime: f.dateTime(iv.scheduledAt) }),
+      confirmLabel: t('Cancel interview'),
+      tone: 'danger',
+    });
+    if (ok) await cancelInterview(iv.id);
   };
 
   const cancelInterview = async (id: string) => {
@@ -1846,7 +2026,8 @@ function InterviewsTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
+      {cancelDialog}
+      <div className="flex flex-wrap items-center gap-3">
         <select title={t('Filter by interview status')} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
           className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200">
           <option value="">{t('All Statuses')}</option>
@@ -1867,7 +2048,7 @@ function InterviewsTab() {
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
               <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Application *')}</label>
-              <select title={t('Select application')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <select title={t('Select application')} dir={applicationDir(applicationById.get(schedForm.applicationId)?.candidateName)} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={schedForm.applicationId} onChange={e => setSchedForm(f => ({ ...f, applicationId: e.target.value }))}>
                 <option value="">{t('— Select candidate/application —')}</option>
                 {applications.map(a => <option key={a.id} value={a.id}>{a.candidateName} — {a.jobTitle} ({a.stage})</option>)}
@@ -1897,10 +2078,11 @@ function InterviewsTab() {
               <input type="number" min={15} step={15} title={t('Duration in minutes')} placeholder="60" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={schedForm.durationMinutes} onChange={e => setSchedForm(f => ({ ...f, durationMinutes: Number(e.target.value) }))} />
             </div>
-            <div>
+            <div className="col-span-2">
               <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Date & Time *')}</label>
-              <input type="datetime-local" title={t('Interview date and time')} placeholder={t('Select date and time')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
-                value={schedForm.scheduledAt} onChange={e => setSchedForm(f => ({ ...f, scheduledAt: e.target.value }))} />
+              {/* The app's own date and 24-hour time selects: the browser's control showed a clipped 12-hour time in an Arabic page. */}
+              <DateTimePicker aria-label={t('Interview date and time')} value={schedForm.scheduledAt} onChange={v => setSchedForm(f => ({ ...f, scheduledAt: v }))} />
+              {pastStart && <p id="interview-past-start" role="alert" className="mt-1 text-xs text-rose-500">{t('That start time has already passed. Choose a date and time that are still ahead.')}</p>}
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Meeting Link')}</label>
@@ -1915,7 +2097,7 @@ function InterviewsTab() {
           </div>
           {schedError && <p className="text-xs text-rose-500">{schedError}</p>}
           <div className="flex items-center gap-2 pt-1">
-            <button type="button" onClick={submitSchedule} disabled={schedSaving}
+            <button type="button" onClick={submitSchedule} disabled={schedSaving || pastStart}
               className="rounded-lg bg-sapphire px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50 hover:bg-sapphire/90">
               {schedSaving ? t('Scheduling…') : t('Schedule')}
             </button>
@@ -1931,15 +2113,15 @@ function InterviewsTab() {
         <div className="space-y-2">
           {interviews.map(iv => (
             <div key={iv.id} className="surface p-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+                <div className="min-w-0 break-words">
                   {(iv.candidateName || applicationById.get(iv.applicationId)) && (
-                    <p className="mb-1 truncate text-sm font-semibold text-slate-900 dark:text-white">
+                    <p className="mb-1 break-words text-sm font-semibold text-slate-900 dark:text-white">
                       <bdi>{iv.candidateName || applicationById.get(iv.applicationId)?.candidateName}</bdi>
                       <span className="font-normal text-slate-500 dark:text-slate-400"> · <bdi>{iv.jobTitle || applicationById.get(iv.applicationId)?.jobTitle}</bdi></span>
                     </p>
                   )}
-                  <div className="flex items-center gap-2 mb-1">
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
                     <span className="text-sm font-semibold text-slate-900 dark:text-white">{t(iv.interviewType)}</span>
                     <span className="text-xs text-slate-400">{MODE_ICON[iv.mode] ?? '🗓'} {t(iv.mode)}</span>
                     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
@@ -1960,7 +2142,7 @@ function InterviewsTab() {
                     <p className="mt-1 text-xs text-slate-600 dark:text-slate-300"><span className="font-medium">{t('Feedback notes')}:</span> {iv.feedbackNotes}</p>
                   )}
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex flex-wrap items-center gap-2 max-sm:gap-3 sm:shrink-0">
                   {iv.overallRating && (
                     <div className="text-end">
                       <p className="text-lg font-semibold text-slate-900 dark:text-white">{iv.overallRating}/5</p>
@@ -1970,17 +2152,42 @@ function InterviewsTab() {
                   {iv.status === 'Scheduled' && (
                     <>
                       <button type="button" onClick={() => { setCompletionError(''); setCompletingId(iv.id); }}
-                        className="rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700">
+                        className="rounded-lg max-sm:min-h-11 max-sm:px-4 bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700">
                         {t('Complete')}
                       </button>
-                      <button type="button" onClick={() => cancelInterview(iv.id)} disabled={cancelling === iv.id}
-                        className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10">
+                      <button type="button" onClick={() => void askCancelInterview(iv)} disabled={cancelling === iv.id}
+                        className="rounded-lg max-sm:min-h-11 max-sm:px-4 border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10">
                         {cancelling === iv.id ? '…' : t('Cancel')}
                       </button>
                     </>
                   )}
+                  {iv.status !== 'Cancelled' && (
+                    <button type="button" aria-expanded={!!feedbackOpen[iv.id]} onClick={() => void toggleFeedback(iv.id)}
+                      className="rounded-lg max-sm:min-h-11 max-sm:px-4 border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5">
+                      {feedbackOpen[iv.id] ? t('Hide panel feedback') : t('Panel feedback')}
+                    </button>
+                  )}
                 </div>
               </div>
+              {feedbackOpen[iv.id] && (
+                <div className="mt-3 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-white/[0.03]" role="region" aria-label={t('Panel feedback')}>
+                  {feedbackById[iv.id]?.loading && <p role="status" className="text-xs text-slate-500">{t('Loading…')}</p>}
+                  {feedbackById[iv.id]?.error && <p role="alert" className="text-xs text-rose-500">{t('Could not load the panel feedback.')}</p>}
+                  {feedbackById[iv.id] && !feedbackById[iv.id].loading && !feedbackById[iv.id].error && feedbackById[iv.id].rows.length === 0 && (
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{t('The panel has not submitted any feedback.')}</p>
+                  )}
+                  {feedbackById[iv.id]?.rows.map(r => (
+                    <div key={r.id} className="border-b border-slate-200 pb-2 text-xs last:border-0 last:pb-0 dark:border-white/10">
+                      <p className="font-semibold text-slate-800 dark:text-slate-100"><bdi>{r.interviewer}</bdi>
+                        <span className="ms-2 font-normal text-slate-500 dark:text-slate-400">{f.dateTime(r.submittedAtUtc)}</span></p>
+                      <p className="mt-0.5 text-slate-600 dark:text-slate-300">
+                        {t('Rating')}: {r.rating}/5 · {t('Recommendation: {recommendation}', { recommendation: enumLabel(t, 'InterviewRecommendation', r.recommendation) })}
+                      </p>
+                      {r.notes && <p className="mt-0.5 break-words text-slate-600 dark:text-slate-300"><span className="font-medium">{t('Feedback notes')}:</span> <bdi>{r.notes}</bdi></p>}
+                    </div>
+                  ))}
+                </div>
+              )}
               {completingId === iv.id && (
                 <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 dark:border-emerald-500/20 dark:bg-emerald-500/5">
                   <p className="mb-2 text-xs font-semibold text-slate-700 dark:text-slate-200">{t('Complete Interview & Record Outcome')}</p>
@@ -2033,6 +2240,9 @@ function InterviewsTab() {
 
 function AssessmentsTab() {
   const t = useT();
+  const f = useFormat();
+  // A table needs room: under 640px each assessment is a card, so Score, Result and the result box are all reachable without sideways scrolling.
+  const wide = useMediaQuery('(min-width: 640px)', true);
   const [statusFilter, setStatusFilter] = useState('');
   const [showAssign, setShowAssign] = useState(false);
   const [applications, setApplications] = useState<JobApplication[]>([]);
@@ -2128,6 +2338,32 @@ function AssessmentsTab() {
     try { await assessmentsApi.recordResult(a.id, score); load(); } catch (e) { notifyApiError(e); } finally { setRecording(null); }
   };
 
+  const resultChip = (a: CandidateAssessment) => (
+    <>
+      {a.passed === true && <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">{t('✓ Passed')}</span>}
+      {a.passed === false && <span className="text-xs font-medium text-rose-600 dark:text-rose-400">{t('✗ Failed')}</span>}
+      {a.passed == null && <span className="text-xs text-slate-400">—</span>}
+    </>
+  );
+
+  const scoreLabel = (a: CandidateAssessment) => a.totalMarks != null && a.totalMarks > 0 ? t('Marks (0–{max})', { max: a.totalMarks }) : t('Score % (0–100)');
+  const resultControl = (a: CandidateAssessment) => !canRecordAssessmentResult(a) ? null : (
+    <div>
+      <div className="flex flex-wrap items-center gap-1">
+        <input type="number" min={0} max={assessmentScoreMax(a.totalMarks)} step={1}
+          aria-label={t('{name} result: {scale}', { name: a.templateName, scale: scoreLabel(a) })}
+          title={scoreLabel(a)} placeholder={scoreLabel(a)}
+          className="w-32 min-w-0 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-2 py-1 text-xs text-slate-800 dark:text-slate-200"
+          value={scoreInput[a.id] ?? ''} onChange={e => setScoreInput(s => ({ ...s, [a.id]: e.target.value }))} />
+        <button type="button" onClick={() => recordResult(a)} disabled={recording === a.id}
+          className="rounded-lg bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+          {recording === a.id ? '…' : t('Record result')}
+        </button>
+      </div>
+      {scoreError[a.id] && <p className="mt-1 text-xs text-rose-500">{scoreError[a.id]}</p>}
+    </div>
+  );
+
   const STATUS_COLORS: Record<string, string> = {
     Pending: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
     Sent: 'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400',
@@ -2137,7 +2373,7 @@ function AssessmentsTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <select title={t('Filter by assessment status')} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
           className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200">
           <option value="">{t('All Statuses')}</option>
@@ -2266,6 +2502,7 @@ function AssessmentsTab() {
       {loading ? <p className="text-center text-sm text-slate-400 py-8">{t('Loading…')}</p> : list.error != null && assessments.length === 0 ? null : assessments.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">{t('No assessments found. Assign one above.')}</p>
       ) : (
+        wide ? (
         <div className="surface overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -2282,37 +2519,37 @@ function AssessmentsTab() {
                   <td className="p-3">
                     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[a.status] ?? ''}`}>{enumLabel(t, 'Status', a.status)}</span>
                   </td>
-                  <td className="p-3 text-xs text-slate-500 dark:text-slate-400">{a.sentAtUtc ? new Date(a.sentAtUtc).toLocaleDateString() : '—'}</td>
-                  <td className="p-3 text-xs text-slate-500 dark:text-slate-400">{a.expiresAtUtc ? new Date(a.expiresAtUtc).toLocaleDateString() : '—'}</td>
-                  <td className="p-3 font-semibold text-slate-900 dark:text-white">{a.scorePercentage != null ? `${a.scorePercentage.toFixed(0)}%` : '—'}</td>
-                  <td className="p-3">
-                    {a.passed === true && <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">{t('✓ Passed')}</span>}
-                    {a.passed === false && <span className="text-xs font-medium text-rose-600 dark:text-rose-400">{t('✗ Failed')}</span>}
-                    {a.passed == null && <span className="text-xs text-slate-400">—</span>}
-                  </td>
-                  <td className="p-3">
-                    {canRecordAssessmentResult(a) && (
-                      <div>
-                        <div className="flex items-center gap-1">
-                          <input type="number" min={0} max={assessmentScoreMax(a.totalMarks)} step={1}
-                            aria-label={`${a.templateName} result: ${assessmentScoreLabel(a.totalMarks)}`}
-                            title={assessmentScoreLabel(a.totalMarks)} placeholder={assessmentScoreLabel(a.totalMarks)}
-                            className="w-32 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-2 py-1 text-xs text-slate-800 dark:text-slate-200"
-                            value={scoreInput[a.id] ?? ''} onChange={e => setScoreInput(s => ({ ...s, [a.id]: e.target.value }))} />
-                          <button type="button" onClick={() => recordResult(a)} disabled={recording === a.id}
-                            className="rounded-lg bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
-                            {recording === a.id ? '…' : t('Record result')}
-                          </button>
-                        </div>
-                        {scoreError[a.id] && <p className="mt-1 text-xs text-rose-500">{scoreError[a.id]}</p>}
-                      </div>
-                    )}
-                  </td>
+                  <td className="p-3 text-xs text-slate-500 dark:text-slate-400">{a.sentAtUtc ? f.date(a.sentAtUtc) : '—'}</td>
+                  <td className="p-3 text-xs text-slate-500 dark:text-slate-400">{a.expiresAtUtc ? f.date(a.expiresAtUtc) : '—'}</td>
+                  <td className="p-3 font-semibold text-slate-900 dark:text-white">{a.scorePercentage != null ? `${a.scorePercentage.toFixed(0)}%` : <span className="text-xs font-normal text-slate-500 dark:text-slate-400">{t('Not scored yet')}</span>}</td>
+                  <td className="p-3">{resultChip(a)}</td>
+                  <td className="p-3">{resultControl(a)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        ) : (
+        <ul aria-label={t('Assessments')} className="space-y-2">
+          {assessments.map(a => (
+            <li key={a.id} className="surface space-y-2 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <p className="min-w-0 break-words font-medium text-slate-800 dark:text-slate-200">{a.templateName}</p>
+                <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[a.status] ?? ''}`}>{enumLabel(t, 'Status', a.status)}</span>
+              </div>
+              <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+                <div><dt>{t('Sent')}</dt><dd className="text-slate-700 dark:text-slate-200">{a.sentAtUtc ? f.date(a.sentAtUtc) : '—'}</dd></div>
+                <div><dt>{t('Expires')}</dt><dd className="text-slate-700 dark:text-slate-200">{a.expiresAtUtc ? f.date(a.expiresAtUtc) : '—'}</dd></div>
+                <div><dt>{t('Score')}</dt><dd className="font-semibold text-slate-900 dark:text-white">{a.scorePercentage != null ? `${a.scorePercentage.toFixed(0)}%` : <span className="font-normal text-slate-500 dark:text-slate-400">{t('Not scored yet')}</span>}</dd></div>
+                {a.passed != null && <div><dt>{t('Result')}</dt><dd>{resultChip(a)}</dd></div>}
+              </dl>
+              {canRecordAssessmentResult(a) && (
+                <div>{resultControl(a)}</div>
+              )}
+            </li>
+          ))}
+        </ul>
+        )
       )}
       <ListWindowFooter shown={assessments.length} total={list.total} noun="assessments" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} assessments', { shown: assessments.length, total: list.total ?? assessments.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
     </div>
@@ -3075,6 +3312,13 @@ function RecruitmentAITab() {
 type Tab = 'overview' | 'requisitions' | 'openings' | 'candidates' | 'workforce' | 'interviews' | 'assessments' | 'offers' | 'onboarding' | 'reports' | 'ai';
 
 export function RecruitmentPage({ initialTab, initialOfferDesigner = false }: { initialTab?: Tab; initialOfferDesigner?: boolean } = {}) {
+  const { hasPermission } = useAuth();
+  // A line manager (only the two narrow keys) gets their own small screen; HR gets the workspace below.
+  if (isManagerRecruitmentUser(recruitmentAccess(hasPermission))) return <ManagerRecruitment />;
+  return <RecruitmentWorkspace initialTab={initialTab} initialOfferDesigner={initialOfferDesigner} />;
+}
+
+function RecruitmentWorkspace({ initialTab, initialOfferDesigner = false }: { initialTab?: Tab; initialOfferDesigner?: boolean } = {}) {
   const t = useT();
   const navigationGuard = useNavigationGuard();
   const [tab, setTab] = useState<Tab>(initialTab ?? 'overview');

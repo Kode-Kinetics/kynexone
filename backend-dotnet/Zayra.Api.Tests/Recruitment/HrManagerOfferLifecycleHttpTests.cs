@@ -141,7 +141,10 @@ public sealed class HrManagerOfferLifecycleHttpTests(PostgresFixture fixture)
         foreach (var user in new[] { w.OfficerId, w.EmployeeId })
         {
             using var client = await ClientAsync(host, w, user);
-            (await client.GetAsync($"/api/recruitment/offers/{offerId}")).StatusCode.Should().Be(HttpStatusCode.Forbidden, "read, " + w.Roles[user]);
+            // The HR Officer holds recruitment.read since 2026-11-16 (owner decision) and OfferAccess.CanRead names that role, so it may read an offer.
+        // Everything that authors, manages or approves an offer stays refused to it, as for the Employee.
+        (await client.GetAsync($"/api/recruitment/offers/{offerId}")).StatusCode.Should()
+            .Be(user == w.OfficerId ? HttpStatusCode.OK : HttpStatusCode.Forbidden, "read, " + w.Roles[user]);
             (await client.GetAsync($"/api/recruitment/offers/{offerId}/approver-options")).StatusCode.Should().Be(HttpStatusCode.Forbidden, "options, " + w.Roles[user]);
             (await client.PostAsJsonAsync("/api/recruitment/offers", body)).StatusCode.Should().Be(HttpStatusCode.Forbidden, "create, " + w.Roles[user]);
             (await client.PostAsJsonAsync($"/api/recruitment/offers/{offerId}/freeze", new { expectedVersion = 1 })).StatusCode.Should().Be(HttpStatusCode.Forbidden, "freeze, " + w.Roles[user]);
@@ -233,7 +236,9 @@ public sealed class HrManagerOfferLifecycleHttpTests(PostgresFixture fixture)
     private static User NewUser(Guid tenantId, string name, Role role)
     {
         var email = $"{name}-{Guid.NewGuid():N}@example.test";
-        var user = new User { TenantId = tenantId, Email = email, NormalizedEmail = email.ToUpperInvariant(), FullName = $"Test {name}", Status = "Active", IsActive = true };
+        var user = new User { TenantId = tenantId, Email = email, NormalizedEmail = email.ToUpperInvariant(), FullName = $"Test {name}", Status = "Active", IsActive = true,
+            // Group scope: an approver must be able to reach the offer's company (the picker and the approval request both check it).
+            IsGroupScope = true };
         user.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id });
         return user;
     }

@@ -98,21 +98,28 @@ function parseAmount(raw: string): number {
   return Number(cleaned);
 }
 
+/** Land on the payroll module and prove it rendered before touching anything (the run bar and the section nav are the shell). */
 async function gotoPayroll(page: Page): Promise<void> {
   await page.goto('/payroll', { waitUntil: 'domcontentloaded' });
-  await expect(content(page).getByRole('heading', { name: 'Payroll Management' })).toBeVisible({ timeout: 60_000 });
+  await expect(content(page).locator('#pipeline-run-picker')).toBeVisible({ timeout: 60_000 });
+  await expect(content(page).getByTestId('payroll-section-nav')).toBeAttached({ timeout: 60_000 });
 }
 
+/** Open a Payroll section from the section nav (links; a folded switcher below 1280px) and verify React committed it. */
 async function openTab(page: Page, label: string): Promise<void> {
-  const tab = content(page).getByRole('tab', { name: label, exact: true });
-  await tab.click();
-  await expect(tab).toHaveAttribute('aria-selected', 'true');
+  const nav = content(page).getByTestId('payroll-section-nav');
+  const link = nav.getByRole('link', { name: label, exact: true });
+  if (!(await link.isVisible())) await content(page).getByTestId('payroll-section-toggle').click();
+  await link.click();
+  await expect(nav.getByRole('link', { name: label, exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(content(page).getByRole('heading', { level: 1, name: label, exact: true })).toBeVisible();
 }
 
-async function selectRun(page: Page, ariaLabel: string, period: string): Promise<string> {
-  const picker = content(page).locator(`select[aria-label="${ariaLabel}"]`);
+async function selectRun(page: Page, period: string): Promise<string> {
+  // One run picker for the whole module: the run bar's. Every section works on the run chosen there.
+  const picker = content(page).locator('#pipeline-run-picker');
   const option = picker.locator('option', { hasText: period });
-  await expect(option, `run picker "${ariaLabel}" must offer exactly one ${period} run`).toHaveCount(1);
+  await expect(option, `the run bar's picker must offer exactly one ${period} run`).toHaveCount(1);
   const runId = await option.getAttribute('value');
   await picker.selectOption(runId!);
   return runId!;
@@ -122,6 +129,8 @@ const runCard = (page: Page, period: string): Locator =>
   content(page).locator('[role="button"]').filter({ hasText: period }).first();
 const approvalCard = (page: Page): Locator =>
   content(page).locator('div.surface').filter({ hasText: /^Payroll Run —/ }).first();
+// The run is created for the whole group (no company), so its batch is not a Saudi company's: the tab shows the batch list
+// and "Generate WPS/SIF", not the guided bank-file flow (that is for a run of a Saudi company; the API's isSaudi).
 const batchCard = (page: Page, number: string): Locator =>
   content(page).locator('[role="button"]').filter({ hasText: number }).first();
 
@@ -528,7 +537,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
         act: async (ctx) => {
           await gotoPayroll(maker.page);
           await openTab(maker.page, 'Validation');
-          expect(await selectRun(maker.page, 'Select payroll run', period)).toBe(runId);
+          expect(await selectRun(maker.page, period)).toBe(runId);
           await content(maker.page).getByRole('button', { name: 'Run Validation' }).click();
           // The tab shows either the findings list or its "no saved validation issues" state; both
           // are settled outcomes, and which one appeared is recorded from the API below.
@@ -595,7 +604,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
         mustShowOnScreen: 'Awaiting Finance Controller approval.',
         act: async (ctx) => {
           await openTab(maker.page, 'Approvals');
-          expect(await selectRun(maker.page, 'Select payroll run to approve', period)).toBe(runId);
+          expect(await selectRun(maker.page, period)).toBe(runId);
 
           const summary = approvalCard(maker.page).getByText(/\d+ employees\s*·\s*Gross/);
           await expect(summary, 'the approvals card must state the run size and its totals').toBeVisible();
@@ -689,7 +698,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
         act: async (ctx) => {
           await gotoPayroll(finance.page);
           await openTab(finance.page, 'Approvals');
-          expect(await selectRun(finance.page, 'Select payroll run to approve', period)).toBe(runId);
+          expect(await selectRun(finance.page, period)).toBe(runId);
           await expect(
             approvalCard(finance.page).getByText('Pending finance review', { exact: true }),
             'the finance approver must pick the run up exactly where the maker left it',
@@ -749,20 +758,21 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           'Create Payment Batch is disabled, and the screen says why, naming the run\'s actual '
           + 'current status rather than a generic message. No batch exists.',
         record: { type: 'PayrollRun', id: runId },
-        mustShowOnScreen: /A payment batch can only be created once the run is/,
+        mustShowOnScreen: /a payment batch can only be created once the run is/i,
         act: async (ctx) => {
           await gotoPayroll(admin.page);
           await openTab(admin.page, 'Bank / WPS Files');
-          expect(await selectRun(admin.page, 'Select payroll run', period)).toBe(runId);
+          expect(await selectRun(admin.page, period)).toBe(runId);
           const createBatch = content(admin.page).getByRole('button', { name: 'Create Payment Batch' });
           await expect(createBatch, 'the Bank/WPS tab must offer the batch control').toBeVisible();
           await expect(createBatch, 'a batch must not be creatable before the run is locked').toBeDisabled();
           await expect(
-            content(admin.page).getByText(/This run is\s*Approved\s*\./),
+            // Step 1 of the guided flow states the run's status beside the blocked button.
+            content(admin.page).getByText(/Run status:\s*Approved/),
             "the notice must name the run's actual current status",
           ).toBeVisible();
           ctx.note(
-            'Create Payment Batch is disabled and the screen states "This run is Approved." — the '
+            'Create Payment Batch is disabled and the screen states "Run status: Approved" — the '
             + 'lock, not the approval, is the gate.',
           );
         },
@@ -830,7 +840,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
         act: async (ctx) => {
           await gotoPayroll(maker.page);
           await openTab(maker.page, 'Payslips');
-          expect(await selectRun(maker.page, 'Select payroll run', period)).toBe(runId);
+          expect(await selectRun(maker.page, period)).toBe(runId);
           await content(maker.page).getByRole('button', { name: 'Generate Payslips' }).click();
 
           const rows = content(maker.page).locator('table tbody tr');
@@ -898,11 +908,11 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
         act: async (ctx) => {
           await gotoPayroll(admin.page);
           await openTab(admin.page, 'Bank / WPS Files');
-          expect(await selectRun(admin.page, 'Select payroll run', period)).toBe(runId);
+          expect(await selectRun(admin.page, period)).toBe(runId);
           const createBatch = content(admin.page).getByRole('button', { name: 'Create Payment Batch' });
           await expect(createBatch, 'locking the run must enable payment batch creation').toBeEnabled();
           await expect(
-            content(admin.page).getByText(/A payment batch can only be created once the run is/),
+            content(admin.page).getByText(/a payment batch can only be created once the run is/i),
             'the lock warning must disappear once the run is locked',
           ).toHaveCount(0);
 
@@ -976,7 +986,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
 
           await gotoPayroll(admin.page);
           await openTab(admin.page, 'Bank / WPS Files');
-          expect(await selectRun(admin.page, 'Select payroll run', period)).toBe(runId);
+          expect(await selectRun(admin.page, period)).toBe(runId);
           const filed = batchCard(admin.page, batchNumber);
           await expect(filed, 'a batch with a wage file must read as File Generated').toContainText(/(File generated|Generated)(?![a-z])/);
           await expect(

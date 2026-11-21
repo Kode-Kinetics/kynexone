@@ -29,6 +29,8 @@ public static class ReleaseAServiceCollectionExtensions
         services.AddScoped<IEntitlementWriter, EntitlementWriter>();
         services.AddSingleton(PackageFreezeJobHandler.Descriptor);
         services.AddScoped<PackageFreezeJobHandler>();
+        // Benefit utilisation: requests against the frozen rows, decided like a loan; moves no money.
+        services.AddScoped<Zayra.Api.Infrastructure.Entitlements.Usage.BenefitUsageService>();
 
         // R3 — deductions statement
         services.AddScoped<IDeductionStatementService, DeductionStatementService>();

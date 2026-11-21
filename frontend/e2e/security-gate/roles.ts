@@ -15,7 +15,10 @@
  * account the world does not contain, or as a different one from the lane next to it (register F07).
  */
 
+import fs from 'node:fs';
+import { request as pwRequest } from '@playwright/test';
 import { resolveTarget } from '../identity/env';
+import { liveSession } from '../helpers';
 import {
   ALMARAI_AUDITOR, ALMARAI_BAKERY_HR, ALMARAI_COMPLIANCE, ALMARAI_DAIRY_HR, ALMARAI_DAIRY_PAYROLL,
   ALMARAI_FINANCE, ALMARAI_HR, ALMARAI_HR_ASSISTANT, ALMARAI_HR_OFFICER, ALMARAI_KIOSK, ALMARAI_LOAN_FINANCE, ALMARAI_OWNER,
@@ -25,6 +28,37 @@ import {
 } from '../world';
 
 export const BASE_URL = resolveTarget().baseUrl;
+
+/** A role's access token for direct-API boundaries: the one the setup project stored while it has more than 5 minutes left,
+ *  else a fresh sign-in AS THE SAME role, once per token life (a long gate outlives the 30-minute token, as group-company did
+ *  in CI #351). A role that fails to sign in again fails loudly, never silently anonymous. */
+export async function roleToken(key: string): Promise<string> {
+  const p = tokenPath(key);
+  if (!fs.existsSync(p)) {
+    throw new Error(`No stored token for role '${key}'. The security-gate setup project must run first — `
+      + 'it authenticates each role exactly once to stay under the login rate limit.');
+  }
+  const stored = JSON.parse(fs.readFileSync(p, 'utf8')).token as string;
+  const session = await liveSession({ accessToken: stored, refreshToken: '' }, `security-gate|${key}`, async () => {
+    const role = roleByKey(key);
+    const api = await pwRequest.newContext({ baseURL: BASE_URL, timeout: 30_000 });
+    try {
+      const isPlatform = role.tenantSlug === null;
+      const resp = await api.post(isPlatform ? '/api/platform/auth/login' : '/api/auth/login', {
+        data: isPlatform ? { email: role.email, password: role.password } : { email: role.email, password: role.password, tenantSlug: role.tenantSlug },
+      });
+      if (!resp.ok()) throw new Error(`Re-login for role '${key}' failed: ${resp.status()} ${await resp.text()}`);
+      const body = await resp.json();
+      const token = body.accessToken ?? body.token ?? body.access_token;
+      if (!token) throw new Error(`Re-login for role '${key}' returned no access token`);
+      return { accessToken: token as string, refreshToken: body.refreshToken ?? '' };
+    } finally {
+      await api.dispose();
+    }
+  }, renewedRoleSessions);
+  return session.accessToken;
+}
+const renewedRoleSessions = new Map<string, { accessToken: string; refreshToken: string }>();
 
 /**
  * The multi-company group tenant. It is no longer seeded by anything — e2e/bootstrap/provision.ts

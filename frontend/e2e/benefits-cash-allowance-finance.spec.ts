@@ -130,6 +130,7 @@ for (const locale of ['en', 'ar'] as const) {
       const panel = page.getByTestId('finance-confirm-panel');
       await expect(panel).toBeVisible();
       await expect(panel.getByRole('heading', { name: say(locale, 'Confirm {benefit}', { benefit: name(locale, waiting) }) })).toBeFocused();
+      await expect(panel.getByTestId('confirm-committed-months-note')).toHaveText(say(locale, 'If this allowance was changed after it was confirmed, months already approved or locked keep the terms they were paid on, and the change applies from the next month. Until then the grid shows the terms in effect today.'));
       const gl = panel.getByLabel(say(locale, 'GL account for this allowance (required)'));
       await expect(gl).toHaveValue('EARN:PHONE'); // what the maker entered
       // Leaving it out needs its category; the error sits at the field.

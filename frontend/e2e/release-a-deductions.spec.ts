@@ -98,8 +98,9 @@ for (const lang of ['en', 'ar'] as const) {
         if (p === `/api/payroll/slips/${FIXTURE.slipWithLoans.slipId}/deduction-statement`) return FIXTURE.slipWithLoans;
         return undefined;
       });
-      await page.goto('/payroll');
-      await page.getByRole('tab', { name: lang === 'ar' ? /مسيرات|Payroll Runs/ : 'Payroll Runs' }).click();
+      // Payroll's sections are links in its section nav (folded to a switcher below 1280px): the section's address opens it on any width.
+      await page.goto('/payroll?tab=runs');
+      await expect(page.locator('h1')).toHaveText(lang === 'ar' ? /مسيرات|Payroll Runs/ : 'Payroll Runs', { timeout: 30_000 });
       await page.locator('[role="button"]').filter({ hasText: String(RUN.year) }).first().click();
       const review = page.getByTestId('run-deductions-review');
       await expect(review).toBeVisible({ timeout: 30_000 });

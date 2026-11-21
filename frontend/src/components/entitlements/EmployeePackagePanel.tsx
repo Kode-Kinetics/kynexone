@@ -197,7 +197,9 @@ export function EmployeePackagePanel({ employee }: { employee: EmployeeDetail })
                 <div className="flex flex-wrap items-center gap-2">
                   {line.gradeStandardDiffers && <span className="rounded-full bg-sky-50 px-2 py-0.5 text-caption font-medium text-sky-700 dark:bg-sky-500/10 dark:text-sky-300">{t('Reviewed at renewal')}</span>}
                   <span className={`text-sm tabular-nums ${line.eligible ? 'text-slate-900 dark:text-slate-50' : 'text-slate-400 line-through dark:text-slate-500'}`}>
-                    {line.eligible || line.class === 'QiwaWage' ? valueText(line, ctx) : line.reasonCode ? '—' : t('Not included')}
+                    {view.salaryAmountsHidden && line.source === 'Salary' && line.monthlyCash == null && line.amount == null
+                      ? <span className="text-meta text-fg-muted" data-testid="salary-amount-hidden">{valueText(line, ctx) || t('Shown to people who can see pay details')}</span>
+                      : line.eligible || line.class === 'QiwaWage' ? valueText(line, ctx) : line.reasonCode ? '—' : t('Not included')}
                   </span>
                   <WhyPopover title={label(line.componentCode)} lines={why(line)} />
                 </div>

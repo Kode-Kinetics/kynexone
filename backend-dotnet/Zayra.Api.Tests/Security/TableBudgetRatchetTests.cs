@@ -194,7 +194,23 @@ public class TableBudgetRatchetTests
         // provision movement was measured on. The GL line says how much moved but not what was measured, and eosb_provision_snapshots
         // cannot carry it (its columns are service years, wage base and the Art. 84 rule). Finance owns it; kept as long as the GL lines
         // it explains; deleted with its run by a void; removed by whole-tenant erasure (it cascades from payroll_runs).
-        DeclaredDbSets().Should().HaveCount(386,
+        // Government and bank integration foundation (AddGovernmentCredentialsAndExchanges; owner Platform/Security). Two tables,
+        // 386 -> 388, shipped dark. GovernmentCredentials: a customer's secret for a government or bank body, envelope-encrypted
+        // under the tenant DEK with AAD tenant+company+body+environment+version, plus rotation and last-used. No existing table can
+        // carry it: qiwa_api_credentials is Qiwa-only, tenant-wide, Data Protection ciphertext with no company, environment
+        // binding, version or rotation record; field_encryption_keys holds key custody, not customer secrets. GovernmentExchanges:
+        // one row per attempt to exchange something with a body on any channel (file out, file in, manual, api), hashes and a
+        // masked preview only, unique per (tenant, body, operation, idempotency key) so a double submit is one row. No existing
+        // table holds an attempt across bodies: wps_file_batches, gosi_filings and qiwa_sync_logs are each one body's domain
+        // state. Retention: credentials for the life of the connection (deleted on removal, with the company or by whole-tenant
+        // erasure); exchange rows 84 months with the payroll record they evidence (OWNERSHIP_AND_RETENTION.md).
+        // Benefit usage requests (AddBenefitUsageRequests; owner HR / Finance). One table, 388 -> 389. BenefitUsageRequests: one request to use
+        // a fixed contract benefit (education per child, an air ticket, a count or amount) against the employee's frozen entitlement row,
+        // with its requester, Finance decision and state. No existing table can carry it: employee_entitlements is the frozen entitlement
+        // (a pending ask there would read as a change to the contract), loans and advances are money-moving and carry repayment, and
+        // approval_requests has no entitlement or benefit-period witness. The used / left figures are read from these rows; no money
+        // moves and nothing reaches payroll or the GL. Retention: kept with the employee's benefit history; removed by whole-tenant erasure.
+        DeclaredDbSets().Should().HaveCount(389,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

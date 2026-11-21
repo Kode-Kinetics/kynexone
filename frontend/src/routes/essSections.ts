@@ -26,6 +26,8 @@ export interface EssPage {
   /** What the page is for, in the employee's words. */
   hint: string;
   requiredFeatureKey?: string;
+  /** Hidden while this tenant flag is on (a page another one replaced under that flag). */
+  hiddenWhenFeatureKey?: string;
   /** Offered only to a user holding this permission (on top of ess.read, which every page here needs). */
   requiredPermission?: string;
   /** Shown only when one of the user's companies is in one of these countries (ISO 3166 alpha-2). */
@@ -53,6 +55,7 @@ export const ESS_SECTIONS: EssSection[] = [
     pages: [
       { label: 'Self-Service', tab: 'Overview', path: ESS_HOME_PATH, hint: 'Your day at a glance: what needs you, your balances and what is coming up.' },
       { label: 'My employee details', tab: 'My details', path: '/ess/onboarding', hint: 'Complete your contact details and share documents securely with HR.' },
+      { label: 'Open positions', tab: 'Open positions', path: '/ess/jobs', hint: 'The jobs open in your company, and what each one involves.' },
       // LRN (learning opt-in flag): the employee's own training, courses, assessments and certificates.
       { label: 'My learning', tab: 'Learning', path: '/ess/learning', hint: 'The training assigned to you, what to do next, and the certificates you have earned.', requiredFeatureKey: 'learning' },
       // SUC (succession opt-in flag): the employee's own development plan, its actions and the next review.
@@ -99,7 +102,8 @@ export const ESS_SECTIONS: EssSection[] = [
     label: 'Benefits',
     icon: HeartPulse,
     pages: [
-      { label: 'My Benefits', tab: 'Benefits', path: ESS_BENEFITS_PATH, hint: 'The benefits you are enrolled in and what they cover.' },
+      // The legacy enrolments page. A Benefits-by-grade (release_a) employee has My package instead, so it is not offered to them.
+      { label: 'My Benefits', tab: 'Benefits', path: ESS_BENEFITS_PATH, hint: 'The benefits you are enrolled in and what they cover.', hiddenWhenFeatureKey: 'release_a' },
     ],
   },
   {
@@ -119,6 +123,7 @@ export const essPages: EssPage[] = ESS_SECTIONS.flatMap((s) => s.pages);
 export function visibleEssPages(section: EssSection, isFeatureEnabled: (key: string) => boolean, countryCodes: string[] = []): EssPage[] {
   return section.pages.filter((p) =>
     (!p.requiredFeatureKey || isFeatureEnabled(p.requiredFeatureKey))
+    && (!p.hiddenWhenFeatureKey || !isFeatureEnabled(p.hiddenWhenFeatureKey))
     && (!p.countries || p.countries.some((c) => countryCodes.includes(c))));
 }
 
@@ -149,5 +154,5 @@ export function activeEssSection(pathname: string): EssSection | undefined {
 export const essNavItems: NavItem[] = ESS_SECTIONS.flatMap((s) =>
   s.pages
     .filter((p) => p.path !== ESS_HOME_PATH)
-    .map((p) => ({ label: p.label, icon: s.icon, path: p.path, requiredPermissions: ['ess.read'], requiredFeatureKey: p.requiredFeatureKey })),
+    .map((p) => ({ label: p.label, icon: s.icon, path: p.path, requiredPermissions: ['ess.read'], requiredFeatureKey: p.requiredFeatureKey, hiddenWhenFeatureKey: p.hiddenWhenFeatureKey })),
 );

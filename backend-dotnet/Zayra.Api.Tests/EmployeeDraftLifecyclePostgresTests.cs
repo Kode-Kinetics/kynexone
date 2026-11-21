@@ -605,6 +605,70 @@ public sealed class EmployeeDraftLifecyclePostgresTests
     }
 
     [Fact]
+    public async Task ARejectionRacingAnApproval_OfAnOfferHire_LeavesTheDraftAndTheSeatAgreeing()
+    {
+        // The draft stands for an accepted offer: its application is Hired on it and the opening's one seat is taken.
+        var seeded = await SeedAsync("PendingHrApproval");
+        var opening = new JobOpening { TenantId = seeded.TenantId, JobCode = $"JOB-{Guid.NewGuid():N}", Title = "Race role", Status = "Closed", HeadCount = 1, FilledCount = 1 };
+        var candidate = new Candidate { TenantId = seeded.TenantId, FirstName = "Race", LastName = "Hire", Email = $"race-{Guid.NewGuid():N}@example.test", Status = "Active" };
+        var application = new JobApplication
+        {
+            TenantId = seeded.TenantId, JobOpeningId = opening.Id, CandidateId = candidate.Id, CandidateName = "Race Hire", JobTitle = "Race role",
+            Stage = "Hired", StageOrder = 6, Status = "Hired", HiredAtUtc = DateTime.UtcNow,
+        };
+        var offer = new OfferLetter
+        {
+            TenantId = seeded.TenantId, ApplicationId = application.Id, CandidateName = "Race Hire", OfferedJobTitle = "Race role", OfferedDepartment = "People",
+            StartDate = new DateOnly(2027, 3, 1), BasicSalary = 1000, GrossSalary = 1000, Status = "Accepted", AcceptedAtUtc = DateTime.UtcNow,
+        };
+        // The offer link is fixed when a draft is created (it cannot be rewritten later), so the offer hire is a copy of the seeded draft made with it.
+        Guid draftId;
+        await using (var db = _fixture.CreateDb())
+        {
+            var hire = await db.EmployeeDrafts.AsNoTracking().SingleAsync(d => d.Id == seeded.DraftId);
+            hire.Id = Guid.NewGuid(); hire.AcceptedOfferId = offer.Id; hire.AcceptedOfferCompanyId = seeded.CompanyId;
+            draftId = hire.Id;
+            application.OnboardingDraftId = draftId;
+            db.AddRange(opening, candidate, application, offer);
+            db.Add(hire);
+            await db.SaveChangesAsync();
+        }
+
+        var gate = new TaskCompletionSource();
+        async Task<IActionResult?> Approve()
+        {
+            await gate.Task;
+            await using var db = _fixture.CreateDb();
+            return (await Employees(db, seeded.TenantId, seeded.Checker).ApproveDraft(draftId, CancellationToken.None)).Result;
+        }
+        async Task<IActionResult> Reject()
+        {
+            await gate.Task;
+            await using var db = _fixture.CreateDb();
+            return await Employees(db, seeded.TenantId, Guid.NewGuid()).RejectDraft(draftId, new EmployeeDraftDecisionRequest("Not this quarter"), CancellationToken.None);
+        }
+        var approving = Approve(); var rejecting = Reject();
+        gate.SetResult();
+        await Task.WhenAll(approving, rejecting);
+
+        await using var verify = _fixture.CreateDb();
+        var finalDraft = (await verify.EmployeeDrafts.AsNoTracking().SingleAsync(d => d.Id == draftId)).Status;
+        var app = await verify.JobApplications.AsNoTracking().SingleAsync(a => a.Id == application.Id);
+        var seats = (await verify.JobOpenings.AsNoTracking().SingleAsync(o => o.Id == opening.Id)).FilledCount;
+        var employees = await CountEmployeesAsync(verify, seeded.TenantId);
+        if (finalDraft == EmployeeDraftStatuses.Rejected)
+        {
+            app.Status.Should().Be("Active"); seats.Should().Be(0); employees.Should().Be(0);
+            (await verify.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == offer.Id)).Status.Should().Be("Sent");
+        }
+        else
+        {
+            finalDraft.Should().Be(EmployeeDraftStatuses.Activated, "the approval won, so the hire stands");
+            app.Status.Should().Be("Hired"); seats.Should().Be(1); employees.Should().Be(1);
+        }
+    }
+
+    [Fact]
     public async Task ACheckerWhoAttachedADocument_CannotApproveTheHire()
     {
         var seeded = await SeedAsync("PendingHrApproval");

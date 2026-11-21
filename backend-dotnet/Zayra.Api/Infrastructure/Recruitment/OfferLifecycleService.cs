@@ -6,7 +6,8 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Recruitment;
 
-public sealed partial class OfferLifecycleService(ZayraDbContext db, IConfiguration configuration, OfferArtifactService? artifacts = null)
+public sealed partial class OfferLifecycleService(ZayraDbContext db, IConfiguration configuration, OfferArtifactService? artifacts = null,
+    Zayra.Api.Infrastructure.Notifications.INotificationService? notifications = null)
 {
     public const string EnablementKey = "Recruitment:ManagedOfferLifecycleEnabled";
     public bool Enabled => configuration.GetValue<bool>(EnablementKey);
@@ -88,6 +89,7 @@ public sealed partial class OfferLifecycleService(ZayraDbContext db, IConfigurat
                 RecipientEmail = source.RecipientEmail ?? app.CandidateEmail,
                 OfferedJobTitle = source.OfferedJobTitle, OfferedDepartment = source.OfferedDepartment,
                 StartDate = source.StartDate, ProbationMonths = source.ProbationMonths,
+                ContractType = source.ContractType, ContractTermMonths = source.ContractTermMonths,
                 ResponseDeadline = source.ResponseDeadline, BasicSalary = source.BasicSalary,
                 HousingAllowance = source.HousingAllowance, TransportAllowance = source.TransportAllowance,
                 OtherAllowances = source.OtherAllowances, GrossSalary = source.GrossSalary,

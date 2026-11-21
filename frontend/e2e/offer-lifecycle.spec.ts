@@ -4,13 +4,13 @@ import { test, expect, type Page } from '@playwright/test';
 // the approved 5198 frontend; this file never launches a runtime or contacts a mail relay.
 const id = '11111111-1111-1111-1111-111111111111';
 const design = { schemaVersion: 2, pageSize: 'A4', landscape: false, margin: 36, direction: 'ltr', fontFamily: 'Lato', headingFontFamily: 'Lato', customFont: null, customFontName: '', fontSize: 11, headingSize: 25, lineHeight: 1.45, textColor: '#253047', accentColor: '#2454D6', backgroundColor: '#FFFFFF', pageBorder: false, header: '{{company_name}}', footer: '', pageNumbers: true, logo: null, logoWidth: 110, logoAlign: 'left', signature: null, stamp: null, signatory: 'HR', signatoryTitle: '', candidateAcceptance: '', customFields: {}, blocks: [{ id: 'block', kind: 'text', text: 'Actual candidate', enabled: true, align: 'left', fontSize: null, color: null, background: null, bold: false, italic: false, underline: false, spacing: 12, image: null, imageWidth: 180, rows: [] }] };
-async function boot(page: Page, options: { issued?: boolean; conflict?: boolean; locale?: string; outcome?: string } = {}) {
+async function boot(page: Page, options: { issued?: boolean; conflict?: boolean; locale?: string; outcome?: string; sharedDepartment?: boolean } = {}) {
   const writes: { path: string; body: Record<string, unknown> }[] = [];
   let emailCalls = 0;
-  const offer = { id, applicationId: 'app', companyId: 'company', seriesId: 'series', revisionNumber: 2, version: 4, candidateName: 'Synthetic Offer Candidate', recipientEmail: 'synthetic@example.invalid', offeredJobTitle: 'Engineer', offeredDepartment: 'Engineering', startDate: '2027-01-01', responseDeadline: '2027-02-01T12:00:00Z', probationMonths: 3, basicSalary: 1000, housingAllowance: 0, transportAllowance: 0, otherAllowances: 0, grossSalary: 1000, status: options.issued ? 'Approved' : 'Draft', generatedAtUtc: '2026-10-19T00:00:00Z', frozenAtUtc: options.issued ? '2026-10-19T00:00:00Z' : null };
+  const offer = { id, applicationId: 'app', companyId: 'company', seriesId: 'series', revisionNumber: 2, version: 4, candidateName: 'Synthetic Offer Candidate', recipientEmail: 'synthetic@example.invalid', offeredJobTitle: 'Engineer', offeredDepartment: options.sharedDepartment ? 'ENG-2' : 'Engineering', startDate: '2027-01-01', responseDeadline: '2027-02-01T12:00:00Z', probationMonths: 3, basicSalary: 1000, housingAllowance: 0, transportAllowance: 0, otherAllowances: 0, grossSalary: 1000, status: options.issued ? 'Approved' : 'Draft', generatedAtUtc: '2026-10-19T00:00:00Z', frozenAtUtc: options.issued ? '2026-10-19T00:00:00Z' : null };
   const snapshot = { schemaVersion: 1, currency: 'SAR', precision: 2, components: [{ code: 'BASIC', labelEn: 'Basic salary', labelAr: 'الراتب الأساسي', kind: 'Cash', amount: 1000, frequency: 'Monthly', included: true, exclusionReason: null, description: null, payComponentId: null, order: 0, required: true, structureField: 'BasicSalary' }], monthlyCash: 1000, annualRecurringCash: 12000, oneTimeCash: 0, basicSalary: 1000, housingAllowance: 0, transportAllowance: 0, otherAllowances: 0, policyVersion: 0, policySource: 'CompanyDefault' };
   const historyRow = { ...offer, position: offer.offeredJobTitle, communicationOutcome: options.outcome ?? 'NotIssued', originalProvenance: options.issued ? 'FrozenOriginal' : 'NotFrozen' };
-  const workspace = { offer, artifact: options.issued ? { id: 'artifact', sha256: 'hash', sizeBytes: 100, provenance: 'FrozenOriginal', offerVersion: 4 } : null, originalProvenance: historyRow.originalProvenance, approvals: [], capabilities: Object.fromEntries(['editDraft', 'freeze', 'issue', 'revise', 'withdraw', 'recordResponse', 'downloadOriginal'].map(key => [key, { allowed: options.issued ? ['issue', 'downloadOriginal'].includes(key) : ['editDraft', 'freeze', 'revise'].includes(key), reason: 'State does not allow this action.' }])), revisions: [historyRow], changedFields: [], communicationOutcome: historyRow.communicationOutcome, compensationSnapshot: snapshot, designSnapshot: { design, values: { candidate_name: offer.candidateName }, templateId: null, templateVersion: null } };
+  const workspace = { offer, offeredDepartmentName: 'Engineering', artifact: options.issued ? { id: 'artifact', sha256: 'hash', sizeBytes: 100, provenance: 'FrozenOriginal', offerVersion: 4 } : null, originalProvenance: historyRow.originalProvenance, approvals: [], capabilities: Object.fromEntries(['editDraft', 'freeze', 'issue', 'revise', 'withdraw', 'recordResponse', 'downloadOriginal'].map(key => [key, { allowed: options.issued ? ['issue', 'downloadOriginal'].includes(key) : ['editDraft', 'freeze', 'revise'].includes(key), reason: 'State does not allow this action.' }])), revisions: [historyRow], changedFields: [], communicationOutcome: historyRow.communicationOutcome, compensationSnapshot: snapshot, designSnapshot: { design, values: { candidate_name: offer.candidateName }, templateId: null, templateVersion: null } };
   await page.addInitScript(locale => { localStorage.setItem('zayra_access_token', 'fixture'); localStorage.setItem('kynexone-locale-choice-v2', locale); }, options.locale ?? 'en');
   await page.route('**/api/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
@@ -53,6 +53,15 @@ test('workspace respects capabilities and protects dirty edits before preview or
   await page.getByRole('button', { name: 'Reload latest', exact: true }).click();
   await page.getByRole('button', { name: 'Discard and leave', exact: true }).click();
   await expect(page.getByLabel('Job title', { exact: true })).toHaveValue('Engineer');
+});
+
+test('a department the offer holds by code is shown by name and saved back by code', async ({ page }) => {
+  const writes = await boot(page, { sharedDepartment: true });
+  await expect(page.getByLabel('Department', { exact: true })).toHaveValue('Engineering');
+  await page.getByLabel('Job title', { exact: true }).fill('Reviewed Engineer');
+  await page.getByRole('button', { name: 'Save draft', exact: true }).click();
+  await expect.poll(() => writes.filter(w => w.path.endsWith('/draft')).length).toBe(1);
+  expect(writes.find(w => w.path.endsWith('/draft'))!.body.offeredDepartment).toBe('ENG-2');
 });
 
 test('network replay keeps reviewed payload, capture is labelled and unknown has reconciliation only', async ({ page }) => {

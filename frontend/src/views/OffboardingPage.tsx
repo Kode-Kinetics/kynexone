@@ -18,6 +18,8 @@ import { Modal } from '../components/Modal';
 import { ConfirmDialog, type ConfirmState } from '../components/ui/ConfirmDialog';
 import { EnumLabel } from '../components/EnumLabel';
 import { FINAL_SETTLEMENT_HREF, isRunDutyOpen, isSettlementCleared, settlementFor, settlementRunHref } from '../lib/offboardingSettlement';
+import { ExitDebtsPanel } from '../components/offboarding/ExitDebtsPanel';
+import type { ExitDebt } from '../lib/exitDebts';
 
 const EXIT_REASONS = ['Compensation', 'Career Growth', 'Management', 'Work-Life Balance', 'Relocation', 'Job Content', 'Company Culture', 'Better Offer', 'Personal', 'Other'] as const;
 const EXIT_INTERVIEW_STATUSES = ['Pending', 'Scheduled', 'Completed', 'Waived'] as const;
@@ -197,6 +199,14 @@ function OffboardingCard({ o, settlements, onChange }: { o: Offboarding; settlem
   const [ei, setEi] = useState({ status: o.exitInterviewStatus, date: o.exitInterviewDate?.slice(0, 10) ?? '', reasonCategory: o.exitReasonCategory, rating: o.exitInterviewRating, notes: o.exitInterviewNotes });
 
   const settlement = settlements ? settlementFor(settlements, o.id) : null;
+  // Every loan and advance the leaver still owes, whatever its repayment method. null = not readable by this user (403) or not
+  // loaded: the section is then left out rather than claiming nothing is owed.
+  const [debts, setDebts] = useState<ExitDebt[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    offboardingApi.openDebts(o.id).then(r => { if (live) setDebts(r.items); }).catch(() => { if (live) setDebts(null); });
+    return () => { live = false; };
+  }, [o.id, o.status, o.finalSettlementDone]);
   // The settlement is cleared when Payroll says it was paid, or when the payment was recorded here.
   const settlementCleared = o.finalSettlementDone || isSettlementCleared(settlement);
 
@@ -360,6 +370,11 @@ function OffboardingCard({ o, settlements, onChange }: { o: Offboarding; settlem
               </div>
             )}
           </div>
+          {debts !== null && (
+            <div className="mt-2">
+              <ExitDebtsPanel debts={debts} employeeName={o.employeeName} fallbackCurrency={settlement?.currency} testId="offboarding-open-debts" />
+            </div>
+          )}
         </div>
 
         {/* Exit interview */}

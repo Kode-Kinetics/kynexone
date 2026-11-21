@@ -1,5 +1,6 @@
 'use client';
 
+import { moneyByCurrency } from '../lib/exitDebts';
 import { useCallback, useEffect, useState } from 'react';
 import { apiErrorReason, notifyApiError } from '../api/client';
 import { TransliterateButton } from '../components/TransliterateButton';
@@ -412,7 +413,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
     if ((!applicantId && staff && !mine) || !createForm.loanTypeId || createForm.requestedAmount <= 0) { setError(t('Select the employee, loan type and requested amount first.')); return; }
     setCheckingEligibility(true); setError('');
     try { setEligibility(await loanGovernanceApi.eligibility({ employeeIntId: applicantId, loanTypeId: createForm.loanTypeId, amount: createForm.requestedAmount, installments: createForm.requestedInstallments, repaymentMethod: createForm.repaymentMethod })); setCheckedKey(eligibilityKey); }
-    catch (e) { setError(loanErrorMessage(e, t('Unable to check eligibility.'))); }
+    catch (e) { setError(loanErrorMessage(e, t('Unable to check eligibility.'), locale)); }
     finally { setCheckingEligibility(false); }
   };
 
@@ -426,7 +427,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
 
   const openDetail = async (loan: EmployeeLoan) => {
     setError('');
-    try { const d = await loansApi.get(loan.id); setSelected(d); setDetailTab('schedule'); setDetailModal(true); } catch (e) { setError(loanErrorMessage(e, t('Unable to open loan.'))); }
+    try { const d = await loansApi.get(loan.id); setSelected(d); setDetailTab('schedule'); setDetailModal(true); } catch (e) { setError(loanErrorMessage(e, t('Unable to open loan.'), locale)); }
   };
 
   const createLoan = async () => {
@@ -447,7 +448,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       setCreateModal(false); setSelectedEmployee(null); load();
       onChanged();
     }
-    catch (e) { setError(loanErrorMessage(e, t('Failed to create loan.'))); }
+    catch (e) { setError(loanErrorMessage(e, t('Failed to create loan.'), locale)); }
     finally { setSaving(false); }
   };
 
@@ -466,7 +467,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       onChanged();
       const d = await loansApi.get(selected.loan.id); setSelected(d);
       load();
-    } catch (e) { setError(loanErrorMessage(e, t('Failed to submit decision.'))); }
+    } catch (e) { setError(loanErrorMessage(e, t('Failed to submit decision.'), locale)); }
     finally { setSaving(false); }
   };
 
@@ -480,7 +481,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       onChanged();
       const d = await loansApi.get(selected.loan.id); setSelected(d);
       load();
-    } catch (e) { setError(loanErrorMessage(e, t('Failed to record repayment.'))); }
+    } catch (e) { setError(loanErrorMessage(e, t('Failed to record repayment.'), locale)); }
     finally { setSaving(false); }
   };
 
@@ -488,12 +489,12 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
     <>
       <div className="space-y-4">
         {!createModal && !decideModal && !receiptModal && <FormError error={error} />}
-        <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800 dark:bg-blue-900/20 dark:text-blue-200">{t('Request → Approval → Loan Payments → Payment confirmation → Repayment receipts. New loans use separate bank repayments by default.')}</p>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <select value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }} className="select" title={t('Filter by status')}>
             <option value="">{t('All Statuses')}</option>
             {['Pending', 'Approved', 'Active', 'Overdue', 'Settled', 'Rejected', 'Closed'].map((s) => <option key={s} value={s}>{s === 'Approved' ? t('Approved — awaiting payment') : enumLabel(t, 'LoanStatus', s)}</option>)}
           </select>
+          <p data-testid="loan-flow-note" className="min-w-0 flex-1 text-xs text-slate-500 dark:text-slate-400">{t('Request → Approval → Loan Payments → Payment confirmation → Repayment receipts. New loans use separate bank repayments by default.')}</p>
           <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer', notes: '' }); setSelectedEmployee(null); setEligibility(null); setPreview(null); setOfferedTypes(null); setOfferedTypesSettled(false); setRequestException(false); setConsentDocumentId(null); setCheckedKey(''); setError(''); setCreateModal(true); }} className="btn-primary">
             <Plus className="h-4 w-4" /> {t('New Loan Request')}
           </button>
@@ -503,7 +504,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Loan #', 'Employee', 'Type / Repayment', 'Requested', 'Approved', 'Outstanding', 'Installment', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h === '#' || h === '' ? h : t(h)}</th>
+                  <th key={h} className="whitespace-nowrap px-2.5 py-2 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h === '#' || h === '' ? h : t(h)}</th>
                 ))}
               </tr>
             </thead>
@@ -516,15 +517,15 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
                 <tr><td colSpan={10} className="py-12 text-center text-slate-400">{t('No loans found')}</td></tr>
               ) : items.map((l) => (
                 <tr key={l.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03] cursor-pointer" onClick={() => openDetail(l)}>
-                  <td className="px-4 py-3 font-mono text-xs text-slate-500">{l.loanNumber}</td>
-                  <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{l.employeeName}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.loanTypeName}<span className="block text-xs text-slate-500">{t(repaymentMethodLabels[l.repaymentMethod])}</span></td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(l.requestedAmount, l.currency)}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.approvedAmount > 0 ? fmt(l.approvedAmount, l.currency) : '—'}</td>
-                  <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{fmt(l.outstandingBalance, l.currency)}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.installmentAmount > 0 ? fmt(l.installmentAmount, l.currency) : '—'}</td>
-                  <td className="px-4 py-3"><StatusBadge status={l.status} />{l.reviewRequired && <span className="mt-1 block text-xs text-amber-700 dark:text-amber-300">{t('HR review required')}</span>}</td>
-                  <td className="px-4 py-3 text-sapphire text-xs"><button type="button" onClick={e => { e.stopPropagation(); openDetail(l); }} aria-label={`View loan ${l.loanNumber}`}>{t('View →')}</button></td>
+                  <td className="whitespace-nowrap px-2.5 py-2 font-mono text-xs text-slate-500">{l.loanNumber}</td>
+                  <td className="whitespace-nowrap px-2.5 py-2 font-medium text-slate-900 dark:text-white">{l.employeeName}</td>
+                  <td className="px-2.5 py-2 text-slate-600 dark:text-slate-300">{l.loanTypeName}<span className="block text-xs text-slate-500">{t(repaymentMethodLabels[l.repaymentMethod])}</span></td>
+                  <td className="whitespace-nowrap px-2.5 py-2 text-slate-600 dark:text-slate-300">{fmt(l.requestedAmount, l.currency)}</td>
+                  <td className="whitespace-nowrap px-2.5 py-2 text-slate-600 dark:text-slate-300">{l.approvedAmount > 0 ? fmt(l.approvedAmount, l.currency) : '—'}</td>
+                  <td className="whitespace-nowrap px-2.5 py-2 font-semibold text-slate-900 dark:text-white">{fmt(l.outstandingBalance, l.currency)}</td>
+                  <td className="whitespace-nowrap px-2.5 py-2 text-slate-600 dark:text-slate-300">{l.installmentAmount > 0 ? fmt(l.installmentAmount, l.currency) : '—'}</td>
+                  <td className="whitespace-nowrap px-2.5 py-2"><StatusBadge status={l.status} />{l.reviewRequired && <span className="mt-1 block text-xs text-amber-700 dark:text-amber-300">{t('HR review required')}</span>}</td>
+                  <td className="whitespace-nowrap px-2.5 py-2 text-sapphire text-xs"><button type="button" onClick={e => { e.stopPropagation(); openDetail(l); }} aria-label={`View loan ${l.loanNumber}`}>{t('View →')}</button></td>
                 </tr>
               ))}
             </tbody>
@@ -615,7 +616,8 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             <LoanConsentAttach loan={selected.loan} self={self} onAttached={() => { void loansApi.get(selected.loan.id).then(setSelected); load(); }} />
             {selected.loan.reviewRequired && <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">{t('HR review required: {reason} Open Reviews & Changes for the review history and next action.', { reason: selected.loan.reviewReason || t('Employment details have changed.') })}</p>}
             <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
-              {selected.loan.status === 'Approved' ? t('Approved and awaiting disbursement. Finance must process this loan in Loan Payments and confirm the completed payment.') : selected.loan.status === 'Pending' ? t('Awaiting the next approval decision. Approval does not send funds.') : selected.loan.status === 'Active' ? t('Repayment method: {method}. {note}', { method: t(repaymentMethodLabels[selected.loan.repaymentMethod]), note: selected.loan.repaymentMethod === 'PayrollDeduction' ? t('Scheduled installments are collected through payroll.') : t('Finance records receipts after payments are received.') }) : t('Repayment method: {method}.', { method: t(repaymentMethodLabels[selected.loan.repaymentMethod]) })}
+              {selected.loan.status === 'Approved' && selected.paymentBatchId ? t('This loan is in a payment batch. Open Loan Payments to see the batch, and record the payment there after the bank transfer.')
+                : selected.loan.status === 'Approved' ? t('Approved and awaiting disbursement. Finance must process this loan in Loan Payments and confirm the completed payment.') : selected.loan.status === 'Pending' ? t('Awaiting the next approval decision. Approval does not send funds.') : selected.loan.status === 'Active' ? t('Repayment method: {method}. {note}', { method: t(repaymentMethodLabels[selected.loan.repaymentMethod]), note: selected.loan.repaymentMethod === 'PayrollDeduction' ? t('Scheduled installments are collected through payroll.') : t('Finance records receipts after payments are received.') }) : t('Repayment method: {method}.', { method: t(repaymentMethodLabels[selected.loan.repaymentMethod]) })}
             </p>
             <div className="grid grid-cols-3 gap-3 text-sm">
               <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400 mb-1">{t('Employee')}</p><p className="font-semibold text-slate-900 dark:text-white">{selected.loan.employeeName}</p></div>
@@ -895,6 +897,8 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
   const openPayout = (a: SalaryAdvance) => { setSelected(a); setPayoutForm({ paidDate: localDateToday(), reference: '', notes: '' }); setError(''); setPayoutModal(true); };
   const refreshOpenDetail = async (id: string) => { if (detailOpen && selected?.id === id) { try { setDetail(await advancesApi.get(id, ownAccounts)); } catch { /* the list reload shows the failure */ } } };
 
+  // The first repayment date, from what is already loaded: the open detail's schedule, else the advance's own start date.
+  const payoutRepaymentStart = selected ? (detail?.advance.id === selected.id ? detail.installments[0]?.dueDate : undefined) ?? selected.repaymentStartDate : undefined;
   const payout = async () => {
     if (!selected) return;
     if (!payoutForm.reference.trim()) { setError(t('Enter the bank or cash reference of the payment.')); return; }
@@ -1151,6 +1155,7 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
         <FormError error={error} />
         <div className="space-y-3">
           <p className="text-sm text-slate-500">{t('Record the payment of {amount} to {name} once the money has actually been sent. Whoever approved the advance, and the employee it pays, cannot record its payout.', { amount: selected ? fx.plain.money(selected.approvedAmount, currencyCode) : '', name: selected?.employeeName ?? '' })}</p>
+          {payoutRepaymentStart && <p className="text-sm text-slate-500" data-testid="payout-repayment-start">{t('Recording the payout posts the journal and starts repayment on {date}.', { date: fx.plain.date(payoutRepaymentStart) })}</p>}
           <FormField label={t('Paid date')} required hint={t('Not in the future, and not before the advance was requested.')}>
             <DatePicker aria-label={t('Paid date')} value={payoutForm.paidDate} onChange={(v) => setPayoutForm(x => ({ ...x, paidDate: v }))} />
           </FormField>
@@ -1841,6 +1846,12 @@ function AuditReportTab() {
   const { currencyCode } = useTenantSettings();
   const fx = useFormat();
   const fmt = (n: number) => fx.plain.money(n, currencyCode);
+  // A loan-book amount: the single total when the book is in one currency, otherwise one figure per currency.
+  const auditMoney = (audit: { byCurrency?: { currency: string; [k: string]: number | string }[] } & Record<string, unknown>, total: string, part: string) => {
+    const rows = (audit.byCurrency ?? []).map(r => ({ currency: r.currency, amount: Number(r[part] ?? 0) }));
+    if (rows.length > 1) return moneyByCurrency(rows, (n, c) => fx.plain.money(n, c)) ?? '—';
+    return fx.plain.money(Number(audit[total] ?? 0), rows[0]?.currency ?? (audit.currencyCode as string | undefined) ?? currencyCode);
+  };
   const [loanAudit, setLoanAudit] = useState<any>(null);
   const [advanceAudit, setAdvanceAudit] = useState<any>(null);
   const [bonusAudit, setBonusAudit] = useState<any>(null);
@@ -1893,8 +1904,10 @@ function AuditReportTab() {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <SummaryCard label={t('Total Loans')} value={loanAudit.totalLoans} icon={CreditCard} color="text-blue-600 dark:text-blue-400" />
             <SummaryCard label={t('Active')} value={loanAudit.activeLoans} icon={TrendingUp} color="text-emerald-600 dark:text-emerald-400" />
-            <SummaryCard label={t('Total Disbursed')} value={fmt(loanAudit.totalDisbursed)} icon={DollarSign} color="text-sapphire" />
-            <SummaryCard label={t('Outstanding')} value={fmt(loanAudit.totalOutstanding)} icon={AlertTriangle} color="text-amber-600 dark:text-amber-400" />
+            {/* Amounts per currency: a book in several currencies has no single total (the server sends null for it). */}
+            <SummaryCard label={t('Total Disbursed')} value={auditMoney(loanAudit, 'totalDisbursed', 'disbursed')} icon={DollarSign} color="text-sapphire" />
+            <SummaryCard label={t('Outstanding')} value={auditMoney(loanAudit, 'totalOutstanding', 'outstanding')} icon={AlertTriangle} color="text-amber-600 dark:text-amber-400" />
+            {(loanAudit.overdueLoans ?? 0) > 0 && <SummaryCard label={t('Overdue loans')} value={loanAudit.overdueLoans} icon={AlertTriangle} color="text-rose-600 dark:text-rose-400" />}
           </div>
           <div className="surface overflow-hidden">
             <p className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">{t('Reconciliation — Loan Register')}</p>
@@ -2037,7 +2050,7 @@ export function LoansPage() {
   }, [summaryVersion, activeTab, canViewFinanceModules, companyVersion]);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{ownAccounts ? t('My Loans') : canViewFinanceModules ? t('Loans, Advances & Bonuses') : t('Team Loans')}</h1>

@@ -362,10 +362,10 @@ public static class CustomBankTemplateStarters
     /// </summary>
     public static readonly IReadOnlyList<CustomBankStarterDto> All = new[]
     {
-        new CustomBankStarterDto(GenericCsv, "Mudad/bank generic CSV (verify with your bank)", true,
+        new CustomBankStarterDto(GenericCsv, "Generic bank CSV (verify with your bank)", true,
             CustomBankTemplates.AcceptanceStatus, new CustomBankTemplateDefinition
             {
-                Name = "Mudad/bank generic CSV (verify with your bank)",
+                Name = "Generic bank CSV (verify with your bank)",
                 SampleReference = "Starter: not modelled on any bank's sample. Compare with your bank's sample file before approving.",
                 Layout = CustomBankTemplates.Delimited, Encoding = CustomBankTemplates.Utf8, LineEnding = CustomBankTemplates.Crlf,
                 FileExtension = "csv", Delimiter = ",", QuoteRule = CustomBankTemplates.QuoteMinimal, HeaderRow = true,

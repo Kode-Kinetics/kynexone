@@ -324,7 +324,7 @@ export const loansApi = {
     client.post(`/api/finance/loans/${id}/repayments`, body).then(r => r.data),
 
   audit: (params: { status?: string; period?: string } = {}) =>
-    client.get<{ totalLoans: number; activeLoans: number; settledLoans: number; pendingLoans: number; totalDisbursed: number; totalOutstanding: number; totalRepaid: number; reconciliation: { loanNumber: string; employeeName: string; loanTypeName: string; status: string; approvedAmount: number; actualDisbursedAmount: number; totalRepaid: number; outstandingBalance: number; isReconciled: boolean }[] }>('/api/finance/loans/audit', { params }).then(r => r.data),
+    client.get<{ totalLoans: number; activeLoans: number; overdueLoans?: number; settledLoans: number; pendingLoans: number; totalDisbursed: number | null; totalOutstanding: number | null; totalRepaid: number | null; currencyCode?: string | null; byCurrency?: { currency: string; count: number; disbursed: number; outstanding: number; repaid: number }[]; reconciliation: { loanNumber: string; employeeName: string; loanTypeName: string; status: string; approvedAmount: number; actualDisbursedAmount: number; totalRepaid: number; outstandingBalance: number; isReconciled: boolean }[] }>('/api/finance/loans/audit', { params }).then(r => r.data),
 };
 
 export const loanPaymentBatchesApi = {

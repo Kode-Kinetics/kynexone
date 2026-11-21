@@ -1,6 +1,6 @@
 {
   "_readme": "Pinned by e2e/i18n-coverage.spec.ts. Counts may not go up. Each Wave PR repins (`npm run i18n:repin`) and commits this file, so the baseline never lags more than one PR. Repin refuses increases unless I18N_ALLOW_INCREASE=1 and allowIncreaseReason is set here. Never hand-edit a number upward.",
-  "pinnedAt": "2026-11-15",
+  "pinnedAt": "2026-11-20",
   "increaseLog": [
     {
       "pinnedAt": "2026-10-06",
@@ -152,11 +152,11 @@
     }
   ],
   "totals": {
-    "hardcoded": 2446,
-    "rawStatus": 19,
-    "locale": 164,
+    "hardcoded": 2354,
+    "rawStatus": 17,
+    "locale": 159,
     "icons": 0,
-    "files": 111
+    "files": 106
   },
   "fragmentKeys": [
     ", ",
@@ -372,11 +372,7 @@
       "locale": 3
     },
     "src/components/Logo.tsx": {
-      "hardcoded": 5
-    },
-    "src/components/MfaEnrollmentPrompt.tsx": {
-      "hardcoded": 4,
-      "locale": 1
+      "hardcoded": 4
     },
     "src/components/ModuleGate.tsx": {
       "hardcoded": 5
@@ -433,15 +429,8 @@
       "hardcoded": 42,
       "rawStatus": 2
     },
-    "src/components/loans/LoanPaymentsTab.tsx": {
-      "hardcoded": 35
-    },
     "src/components/loans/LoanPoliciesTab.tsx": {
       "hardcoded": 24,
-      "locale": 1
-    },
-    "src/components/payroll/SaudiBankExportPanel.tsx": {
-      "rawStatus": 1,
       "locale": 1
     },
     "src/components/platform/ComingSoon.tsx": {
@@ -466,8 +455,7 @@
       "hardcoded": 2
     },
     "src/components/recruitment/OfferSendDialog.tsx": {
-      "hardcoded": 13,
-      "rawStatus": 1
+      "hardcoded": 13
     },
     "src/components/recruitment/OfferWorkspace.tsx": {
       "hardcoded": 12
@@ -506,11 +494,8 @@
     "src/views/ComplianceProfilesPage.tsx": {
       "hardcoded": 10
     },
-    "src/views/DashboardPage.tsx": {
-      "hardcoded": 2
-    },
     "src/views/EmployeesPage.tsx": {
-      "hardcoded": 128,
+      "hardcoded": 93,
       "locale": 5
     },
     "src/views/ExEmployeesTable.tsx": {
@@ -523,7 +508,7 @@
       "locale": 3
     },
     "src/views/LeavePage.tsx": {
-      "locale": 2
+      "locale": 1
     },
     "src/views/LoansPage.tsx": {
       "hardcoded": 79,
@@ -548,7 +533,7 @@
     },
     "src/views/RecruitmentPage.tsx": {
       "hardcoded": 5,
-      "locale": 5
+      "locale": 3
     },
     "src/views/ReportsPage.tsx": {
       "hardcoded": 82,
@@ -576,9 +561,6 @@
     },
     "src/views/employees/EmployeeEmploymentSection.tsx": {
       "hardcoded": 18
-    },
-    "src/views/employees/EmployeePayBenefitsSection.tsx": {
-      "hardcoded": 15
     },
     "src/views/employees/EmployeePersonalSection.tsx": {
       "hardcoded": 12

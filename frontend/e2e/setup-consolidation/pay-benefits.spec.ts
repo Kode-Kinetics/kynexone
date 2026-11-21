@@ -99,7 +99,8 @@ test.describe('Benefits by grade in Setup uses the space it has', () => {
         };
       });
       expect(m.top, 'the grid starts in the top half').toBeLessThan(768 * 0.5);
-      expect(m.rowsVisible, 'benefit rows in view without scrolling').toBeGreaterThanOrEqual(5);
+      // 4, not 5: a recorded-only benefit now carries its one-line "not connected yet" note under the name, which costs about one row of height.
+      expect(m.rowsVisible, 'benefit rows in view without scrolling').toBeGreaterThanOrEqual(4);
       expect(m.grades, 'every grade is in view').toBe(matrix.grades.length);
       expect(m.overflowX, 'the page does not scroll sideways').toBeLessThanOrEqual(0);
       expect(errors, 'No application runtime errors').toEqual([]);

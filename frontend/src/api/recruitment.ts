@@ -185,7 +185,19 @@ export interface RequisitionStats {
 
 // ── API ───────────────────────────────────────────────────────────────────────
 
+/** The body of a requisition create or edit (the same fields as POST api/recruitment/requisitions). */
+export interface RequisitionRequestBody {
+  departmentId?: string; departmentName: string; designationId?: string; designationTitle: string; gradeId?: string;
+  headCount: number; employmentType: string; priority: string; justification: string;
+  requiredSkills: string; minExperienceYears?: number; maxExperienceYears?: number;
+  budgetFrom?: number; budgetTo?: number; targetJoiningDate?: string; requestedByName: string;
+}
+
 export const requisitionsApi = {
+  /** The departments the caller may raise a requisition for (their own and any they lead). */
+  myDepartments: () =>
+    client.get<{ items: { id: string; name: string; nameAr?: string }[] }>('/api/recruitment/requisitions/my-departments').then(r => r.data),
+
   list: (params: { status?: string; priority?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ items: ManpowerRequisition[]; total: number }>('/api/recruitment/requisitions', { params }).then(r => r.data),
 
@@ -198,6 +210,10 @@ export const requisitionsApi = {
     requiredSkills: string; minExperienceYears?: number; maxExperienceYears?: number;
     budgetFrom?: number; budgetTo?: number; targetJoiningDate?: string; requestedByName: string;
   }) => client.post<ManpowerRequisition>('/api/recruitment/requisitions', body).then(r => r.data),
+
+  /** Edit a Draft or Rejected requisition; the API sets it back to Draft (and clears the rejection reason). */
+  update: (id: string, body: RequisitionRequestBody) =>
+    client.put<ManpowerRequisition>(`/api/recruitment/requisitions/${id}`, body).then(r => r.data),
 
   submit: (id: string) =>
     client.post<ManpowerRequisition>(`/api/recruitment/requisitions/${id}/submit`).then(r => r.data),
@@ -410,7 +426,23 @@ export const workforcePlanningApi = {
     client.get<{ totalPlans: number; draft: number; approved: number; inProgress: number; totalGap: number; totalBudget: number }>('/api/recruitment/workforce-planning/summary', { params: { year } }).then(r => r.data),
 };
 
+/** An interview the signed-in person is named on (GET /api/recruitment/interviews/mine): the candidate and job, no contact details. */
+export interface MyInterview {
+  id: string; applicationId: string; interviewType: string; scheduledAt: string; durationMinutes: number;
+  mode: string; location: string; meetingLink: string; status: string; candidateName: string; jobTitle: string;
+}
+
 export const interviewsApi = {
+  mine: () =>
+    client.get<{ total: number; items: MyInterview[] }>('/api/recruitment/interviews/mine').then(r => r.data),
+
+  /** The caller's own scorecard on an interview they are on (a line manager on the panel): overall score and notes only, never the shared verdict. */
+  recordFeedback: (id: string, body: { overallRating: number; recommendation: string; feedbackNotes: string }) =>
+    client.post(`/api/recruitment/interviews/${id}/feedback`, {
+      communicationScore: 0, technicalScore: 0, cultureFitScore: 0, problemSolvingScore: 0, leadershipScore: 0,
+      overallScore: body.overallRating, recommendation: body.recommendation, notes: body.feedbackNotes,
+    }).then(r => r.data),
+
   list: (applicationId?: string, status?: string, page = 1, pageSize?: number) =>
     client.get<{ total: number; items: InterviewSchedule[] }>('/api/recruitment/interviews', { params: { applicationId, status, page, pageSize } }).then(r => r.data),
 

@@ -1,5 +1,6 @@
 'use client';
 
+import { moneyByCurrency } from '../lib/exitDebts';
 import { useConfirm } from '../components/ui/useConfirm';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiErrorReason, notifyApiError } from '../api/client';
@@ -65,13 +66,13 @@ function KpiCard({ label, value, sub, definition, drill }: {
   const { t } = useLocale();
   const withheld = value == null;
   return (
-    <div className="surface flex flex-col p-4">
+    <div className="surface flex min-w-0 flex-col p-3">
       <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{label}</p>
-      <p className={`mt-1 font-semibold ${withheld ? 'text-sm text-slate-400' : 'text-2xl text-slate-900 dark:text-white'}`}>{withheld ? t('Restricted') : value}</p>
-      {withheld ? <p className="mt-0.5 text-xs text-slate-400">{t('Needs access to this data')}</p> : sub && <p className="mt-0.5 text-xs text-slate-400">{sub}</p>}
+      <p className={`mt-0.5 font-semibold ${withheld ? 'text-sm text-slate-400' : 'text-xl text-slate-900 dark:text-white'}`}>{withheld ? t('Restricted') : value}</p>
+      {withheld ? <p className="text-xs text-slate-400">{t('Needs access to this data')}</p> : sub && <p className="text-xs text-slate-400">{sub}</p>}
       <p className="mt-1 text-caption leading-snug text-slate-500 dark:text-slate-400">{definition}</p>
       {drill && !withheld && (
-        <Link href={drill.href} className="mt-2 text-xs font-semibold text-sapphire underline underline-offset-2">{drill.label}</Link>
+        <Link href={drill.href} className="mt-1.5 text-xs font-semibold text-sapphire underline underline-offset-2">{drill.label}</Link>
       )}
     </div>
   );
@@ -170,7 +171,7 @@ function AnalyticsDashboard() {
   const allFailed = failedCount === Object.keys(ANALYTICS_SOURCE_LABELS).length;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3">
       {failedCount > 0 && (
         <div role="alert" className="flex items-center justify-between gap-3 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-400">
           <span>
@@ -187,9 +188,10 @@ function AnalyticsDashboard() {
         <div className="surface p-4 text-sm text-slate-400">KPI summary unavailable</div>
       ) : kpis && (
         <>
+          <div className="grid gap-x-4 gap-y-3 lg:grid-cols-3" data-testid="kpi-groups">
           <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Workforce</h3>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">Workforce</h3>
+            <div className="grid grid-cols-2 gap-2">
               <KpiCard label={t('Active Employees')} value={kpis.headcount.totalActive} definition={t('Employees whose status is Active.')}
                 drill={{ href: '/people?status=Active', label: t('Show these employees') }} />
               <KpiCard label={t('New This Month')} value={kpis.headcount.newThisMonth} definition={t('Employees whose joining date falls in this calendar month.')} />
@@ -199,8 +201,8 @@ function AnalyticsDashboard() {
             </div>
           </div>
           <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Today</h3>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">Today</h3>
+            <div className="grid grid-cols-2 gap-2">
               <KpiCard label={t('Present Today')} value={kpis.attendance.presentToday} definition={t("Today's attendance records marked present, late or half day.")} />
               <KpiCard label={t('Late Today')} value={kpis.attendance.lateToday} definition={t("Today's attendance records with late minutes.")} />
               <KpiCard label={t('On Leave')} value={kpis.leave.onLeaveToday} definition={t('Approved leave requests that cover today.')} />
@@ -209,20 +211,24 @@ function AnalyticsDashboard() {
             </div>
           </div>
           <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Finance & Compliance</h3>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">Finance & Compliance</h3>
+            <div className="grid grid-cols-2 gap-2">
               <KpiCard label={t('Pending OT')} value={kpis.overtime.pendingOT} definition={t('Overtime requests waiting for a decision.')} />
-              <KpiCard label={t('Active Loans')} value={kpis.financial.activeLoans} sub={t('Outstanding: {amount}', { amount: fmt(kpis.financial.outstandingLoanBalance) })}
-                definition={t('Active employee loans. Outstanding is what is still to be repaid on them.')}
+              <KpiCard label={t('Active Loans')} value={kpis.financial.activeLoans} sub={(kpis.financial.outstandingLoanBalanceByCurrency?.length ?? 0) > 1
+                  // Several currencies: one figure per currency, never one total adding them together.
+                  ? t('Outstanding by currency: {amounts}', { amounts: moneyByCurrency(kpis.financial.outstandingLoanBalanceByCurrency ?? [], (n, c) => `${c} ${fmt(n)}`) ?? '—' })
+                  : t('Outstanding: {amount}', { amount: fmt(kpis.financial.outstandingLoanBalance) })}
+                definition={t('Open employee loans, overdue ones included. Outstanding is what is still to be repaid on them, per currency.')}
                 drill={{ href: '/reports?report=finance.loan-balance', label: t('Open the Loan Balance report') }} />
               <KpiCard label={t('Visas Expiring (30d)')} value={kpis.compliance.visasExpiring} definition={t('Active visas that expire in the next 30 days.')} />
               <KpiCard label={t('Passports Expiring (30d)')} value={kpis.compliance.passportsExpiring} definition={t('Active passports that expire in the next 30 days.')} />
             </div>
           </div>
+          </div>
           {kpis.payroll.lastRunYear && (
             <div>
-              <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Last Payroll Run</h3>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">Last Payroll Run</h3>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                 <KpiCard label={t('Period')} value={`${kpis.payroll.lastRunYear}-${String(kpis.payroll.lastRunMonth).padStart(2, '0')}`}
                   definition={t('The latest pay period with a payroll run. Draft and voided runs are not counted.')}
                   drill={{ href: '/payroll', label: t('Open the payroll runs') }} />
@@ -911,7 +917,7 @@ export function ReportsPage() {
   useEffect(() => { if (requestedReport) setActiveTab('library'); }, [requestedReport]);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Reports & Analytics')}</h1>
         <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">

@@ -341,18 +341,19 @@ public class BenefitPayrollTests
     }
 
     [Theory]
-    [InlineData("Coverage", false)]
-    [InlineData("SalaryAllowance", true)]
-    [InlineData("PayrollDeduction", true)]
-    [InlineData("Reimbursement", true)]
-    public async Task CanonicalAuthority_NeverExecutesLegacyPaymentTerms(string delivery, bool needsReconciliation)
+    [InlineData("Coverage")]
+    [InlineData("SalaryAllowance")]
+    [InlineData("PayrollDeduction")]
+    [InlineData("Reimbursement")]
+    public async Task CanonicalAuthority_NeverExecutesLegacyPaymentTerms_AndNeverStopsThePayroll(string delivery)
     {
+        // Under release_a the legacy terms are skipped (never paid, never a reason to stop the company's run); the run
+        // names each skipped enrolment as a warning (LegacyEnrollmentUnderReleaseATests).
         await using var db = Db();
         var f = await Seed(db, delivery: delivery);
         db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = f.Tenant, FeatureKey = "release_a", IsEnabled = true });
         await db.SaveChangesAsync();
-        if (needsReconciliation) await Assert.ThrowsAsync<BenefitPaymentException>(() => Stage(db, f));
-        else Assert.Empty(await Stage(db, f));
+        Assert.Empty(await Stage(db, f));
         Assert.Empty(db.PayrollAdjustments);
     }
 

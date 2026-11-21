@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle2, Info } from 'lucide-react';
 import type { PayrollGLJournal, PostedGlJournal } from '../../api/payroll';
 import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
+import { glAccountName } from '../../lib/glAccountName';
 import { erpAccountingDate, hasCostCentres, journalTitle } from '../../lib/glJournalView';
 import { Badge } from '../gl/glUi';
 
@@ -20,20 +21,20 @@ export function PostedJournalsView({ journal }: { journal: PayrollGLJournal }) {
   const others = journals.filter(j => j !== accrual);
 
   return (
-    <section data-testid="gl-posted-journals" className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div className="surface p-4">
+    <section data-testid="gl-posted-journals" className="space-y-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="surface px-4 py-2.5">
           <p className="text-xs text-slate-500 dark:text-slate-400">{t('Period')}</p>
-          <p className="text-lg font-semibold text-slate-900 dark:text-white">{journal.period}</p>
+          <p className="text-base font-semibold text-slate-900 dark:text-white">{journal.period}</p>
         </div>
-        <div className="surface p-4" data-testid="gl-headline-debits">
+        <div className="surface px-4 py-2.5" data-testid="gl-headline-debits">
           <p className="text-xs text-slate-500 dark:text-slate-400">{t('Total debits')}</p>
-          <p className="text-lg font-semibold tabular-nums text-sapphire dark:text-cyanAccent">{fmt.money(journal.totalDebits, journal.currency)}</p>
+          <p className="text-base font-semibold tabular-nums text-sapphire dark:text-cyanAccent">{fmt.money(journal.totalDebits, journal.currency)}</p>
           <p className="text-caption text-slate-500 dark:text-slate-400">{t('Payroll accrual')}</p>
         </div>
-        <div className="surface p-4" data-testid="gl-headline-credits">
+        <div className="surface px-4 py-2.5" data-testid="gl-headline-credits">
           <p className="text-xs text-slate-500 dark:text-slate-400">{t('Total credits')}</p>
-          <p className="text-lg font-semibold tabular-nums text-sapphire dark:text-cyanAccent">{fmt.money(journal.totalCredits, journal.currency)}</p>
+          <p className="text-base font-semibold tabular-nums text-sapphire dark:text-cyanAccent">{fmt.money(journal.totalCredits, journal.currency)}</p>
           <p className="text-caption text-slate-500 dark:text-slate-400">{t('Payroll accrual')}</p>
         </div>
       </div>
@@ -93,7 +94,7 @@ function JournalBlock({ j, currency }: { j: PostedGlJournal; currency: string })
             {j.entries.map((e, i) => (
               <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                 <td className="break-words px-2 py-2 sm:px-3 text-slate-700 dark:text-slate-300">
-                  <span className="me-2 font-mono text-xs text-slate-500"><bdi>{e.glAccount}</bdi></span>{e.glAccountName}
+                  <span className="me-2 font-mono text-xs text-slate-500"><bdi>{e.glAccount}</bdi></span>{glAccountName(t, e.glAccountName)}
                   {showCostCentre && e.costCentreCode && (
                     <span className="mt-0.5 block text-caption text-slate-500 dark:text-slate-400 sm:hidden">{t('Cost centre')}: <bdi>{e.costCentreCode}</bdi></span>
                   )}

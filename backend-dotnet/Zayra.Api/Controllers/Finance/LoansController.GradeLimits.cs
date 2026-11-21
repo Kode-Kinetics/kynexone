@@ -238,14 +238,13 @@ public partial class LoansController
     public async Task<IActionResult> ListOfferedLoanTypes([FromQuery] int? employeeIntId, CancellationToken ct)
     {
         var tid = GetTenantId();
-        var uid = GetUserId();
-        employeeIntId ??= await _db.Employees.Where(x => x.TenantId == tid && x.UserAccountId == uid && !x.IsDeleted).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+        employeeIntId ??= await CallerEmployeeIdAsync(ct);
         if (!employeeIntId.HasValue) return BadRequest(new { error = "no_linked_employee", message = "A linked employee is required." });
         var scope = await _scopeService.ResolveAsync(User, tid, ct);
         if (!scope.CanAccessEmployee(employeeIntId.Value)) return Forbid();
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == employeeIntId.Value && !x.IsDeleted, ct);
         if (employee == null) return NotFound();
-        if (!IsHrLoanActor() && !IsFinanceActor() && employee.UserAccountId != uid) return Forbid();
+        if (!IsHrLoanActor() && !IsFinanceActor() && !await IsCallerEmployeeAsync(employee.Id, ct)) return Forbid();
         var types = await _db.LoanTypes.AsNoTracking().Where(x => x.TenantId == tid && !x.IsDeleted && x.IsActive).OrderBy(x => x.NameEn).ToListAsync(ct);
         // Same selection as LoanEligibilityService: the company's own active policy wins over a group-wide one.
         var policies = (await _db.Set<LoanPolicy>().AsNoTracking()

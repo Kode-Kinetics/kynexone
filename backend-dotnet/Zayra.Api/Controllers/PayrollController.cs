@@ -1584,6 +1584,10 @@ public partial class PayrollController : ControllerBase
         // The run's employees' attendance days in its month are now payroll-locked: no range run, correction or late punch
         // may rewrite them (AttendancePayrollLock). A void releases them.
         await AttendancePayrollLock.LockAsync(_db, tenantId, id, run.Year, run.Month, GetUserId(), cancellationToken);
+        // Every slip gets its payslip row here, in this transaction, and every row is published: the web self-service (which
+        // reads the Final slips) and the mobile app (which reads the published payslip rows) then show the same month with the
+        // same net. Rows generated earlier are rebuilt from the locked figures; none is ever created twice.
+        var lockPayslips = await UpsertRunPayslipsAsync(tenantId, id, publishToEss: true, cancellationToken);
         await _db.Payslips.Where(s => s.PayrollRunId == id && s.TenantId == tenantId).ExecuteUpdateAsync(s => s.SetProperty(p => p.IsPublishedToEss, true).SetProperty(p => p.PublishedAtUtc, DateTime.UtcNow), cancellationToken);
         // POD-B2 (M5b) — echo the hold-out count on the Lock audit and response so the last irreversible
         // step before payment restates who is NOT being paid.
@@ -1600,6 +1604,7 @@ public partial class PayrollController : ControllerBase
         await PayrollAudit("payroll.run.locked", "PayrollRun", id.ToString(), new
         {
             glPosted = !alreadyPosted, period,
+            payslipsGenerated = lockPayslips.Generated, payslipsRefreshed = lockPayslips.Refreshed,
             runType = run.RunType, includesRecurringPay = run.IncludesRecurringPay,
             payPeriod = $"{run.Year}-{run.Month:D2}", excludedCount = lockExcludedCount,
             parentRunId = run.ParentRunId,
@@ -1856,8 +1861,10 @@ public partial class PayrollController : ControllerBase
         // Load OT/attendance data so Rules 10+11 fire correctly on /validate too.
         var valPeriodStart = new DateOnly(run.Year, run.Month, 1);
         var valPeriodEnd   = valPeriodStart.AddMonths(1).AddDays(-1);
-        var valLateOvertimeMode = await (_policySettings ?? new Infrastructure.Policy.PolicySettingsService(_db))
-            .GetEnumAsync(tenantId, Infrastructure.Policy.PolicyRegistry.OvertimeLateApprovalMode, cancellationToken);
+        // The company's own overtime_late_approval_mode first, else the account-wide policy, exactly as Process resolves it.
+        var valLateOvertimeMode = (await Infrastructure.Payroll.CompanyPayrollRules.ResolveAsync(_db, tenantId, company.Id, cancellationToken, valPeriodStart)).OvertimeLateApprovalMode
+            ?? await (_policySettings ?? new Infrastructure.Policy.PolicySettingsService(_db))
+                .GetEnumAsync(tenantId, Infrastructure.Policy.PolicyRegistry.OvertimeLateApprovalMode, cancellationToken);
         var valOtRequestIds = await _db.OvertimeRequests.AsNoTracking()
             .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployeesForValidation && r.CompanyId == null)) && r.WorkDate >= valPeriodStart && r.WorkDate <= valPeriodEnd)
             .Select(r => r.Id)
@@ -1912,12 +1919,18 @@ public partial class PayrollController : ControllerBase
             }
         }
 
+        // The instalments Process carried forward are a fact of Process (the loans were left untouched for that part), not
+        // something re-derivable from today's data: carried across the rebuild below, and fed to the zero-net rule.
+        var processDeferrals = await _db.PayrollValidationResults.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.Code == DebtDeferredWarningCode && x.EmployeeId != null)
+            .ToListAsync(cancellationToken);
         var valYtdSources = await PayrollYtdBasis.LoadAsync(
             _db, tenantId, company.Id, run, slips.Select(s => s.EmployeeId).Distinct().ToList(), cancellationToken);
         var ctx     = new PayrollValidationContext(run, slips, employees, salaries, profiles, deductions, earnings, company)
         {
             UnverifiedImportedBankDetails  = await UnverifiedImportedBankDetailsAsync(
                 tenantId, slips.Select(s => s.EmployeeId).ToList(), cancellationToken),
+            DebtDeferredEmployeeIds        = processDeferrals.Select(x => x.EmployeeId!.Value).ToHashSet(),
             OvertimeHoursByEmployee        = valOtHoursByEmp,
             AttendanceProcessedEmployeeIds = valAttendanceEmpIds,
             // Same source as Process, so /validate (which replaces the findings wholesale) keeps the warning.
@@ -1980,8 +1993,33 @@ public partial class PayrollController : ControllerBase
             .ToListAsync(cancellationToken);
         var runSlipEmployeeIds = runSlips.Select(s => s.EmployeeId).ToHashSet();
         results.AddRange(PayPopulationFindings.ToResults(tenantId, id, validationPopulationReport, runSlipEmployeeIds));
+        results.AddRange(processDeferrals.Select(x => new PayrollValidationResult
+        {
+            TenantId = x.TenantId, PayrollRunId = x.PayrollRunId, EmployeeId = x.EmployeeId, Severity = x.Severity, Code = x.Code, Message = x.Message,
+        }));
         results.AddRange(await StandingChangedFindingsAsync(tenantId, run, runSlips.Select(s => (s.EmployeeId, s.EmployeeCode, s.IsFinalWageMonth, s.PaidToDate, s.ProrationBasis)).ToList(),
             employeeIdsForValidation, validationLastWorkingDays, valPeriodStart, valPeriodEnd, cancellationToken));
+
+        // Release A: the legacy enrolments the run did not pay are named again, so a refresh never hides them (BenefitPayroll.LegacySkipWarningsAsync).
+        foreach (var (legacyEmployeeId, legacyMessage) in await Zayra.Api.Infrastructure.Benefits.BenefitPayroll.LegacySkipWarningsAsync(_db, tenantId, company.Id,
+                     employeeIdsForValidation.ToList(), valPeriodStart, valPeriodEnd, cancellationToken))
+            results.Add(new PayrollValidationResult
+            {
+                TenantId = tenantId, PayrollRunId = id, EmployeeId = legacyEmployeeId, Severity = "Warning",
+                Code = Zayra.Api.Infrastructure.Benefits.BenefitPayroll.LegacyEnrollmentSkippedCode, Message = legacyMessage,
+            });
+
+        // The allowances this run paid on held-back terms (a change waiting for Finance) are named again on a refresh, from the run's own lines.
+        var paidAllowanceCodes = (await _db.PayrollEarnings.AsNoTracking().Where(e => e.TenantId == tenantId && e.PayrollRunId == id)
+                .Select(e => e.ComponentCode).Distinct().ToListAsync(cancellationToken))
+            .Where(Zayra.Api.Infrastructure.Entitlements.EntitlementComponentRules.IsAllowance).ToList();
+        foreach (var (heldCode, heldName, heldSince) in await Zayra.Api.Infrastructure.Payroll.CashAllowanceDefinitions.HeldBackAsync(_db, tenantId,
+                     paidAllowanceCodes, company.Id, valPeriodStart, cancellationToken))
+            results.Add(new PayrollValidationResult
+            {
+                TenantId = tenantId, PayrollRunId = id, Severity = "Warning", Code = Zayra.Api.Infrastructure.Payroll.CashAllowanceDefinitions.HeldBackWarningCode,
+                Message = Zayra.Api.Infrastructure.Payroll.CashAllowanceDefinitions.HeldBackMessage(heldName, heldCode, heldSince),
+            });
 
         // Replace stored results with fresh engine output.
         await _db.PayrollValidationResults
@@ -2225,6 +2263,27 @@ public partial class PayrollController : ControllerBase
                 acknowledged    = req.ExpectedPayWarningCount,
             });
 
+        // ── Zero net from unpaid leave: acknowledged the same way, and sealed into the approval's audit entry ─────────────
+        // ZERO_NET_UNPAID_LEAVE is a Warning (it does not block), but the approver states how many such employees they
+        // reviewed, exactly like a cash count, and who acknowledged it and when is the approval audit row below.
+        var zeroNetEmployees = (await _db.PayrollValidationResults.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.EmployeeId != null
+                     && x.Code == Infrastructure.Payroll.PayrollValidationEngine.ZeroNetUnpaidLeave)
+            .Select(x => x.EmployeeId!.Value).Distinct().ToListAsync(cancellationToken)).OrderBy(x => x).ToList();
+        if (zeroNetEmployees.Count > 0 && req.ExpectedZeroNetCount != zeroNetEmployees.Count)
+            return Conflict(new
+            {
+                error        = "zero_net_not_acknowledged",
+                message      = $"{zeroNetEmployees.Count} employee(s) on this run net zero because unpaid leave took the whole wage, so they " +
+                               "are paid nothing this month. Review the ZERO_NET_UNPAID_LEAVE warnings and re-submit with " +
+                               $"expectedZeroNetCount={zeroNetEmployees.Count} to acknowledge.",
+                messageAr    = $"{zeroNetEmployees.Count} من الموظفين في هذا المسير صافي أجرهم صفر لأن الإجازة غير المدفوعة استغرقت الأجر كاملًا، فلا يُصرف لهم شيء هذا الشهر. " +
+                               $"راجع تنبيهات ZERO_NET_UNPAID_LEAVE ثم أعد الإرسال مع expectedZeroNetCount={zeroNetEmployees.Count} للإقرار.",
+                zeroNetCount = zeroNetEmployees.Count,
+                employees    = zeroNetEmployees,
+                acknowledged = req.ExpectedZeroNetCount,
+            });
+
         // ── POD-B3: OVERRIDDEN compliance errors must be acknowledged the same way ────────────────────
         // Restating overrides in a response body is not a control — nobody reads a body they did not ask
         // for. A cash-count match is: the approver must state the number of blocking errors that were
@@ -2289,8 +2348,16 @@ public partial class PayrollController : ControllerBase
                 return Conflict(new
                 {
                     error = "payroll_run_stale_definition",
-                    message = $"The monthly allowance {stale.Code} was corrected from {stale.EffectiveFrom:yyyy-MM} after this run was processed, so its payslips use the old definition. "
-                              + "Nothing was approved. Reopen the run and process it again, then approve it.",
+                    message = stale.NoLongerInEffect
+                        ? $"The monthly allowance {stale.Code} was switched off or ended for {stale.EffectiveFrom:yyyy-MM} after this run was processed, so its payslips pay an allowance "
+                          + "that no longer applies. Nothing was approved. Reopen the run and process it again, then approve it."
+                        : $"The monthly allowance {stale.Code} was corrected from {stale.EffectiveFrom:yyyy-MM} after this run was processed, so its payslips use the old definition. "
+                          + "Nothing was approved. Reopen the run and process it again, then approve it.",
+                    messageAr = stale.NoLongerInEffect
+                        ? $"أُوقف البدل الشهري {stale.Code} أو انتهى لشهر {stale.EffectiveFrom:yyyy-MM} بعد معالجة هذا المسير، لذلك تصرف قسائمه بدلًا لم يعد ساريًا. "
+                          + "لم يُعتمد شيء. أعد فتح المسير وعالجه من جديد، ثم اعتمده."
+                        : $"صُحِّح البدل الشهري {stale.Code} اعتبارًا من {stale.EffectiveFrom:yyyy-MM} بعد معالجة هذا المسير، لذلك تستخدم قسائمه التعريف القديم. "
+                          + "لم يُعتمد شيء. أعد فتح المسير وعالجه من جديد، ثم اعتمده.",
                     componentCode = stale.Code,
                     effectiveFrom = stale.EffectiveFrom.ToString("yyyy-MM-dd"),
                 });
@@ -2326,7 +2393,8 @@ public partial class PayrollController : ControllerBase
                     new { level = "Finance", reason = reconGate.Reason, processVersion = run.ProcessVersion }, cancellationToken);
             // The acknowledged cash/cheque list is sealed here; Lock refuses to freeze any other list.
             await PayrollAudit("payroll.run.approved", "PayrollRun", id.ToString(),
-                new { notes = req.Notes, level = "Finance", paidOutsideBankFile = outsideBankEmployees, policyRelaxation = relaxation }, cancellationToken);
+                new { notes = req.Notes, level = "Finance", paidOutsideBankFile = outsideBankEmployees, policyRelaxation = relaxation,
+                      zeroNetAcknowledged = zeroNetEmployees.Count, zeroNetEmployees }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             onFinanceApproved(run);
             return Ok(run);
@@ -2341,7 +2409,8 @@ public partial class PayrollController : ControllerBase
             if (reconGate.Waived)
                 await PayrollAudit("payroll.recon.approved_without_signoff", "PayrollRun", id.ToString(),
                     new { level = "Payroll", reason = reconGate.Reason, processVersion = run.ProcessVersion }, cancellationToken);
-            await PayrollAudit("payroll.run.payroll_approved", "PayrollRun", id.ToString(), new { notes = req.Notes }, cancellationToken);
+            await PayrollAudit("payroll.run.payroll_approved", "PayrollRun", id.ToString(),
+                new { notes = req.Notes, zeroNetAcknowledged = zeroNetEmployees.Count, zeroNetEmployees }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             return Ok(run);
         }
@@ -2945,6 +3014,9 @@ public partial class PayrollController : ControllerBase
         return null;
     }
 
+    /// <summary>Process's warning that a loan or advance instalment was carried forward (PayrollRunProcessor).</summary>
+    private const string DebtDeferredWarningCode = "WARN_EMI_DEFERRED_PRORATED_PERIOD";
+
     private static string OverrideRefusalMessage(string code) => code switch
     {
         "ALREADY_PAID_THIS_PERIOD" =>
@@ -3258,6 +3330,44 @@ public partial class PayrollController : ControllerBase
     public async Task<IActionResult> GeneratePayslips(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
+        // POD-B3 — a payslip generated AFTER the run is locked must still reach ESS.
+        //
+        // Lock publishes every payslip (and, since the payslip rows are generated by Lock itself, every slip has one), and
+        // the void is the only un-publisher. Regenerating afterwards (the recovery order is void → Replacement run →
+        // process → lock → payment batch) must therefore keep the rows published.
+        //
+        // Publishing is gated on the run being at or past Lock, so this can never publish a Draft or
+        // Processed run early, and never re-publishes a Voided run (the void sets Status="Voided", which
+        // is not in this set) — the un-publish stays sticky exactly as intended.
+        var publishRun = await _db.PayrollRuns.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
+        var publishToEss = publishRun is not null && publishRun.Status is "Locked" or "Paid";
+        var outcome = await UpsertRunPayslipsAsync(tenantId, id, publishToEss, cancellationToken);
+        await PayrollAudit("payroll.payslips.generated", "PayrollRun", id.ToString(),
+            new { generated = outcome.Generated, refreshed = outcome.Refreshed, publishedToEss = outcome.Published }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        // Same header-only projection as ListPayslips — carrying the employee name so the caller never has
+        // to fall back to a placeholder code.
+        var generated = await _db.Payslips.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id)
+            .OrderBy(x => x.EmployeeId).ToListAsync(cancellationToken);
+        var generatedNames = await ResolvePayslipEmployeeNamesAsync(tenantId, id, generated, cancellationToken);
+        return Ok(generated
+            .Select(x => PayslipListItemDto.Project(x, generatedNames[x.EmployeeId].Code, generatedNames[x.EmployeeId].Name))
+            .ToList());
+    }
+
+    /// <summary>What one payslip generation did: rows created, rows whose lines were rebuilt, rows newly published.</summary>
+    private sealed record PayslipUpsertOutcome(int Generated, int Refreshed, int Published);
+
+    /// <summary>
+    /// Creates the Payslip row (header and lines) for every slip of the run that has none, rebuilds the lines of every row that
+    /// exists from the run's current slips, earnings and deductions, and, when <paramref name="publishToEss"/>, publishes them.
+    /// One row per employee per run, whoever calls it and however often: the Generate button, and Lock inside its row-locked
+    /// transaction. Adds and edits are tracked; the caller saves.
+    /// </summary>
+    private async Task<PayslipUpsertOutcome> UpsertRunPayslipsAsync(Guid tenantId, Guid id, bool publishToEss, CancellationToken cancellationToken)
+    {
         var slips = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == id).ToListAsync(cancellationToken);
         // M2: load itemized earnings and deductions for proper payslip line items
         var earnings = await _db.PayrollEarnings.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken);
@@ -3277,26 +3387,16 @@ public partial class PayrollController : ControllerBase
         // disagreeing, permanently, with nothing reporting it. The Payslip ROW is kept (its number and
         // template version are its identity, and DownloadSlipPdf links to it); only its components are
         // rebuilt from the current lines.
-        var existingPayslips = await _db.Payslips
-            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id).ToListAsync(cancellationToken);
-
-        // POD-B3 — a payslip generated AFTER the run is locked must still reach ESS.
         //
-        // Lock is the ONLY writer of IsPublishedToEss (it publishes every payslip that exists at that
-        // moment) and the void is the only un-publisher. Generating slips afterwards therefore produced
-        // rows the employee could never see — permanently, with nothing reporting it. That is a live trap
-        // in exactly the flow this pod exists to make safe: the recovery order is void → Replacement run →
-        // process → lock → payment batch (CreatePaymentBatch requires a Locked run, so "lock, then produce
-        // the documents" is the natural operator sequence), and the void has already un-published the bad
-        // month's payslips. Generate-after-lock would leave the employee with NO visible payslip for the
-        // month at all — the corrected one invisible, the original withdrawn.
-        //
-        // Publishing is gated on the run being at or past Lock, so this can never publish a Draft or
-        // Processed run early, and never re-publishes a Voided run (the void sets Status="Voided", which
-        // is not in this set) — the un-publish stays sticky exactly as intended.
-        var publishRun = await _db.PayrollRuns.AsNoTracking()
-            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, cancellationToken);
-        var publishToEss = publishRun is not null && publishRun.Status is "Locked" or "Paid";
+        // A month's payslips belong to the company that paid it (the run's), never to whatever company the employee is in
+        // today: a new row is stamped with the run's company, so the company write guard checks the locker against the run's
+        // company and an employee moved to a sister company since cannot roll the whole Lock back. Existing rows are read
+        // across the tenant by run id, so a row the caller's company filter would hide is refreshed, never inserted twice.
+        var runCompanyId = await _db.PayrollRuns.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.Id == id).Select(r => r.CompanyId).FirstOrDefaultAsync(cancellationToken);
+        var existingPayslips = await Infrastructure.Data.ScopedBypass.TenantWide(_db.Payslips, tenantId,
+                "A run's payslip rows are matched by run id across the tenant, so a row of an employee since moved to a sister company is refreshed, not duplicated; the run's own company scope was checked by the caller.")
+            .Where(x => x.PayrollRunId == id).ToListAsync(cancellationToken);
 
         var refreshed = 0;
         var published = 0;
@@ -3305,7 +3405,7 @@ public partial class PayrollController : ControllerBase
             var payslip = existingPayslips.FirstOrDefault(x => x.EmployeeId == slip.EmployeeId);
             if (payslip is null)
             {
-                payslip = new Payslip { TenantId = tenantId, PayrollRunId = id, EmployeeId = slip.EmployeeId, PayslipNumber = $"PS-{slip.EmployeeCode}-{DateTime.UtcNow:yyyyMMddHHmmss}", PayslipTemplateId = defaultTemplate };
+                payslip = new Payslip { TenantId = tenantId, CompanyId = runCompanyId, PayrollRunId = id, EmployeeId = slip.EmployeeId, PayslipNumber = $"PS-{slip.EmployeeCode}-{DateTime.UtcNow:yyyyMMddHHmmss}", PayslipTemplateId = defaultTemplate };
                 _db.Payslips.Add(payslip);
             }
             else
@@ -3337,18 +3437,7 @@ public partial class PayrollController : ControllerBase
                 published++;
             }
         }
-        await PayrollAudit("payroll.payslips.generated", "PayrollRun", id.ToString(),
-            new { generated = slips.Count - refreshed, refreshed, publishedToEss = published }, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-        // Same header-only projection as ListPayslips — carrying the employee name so the caller never has
-        // to fall back to a placeholder code.
-        var generated = await _db.Payslips.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id)
-            .OrderBy(x => x.EmployeeId).ToListAsync(cancellationToken);
-        var generatedNames = await ResolvePayslipEmployeeNamesAsync(tenantId, id, generated, cancellationToken);
-        return Ok(generated
-            .Select(x => PayslipListItemDto.Project(x, generatedNames[x.EmployeeId].Code, generatedNames[x.EmployeeId].Name))
-            .ToList());
+        return new PayslipUpsertOutcome(slips.Count - refreshed, refreshed, published);
     }
 
     /// <summary>
@@ -3531,7 +3620,10 @@ public partial class PayrollController : ControllerBase
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (run is null) return NotFound();
 
-        var slips    = await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == id).ToListAsync(cancellationToken);
+        // A zero net has no payable line: the payment batch and the wage file leave it out (PaymentBatchExclusions), so the
+        // pre-check does too, instead of reporting an INVALID_NET_SALARY the file will never contain.
+        var slips    = (await _db.PayrollSlips.AsNoTracking().Where(x => x.TenantId == tenantId && x.RunId == id).ToListAsync(cancellationToken))
+            .Where(x => x.NetSalary != 0m).ToList();
         var profiles = await _db.EmployeePayrollProfiles.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(cancellationToken);
         var empIds   = slips.Select(s => s.EmployeeId).Distinct().ToList();
         var employees = await _db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && empIds.Contains(e.Id)).ToListAsync(cancellationToken);
@@ -4107,6 +4199,8 @@ public partial class PayrollController : ControllerBase
                 .Select(x => new { x.EmployeeId, x.Amount, x.Status })
                 .ToListAsync(cancellationToken);
             var d4Failed = d4Records.Where(x => PaymentRecordStatuses.IsFailed(x.Status)).ToList();
+            var d4Returned = d4Failed.Where(x => string.Equals(x.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase)).ToList();
+            var d4Rejected = d4Failed.Where(x => string.Equals(x.Status, PaymentRecordStatuses.Rejected, StringComparison.OrdinalIgnoreCase)).ToList();
             var d4Unconfirmed = d4Records
                 .Where(x => !PaymentRecordStatuses.IsConfirmed(x.Status) && !PaymentRecordStatuses.IsCancelled(x.Status))
                 .ToList();
@@ -4114,15 +4208,21 @@ public partial class PayrollController : ControllerBase
                 return UnprocessableEntity(new
                 {
                     error   = "payments_not_reconciled",
-                    message = "This batch cannot reach Reconciled while payments are returned or unconfirmed by the "
-                            + "bank. Import the bank/WPS response (POST payment-batches/{id}/bank-confirmations) and "
-                            + "resolve any returns first — reconciling now would close the month over money that "
-                            + "came back or was never confirmed.",
-                    returnedCount = d4Failed.Count,
-                    returnedTotal = d4Failed.Sum(x => x.Amount),
+                    message = Infrastructure.Finance.BankOutcomeMessages.NotReconciled(d4Returned.Count, d4Rejected.Count, d4Unconfirmed.Count),
+                    messageAr = Infrastructure.Finance.BankOutcomeMessages.NotReconciledAr(d4Returned.Count, d4Rejected.Count, d4Unconfirmed.Count),
+                    // Returned (the money came back) and rejected ("Not paid: rejected by bank") are counted apart.
+                    returnedCount = d4Returned.Count,
+                    returnedTotal = d4Returned.Sum(x => x.Amount),
+                    rejectedCount = d4Rejected.Count,
+                    rejectedTotal = d4Rejected.Sum(x => x.Amount),
                     unconfirmedCount = d4Unconfirmed.Count,
                     unconfirmedTotal = d4Unconfirmed.Sum(x => x.Amount),
                 });
+
+            // CTO ruling N4: a line held for a person (a rejection after Paid, a duplicate refusal, a returned/rejected swap)
+            // keeps the batch open, even when every record reads Paid.
+            if (await HeldBankLinesRefusalAsync(tenantId, batch.Id, Infrastructure.Finance.BankOutcomeMessages.ReconcileAction, cancellationToken) is { } heldRefusal)
+                return heldRefusal;
         }
 
         batch.WpsStatus = req.Status;
@@ -4449,6 +4549,10 @@ public partial class PayrollController : ControllerBase
             return BadRequest(new { error = "run_not_locked", message = "Only a Locked run can be settled." });
         if (batch.WpsStatus != WpsStatuses.Accepted)
             return BadRequest(new { error = "batch_not_accepted", message = $"Only an Accepted payment batch can be settled (current: {batch.WpsStatus}). Mark the WPS/bank file Accepted first." });
+
+        // CTO ruling N4: no cash journal while a line is held for a person: the bank may have refused a salary that reads Paid.
+        if (await HeldBankLinesRefusalAsync(tenantId, batch.Id, Infrastructure.Finance.BankOutcomeMessages.LedgerSettleAction, cancellationToken) is { } settleHeldRefusal)
+            return settleHeldRefusal;
 
         // Accrual must exist — cannot settle an un-accrued run.
         var accrualLines = await _db.FinanceGlEntries
@@ -4894,8 +4998,10 @@ public partial class PayrollController : ControllerBase
         // names the candidates; the tracked rows are read after the locks, so the residual is what payroll left, and payroll, if
         // it comes second, sees the debt already moved. Lock order: the caller holds the batch-payment lock (and, for the bank
         // settlement, the run row); the debt locks come next, loans then advances, each ascending (AcquireDebtLocksAsync).
+        // Every open loan of the leaver not on hold, whatever its repayment method: the same set the settlement run recovered from
+        // (LoanRecoveryScope). A held loan stays open on the loan, as the plan warned.
         System.Linq.Expressions.Expression<Func<EmployeeLoan, bool>> openLoan = l =>
-            l.TenantId == tenantId && l.CompanyId == run.CompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null
+            l.TenantId == tenantId && l.CompanyId == run.CompanyId && !l.IsDeleted && l.CollectionStatus != LoanRecoveryScope.OnHold && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null
             && employeeIds.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0;
         // Only the paying company's advances, as for loans: an advance another legal entity paid (an employee who moved) is that
         // entity's 1410 receivable; this company's settlement neither reclassifies nor reports it. A legacy advance with no company
@@ -5884,6 +5990,22 @@ public partial class PayrollController : ControllerBase
         return Ok(structs.Select(s => SalaryStructureAssignmentDto.Project(s, true, linesByRecord.GetValueOrDefault(s.Id))).ToList());
     }
 
+    /// <summary>CTO ruling N4: the refusal when a batch has a line held for a person; null when none is open.</summary>
+    private async Task<IActionResult?> HeldBankLinesRefusalAsync(Guid tenantId, Guid batchId, string action, CancellationToken ct)
+    {
+        var held = await Infrastructure.Finance.BankOutcomeLedger.OpenHoldsAsync(_db, tenantId, batchId, ct);
+        if (held.Count == 0) return null;
+        var (message, messageAr) = Infrastructure.Finance.BankOutcomeMessages.HeldForPerson(action, held.Count);
+        return UnprocessableEntity(new
+        {
+            error = "bank_lines_held_for_person",
+            action,
+            message,
+            messageAr,
+            heldForPerson = held.Select(Infrastructure.Finance.BankOutcomeLedger.View).ToList(),
+        });
+    }
+
     [HttpGet("payment-batches")]
     [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
     public async Task<IActionResult> ListPaymentBatches([FromQuery] Guid? runId, CancellationToken cancellationToken)
@@ -5949,6 +6071,12 @@ public partial class PayrollController : ControllerBase
             : await _db.PayrollPaymentRecords.AsNoTracking()
                 .Where(r => r.TenantId == tenantId && d4BatchIds.Contains(r.PaymentBatchId))
                 .ToListAsync(cancellationToken);
+        // One read for every batch's bank lines: the open holds for a person count against "presents clean" (N4).
+        var d4Confirmations = d4BatchIds.Count == 0
+            ? new List<BankPaymentConfirmation>()
+            : await _db.BankPaymentConfirmations.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && d4BatchIds.Contains(c.PaymentBatchId))
+                .ToListAsync(cancellationToken);
 
         return Ok(batches.Select(b =>
         {
@@ -5968,11 +6096,14 @@ public partial class PayrollController : ControllerBase
                 b.Id, b.TenantId, b.PayrollRunId, b.BatchNumber, b.PaymentMethod, b.TotalAmount, b.Currency,
                 b.Status, b.WpsStatus, b.WpsStatusChangedAtUtc, b.WpsSubmissionReference, b.WpsRejectionReason,
                 b.CreatedAtUtc,
-                unresolvedReturns = new { count = cov.FailedCount, total = cov.FailedTotal },
+                // Returned only: the money came back. A rejection (never left) is counted apart.
+                unresolvedReturns = new { count = cov.ReturnedCount, total = cov.ReturnedTotal },
+                unresolvedRejections = new { count = cov.RejectedCount, total = cov.RejectedTotal },
                 unconfirmedPayments = new { count = cov.UnconfirmedCount, total = cov.UnconfirmedTotal },
                 confirmationCoverage = cov.ConfirmationCoverage,
-                presentsCleanButIsNot = b.WpsStatus is WpsStatuses.Paid or WpsStatuses.Reconciled
-                                        && (cov.FailedCount > 0 || cov.UnconfirmedCount > 0),
+                presentsCleanButIsNot = Infrastructure.Finance.BankOutcomeLedger.PresentsCleanButIsNot(b.WpsStatus, cov,
+                    Infrastructure.Finance.BankOutcomeLedger.BlockingHolds(
+                        d4Records.Where(r => r.PaymentBatchId == b.Id), d4Confirmations.Where(c => c.PaymentBatchId == b.Id)).Count),
                 acceptanceEvidenceCount = evidence.Count,
                 latestEvidenceId = latestEvidence?.EvidenceId,
                 effectiveWpsStatus = effective,
@@ -6045,7 +6176,9 @@ public partial class PayrollController : ControllerBase
                 r.Status,
                 r.WpsReference,
                 Iban = canSeeIban ? r.Iban : Infrastructure.Payroll.SifFileGenerator.MaskIban(r.Iban),
-                isReturned = PaymentRecordStatuses.IsFailed(r.Status),
+                // Returned = the money came back; Rejected = "Not paid: rejected by bank", it never left.
+                isReturned = string.Equals(r.Status, PaymentRecordStatuses.Returned, StringComparison.OrdinalIgnoreCase),
+                isRejected = string.Equals(r.Status, PaymentRecordStatuses.Rejected, StringComparison.OrdinalIgnoreCase),
                 bankConfirmed = PaymentRecordStatuses.IsConfirmed(r.Status),
                 returnReasonCode = latest is null || latest.Outcome != BankConfirmationOutcomes.Returned ? null : latest.ReasonCode,
                 returnReasonText = latest is null || latest.Outcome != BankConfirmationOutcomes.Returned ? null : latest.ReasonText,
@@ -7898,28 +8031,9 @@ public partial class PayrollController : ControllerBase
     /// establishments. Other countries, and KSA without bank-file settings: the legal entity's own GCC
     /// compliance row, else the tenant-wide row. Null when none is recorded — the caller refuses.
     /// </summary>
-    private async Task<(string? Id, Infrastructure.Payroll.SaudiBankExports.SaudiBankExportIssueDto? Conflict)> ResolveWpsEstablishmentIdAsync(
-        Guid tenantId, Guid? companyId, bool isKsa, CancellationToken ct)
-    {
-        var rows = await _db.GCCComplianceSettings.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.IsActive && (x.CompanyId == null || x.CompanyId == companyId))
-            .Select(x => new { x.CompanyId, x.WpsAgentId })
-            .ToListAsync(ct);
-        var ownAgentId = rows.FirstOrDefault(x => companyId != null && x.CompanyId == companyId && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId;
-        var tenantAgentId = rows.FirstOrDefault(x => x.CompanyId == null && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId;
-        // Decision 10: the company's own MOL establishment number is the authority when it is recorded.
-        var companyValue = companyId is Guid id
-            ? await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == id).Select(c => c.WpsEmployerId).FirstOrDefaultAsync(ct)
-            : null;
-        // A recorded company number is checked only against ids recorded for THIS company. The tenant-wide row is a
-        // fallback for companies with no number of their own: in a group every legal entity has its own establishment,
-        // so the workspace default must not refuse a sister company's file.
-        var agentId = string.IsNullOrWhiteSpace(companyValue) ? ownAgentId ?? tenantAgentId : ownAgentId;
-        string? mol = null;
-        if (isKsa && companyId is Guid c)
-            mol = (await new Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService(_db).GetSettingsAsync(tenantId, c, ct)).MolEstablishmentId;
-        return Infrastructure.Payroll.SaudiBankExports.WpsEstablishmentAuthority.Resolve(companyValue, mol, agentId, isKsa && companyId is not null);
-    }
+    private Task<(string? Id, Infrastructure.Payroll.SaudiBankExports.SaudiBankExportIssueDto? Conflict)> ResolveWpsEstablishmentIdAsync(
+        Guid tenantId, Guid? companyId, bool isKsa, CancellationToken ct) =>
+        Infrastructure.Payroll.SaudiBankExports.WpsEstablishmentResolver.ResolveAsync(_db, tenantId, companyId, isKsa, ct);
 
     /// <summary>Null when the id is usable. KSA applies the [MOL-ESTBID] rule; every country refuses a
     /// missing or all-zero id.</summary>
@@ -9298,7 +9412,8 @@ public partial class PayrollController : ControllerBase
         decimal UnpaidWagesAmount, Guid? WagesPaidByRunId, DateOnly? WagesPaidThroughDate,
         decimal WageBaseDeltaAmount,
         List<FinalSettlementLine> Lines, List<string> Warnings,
-        int NoticePeriodDaysShort, int DaysInMonth, int DaysWorkedInMonth);
+        int NoticePeriodDaysShort, int DaysInMonth, int DaysWorkedInMonth,
+        List<ExitDebtLine> OpenDebts, decimal HeldDebt, decimal UnrecoveredDebt);
 
     private static void ApplyPlan(EmployeeFinalSettlement s, FinalSettlementPlan p)
     {
@@ -9483,6 +9598,11 @@ public partial class PayrollController : ControllerBase
             eosbResult = SafeEosbBreakdown(s.EosbResultJson),
             appliedRule = SafeEosbRule(s.EosbResultJson),
             warnings = plan?.Warnings ?? new List<string>(),
+            // Every open loan and advance of the leaver at this company (any repayment method, held ones flagged), what the
+            // settlement plans to take from each, the held total and what it cannot fund (null where not computed).
+            openDebts = plan?.OpenDebts,
+            heldDebt = plan?.HeldDebt,
+            unrecoveredDebt = plan?.UnrecoveredDebt,
             // Unpaid-leave arrears not yet collected, and leave refunds not yet paid (null where not computed).
             outstandingLeaveDeductions,
             lines = lines.Select(l => new
@@ -9653,10 +9773,13 @@ public partial class PayrollController : ControllerBase
 
         // ── PLANNED debt recovery. Planned only: the run RE-CAPS against the live balance and is the sole
         //    decrement path, so there is exactly one recovery mechanism and no double-recovery to guard. ─
-        var loans = await _db.EmployeeLoans.AsNoTracking()
-            .Where(l => l.TenantId == tenantId && l.CompanyId == companyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue")
-                     && l.EmployeeIntId == employee.Id && l.OutstandingBalance > 0)
+        // Every open loan of this company, whatever its repayment method (LoanRecoveryScope): the run recovers all of them from the
+        // final pay except a loan on hold, which is listed and warned about but never recovered here.
+        var openLoans = await LoanRecoveryScope.OpenLoans(_db.EmployeeLoans.AsNoTracking(), tenantId, companyId)
+            .Where(l => l.EmployeeIntId == employee.Id)
             .ToListAsync(ct);
+        var loans = openLoans.Where(l => !LoanRecoveryScope.IsHeld(l)).ToList();
+        var heldLoans = openLoans.Where(LoanRecoveryScope.IsHeld).ToList();
         // Exactly the advances the settlement run will recover (and the settlement payment will disposition): this company's, and
         // legacy advances with no company. One shared rule, so the plan cannot count an advance another legal entity owns.
         var advances = await Infrastructure.Payroll.AdvanceRecoveryScope.Query(_db, tenantId, companyId).AsNoTracking()
@@ -9728,18 +9851,20 @@ public partial class PayrollController : ControllerBase
 
         // Recovery is planned against what the settlement can actually fund, in a fixed order.
         var recoveryBudget = net;
+        var debtBudget = net;
         decimal loanPlan = 0m, advPlan = 0m, rcvPlan = 0m;
+        var plannedById = new Dictionary<Guid, decimal>();
         foreach (var l in loans.OrderBy(l => l.Id))
         {
-            if (recoveryBudget <= 0m) break;
-            var take = Math.Min(l.OutstandingBalance, recoveryBudget);
-            loanPlan += take; recoveryBudget -= take;
+            if (debtBudget <= 0m) break;
+            var take = Math.Min(l.OutstandingBalance, debtBudget);
+            loanPlan += take; debtBudget -= take; recoveryBudget -= take; plannedById[l.Id] = take;
         }
         foreach (var a in advances.OrderBy(a => a.Id))
         {
-            if (recoveryBudget <= 0m) break;
-            var take = Math.Min(a.OutstandingBalance, recoveryBudget);
-            advPlan += take; recoveryBudget -= take;
+            if (debtBudget <= 0m) break;
+            var take = Math.Min(a.OutstandingBalance, debtBudget);
+            advPlan += take; debtBudget -= take; recoveryBudget -= take; plannedById[a.Id] = take;
         }
         foreach (var r in receivables.OrderBy(r => r.CreatedAtUtc))
         {
@@ -9748,11 +9873,21 @@ public partial class PayrollController : ControllerBase
             rcvPlan += take; recoveryBudget -= take;
         }
         var totalDebt = Math.Round(loans.Sum(l => l.OutstandingBalance) + advances.Sum(a => a.OutstandingBalance), 2);
-        if (totalDebt > Math.Round(loanPlan + advPlan, 2))
-            warnings.Add($"{totalDebt - Math.Round(loanPlan + advPlan, 2):N2} of outstanding loan/advance cannot be " +
+        var unrecoveredDebt = Math.Max(0m, Math.Round(totalDebt - Math.Round(loanPlan + advPlan, 2), 2));
+        if (unrecoveredDebt > 0m)
+            warnings.Add($"{employee.FullName} ({employee.EmployeeCode}): {unrecoveredDebt:N2} {currency} of outstanding loan/advance cannot be " +
                          "funded by this settlement. It is NOT written off: when the settlement is paid, the residual " +
                          "is reclassified to the Employee Overpayment Receivable (1420) up to what 1400/1410 actually " +
                          "carries, and reported when it cannot be.");
+        var heldDebt = Math.Round(heldLoans.Sum(l => l.OutstandingBalance), 2);
+        if (heldDebt > 0m)
+            warnings.Add($"{employee.FullName} ({employee.EmployeeCode}): {heldDebt:N2} {currency} of loan balance is on hold " +
+                         $"({string.Join(", ", heldLoans.Select(l => l.LoanNumber))}) and is NOT recovered by this settlement. It stays " +
+                         "open on the loan until HR releases the hold or Finance records its recovery.");
+        // Every open loan and advance, held ones included, with what this settlement plans to take from each.
+        var openDebts = (await LoanRecoveryScope.ListAsync(_db, tenantId, employee.Id, companyId, allCompanies: false, ct))
+            .Select(d => d with { PlannedRecovery = Math.Round(plannedById.GetValueOrDefault(d.Id), 2) })
+            .ToList();
 
         // [FLAG-COMPLIANCE-KSA] Art. 88 — one week from the end of the contract, two where the WORKER
         // terminated it. Persisted so an overdue settlement is visible on the list view.
@@ -9807,7 +9942,8 @@ public partial class PayrollController : ControllerBase
             wageBaseDelta,
             lines, warnings,
             noticeDaysShort,
-            DateTime.DaysInMonth(lastDay.Year, lastDay.Month), lastDay.Day);
+            DateTime.DaysInMonth(lastDay.Year, lastDay.Month), lastDay.Day,
+            openDebts, heldDebt, unrecoveredDebt);
     }
 
     private Task<string> ResolveCurrencyAsync(Guid tenantId, CancellationToken ct)
@@ -10905,8 +11041,11 @@ public record EmployeeSalaryStructureRequest(int EmployeeId, Guid? SalaryStructu
 /// the bank/WPS file). Required when the run has any.</param>
 /// <param name="ExpectedPayWarningCount">Acknowledges, by count, the employees the run pays with a pay-population
 /// warning (no last working day, "On leave" with no approved leave, deleted but owed wages). Required when it has any.</param>
+/// <param name="ExpectedZeroNetCount">Acknowledges, by count, the employees who net zero because unpaid leave took the whole
+/// wage (ZERO_NET_UNPAID_LEAVE). Required when the run has any.</param>
 public record PayrollDecisionRequest(string? Notes, int? ExpectedExcludedCount = null, int? ExpectedOverriddenCount = null,
-    int? ExpectedOutsideBankCount = null, int? ExpectedUncostedCount = null, int? ExpectedPayWarningCount = null);
+    int? ExpectedOutsideBankCount = null, int? ExpectedUncostedCount = null, int? ExpectedPayWarningCount = null,
+    int? ExpectedZeroNetCount = null);
 /// <param name="ExpectedOutsideBankCount">Only for a run locked before payment methods were frozen: acknowledges,
 /// by count, the cash/cheque employees the batch will leave out of the bank file.</param>
 public record PayrollPaymentBatchRequest(string? PaymentMethod, string? Currency, int? ExpectedOutsideBankCount = null);

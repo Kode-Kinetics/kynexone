@@ -7,6 +7,7 @@ import { useAuth } from '@/src/contexts/AuthContext';
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { useFormat } from '@/src/hooks/useFormat';
 import { useReleaseA } from '@/src/lib/releaseA';
+import { normaliseEmployeePackage } from '@/src/lib/employeeBenefitPackage';
 import { AssignmentLabel, EnrollmentDrawer } from './BenefitEnrollmentDrawer';
 import { BenefitClaimsPanel } from './BenefitClaims';
 import { DependantsPanel } from '../entitlements/DependantsPanel';
@@ -44,7 +45,7 @@ export function EmployeeBenefitsPanel({ employeeId, employeeName, companyId }: E
       const [availablePlans, employeeEnrollments] = await Promise.all([
         benefitsApi.listPlans(companyId ?? undefined), benefitsApi.employeePackage(employeeId),
       ]);
-      setPlans(availablePlans); setData(employeeEnrollments);
+      setPlans(Array.isArray(availablePlans) ? availablePlans : []); setData(normaliseEmployeePackage(employeeEnrollments, employeeId));
     } catch (err) { setError(benefitsErrorMessage(err, t('Could not load employee benefits.'))); }
     finally { setLoading(false); }
   }, [companyId, employeeId, t]);

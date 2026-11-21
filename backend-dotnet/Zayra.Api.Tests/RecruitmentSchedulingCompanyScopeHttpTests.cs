@@ -399,7 +399,7 @@ public sealed class SchedulingScopeFixture : IAsyncLifetime
         db.JobOpenings.Add(new JobOpening { Id = OpeningA, TenantId = TenantId, CompanyId = CompanyA, JobCode = "JOB-A", Title = "Opening A", Status = "Open", HeadCount = 2 });
         db.JobOpenings.Add(new JobOpening { Id = OpeningB, TenantId = TenantId, CompanyId = CompanyB, JobCode = "JOB-B", Title = "Opening B", Status = "Open", HeadCount = 2 });
         db.ManpowerRequisitions.Add(new ManpowerRequisition { Id = RequisitionA, TenantId = TenantId, CompanyId = CompanyA, RequisitionNumber = "MRQ-A", Status = "Draft", DepartmentId = DepartmentA });
-        db.ManpowerRequisitions.Add(new ManpowerRequisition { Id = RequisitionB, TenantId = TenantId, CompanyId = CompanyB, RequisitionNumber = "MRQ-B", Status = "Submitted", DepartmentId = DepartmentB });
+        db.ManpowerRequisitions.Add(new ManpowerRequisition { Id = RequisitionB, TenantId = TenantId, CompanyId = CompanyB, RequisitionNumber = "MRQ-B", Status = "Approved", DepartmentId = DepartmentB });
         db.JobApplications.Add(new JobApplication { Id = ApplicationA, TenantId = TenantId, CompanyId = CompanyA, JobOpeningId = OpeningA, CandidateId = candidateA.Id, CandidateName = "Ann A", JobTitle = "Opening A" });
         db.JobApplications.Add(new JobApplication { Id = ApplicationB, TenantId = TenantId, CompanyId = CompanyB, JobOpeningId = OpeningB, CandidateId = candidateB.Id, CandidateName = "Bob B", JobTitle = "Opening B" });
         db.InterviewSchedules.Add(new InterviewSchedule { Id = InterviewA, TenantId = TenantId, CompanyId = CompanyA, ApplicationId = ApplicationA, InterviewerNames = "Ivy", ScheduledAt = DateTime.UtcNow.AddDays(1), FeedbackNotes = "A notes" });

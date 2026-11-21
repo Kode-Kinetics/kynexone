@@ -557,11 +557,15 @@ public sealed partial class EntitlementMatrixService
         var datesChanged = newFrom != head.EffectiveFrom || newTo != head.EffectiveTo;
         var activeChanged = newActive != head.IsActive;
         var classChanged = policyClass != head.PolicyClass;
+        // The window a paid month is judged against is the one payroll paid: for a change still waiting for Finance, the terms Finance last confirmed.
+        var paidWindow = CashAllowanceDefinitions.KeptTerms(head) is { } paid
+            ? new Window(paid.IsActive, paid.EffectiveFrom, paid.EffectiveTo)
+            : new Window(head.IsActive, head.EffectiveFrom, head.EffectiveTo);
         if (datesChanged || activeChanged)
         {
             if (versions.Count > 1)
                 return Conflict("dates_locked_by_versions", "Finance has corrected this allowance's terms over time, so its dates and active switch can't be changed here.");
-            if (await WindowChangeLockProblemAsync(tid, new Window(head.IsActive, head.EffectiveFrom, head.EffectiveTo), new Window(newActive, newFrom, newTo), openPastCounts: true, ct, owner) is { } locked)
+            if (await WindowChangeLockProblemAsync(tid, paidWindow, new Window(newActive, newFrom, newTo), openPastCounts: true, ct, owner) is { } locked)
                 return locked;
             if (newFrom != head.EffectiveFrom
                 && await ScopedBypass.TenantWide(db.PayComponents, tid, "The unique key counts removed rows: a start date another version of the code already holds is taken.")
@@ -613,11 +617,13 @@ public sealed partial class EntitlementMatrixService
         // The last look before anything is changed (nothing below awaits until the save): a payroll approval that landed since the first check is caught.
         if (BeforeDefinitionSaveHook is { } beforeSave) await beforeSave();
         if ((datesChanged || activeChanged)
-            && await WindowChangeLockProblemAsync(tid, new Window(head.IsActive, head.EffectiveFrom, head.EffectiveTo), new Window(newActive, newFrom, newTo), openPastCounts: true, ct, owner) is { } lateLock)
+            && await WindowChangeLockProblemAsync(tid, paidWindow, new Window(newActive, newFrom, newTo), openPastCounts: true, ct, owner) is { } lateLock)
         {
             db.ChangeTracker.Clear();
             return lateLock;
         }
+        // The terms Finance confirmed, kept before anything below changes them: payroll keeps paying them until the change is confirmed.
+        var keptTerms = repended ? CashAllowanceDefinitions.ConfirmedSnapshot(head) : null;
         var now = DateTime.UtcNow;
         foreach (var version in versions)
         {
@@ -633,7 +639,7 @@ public sealed partial class EntitlementMatrixService
             head.GlDriverKey = newTerms.Driver; head.EosbIncluded = newTerms.EosbIncluded;
             head.EosbExclusionCategory = newTerms.Category; head.EosbExclusionReason = newTerms.Note;
         }
-        if (repended) { head.FinanceConfirmedAtUtc = null; head.FinanceConfirmedByUserId = null; }
+        if (repended) { head.FinanceConfirmedAtUtc = null; head.FinanceConfirmedByUserId = null; head.LastConfirmedTermsJson = keptTerms; }
         if (moneyChanged && head.FinanceConfirmedAtUtc is null) head.CreatedBy = actor.UserId;
         foreach (var row in renamedRows) { row.Code = newCode; row.UpdatedAtUtc = now; row.UpdatedBy = actor.UserId; }
         if (widen)

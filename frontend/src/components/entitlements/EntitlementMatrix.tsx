@@ -28,6 +28,7 @@ import { useFormat } from '../../hooks/useFormat';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { useRetiredBenefitPlans } from '../../hooks/useRetiredBenefitPlans';
 import { InfoTip } from '../InfoTip';
+import { RECORDED_ONLY_NOTE, isRecordedOnlyBenefit } from './packageFormat';
 import { Modal } from '../Modal';
 import { EmptyState } from '../ui/EmptyState';
 import { ResultBanner } from '../ui/ResultBanner';
@@ -646,6 +647,8 @@ function MatrixRow({ layout, onlyGradeId, isNew, component: c, grades, drafts, o
     </div>
     {chip && <span data-testid="row-chip" title={t(chip.title)} className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-caption font-semibold ${chipTone[chip.tone]}`}>
       {chip.key === 'Waiting for Finance' && <Hourglass className="h-3 w-3" aria-hidden="true" />}{t(chip.key)}</span>}
+    {isRecordedOnlyBenefit(c.code) && <span data-testid="recorded-only-note" className="flex items-start gap-1 text-meta text-fg-muted">
+      <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />{t(RECORDED_ONLY_NOTE)}</span>}
     {pending && canFinance && !makerBlocked && <button type="button" className="btn-secondary btn-sm" aria-expanded={financeOpen === 'confirm'} onClick={() => onFinance('confirm')}>
       {t('Review and confirm')}<span className="sr-only"> {name}</span></button>}
     {pending && canFinance && makerBlocked && <span className="block text-meta text-fg-muted" data-testid="maker-cannot-confirm">

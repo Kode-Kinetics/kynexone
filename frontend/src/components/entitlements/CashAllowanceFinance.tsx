@@ -199,6 +199,7 @@ export function FinanceAllowancePanel({ mode, component, name, today, onClose, o
       <p className="text-xs text-slate-500 dark:text-slate-400">{t(confirming
         ? 'Check the GL account and the end of service setting. No grade can be given a value for this allowance, and no salary can carry it, until you confirm.'
         : 'The change starts on the first day of the month you choose. A month a company has already approved or locked cannot be changed.')}</p>
+      {confirming && <p className="text-xs text-slate-500 dark:text-slate-400" data-testid="confirm-committed-months-note">{t('If this allowance was changed after it was confirmed, months already approved or locked keep the terms they were paid on, and the change applies from the next month. Until then the grid shows the terms in effect today.')}</p>}
     </div>
 
     {!confirming && <div className="grid gap-3 sm:grid-cols-2">

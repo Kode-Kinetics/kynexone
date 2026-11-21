@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Recruitment;
@@ -24,6 +26,7 @@ public class WorkforcePlanningController : ControllerBase
     private string GetUserName() => User.FindFirst("name")?.Value ?? User.Identity?.Name ?? "System";
 
     // GET /api/recruitment/workforce-planning
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] int year = 0,
@@ -51,6 +54,7 @@ public class WorkforcePlanningController : ControllerBase
     }
 
     // GET /api/recruitment/workforce-planning/{id}
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
@@ -63,6 +67,7 @@ public class WorkforcePlanningController : ControllerBase
     // POST /api/recruitment/workforce-planning
     [HttpPost]
     [Authorize(Roles = "Admin,HR Manager")]
+    [RefuseHrOfficer]
     public async Task<IActionResult> Create([FromBody] CreateWorkforcePlanRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -117,6 +122,7 @@ public class WorkforcePlanningController : ControllerBase
     // PATCH /api/recruitment/workforce-planning/{id}/status
     [HttpPatch("{id:guid}/status")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [RefuseHrOfficer]
     public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateStatusRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -142,6 +148,7 @@ public class WorkforcePlanningController : ControllerBase
     // DELETE /api/recruitment/workforce-planning/{id}
     [HttpDelete("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [RefuseHrOfficer]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -160,6 +167,7 @@ public class WorkforcePlanningController : ControllerBase
     }
 
     // GET /api/recruitment/workforce-planning/summary
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("summary")]
     public async Task<IActionResult> Summary([FromQuery] int year = 0, CancellationToken ct = default)
     {

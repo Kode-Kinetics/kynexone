@@ -363,6 +363,7 @@ RLS: shape (a) for all three, plus the company-scope predicate for the two tier-
 | `employee_entitlements` | S | Labour-law evidence of the package agreed for each term. Anonymise with the employee only after the S minimum. |
 | `contract_renewal_cases` | S | Evidence of a renewal decision, its notice and its Qiwa outcome. The referenced Qiwa evidence and notice documents must be retained at least as long. |
 | `employee_salary_allowances` | S | Owner: **Payroll Engineering**. The monthly cash allowances a salary record pays; kept as long as the salary record it belongs to (RESTRICT FK). RLS shape (a). |
+| `benefit_usage_requests` | S | Requests to use frozen contract benefits (education, tickets), decided like a loan. Kept as long as the frozen `employee_entitlements` row it measures (RESTRICT FK); anonymise with the employee only after the S minimum. RLS shape (a) + company scope. |
 
 ### T. Selfie attendance and biometric consent (selfie attendance v2)
 
@@ -405,6 +406,17 @@ filter).
 | `hire_templates` | C | Configuration, no personal data. Kept for the life of the company; a soft-deleted row is kept 7 years. Per company, copied (never shared) to a sister company. |
 | `onboarding_checklists` / `onboarding_checklist_template_tasks` | C | Configuration. Same rule. Removing a checklist that raised tasks turns it off instead of deleting it. |
 | `onboarding_tasks` | O | Operational follow-up work per hire; follows the employee record. A task is a copy of its template task, so editing a template never changes it. |
+
+### W. Government and bank integration foundation (live bridge)
+
+**Owner:** Platform / Security Engineering · **Approved by:** Security lead. RLS: shape (a) (live bridge: the `ITenantOwned`
+query filter; company scope through `ICompanyScoped` / `ICompanyScopedOperational`). Both tables ship dark: nothing writes them
+until a body is switched on for a tenant.
+
+| Table | Class | Note |
+|---|---|---|
+| `government_credentials` | T | A credential, not a business record. Kept while the connection is in use; deleted (row and ciphertext) when an authorised user removes it, with its company, or by whole-tenant erasure. Holds only an envelope encrypted under the tenant's DEK, a keyed fingerprint and rotation / last-used metadata. A tenant restored into another deployment arrives without them (the ciphertext is bound to the source KEK and AAD). |
+| `government_exchanges` | E | **Kept; no deletion rule yet.** Attempt history evidencing what was sent to a body and when, kept with the payroll records it evidences (84 months). Deleting a company does not delete it (RESTRICT); only whole-tenant erasure does. Holds hashes, a masked preview and ids only, never a request or response body. A shorter retention for any stored full body is a DPO decision (security R6) and applies to the artifact store, not to this row. |
 
 ---
 

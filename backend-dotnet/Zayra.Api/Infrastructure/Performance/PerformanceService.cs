@@ -158,9 +158,18 @@ public class PerformanceService : IPerformanceService
             .Select(e => e.EmployeeId)
             .ToListAsync(ct);
 
-        var employees = await _db.Employees
-            .Where(e => e.TenantId == tenantId && e.Status == "Active")
-            .ToListAsync(ct);
+        // The cycle's company (and department, when chosen), active, and joined by the end of the review period: someone
+        // who joins after it has nothing to be appraised on in this cycle. No company on the cycle means the whole
+        // tenant, which Launch allows only where the tenant has a single company.
+        var query = _db.Employees.Where(e => e.TenantId == tenantId && e.Status == "Active" && !e.IsDeleted);
+        if (cycle.ReviewPeriodEnd != default)
+        {
+            var joinedBy = DateTime.SpecifyKind(cycle.ReviewPeriodEnd.ToDateTime(TimeOnly.MaxValue), DateTimeKind.Utc);
+            query = query.Where(e => e.JoiningDate <= joinedBy);
+        }
+        if (cycle.CompanyId is Guid companyId) query = query.Where(e => e.CompanyId == companyId);
+        if (cycle.DepartmentId is Guid departmentId) query = query.Where(e => e.DepartmentId == departmentId);
+        var employees = await query.ToListAsync(ct);
 
         var enrolled = 0;
         foreach (var emp in employees)

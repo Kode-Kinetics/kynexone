@@ -119,8 +119,9 @@ async function ensureLinkedLogin(admin: string, companyId: string, employee: { i
   }), `accept the ${persona.role} invitation`, [200, 204]);
 }
 
-/** A published appraisal cycle through the product's own path: launch → manager reviews → final approval → publish. */
-async function ensurePublishedCycle(admin: string): Promise<string> {
+/** A published appraisal cycle through the product's own path: launch → manager reviews → final approval → publish.
+ *  The cycle names the company it appraises: in a tenant with several companies a cycle without one is not launched. */
+async function ensurePublishedCycle(admin: string, companyId: string): Promise<string> {
   // No X-Company-Id: a cycle spans every company, and launching it needs the group scope a company selection narrows.
   const cycles = pageItems(ok(await call('GET', '/api/performance/cycles?page=1&pageSize=100', { token: admin }), 'list cycles').body);
   let cycle = cycles.find((c: any) => c.name === CYCLE_NAME);
@@ -144,8 +145,20 @@ async function ensurePublishedCycle(admin: string): Promise<string> {
         name: CYCLE_NAME, cycleType: 'Annual', reviewPeriodStart: '2025-01-01', reviewPeriodEnd: '2025-12-31', enableCalibration: false,
         enable360Feedback: false, enableSelfAssessment: false, enableForcedDistribution: false, selfAssessmentDeadline: null,
         managerReviewDeadline: null, calibrationDeadline: null, defaultScorecardTemplateId: template.id, notes: 'Succession acceptance seed',
+        companyId,
       },
     }), 'create cycle', [200, 201]).body;
+  } else if (cycle.status === 'Draft' && !cycle.companyId) {
+    // A draft left by an earlier run, from before a cycle named its company.
+    ok(await call('PUT', `/api/performance/cycles/${cycle.id}`, {
+      token: admin,
+      body: {
+        name: cycle.name, cycleType: cycle.cycleType, reviewPeriodStart: cycle.reviewPeriodStart, reviewPeriodEnd: cycle.reviewPeriodEnd,
+        enableCalibration: cycle.enableCalibration, enable360Feedback: cycle.enable360Feedback, enableSelfAssessment: cycle.enableSelfAssessment,
+        enableForcedDistribution: false, selfAssessmentDeadline: cycle.selfAssessmentDeadline, managerReviewDeadline: cycle.managerReviewDeadline,
+        calibrationDeadline: cycle.calibrationDeadline, defaultScorecardTemplateId: cycle.defaultScorecardTemplateId, notes: cycle.notes, companyId,
+      },
+    }), 'name the draft cycle\'s company');
   }
   if (cycle.status === 'Draft') ok(await call('POST', `/api/performance/cycles/${cycle.id}/launch`, { token: admin }), 'launch cycle');
   const reviews = async () => pageItems(ok(await call('GET', `/api/performance/reviews?cycleId=${cycle.id}&pageSize=500`, { token: admin }), 'list reviews').body);
@@ -216,7 +229,7 @@ export async function seedSuccessionWorld(): Promise<SuccessionWorld> {
   const companiesB = pageItems(ok(await call('GET', '/api/companies?page=1&pageSize=100', { token: adminB }), 'list companies (B)').body);
   const positionB = await ensurePosition(adminB, companiesB[0].id, 'SUC-B-CFO', 'Ras Al-Manar CFO');
 
-  const cycleId = await ensurePublishedCycle(admin);
+  const cycleId = await ensurePublishedCycle(admin, companyId);
 
   const hr = await login(INTELLIFLOW_HR_MGR.email, INTELLIFLOW_HR_MGR.password, INTELLIFLOW_SLUG);
   const pathId = await ensureLearningPath(hr, companyId);

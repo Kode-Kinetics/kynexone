@@ -719,7 +719,8 @@ public sealed partial class MigrationImportController : ControllerBase
         var language = Val(row, "PreferredLanguage", "en");
         var timezone = Val(row, "Timezone", "UTC");
         var status = Val(row, "Status", "Invited");
-        var isGroupScope = Bool(row, "IsGroupScope", false);
+        // A blank IsGroupScope means "not stated": an existing login keeps the scope it has; a new one starts company-scoped.
+        bool? isGroupScope = string.IsNullOrWhiteSpace(Val(row, "IsGroupScope")) ? null : Bool(row, "IsGroupScope", false);
         var names = Val(row, "RoleNames").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         List<Role>? roles = null;
         if (names.Length > 0)
@@ -740,7 +741,7 @@ public sealed partial class MigrationImportController : ControllerBase
 
         // ── Mutate (nothing below can throw) ──
         user ??= new User { TenantId = tenantId, Email = email, NormalizedEmail = normalized, PasswordHash = ImportPlaceholderHash(), MustChangePassword = true, IsEmailConfirmed = false };
-        user.Email = email; user.NormalizedEmail = normalized; user.FullName = fullName; user.PhoneNumber = phone; user.PreferredLanguage = language; user.Timezone = timezone; user.Status = status; user.IsActive = status == "Active"; user.IsGroupScope = isGroupScope;
+        user.Email = email; user.NormalizedEmail = normalized; user.FullName = fullName; user.PhoneNumber = phone; user.PreferredLanguage = language; user.Timezone = timezone; user.Status = status; user.IsActive = status == "Active"; if (isGroupScope is bool stated) user.IsGroupScope = stated;
         var assigned = new List<string>();
         if (roles is not null)
         {

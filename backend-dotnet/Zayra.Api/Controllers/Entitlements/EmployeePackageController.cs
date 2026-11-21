@@ -7,6 +7,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Contracts;
 using Zayra.Api.Application.Entitlements;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Entitlements;
@@ -62,7 +63,10 @@ public sealed class EmployeePackageController : ControllerBase
             try { preview = await new EntitlementWriter(_db, _clock, _resolver).PreviewAsync(tid, active.Id, ct); }
             catch (EntitlementWriteRefusedException) { preview = null; }
         }
-        return Ok(EmployeePackageView.From(resolved, context, proposal, preview, this.GetUserId()));
+        var view = EmployeePackageView.From(resolved, context, proposal, preview, this.GetUserId());
+        // Salary figures are pay data: only a caller holding employees.sensitive sees them (as on every other view of pay). entitlements.read alone
+        // (a custom role, or Finance confirming allowances) sees the package's shape without the salary amounts.
+        return Ok(User.HasPermission("employees.sensitive") ? view : view.WithoutSalaryAmounts());
     }
 
     /// <summary>
@@ -118,6 +122,7 @@ public sealed class EmployeePackageController : ControllerBase
         if (this.GetTenantId() is not Guid tid) return Unauthorized();
         var employee = await VisibleEmployeeAsync(tid, employeeId, ct);
         if (employee is null) return EmployeeNotFound();
+        if (await OwnPackageRefusalAsync(tid, employeeId, ct) is { } own) return own;
         var contract = await OwnContractAsync(tid, employee.PublicId, req.ContractId, ct);
         if (contract is null)
             return Refused(PackageReasons.ContractNotFound, "That contract isn't one of this employee's.", StatusCodes.Status404NotFound);
@@ -163,6 +168,7 @@ public sealed class EmployeePackageController : ControllerBase
         if (this.GetTenantId() is not Guid tid) return Unauthorized();
         var employee = await VisibleEmployeeAsync(tid, employeeId, ct);
         if (employee is null) return EmployeeNotFound();
+        if (await OwnPackageRefusalAsync(tid, employeeId, ct) is { } own) return own;
         var contract = await OwnContractAsync(tid, employee.PublicId, req.ContractId, ct);
         if (contract?.CompanyId is not Guid companyId)
             return Refused(PackageReasons.ContractNotFound, "That contract isn't one of this employee's.", StatusCodes.Status404NotFound);
@@ -294,8 +300,20 @@ public sealed class EmployeePackageController : ControllerBase
             return (null, null, Refused(PackageReasons.ProposalClosed, "This proposal was already decided."));
         var employee = await VisibleEmployeeAsync(tid, proposal.EmployeeId, ct);
         if (employee is null) return (null, null, EmployeeNotFound());
+        // The subject never decides: the person the package is about cannot confirm or reject their own proposal, whoever asked for it.
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tid, this.GetUserId(), proposal.EmployeeId, ct))
+            return (null, null, BadRequest(SubjectDecisionBar.Refusal(OwnPackageRefusalEn, OwnPackageRefusalAr)));
         return (proposal, employee, null);
     }
+
+    /// <summary>The subject never decides: the person a package is about cannot fix or propose it, any more than confirm or reject it.</summary>
+    private async Task<IActionResult?> OwnPackageRefusalAsync(Guid tid, int employeeId, CancellationToken ct) =>
+        await SubjectDecisionBar.CallerIsSubjectAsync(_db, tid, this.GetUserId(), employeeId, ct)
+            ? BadRequest(SubjectDecisionBar.Refusal(OwnPackageRefusalEn, OwnPackageRefusalAr))
+            : null;
+
+    private const string OwnPackageRefusalEn = "This package is about you. Another HR user must decide it.";
+    private const string OwnPackageRefusalAr = "هذه الباقة تخصّك. يجب أن يقرّر فيها مستخدم آخر في الموارد البشرية.";
 
     /// <summary>Inside the per-employee lock: a proposal is decided once, however many people press the button at once.</summary>
     private async Task EnsureUndecidedAsync(Guid tid, Guid batchId, Guid contractId, CancellationToken ct)
@@ -413,7 +431,8 @@ public sealed record EmployeePackageView(
     PackageFreezeStatusDto FreezeStatus,
     int DependantsOnFile,
     PackageProposalDto? Proposal,
-    IReadOnlyDictionary<string, ComponentLabel> Labels)
+    IReadOnlyDictionary<string, ComponentLabel> Labels,
+    bool SalaryAmountsHidden = false)
 {
     public static EmployeePackageView From(ResolvedPackage resolved, PackageViewContext c, OpenProposal? proposal, FreezePreview? preview, Guid? viewer)
     {
@@ -462,6 +481,32 @@ public sealed record EmployeePackageView(
                 proposal.Proposal.From, proposal.Proposal.To, proposal.Proposal.Rows, proposal.Proposal.Skips),
             c.Labels);
     }
+}
+
+public static class EmployeePackageViewMasking
+{
+    /// <summary>The same view without the employee's salary figures: the salary record (basic salary) is left out, and every line read from the salary
+    /// record, or worked out from it (a multiple of housing, a percentage of basic), loses its amounts; a rate stays (it is the grade's, not the
+    /// employee's pay). <see cref="EmployeePackageView.SalaryAmountsHidden"/> tells the screen why the amounts are missing. The benefits, the grade
+    /// standard and the contract benefits are unchanged.</summary>
+    public static EmployeePackageView WithoutSalaryAmounts(this EmployeePackageView view) => view with
+    {
+        Salary = null,
+        SalaryAmountsHidden = true,
+        Package = view.Package with
+        {
+            Lines = view.Package.Lines.Select(l => l.Source == PackageLineSources.Salary
+                    ? l with { Amount = null, MonthlyCash = null, ResolvedAmount = null }
+                    : l.Rate is not null ? l with { ResolvedAmount = null } : l).ToList(),
+        },
+        // A frozen or proposed row's resolved figure is worked out from the salary (25% of basic = 2,000): with the grade's rate beside it, it gives the
+        // salary away. Left out too.
+        FrozenRows = view.FrozenRows.Select(r => r with { ResolvedAmount = null }).ToList(),
+        Proposal = view.Proposal is null ? null : view.Proposal with
+        {
+            Rows = view.Proposal.Rows.Select(r => r with { ResolvedAmount = null, ResolvedBasisSalaryId = null }).ToList(),
+        },
+    };
 }
 
 public sealed record PackageGradeDto(Guid Id, string Code, string Name, string? NameAr, int Level);

@@ -690,10 +690,16 @@ public class DashboardController : ControllerBase
             // payDate: neither PayrollRun nor PayrollPaymentBatch stores a scheduled pay date. The only
             // stored payment date is the bank's value date on an APPLIED "Paid" confirmation line for
             // one of this run's (non-voided) payment batches; the latest such date is reported, and a
-            // run not yet confirmed paid by a bank file reports null.
+            // run not yet confirmed paid by a bank file reports null. A person's reasoned exit to Paid
+            // (a DUPL line confirmed as the original payment received) counts like an applied Paid line, but the
+            // ORIGINAL Paid line's date wins when one exists: the duplicate line's date is not when the money left.
             var runId = latestRun.Id;
             var valueDate = await _db.BankPaymentConfirmations
-                .Where(c => c.TenantId == tenantId && c.Applied && c.Outcome == BankConfirmationOutcomes.Paid
+                .Where(c => c.TenantId == tenantId
+                    && ((c.Applied && c.Outcome == BankConfirmationOutcomes.Paid)
+                        || (c.HoldReason == Infrastructure.Finance.BankOutcomeHolds.DuplicateOriginalReceivedConfirmed
+                            && !_db.BankPaymentConfirmations.Any(orig => orig.TenantId == tenantId && orig.PaymentRecordId == c.PaymentRecordId
+                                && orig.Applied && orig.Outcome == BankConfirmationOutcomes.Paid)))
                     && c.ValueDate != null
                     && _db.PayrollPaymentBatches.Any(b => b.Id == c.PaymentBatchId && b.TenantId == tenantId
                         && b.PayrollRunId == runId && b.WpsStatus != WpsStatuses.Voided))

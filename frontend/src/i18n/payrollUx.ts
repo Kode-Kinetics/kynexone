@@ -52,12 +52,17 @@ const ar: Record<string, string> = {
   'Create a payment batch for this run, or open one from the list.': 'أنشئ دفعة دفع لهذا المسير أو افتح إحدى الدفعات من القائمة.',
   'Needs the Payroll export permission. Ask an administrator.': 'تتطلب صلاحية «تصدير الرواتب». اطلب ذلك من مسؤول النظام.',
   'Bank file export is switched off for this company. Ask the platform team.': 'تصدير ملف البنك متوقف لهذه الشركة. اطلب من فريق المنصة تفعيله.',
-  'The availability check failed. Use Retry in the bank file section.': 'فشل التحقق من الإتاحة. استخدم «إعادة المحاولة» في قسم ملف البنك.',
-  'The check found blockers. Fix them in the bank file section, then check again.': 'وجد التحقق عوائق. عالجها في قسم ملف البنك ثم تحقق مجددًا.',
   'Waits for a successful check.': 'بانتظار نجاح التحقق.',
   'Waits for the bank file.': 'بانتظار ملف البنك.',
   'Download the files, send them to your bank, then record the batch as submitted in Payment Tracking.': 'نزّل الملفات وأرسلها إلى بنكك ثم سجّل الدفعة «مُرسلة» في تتبع المدفوعات.',
   'Open Payment Tracking': 'فتح تتبع المدفوعات',
+  // Validation tab: the zero-net warning (unpaid leave took the whole month's wage and a loan or advance instalment was carried forward).
+  'Zero net pay from a full month of unpaid leave': 'صافي أجر صفري بسبب إجازة غير مدفوعة طوال الشهر',
+  '{count} employee(s) net zero this month: unpaid leave took the whole wage. Any loan or advance instalment they owe is carried forward to the next run, not written off. Nothing is paid to them, so they are left out of the bank file. This is a warning, not a block: check the leave, then acknowledge it when approving.': '{count} من الموظفين صافي أجرهم صفر هذا الشهر: استغرقت الإجازة غير المدفوعة الأجر كاملًا. يُرجأ أي قسط قرض أو سلفة مستحق عليهم إلى المسير التالي دون إسقاطه. لا يُصرف لهم شيء، لذلك لا يُدرجون في ملف البنك. هذا تنبيه وليس مانعًا: راجع الإجازة ثم أقرّ به عند الاعتماد.',
+  'Net pay is zero: unpaid leave took the whole wage this month. Any loan or advance instalment is carried forward to the next run, not written off.': 'صافي الأجر صفر: استغرقت الإجازة غير المدفوعة الأجر كاملًا هذا الشهر. يُرجأ أي قسط قرض أو سلفة إلى المسير التالي دون إسقاطه.',
+  '{zeroNetCount} employee(s) net zero because unpaid leave took the whole wage': '{zeroNetCount} من الموظفين صافي أجرهم صفر لأن الإجازة غير المدفوعة استغرقت الأجر كاملًا',
+  'They are paid nothing this month and are left out of the bank file. Any loan or advance instalment is carried forward, not written off. Check the leave before approving.': 'لا يُصرف لهم شيء هذا الشهر ولا يُدرجون في ملف البنك. يُرجأ أي قسط قرض أو سلفة دون إسقاطه. راجع الإجازة قبل الاعتماد.',
+  'I have reviewed the list and confirm exactly {zeroNetCount} employee(s) net zero this month.': 'راجعت القائمة وأؤكد أن عدد الموظفين الذين صافي أجرهم صفر هذا الشهر هو {zeroNetCount} بالضبط.',
 };
 
 export const payrollUx = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) };

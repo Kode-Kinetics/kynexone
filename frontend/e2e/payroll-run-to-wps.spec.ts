@@ -77,7 +77,7 @@ function parseAmount(raw: string): number {
 
 /**
  * Everything is scoped to <main>. The sidebar carries its own "Approvals", "Payroll" and
- * "Finance & Talent" entries, so an unscoped getByRole/getByText would match the shell and either
+ * "Finance" entries, so an unscoped getByRole/getByText would match the shell and either
  * click the wrong control or trip strict mode.
  */
 const content = (page: Page): Locator => page.locator('main');
@@ -94,19 +94,21 @@ async function openAs(
   return page;
 }
 
-/** Land on the payroll module and prove it rendered before touching anything. */
+/** Land on the payroll module and prove it rendered before touching anything (the run bar and the section nav are the shell). */
 async function gotoPayroll(page: Page): Promise<void> {
   await page.goto('/payroll', { waitUntil: 'domcontentloaded' });
-  await expect(content(page).getByRole('heading', { name: 'Payroll Management' })).toBeVisible({
-    timeout: 30_000,
-  });
+  await expect(content(page).locator('#pipeline-run-picker')).toBeVisible({ timeout: 30_000 });
+  await expect(content(page).getByTestId('payroll-section-nav')).toBeAttached({ timeout: 30_000 });
 }
 
-/** Select the semantic payroll tab and verify React committed the new panel. */
+/** Open a Payroll section from the section nav (links; a folded switcher below 1280px) and verify React committed it. */
 async function openTab(page: Page, label: string): Promise<void> {
-  const tab = content(page).getByRole('tab', { name: label, exact: true });
-  await tab.click();
-  await expect(tab).toHaveAttribute('aria-selected', 'true');
+  const nav = content(page).getByTestId('payroll-section-nav');
+  const link = nav.getByRole('link', { name: label, exact: true });
+  if (!(await link.isVisible())) await content(page).getByTestId('payroll-section-toggle').click();
+  await link.click();
+  await expect(nav.getByRole('link', { name: label, exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(content(page).getByRole('heading', { level: 1, name: label, exact: true })).toBeVisible();
 }
 
 /**
@@ -120,10 +122,11 @@ const periodText = (period: string): RegExp => {
   return new RegExp(`\\b${mon}[a-z]* ${year}(?!\\d)`);
 };
 
-async function selectRun(page: Page, ariaLabel: string, period: string): Promise<string> {
-  const picker = content(page).locator(`select[aria-label="${ariaLabel}"]`);
+async function selectRun(page: Page, period: string): Promise<string> {
+  // One run picker for the whole module: the run bar's. Every section works on the run chosen there.
+  const picker = content(page).locator('#pipeline-run-picker');
   const option = picker.locator('option', { hasText: periodText(period) });
-  await expect(option, `run picker "${ariaLabel}" must offer exactly one ${period} run`).toHaveCount(1);
+  await expect(option, `the run bar's picker must offer exactly one ${period} run`).toHaveCount(1);
   const runId = await option.getAttribute('value');
   expect(runId, `the ${period} option must carry a run id`).toMatch(
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
@@ -140,7 +143,11 @@ const runCard = (page: Page, period: string): Locator =>
 const approvalCard = (page: Page): Locator =>
   content(page).locator('div.surface').filter({ hasText: /^Payroll Run —/ }).first();
 
-/** A Bank/WPS-tab payment batch card. */
+/**
+ * A Bank/WPS-tab payment batch card. The run is created for the whole group (no company chosen), so its batch is not a
+ * Saudi company's and the tab shows the batch list, its records and "Generate WPS/SIF" (the guided bank-file flow is for
+ * a batch whose run belongs to a Saudi company; the API's isSaudi). Steps 6a/1 still see the guided step 1 (no batch yet).
+ */
 const batchCard = (page: Page, number: string): Locator =>
   content(page).locator('[role="button"]').filter({ hasText: number }).first();
 
@@ -265,10 +272,11 @@ test.describe('Payroll — run to WPS file', () => {
 
         // Positive control for every role-shaped assertion below: the module resolved THIS user's
         // roles. Without it, "the final-approve control is absent" could pass on a blank page.
+        // (The Payroll page no longer repeats the role; the top bar names it for every page.)
         await expect(
-          content(maker).getByText('HR / Payroll', { exact: true }),
-          'the payroll module must identify this session as HR / Payroll',
-        ).toBeVisible();
+          maker.getByRole('button', { name: 'Open user menu' }),
+          'the app must identify this session as the HR Manager',
+        ).toContainText('HR Manager');
 
         await openTab(maker, 'Payroll Runs');
         const card = runCard(maker, period);
@@ -284,7 +292,7 @@ test.describe('Payroll — run to WPS file', () => {
         expect(renderedSlips, 'a processed run must render one salary slip per employee').toBeGreaterThan(0);
 
         await openTab(maker, 'Approvals');
-        runId = await selectRun(maker, 'Select payroll run to approve', period);
+        runId = await selectRun(maker, period);
 
         const summary = approvalCard(maker).getByText(/\d+ employees\s*·\s*Gross/);
         await expect(summary, 'the approvals card must state the run size and its totals').toBeVisible();
@@ -397,7 +405,7 @@ test.describe('Payroll — run to WPS file', () => {
       await test.step('3. the finance approver signs off and the run reaches Approved', async () => {
         await gotoPayroll(finance);
         await openTab(finance, 'Approvals');
-        const financeRunId = await selectRun(finance, 'Select payroll run to approve', period);
+        const financeRunId = await selectRun(finance, period);
         expect(financeRunId, 'both personas must be acting on the same run').toBe(runId);
 
         await expect(approvalCard(finance).getByText('Pending finance review', { exact: true })).toBeVisible();
@@ -434,7 +442,7 @@ test.describe('Payroll — run to WPS file', () => {
       await test.step('6a. Create Payment Batch is disabled before the run is locked', async () => {
         await gotoPayroll(admin);
         await openTab(admin, 'Bank / WPS Files');
-        expect(await selectRun(admin, 'Select payroll run', period)).toBe(runId);
+        expect(await selectRun(admin, period)).toBe(runId);
 
         const createBatch = content(admin).getByRole('button', { name: 'Create Payment Batch' });
         await expect(createBatch, 'the Bank/WPS tab must offer the batch control').toBeVisible();
@@ -442,12 +450,16 @@ test.describe('Payroll — run to WPS file', () => {
           createBatch,
           'a payment batch must not be creatable before the run is locked',
         ).toBeDisabled();
+        // The reason sits beside the disabled button and describes it (the step's purpose line repeats the same sentence, so
+        // the reason is located by its role on the page, not by its words alone).
+        const reason = content(admin).getByTestId('bank-guide-primary-reason');
+        await expect(reason, 'the operator must be told why the control is disabled')
+          .toContainText(/a payment batch can only be created once the run is/i);
+        const reasonId = await reason.evaluate((el) => el.closest('[id]')?.id ?? '');
+        await expect(createBatch, 'the disabled control must be described by its reason').toHaveAttribute('aria-describedby', reasonId);
         await expect(
-          content(admin).getByText(/A payment batch can only be created once the run is/),
-          'the operator must be told why the control is disabled',
-        ).toBeVisible();
-        await expect(
-          content(admin).getByText(/This run is\s*Approved\s*\./),
+          // Step 1 of the guided flow states the run's status beside the blocked button.
+          content(admin).getByText(/Run status:\s*Approved/),
           "the notice must name the run's actual current status",
         ).toBeVisible();
       });
@@ -488,7 +500,7 @@ test.describe('Payroll — run to WPS file', () => {
       await test.step('5. payslips are generated one per employee, each with a payslip number', async () => {
         await gotoPayroll(maker);
         await openTab(maker, 'Payslips');
-        expect(await selectRun(maker, 'Select payroll run', period)).toBe(runId);
+        expect(await selectRun(maker, period)).toBe(runId);
 
         await content(maker).getByRole('button', { name: 'Generate Payslips' }).click();
 
@@ -544,13 +556,13 @@ test.describe('Payroll — run to WPS file', () => {
       await test.step('6b. Create Payment Batch is enabled after the lock and the batch totals the run', async () => {
         await gotoPayroll(admin);
         await openTab(admin, 'Bank / WPS Files');
-        expect(await selectRun(admin, 'Select payroll run', period)).toBe(runId);
+        expect(await selectRun(admin, period)).toBe(runId);
 
         const createBatch = content(admin).getByRole('button', { name: 'Create Payment Batch' });
         await expect(createBatch, 'locking the run must enable payment batch creation').toBeEnabled();
         // NEGATIVE, paired with the enabled control above: the blocking notice is gone.
         await expect(
-          content(admin).getByText(/A payment batch can only be created once the run is/),
+          content(admin).getByText(/a payment batch can only be created once the run is/i),
           'the lock warning must disappear once the run is locked',
         ).toHaveCount(0);
 
@@ -647,23 +659,16 @@ test.describe('Payroll — run to WPS file', () => {
         // Back to the browser: the operator's own view must now show the filed batch.
         await gotoPayroll(admin);
         await openTab(admin, 'Bank / WPS Files');
-        expect(await selectRun(admin, 'Select payroll run', period)).toBe(runId);
+        expect(await selectRun(admin, period)).toBe(runId);
 
-        const filedCard = batchCard(admin, batchNumber);
-        await expect(filedCard).toBeVisible({ timeout: 30_000 });
-        // The card badge shows the wage-file (WPS) status once one exists, so a filed batch
-        // reads "Generated"; older builds showed the batch status "File generated".
+        // Reopened, the run's batch is open in the guided Bank / WPS flow: its facts strip names the batch and the amount, and
+        // that flow no longer offers the old register button (the file above was made with the list's own button before the reload).
+        const facts = content(admin).getByTestId('bank-file-facts');
+        await expect(facts, 'the reopened Bank / WPS flow must name the batch').toContainText(batchNumber, { timeout: 30_000 });
+        await expect(facts, "the batch must still show the run's net-pay total").toContainText(netRendered);
+        // NEGATIVE, paired with the two positives above: a batch that already has a wage file offers no re-generate.
         await expect(
-          filedCard,
-          'a batch with a generated wage file must read as Generated',
-        ).toContainText(/(File generated|Generated)(?![a-z])/);
-        await expect(
-          filedCard,
-          "the filed batch must still show the run's net-pay total",
-        ).toContainText(`${currency} ${netRendered}`);
-        // NEGATIVE, paired with the two positives above: a filed batch offers no re-generate.
-        await expect(
-          filedCard.getByRole('button', { name: 'Generate WPS/SIF' }),
+          content(admin).getByRole('button', { name: 'Generate WPS/SIF' }),
           'a batch that already has a wage file must not offer to generate another',
         ).toHaveCount(0);
 

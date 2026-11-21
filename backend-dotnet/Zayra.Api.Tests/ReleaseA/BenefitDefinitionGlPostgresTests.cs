@@ -9,6 +9,7 @@ using Zayra.Api.Controllers;
 using Zayra.Api.Controllers.Entitlements;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Entitlements;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.Seed;
 using Zayra.Api.Models;
 
@@ -113,6 +114,13 @@ public sealed class BenefitDefinitionGlPostgresTests(PostgresFixture fixture)
 
         var off = await PutAsync(w, finance: true, Edit(created, "Car allowance", b => b.IsActive = false));
         Outcome(off).Status.Should().Be(200, JsonSerializer.Serialize(((ObjectResult)off).Value, Web));
+        // Switching it off is a money change another Finance user confirms; until then the last confirmed terms keep paying
+        // (CashAllowanceRependKeepsPayingTests). Once confirmed, it is off.
+        await using (var confirmDb = fixture.CreateDb())
+        {
+            var confirmed = await As(w, finance: true, user: SecondFinanceUser).ConfirmBenefit(new EntitlementMatrixService(confirmDb, new FixedClock(Today)), Code, null, default);
+            Outcome(confirmed).Status.Should().Be(200, JsonSerializer.Serialize(((ObjectResult)confirmed).Value, Web));
+        }
 
         var december = await NewRunAsync(w, 12);
         var refused = await ProcessAsync(w, december);
@@ -120,6 +128,31 @@ public sealed class BenefitDefinitionGlPostgresTests(PostgresFixture fixture)
         await using var db = fixture.CreateDb();
         (await db.PayrollEarnings.AsNoTracking().CountAsync(e => e.PayrollRunId == december)).Should().Be(0);
         (await db.FinanceGlEntries.AsNoTracking().CountAsync(g => g.SourceEntityId == december)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TheConfirmedTermsKeptBetweenAnEditAndItsConfirmation_RoundTripThroughJsonb_AndKeepPaying()
+    {
+        var w = await SeedAsync();
+        var created = await CreateAllowanceAsync(w);
+        await PublishGradeValueAsync(w);
+        await GiveEmployeeTheGradeValueAsync(w);
+
+        var off = await PutAsync(w, finance: true, Edit(created, "Car allowance", b => b.IsActive = false));
+        Outcome(off).Status.Should().Be(200, JsonSerializer.Serialize(((ObjectResult)off).Value, Web));
+
+        await using (var db = fixture.CreateDb())
+        {
+            var row = await db.PayComponents.AsNoTracking().SingleAsync(c => c.TenantId == w.TenantId && c.Code == Code && c.CompanyId == null);
+            (row.IsActive, row.FinanceConfirmedAtUtc).Should().Be((false, (DateTime?)null), "the edit waits for Finance");
+            var kept = CashAllowanceDefinitions.KeptTerms(row);
+            kept.Should().NotBeNull("the jsonb column returns what was written");
+            (kept!.IsActive, kept.GlDriverKey, kept.EosbIncluded, kept.EffectiveFrom).Should().Be((true, CarDriver, true, (DateOnly?)Nov1));
+            var payable = CashAllowanceDefinitions.InEffect((await CashAllowanceDefinitions.VersionsAsync(db, w.TenantId, [Code], default, payable: true))[Code], Nov1);
+            (payable!.IsActive, payable.FinanceConfirmedAtUtc is not null, payable.GlDriverKey).Should().Be((true, true, CarDriver));
+        }
+        var november = await ProcessAsync(w, await NewRunAsync(w, 11));
+        november.Should().BeOfType<OkObjectResult>("the last confirmed terms keep paying while the switch-off waits");
     }
 
     // ── 3. A contract benefit never reaches payroll or the journal ──────────────────────────────
@@ -244,12 +277,13 @@ public sealed class BenefitDefinitionGlPostgresTests(PostgresFixture fixture)
 
     private static readonly Guid HrUser = Guid.NewGuid();
     private static readonly Guid FinanceUser = Guid.NewGuid();
+    private static readonly Guid SecondFinanceUser = Guid.NewGuid();
 
-    private static EntitlementMatrixController As(World w, bool finance)
+    private static EntitlementMatrixController As(World w, bool finance, Guid? user = null)
     {
         var claims = new List<Claim>
         {
-            new("tenant_id", w.TenantId.ToString()), new(ClaimTypes.NameIdentifier, (finance ? FinanceUser : HrUser).ToString()), new(ClaimTypes.Role, "HR Director"),
+            new("tenant_id", w.TenantId.ToString()), new(ClaimTypes.NameIdentifier, (user ?? (finance ? FinanceUser : HrUser)).ToString()), new(ClaimTypes.Role, "HR Director"),
             new(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })),
         };
         if (finance) claims.Add(new Claim("permission", "payroll.approve"));

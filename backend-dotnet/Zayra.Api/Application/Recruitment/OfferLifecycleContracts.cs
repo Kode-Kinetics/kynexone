@@ -25,7 +25,8 @@ public sealed record OfferActor(Guid TenantId, Guid? CompanyId, Guid UserId, str
 public sealed record OfferEmailRequest(long ExpectedVersion, string IdempotencyKey, string Subject, string Message,
     string ReviewedSenderFingerprint, string? ResendReason = null, bool ConfirmResend = false);
 public sealed record OfferMailReadiness(bool Configured, string Mode, string Source, string? FromAddress,
-    string? FromName, bool CanManageSettings, string? BlockedReason, string ConfigurationFingerprint, bool RecipientRestricted);
+    string? FromName, bool CanManageSettings, string? BlockedReason, string ConfigurationFingerprint, bool RecipientRestricted,
+    string? BlockedReasonAr = null);
 [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<OfferReconciliationAction>))]
 public enum OfferReconciliationAction { ApplyRetainedRelayEvidence, RecordConfirmedExternalSending, AuthorizeRiskAcknowledgedResend }
 public sealed record OfferDispatchCancelRequest(long ExpectedVersion, string Reason);
@@ -51,7 +52,8 @@ public sealed record OfferReasonRequest(long ExpectedVersion, string Reason);
 public sealed record OfferCreateInput(DateOnly StartDate, int ProbationMonths, string? OfferedJobTitle = null, string? OfferedDepartment = null,
     Guid? DepartmentId = null, Guid? DesignationId = null, DateTime? ResponseDeadline = null, Guid? TemplateId = null,
     IReadOnlyList<OfferComponentInput>? Components = null, decimal? BasicSalary = null, decimal? HousingAllowance = null,
-    decimal? TransportAllowance = null, decimal? OtherAllowances = null, string? ContentHtml = null, long? ExpectedApplicationVersion = null);
+    decimal? TransportAllowance = null, decimal? OtherAllowances = null, string? ContentHtml = null, long? ExpectedApplicationVersion = null,
+    string? ContractType = null, int? ContractTermMonths = null);
 public sealed record OfferHistoryQuery(string? Search = null, Guid? ApplicationId = null, Guid? CompanyId = null,
     string? Position = null, string? Status = null, string? CommunicationOutcome = null,
     DateTime? IssuedFrom = null, DateTime? IssuedTo = null, int Page = 1, int PageSize = 20);
@@ -64,14 +66,15 @@ public sealed record OfferDetailDto(Zayra.Api.Models.OfferLetter Offer, OfferArt
     string OriginalProvenance, IReadOnlyList<Zayra.Api.Models.OfferApproval> Approvals,
     IReadOnlyDictionary<string, OfferActionCapability> Capabilities, IReadOnlyList<OfferHistoryItem> Revisions,
     IReadOnlyList<string> ChangedFields, string CommunicationOutcome,
-    System.Text.Json.JsonElement? CompensationSnapshot, System.Text.Json.JsonElement? DesignSnapshot);
+    System.Text.Json.JsonElement? CompensationSnapshot, System.Text.Json.JsonElement? DesignSnapshot, string OfferedDepartmentName = "");
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record OfferDraftInput(long ExpectedVersion, long? ReviewedPolicyVersion,
     DateOnly StartDate, DateTime? ResponseDeadline, int ProbationMonths, string RecipientEmail,
     string OfferedJobTitle, string OfferedDepartment, IReadOnlyList<OfferComponentInput>? Components = null,
     decimal? BasicSalary = null, decimal? HousingAllowance = null, decimal? TransportAllowance = null,
     decimal? OtherAllowances = null, Guid? DepartmentId = null, Guid? DesignationId = null,
-    Guid? TemplateId = null, string? DesignJson = null, bool AdoptLegacy = false, string? RecipientChangeReason = null);
+    Guid? TemplateId = null, string? DesignJson = null, bool AdoptLegacy = false, string? RecipientChangeReason = null,
+    string? ContractType = null, int? ContractTermMonths = null);
 public sealed record OfferPolicyDto(Guid CompanyId, string Currency, int Precision,
     IReadOnlyList<string> RequiredComponentCodes, long ExpectedVersion);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

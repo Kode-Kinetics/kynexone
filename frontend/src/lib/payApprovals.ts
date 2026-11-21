@@ -45,3 +45,10 @@ export function reasonError(reason: string): string | null {
 export function maskedAccount(last4: string | null | undefined): string {
   return last4 ? `•••• ${last4}` : '';
 }
+
+/** The queue's search: a case-insensitive match on name, employee code, designation or company. Blank shows everything. */
+export function filterPayApprovals<T extends { name: string; employeeCode: string; designation?: string | null; companyName?: string | null }>(items: T[], query: string): T[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return items;
+  return items.filter(i => [i.name, i.employeeCode, i.designation ?? '', i.companyName ?? ''].some(v => v.toLowerCase().includes(q)));
+}

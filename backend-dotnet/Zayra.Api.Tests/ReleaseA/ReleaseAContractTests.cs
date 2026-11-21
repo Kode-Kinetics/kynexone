@@ -631,8 +631,11 @@ public class ReleaseAContractTests
         string[] keys = ["entitlements.read", "entitlements.manage", "contracts.renewal.read", "contracts.renewal.manage"];
         foreach (var role in new[] { "Admin", "HR Director", "HR Manager" })
             (await Security.SeededRoleBundles.PermissionsOfAsync(db, tenantId, role)).Should().Contain(keys, role);
-        foreach (var role in new[] { "Payroll Manager", "HR Officer", "Finance", "Employee" })
+        foreach (var role in new[] { "HR Officer", "Finance", "Employee" })
             (await Security.SeededRoleBundles.PermissionsOfAsync(db, tenantId, role)).Should().NotContain(keys, role);
+        // Company Finance confirms monthly cash allowances on Benefits by grade: read only, never the other three (FinanceEntitlementsReadGrantTests).
+        foreach (var role in new[] { "Payroll Manager", "Finance Approver" })
+            (await Security.SeededRoleBundles.PermissionsOfAsync(db, tenantId, role)).Where(k => keys.Contains(k)).Should().Equal(["entitlements.read"], role);
     }
 
     private static string Signature(Type type, string method)

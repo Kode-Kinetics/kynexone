@@ -8,12 +8,18 @@ import { launchLeave } from './launchLeave';
 import { launchCompliance } from './launchCompliance';
 import { launchAttendance } from './launchAttendance';
 import { launchRecruitment } from './launchRecruitment';
+import { managerRecruitment } from './managerRecruitment';
 import { launchNewHires } from './launchNewHires';
 import { essWorkspace } from './essWorkspace';
+import { essJobs } from './essJobs';
+import { recruitmentFixesA } from './recruitmentFixesA';
+import { recruitmentFixesB } from './recruitmentFixesB';
+import { recruitmentFixesC } from './recruitmentFixesC';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { hireWizard } from './hireWizard';
 import { demoFixes } from './demoFixes';
+import { overtimeSettings } from './overtimeSettings';
 import { settledService } from './settledService';
 import { onboardingP3 } from './onboardingP3';
 import { setupExperience } from './setupExperience';
@@ -25,6 +31,7 @@ import { payrollCostCentres } from './payrollCostCentres';
 import { glErp } from './glErp';
 import { payrollGlUi } from './payrollGlUi';
 import { payrollUx } from './payrollUx';
+import { bankFileGuide } from './bankFileGuide';
 import { statutoryRules } from './statutoryRules';
 import { glApiKeys } from './glApiKeys';
 import { signInSecurity } from './signInSecurity';
@@ -37,10 +44,12 @@ import { approvalChanges } from './approvalChanges';
 import { compensation } from './compensation';
 import { learning } from './learning';
 import { succession } from './succession';
+import { appraisalsUi } from './appraisalsUi';
 import { glEosb } from './glEosb';
 import { glLeaveProvision } from './glLeaveProvision';
 import { belowMinimum } from './belowMinimum';
 import { loanBatchApprover } from './loanBatchApprover';
+import { loanExit } from './loanExit';
 import { deadEnds } from './deadEnds';
 import { leaveDocument } from './leaveDocument';
 import { recruitmentDemo } from './recruitmentDemo';
@@ -57,6 +66,7 @@ import { payrollPipeline } from './payrollPipeline';
 import { payrollRecon } from './payrollRecon';
 import { payrollVariance } from './payrollVariance';
 import { launchPolish } from './launchPolish';
+import { glAccountNames } from './glAccountNames';
 import { polishB } from './polishB';
 import { statusTail } from './statusTail';
 import { complianceActions } from './complianceActions';
@@ -78,8 +88,10 @@ import { setupRollout } from './setupRollout';
 import { attendanceRules } from './attendanceRules';
 import { payrollRules } from './payrollRules';
 import { heldPay } from './heldPay';
+import { appraisalCycle } from './appraisalCycle';
 import { gradePackage } from './gradePackage';
 import { appChrome } from './appChrome';
+import { peopleList } from './peopleList';
 import { removalSafety } from './removalSafety';
 import { companyStructure } from './companyStructure';
 import { dailyA } from './dailyA';
@@ -119,12 +131,14 @@ const en: Dict = {
   ...launchCompliance.en,
   ...launchAttendance.en,
   ...launchRecruitment.en,
+  ...managerRecruitment.en,
   ...launchNewHires.en,
   ...benefitPlanForm.en,
   // Create-company wizard (./companyWizard). First, so an existing app-wide entry for the same key wins.
   ...removalSafety.en,
   ...companyStructure.en,
   ...appChrome.en,
+  ...peopleList.en,
   ...dailyA.en,
   ...attendanceBulk.en,
   ...attendanceDashboard.en,
@@ -150,6 +164,7 @@ const en: Dict = {
   ...attendanceRules.en,
   ...payrollRules.en,
   ...heldPay.en,
+  ...appraisalCycle.en,
   ...gradePackage.en,
   ...employeeWorkspace.en,
   "Navigation could not be resumed. Try the action again.": "Navigation could not be resumed. Try the action again.",
@@ -1653,6 +1668,11 @@ const en: Dict = {
 
   // Self-Service workspace — see ./essWorkspace.
   ...essWorkspace.en,
+  // Self-Service open positions — see ./essJobs.
+  ...essJobs.en,
+  ...recruitmentFixesA.en,
+  ...recruitmentFixesB.en,
+  ...recruitmentFixesC.en,
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.en,
   // Payroll's attendance check before Process — see ./payrollAttendance.
@@ -1665,6 +1685,8 @@ const en: Dict = {
   ...payrollVariance.en,
   // Launch polish: payment readiness, compliance, home and offer sentences — see ./launchPolish.
   ...launchPolish.en,
+  // The seeded chart-of-accounts names, so a journal reads in Arabic — see ./glAccountNames.
+  ...glAccountNames.en,
   // Saudi Compliance action items and GOSI findings — see ./complianceActions.
   ...complianceActions.en,
   // Rules-engine findings on the home dashboard — see ./insights.
@@ -1674,6 +1696,7 @@ const en: Dict = {
   ...employeeCompletion.en,
   ...hireWizard.en,
   ...demoFixes.en,
+  ...overtimeSettings.en,
   ...settledService.en,
   ...onboardingP2.en,
   ...onboardingP3.en,
@@ -1688,6 +1711,7 @@ const en: Dict = {
   ...glErp.en,
   ...payrollGlUi.en,
   ...payrollUx.en,
+  ...bankFileGuide.en,
   ...statutoryRules.en,
   ...glApiKeys.en,
   // Sign-in security and the trust-this-browser choice — see ./signInSecurity.
@@ -1708,6 +1732,7 @@ const en: Dict = {
   ...glLeaveProvision.en,
   ...belowMinimum.en,
   ...loanBatchApprover.en,
+  ...loanExit.en,
   ...deadEnds.en,
   ...leaveDocument.en,
   ...recruitmentDemo.en,
@@ -1720,6 +1745,8 @@ const en: Dict = {
   ...learning.en,
   // SUC — succession and career development (./succession).
   ...succession.en,
+  // Appraisal screens: scorecard picker, own review and appeal, probation, PIP check-ins, 360 (./appraisalsUi).
+  ...appraisalsUi.en,
   // Demo polish B: statuses, offer events and sentences still English under Arabic — see ./polishB.
   ...polishB.en,
   // Status tail: Loans and Compliance screens and raw status words — see ./statusTail.
@@ -1735,11 +1762,13 @@ const ar: Dict = {
   ...launchCompliance.ar,
   ...launchAttendance.ar,
   ...launchRecruitment.ar,
+  ...managerRecruitment.ar,
   ...launchNewHires.ar,
   ...benefitPlanForm.ar,
   ...removalSafety.ar,
   ...companyStructure.ar,
   ...appChrome.ar,
+  ...peopleList.ar,
   ...dailyA.ar,
   ...attendanceBulk.ar,
   ...attendanceDashboard.ar,
@@ -1765,6 +1794,7 @@ const ar: Dict = {
   ...attendanceRules.ar,
   ...payrollRules.ar,
   ...heldPay.ar,
+  ...appraisalCycle.ar,
   ...gradePackage.ar,
   ...employeeWorkspace.ar,
   "Navigation could not be resumed. Try the action again.": "تعذر استئناف التنقل. أعد المحاولة.",
@@ -3269,6 +3299,11 @@ const ar: Dict = {
 
   // Self-Service workspace — see ./essWorkspace.
   ...essWorkspace.ar,
+  // Self-Service open positions — see ./essJobs.
+  ...essJobs.ar,
+  ...recruitmentFixesA.ar,
+  ...recruitmentFixesB.ar,
+  ...recruitmentFixesC.ar,
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.ar,
   // Payroll's attendance check before Process — see ./payrollAttendance.
@@ -3278,6 +3313,7 @@ const ar: Dict = {
   ...payrollRecon.ar,
   ...payrollVariance.ar,
   ...launchPolish.ar,
+  ...glAccountNames.ar,
   ...complianceActions.ar,
   ...insightsText.ar,
   // Attendance → Exceptions — see ./attendanceExceptions.
@@ -3285,6 +3321,7 @@ const ar: Dict = {
   ...employeeCompletion.ar,
   ...hireWizard.ar,
   ...demoFixes.ar,
+  ...overtimeSettings.ar,
   ...settledService.ar,
   ...onboardingP2.ar,
   ...onboardingP3.ar,
@@ -3298,6 +3335,7 @@ const ar: Dict = {
   ...glErp.ar,
   ...payrollGlUi.ar,
   ...payrollUx.ar,
+  ...bankFileGuide.ar,
   ...statutoryRules.ar,
   ...glApiKeys.ar,
   ...signInSecurity.ar,
@@ -3313,6 +3351,7 @@ const ar: Dict = {
   ...glLeaveProvision.ar,
   ...belowMinimum.ar,
   ...loanBatchApprover.ar,
+  ...loanExit.ar,
   ...deadEnds.ar,
   ...leaveDocument.ar,
   ...recruitmentDemo.ar,
@@ -3324,6 +3363,7 @@ const ar: Dict = {
   ...learning.ar,
   // SUC — succession and career development (./succession).
   ...succession.ar,
+  ...appraisalsUi.ar,
   ...polishB.ar,
   ...statusTail.ar,
 };

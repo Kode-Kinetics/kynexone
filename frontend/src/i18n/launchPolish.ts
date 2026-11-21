@@ -26,7 +26,7 @@ const ar: Record<string, string> = {
   'Open the employee and correct their IBAN': 'افتح ملف الموظف وصحّح رقم الآيبان',
   'Required statutory details are missing or expired': 'بيانات نظامية مطلوبة ناقصة أو منتهية الصلاحية',
   'Open the employee and complete their readiness checklist': 'افتح ملف الموظف وأكمل قائمة الجاهزية',
-  'No MOL ID for WPS (Mudad) reporting': 'لا يوجد رقم وزارة الموارد البشرية للإبلاغ عبر نظام حماية الأجور (مُدد)',
+  'No MOL ID for WPS (Mudad) reporting': 'لا يوجد رقم وزارة الموارد البشرية للإبلاغ عبر نظام حماية الأجور (مدد)',
   'Open the employee and add their MOL ID': 'افتح ملف الموظف وأضف رقم وزارة الموارد البشرية',
   'IBAN is not a Saudi account': 'رقم الآيبان ليس لحساب سعودي',
   'Confirm the employee\'s bank account is held in Saudi Arabia': 'تأكد من أن الحساب البنكي للموظف في المملكة العربية السعودية',
@@ -46,8 +46,8 @@ const ar: Record<string, string> = {
   // Bank file status text sent by the API (payroll pipeline, Bank / WPS)
   'Generated (file ready for the bank)': 'تم إنشاء الملف (جاهز لتسليمه للبنك)',
   'Submitted to the bank': 'سُلّم إلى البنك',
-  'Accepted \u2014 evidence attached (not verified by Mudad)': 'مقبول — أُرفق الدليل (لم تتحقق منه منصة مُدد)',
-  'Accepted \u2014 no Mudad evidence on record': 'مقبول — لا يوجد دليل من منصة مُدد',
+  // 'Accepted — evidence attached (not verified by Mudad)' lives once, in launchPayroll.ts.
+  'Accepted \u2014 no Mudad evidence on record': 'مقبول — لا يوجد دليل من منصة مدد',
   // Employee overview (new-hire readiness)
   'Employee overview': 'نظرة عامة على الموظف',
   'Recommended next action': 'الإجراء التالي الموصى به',
@@ -72,6 +72,7 @@ const ar: Record<string, string> = {
   // ERP journal export formats (the API describes them in English)
   'Generic journal CSV (line-per-row)': 'ملف قيود عام بصيغة CSV (سطر لكل بند)',
   'Neutral line-level export. Debit and Credit are separate columns and exactly one is non-zero per row. Import using AccountingDate (not SystemPostedDate) \u2014 SystemPostedDate is when our system wrote the row, AccountingDate is the accounting month the line belongs to. CompanyCode is per line (the company\'s ERP code); ExternalAccountCode is your ERP account when one is mapped. ExportId + EntryId + DR/CR identify a line uniquely: use them to refuse a second import of the same file. When any line carries a cost centre the file ends with CostCentre (code), CostCentreName and CostCentreErpCode (the ERP cost-centre value: the cost centre\'s ERP segment when set, else its code); they are blank on lines with no cost centre, and absent when no line has one.': 'تصدير محايد على مستوى البنود. المدين والدائن عمودان منفصلان، ويكون أحدهما فقط غير صفري في كل سطر. استورد الملف بالاعتماد على \u2066AccountingDate\u2069 (وليس \u2066SystemPostedDate\u2069)؛ فـ\u2066SystemPostedDate\u2069 هو وقت كتابة نظامنا للسطر، و\u2066AccountingDate\u2069 هو الشهر المحاسبي الذي ينتمي إليه البند. \u2066CompanyCode\u2069 لكل بند (رمز الشركة في نظام تخطيط الموارد)؛ و\u2066ExternalAccountCode\u2069 هو حسابك في النظام عند ربطه. تحدد الأعمدة \u2066ExportId\u2069 و\u2066EntryId\u2069 والمدين/الدائن كل بند على نحو فريد: استخدمها لرفض استيراد الملف نفسه مرة ثانية. وإذا حمل أي بند مركز تكلفة، ينتهي الملف بالأعمدة \u2066CostCentre\u2069 (الرمز) و\u2066CostCentreName\u2069 و\u2066CostCentreErpCode\u2069 (قيمة مركز التكلفة في نظام تخطيط الموارد: مقطعه في النظام إن وُجد وإلا رمزه)؛ وتكون فارغة في البنود بلا مركز تكلفة، وتغيب كليًا إذا لم يحمل أي بند مركز تكلفة.',
+  '(template – validate in a test instance)': '(نموذج — تحقّق منه في نسخة اختبار)',
   '(template – validate in your ERP test instance)': '(نموذج — تحقّق منه في نسخة الاختبار من نظام تخطيط الموارد)',
   'UTF-8 byte-order mark (for Excel)': 'علامة ترتيب البايتات UTF-8 (لبرنامج Excel)',
   'Set to true to add a UTF-8 byte-order mark so Excel opens Arabic text correctly. Leave it off (false) for an ERP import.': 'اضبطها على true لإضافة علامة ترتيب البايتات UTF-8 ليفتح Excel النص العربي بشكل صحيح. اتركها معطّلة (false) عند الاستيراد إلى نظام تخطيط الموارد.',

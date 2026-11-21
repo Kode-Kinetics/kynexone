@@ -3398,22 +3398,43 @@ public class AccessManagementService : IAccessManagementService
     /// </summary>
     private async Task ThrowIfBeyondManagementScopeAsync(Guid tenantId, Guid targetUserId, EntityScopeContext scope, CancellationToken ct)
     {
-        if (scope.IsGroupLevel) return;
+        if (await IsBeyondManagementScopeAsync(_db, tenantId, targetUserId, scope, ct))
+            throw new PrivilegeCeilingException(PrivilegeCeiling.Refuse(PrivilegeCeiling.Codes.TargetOtherCompanies, null));
+    }
+
+    /// <summary>
+    /// The rule behind <see cref="ThrowIfBeyondManagementScopeAsync"/>, shared with the migration import's access gate so an
+    /// import changes a login only where the Access screen would: true when the person is group-wide, or holds company access
+    /// or an employee link outside <paramref name="scope"/>. Group-level scope is never beyond.
+    /// </summary>
+    internal static async Task<bool> IsBeyondManagementScopeAsync(ZayraDbContext db, Guid tenantId, Guid targetUserId, EntityScopeContext scope, CancellationToken ct)
+    {
+        if (scope.IsGroupLevel) return false;
         var allowed = scope.AccessibleCompanyIds.ToHashSet();
-        var groupWide = await _db.Users.AsNoTracking().Where(u => u.Id == targetUserId && u.TenantId == tenantId)
+        var groupWide = await db.Users.AsNoTracking().Where(u => u.Id == targetUserId && u.TenantId == tenantId)
             .Select(u => u.IsGroupScope).FirstOrDefaultAsync(ct);
-        var grants = await ScopedBypass.TenantWide(_db.UserEntityAccesses, tenantId, ManagementScopeWhy).AsNoTracking()
+        var grants = await ScopedBypass.TenantWide(db.UserEntityAccesses, tenantId, ManagementScopeWhy).AsNoTracking()
             .Where(g => g.UserId == targetUserId && g.IsActive)
             .Select(g => new { g.GrantMode, g.CompanyId }).ToListAsync(ct);
-        var employeeIds = await ScopedBypass.TenantWide(_db.EmployeeUserAccounts, tenantId, ManagementScopeWhy).AsNoTracking()
+        var employeeIds = await ScopedBypass.TenantWide(db.EmployeeUserAccounts, tenantId, ManagementScopeWhy).AsNoTracking()
             .Where(l => l.UserId == targetUserId && !l.IsDeleted).Select(l => l.EmployeeId).ToListAsync(ct);
-        var employeeCompanies = employeeIds.Count == 0 ? [] : await ScopedBypass.TenantWideByConvention(_db.Employees, tenantId, ManagementScopeWhy).AsNoTracking()
+        var employeeCompanies = employeeIds.Count == 0 ? [] : await ScopedBypass.TenantWideByConvention(db.Employees, tenantId, ManagementScopeWhy).AsNoTracking()
             .Where(e => employeeIds.Contains(e.Id) && !e.IsDeleted && e.CompanyId != null).Select(e => e.CompanyId!.Value).ToListAsync(ct);
-        var beyond = groupWide
+        return groupWide
             || grants.Any(g => g.GrantMode != EntityGrantModes.SelectedCompanies || g.CompanyId is not Guid c || !allowed.Contains(c))
             || employeeCompanies.Any(c => !allowed.Contains(c));
-        if (beyond)
-            throw new PrivilegeCeilingException(PrivilegeCeiling.Refuse(PrivilegeCeiling.Codes.TargetOtherCompanies, null));
+    }
+
+    /// <summary>
+    /// May a caller with <paramref name="scope"/> change this existing login? It must be visible to them (it reaches one of their
+    /// companies) and entirely inside their companies: the Access screen's two checks, answered together for the import gate.
+    /// </summary>
+    internal static async Task<bool> UserWithinManagementScopeAsync(ZayraDbContext db, Guid tenantId, Guid targetUserId, EntityScopeContext scope, CancellationToken ct)
+    {
+        if (scope.IsGroupLevel) return true;
+        if (!await db.Users.AsNoTracking().ApplyEntityScope(db, tenantId, scope).AnyAsync(u => u.TenantId == tenantId && u.Id == targetUserId && !u.IsDeleted, ct))
+            return false;
+        return !await IsBeyondManagementScopeAsync(db, tenantId, targetUserId, scope, ct);
     }
 
     private static void ThrowIfOwnerProtected(Guid callerId, User target)

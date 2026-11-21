@@ -21,6 +21,7 @@ import {
   type PayrollCompanySummary, type AIInsight,
   type PayrollRunPopulation, type PayrollPopulationEntry, type PayrollValidationOverrideReport, type AuditIntegrityReport,
 } from '../api/payroll';
+import { ExitDebtsPanel } from '../components/offboarding/ExitDebtsPanel';
 import { identityAuditApi } from '../api/identity';
 import { requestFailureReason } from '../lib/requestFailure';
 import { commonPayrollCurrency, resolvePayrollRunCurrency, totalsByCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
@@ -60,16 +61,24 @@ import { useLocale } from '../contexts/LocaleContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
-import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
+import { currencyForAmount } from '../lib/moneyCurrency';
+import { SectionNav } from '../components/ui/SectionNav';
+import { PayrollSectionHeader, PAYROLL_SECTION_HEADING_ID } from '../components/payroll/PayrollSectionHeader';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
-import { BankFileSteps } from '../components/payroll/BankFileSteps';
-import { deriveBankSteps, suggestedBatchReference, type BankFlowProgress, type BankStepKey } from '../lib/bankFileSteps';
+import { BankFileGuide, useBankHandOver, type BankPanelData, type GuideSlots } from '../components/payroll/BankFileGuide';
+import { BankFileFacts, tieOut } from '../components/payroll/BankFileFacts';
+import { RecordSubmittedDialog } from '../components/payroll/RecordSubmittedDialog';
+import { bankResponseBuckets, confirmedResponsePurpose, derivePayOut, pickPayOutBatch, rejectedFilePurpose, type PayOutStepKey } from '../lib/payOut';
+import { EmptyState } from '../components/ui/EmptyState';
+import { Modal as SideDrawer } from '../components/Modal';
+import { suggestedBatchReference, type BankFlowProgress } from '../lib/bankFileSteps';
+import type { PipelineBatch } from '../lib/payrollPipeline';
 import { AttendanceReconciliationPanel } from '../components/payroll/AttendanceReconciliationPanel';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
 import { LoadFailedNotice, LoadFailedRow } from '../components/ui/LoadFailedRow';
 import { SkeletonRows } from '../components/ui/Skeleton';
 import { employeeWorkspaceHref } from '../lib/peopleRoutes';
-import { RunPipeline } from '../components/payroll/RunPipeline';
+import { RunPipeline, type PayOutContext } from '../components/payroll/RunPipeline';
 import { useLockWithSummary } from '../hooks/useLockWithSummary';
 import { startRunProcessing } from '../api/payrollProcessing';
 import { parseDeepLink, withDeepLink } from '../lib/payrollPipeline';
@@ -79,8 +88,11 @@ import { RunDeductionsReview } from '../components/deductions/RunDeductionsRevie
 import { JournalExportsPanel } from '../components/gl/JournalExportsPanel';
 import { LoadError, serverMessage } from '../components/gl/glUi';
 import { financeGlApi } from '../api/financeGl';
+import { isCustomFormatId, saudiBankExportsApi } from '../api/saudiBankExports';
 import { CostCentreLockPreview, CostingOffNote, periodLabel } from '../components/payroll/CostCentreLockPreview';
 import { VoidRunForm } from '../components/payroll/VoidRunForm';
+import { validationPanelState } from '../lib/payrollValidationState';
+import { exitLeaveMoney } from '../lib/settlementExitArrears';
 import { HeldPayPanel } from '../components/payroll/HeldPayPanel';
 import { PostedJournalsView, PostedWithoutCostCentresNote } from '../components/payroll/PostedJournals';
 import { costingNote } from '../lib/glJournalView';
@@ -89,6 +101,7 @@ import { UncostedApprovalAck, useUncostedAck } from '../components/payroll/Uncos
 import { CostCentreJournalReport } from '../components/payroll/CostCentreJournalReport';
 import { SettlementRunDutyPanel } from '../components/payroll/SettlementRunDutyPanel';
 import { SettlementRunDutyCard } from '../components/payroll/SettlementRunDutyCard';
+import { glAccountName } from '../lib/glAccountName';
 import { msg } from '../i18n/translations';
 import { insightDetail, insightTitle } from '../lib/insightText';
 import { languageLabel } from '../lib/displayLabels';
@@ -109,7 +122,9 @@ function useFmtDate() {
 /** An amount with its currency in the viewer's language (Arabic shows the Arabic currency symbol and a bidi-safe order). */
 function useFmtAmt() {
   const fx = useFormat();
-  return useCallback((n: number, currency = 'USD') => fx.money(n, currency), [fx]);
+  const { currencyCode } = useTenantSettings();
+  // No currency of its own (e.g. a run with no payment batch yet) reads in the company's currency, never a dollar sign.
+  return useCallback((n: number, currency?: string | null) => fx.money(n, currencyForAmount(currency, currencyCode)), [fx, currencyCode]);
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -147,15 +162,26 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
   icon: React.ComponentType<{ className?: string }>; color: string;
 }) {
   return (
-    <div className="surface flex items-center gap-4 p-4">
+    <div className="surface flex items-center gap-3 p-3.5">
       <div className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${color}`}>
         <Icon className="h-5 w-5" />
       </div>
       <div className="min-w-0">
-        <p className="text-2xl font-bold tabular-nums text-slate-900 dark:text-white">{value}</p>
+        <p className="whitespace-nowrap text-lg font-bold tabular-nums text-slate-900 2xl:text-xl dark:text-white">{value}</p>
         <p className="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">{label}</p>
         {sub && <p className="text-[10px] text-slate-400 dark:text-slate-500">{sub}</p>}
       </div>
+    </div>
+  );
+}
+
+/** One count in a toolbar row (a KpiCard without the second line): the number, then what it counts. */
+function CountChip({ label, value, color }: { label: string; value: string | number; color: string }) {
+  return (
+    <div className="surface flex items-center gap-2 px-3 py-1.5">
+      <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg ${color}`}><AlertTriangle className="h-4 w-4" aria-hidden="true" /></span>
+      <span className="whitespace-nowrap text-base font-bold tabular-nums text-slate-900 dark:text-white">{value}</span>
+      <span className="whitespace-nowrap text-xs text-slate-500 dark:text-slate-400">{label}</span>
     </div>
   );
 }
@@ -211,14 +237,24 @@ const TABS: { key: Tab; label: string; icon: React.ComponentType<{ className?: s
   { key: 'audit-integrity',  label: msg('Audit Integrity'),     icon: Shield },
 ];
 
-/** The sixteen tabs as five labelled groups, in the order a payroll month goes. */
-const TAB_GROUPS: { label: string; ids: Tab[] }[] = [
-  { label: msg('Set up'),             ids: ['dashboard', 'salary-structures', 'employee-salary'] },
-  { label: msg('Run payroll'),        ids: ['runs', 'validation', 'approvals', 'payslips'] },
-  { label: msg('Pay out'),            ids: ['bank-wps', 'payment-tracking'] },
-  { label: msg('Report and ledger'),  ids: ['reports', 'gl-journal', 'reconciliation'] },
-  { label: msg('Settle and check'),   ids: ['eosb', 'final-settlement', 'ai-validation', 'audit-integrity'] },
+/**
+ * The sixteen sections as five labelled groups, in the order a payroll month goes (the Payroll section nav). Each group has one purpose
+ * sentence its sections use under their heading until they have their own (Bank / WPS Files has its own).
+ */
+const TAB_GROUPS: { id: string; label: string; purpose: string; ids: Tab[] }[] = [
+  { id: 'set-up',  label: msg('Set up'),            purpose: msg('Set up the grade packages and salaries every payroll run uses.'), ids: ['dashboard', 'salary-structures', 'employee-salary'] },
+  { id: 'run',     label: msg('Run payroll'),       purpose: msg('Process, check and approve the month’s payroll run, then lock it.'), ids: ['runs', 'validation', 'approvals', 'payslips'] },
+  { id: 'pay-out', label: msg('Pay out'),           purpose: msg('Record what the bank confirms or returns for each payment, then settle the payments.'), ids: ['bank-wps', 'payment-tracking'] },
+  { id: 'ledger',  label: msg('Report and ledger'), purpose: msg('See the run’s reports and post its journal to the general ledger.'), ids: ['reports', 'gl-journal', 'reconciliation'] },
+  { id: 'settle',  label: msg('Settle and check'),  purpose: msg('Settle end-of-service and final pay, and check the payroll for anomalies.'), ids: ['eosb', 'final-settlement', 'ai-validation', 'audit-integrity'] },
 ];
+const groupOf = (tab: Tab) => TAB_GROUPS.find(g => g.ids.includes(tab)) ?? TAB_GROUPS[0];
+/** A section's own purpose line; the others still use their group's sentence (follow-up). */
+const TAB_PURPOSE: Partial<Record<Tab, string>> = {
+  runs: msg('Create, process and lock the month’s run.'),
+  validation: msg('Check the run for problems before it goes to approval.'),
+  approvals: msg('See who has approved this run and what is waiting.'),
+};
 
 // ── Payroll Setup Wizard ───────────────────────────────────────────────────────
 
@@ -321,10 +357,18 @@ function PaymentPrerequisitesPanel({ prerequisites, runStatus, onNavigate }: { p
   const hasBlocking = prerequisites.companyBlocking.length > 0 || prerequisites.blocking.length > 0;
   const hasRecommended = prerequisites.companyRecommended.length > 0 || prerequisites.recommended.length > 0;
   const listed = prerequisites.employees.length;
+  // The long "how this is checked" sentence sits inside the employee disclosure when there is one, so the panel's header stays two lines.
+  const checkedNote = (
+    <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500" data-testid="payment-readiness-checked">
+      {prerequisites.attendanceChecked
+        ? t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality, and attendance for this period — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })
+        : t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality (attendance is checked once the period starts) — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })}
+    </p>
+  );
 
   return (
     <section aria-label={t('Payment readiness')} className={`surface overflow-hidden border ${tone.box}`}>
-      <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-4 dark:border-white/10">
+      <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-3 dark:border-white/10">
         {headline.tone === 'clear'
           ? <CheckCircle2 className={`mt-0.5 h-5 w-5 shrink-0 ${tone.icon}`} />
           : settled
@@ -333,11 +377,7 @@ function PaymentPrerequisitesPanel({ prerequisites, runStatus, onNavigate }: { p
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t(headline.titleKey, headline.params)}</h3>
           <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{t(headline.detailKey, headline.params)}</p>
-          <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
-            {prerequisites.attendanceChecked
-              ? t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality, and attendance for this period — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })
-              : t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality (attendance is checked once the period starts) — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })}
-          </p>
+          {listed === 0 && checkedNote}
         </div>
       </div>
 
@@ -377,6 +417,7 @@ function PaymentPrerequisitesPanel({ prerequisites, runStatus, onNavigate }: { p
               ? t('Show each employee ({count}, the first 500 — the counts above include everyone)', { count: listed })
               : t('Show each employee ({count})', { count: listed })}
           </summary>
+          <div className="px-5 pb-2">{checkedNote}</div>
           <div className="max-h-96 overflow-auto">
             <table className="w-full text-xs">
               <thead className="sticky top-0 bg-surface-sunken text-fg-muted">
@@ -673,6 +714,8 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
 
   const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
+
+
   return (
     <div className="space-y-5">
       <SettlementRunDutyCard onOpen={() => onNavigate('final-settlement')} />
@@ -743,7 +786,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
         <PaymentPrerequisitesPanel prerequisites={readiness.paymentPrerequisites} runStatus={readiness.payrollRunStatus} onNavigate={onNavigate} />
       )}
 
-      {/* ── Summary KPIs ── */}
+    <>
       {!loading && overview && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <KpiCard label={t('Active Employees')} value={overview.totalActiveEmployees.toLocaleString()} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
@@ -758,6 +801,8 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
           {[0, 1, 2, 3].map(i => <div key={i} className="surface h-20 animate-pulse rounded-xl" />)}
         </div>
       )}
+
+    </>
 
       {/* ── Insights Panel ── */}
       <AiInsightsPanel readiness={readiness} />
@@ -1004,7 +1049,7 @@ function SalaryChangesPanel({ onApplied }: { onApplied: () => void }) {
                 {stale.message && <p className="mt-1">{stale.message}</p>}
               </div>
             )}
-            <div className="basis-full space-y-2">
+            <div className="basis-full space-y-2 empty:hidden">
               <SalaryChangeMoney change={r} />
               <SalaryAllowanceComparison current={r.currentAllowances} proposed={r.proposedAllowances} carriedForward={r.allowancesCarriedForward ?? false} currency={r.currency} basic={r.basicSalary} />
             </div>
@@ -1213,10 +1258,10 @@ function EmployeeSalaryTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <input type="number" aria-label={t('Employee ID filter')} placeholder={t('Filter by Employee ID')} className={`${inp} w-52`} value={empIdFilter} onChange={e => setEmpIdFilter(e.target.value)} />
-        <button type="button" className={btn.ghost} onClick={load}>{t('Search')}</button>
-        <button type="button" className={`ms-auto ${btn.primary}`} onClick={() => setShowAssign(true)}><Plus className="h-4 w-4" /> {t('Assign Salary')}</button>
+      <div className="flex flex-wrap items-center gap-3">
+        <input type="number" aria-label={t('Employee ID filter')} placeholder={t('Filter by Employee ID')} className={`${inp} max-w-52`} value={empIdFilter} onChange={e => setEmpIdFilter(e.target.value)} />
+        <button type="button" className={`${btn.ghost} whitespace-nowrap`} onClick={load}>{t('Search')}</button>
+        <button type="button" className={`ms-auto whitespace-nowrap ${btn.primary}`} onClick={() => setShowAssign(true)}><Plus className="h-4 w-4 shrink-0" /> {t('Assign Salary')}</button>
       </div>
       {submitted && (
         <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
@@ -1245,15 +1290,15 @@ function EmployeeSalaryTab() {
                 const gross = a.basicSalary + a.housingAllowance + a.transportAllowance + a.foodAllowance + a.mobileAllowance + a.otherAllowance;
                 return (
                   <tr key={a.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-                    <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{t('Emp #{employeeId}', { employeeId: a.employeeId })}</td>
-                    <td className="px-3 py-2 text-slate-500">{structName(a.salaryStructureId)}</td>
-                    <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{a.basicSalary.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{a.housingAllowance.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{a.transportAllowance.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-end font-semibold text-slate-900 dark:text-white">{gross.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-end text-rose-500">{a.fixedDeduction > 0 ? `(${a.fixedDeduction.toLocaleString()})` : '—'}</td>
-                    <td className="px-3 py-2 text-xs text-slate-400">{fmtDate(a.effectiveDate)}</td>
-                    <td className="px-3 py-2"><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${a.isActive ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500'}`}>{a.isActive ? t('Active') : t('Inactive')}</span></td>
+                    <td className="px-3 py-1.5 font-medium text-slate-900 dark:text-white">{t('Emp #{employeeId}', { employeeId: a.employeeId })}</td>
+                    <td className="px-3 py-1.5 text-slate-500">{structName(a.salaryStructureId)}</td>
+                    <td className="px-3 py-1.5 text-end text-slate-700 dark:text-slate-300">{a.basicSalary.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-end text-slate-700 dark:text-slate-300">{a.housingAllowance.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-end text-slate-700 dark:text-slate-300">{a.transportAllowance.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-end font-semibold text-slate-900 dark:text-white">{gross.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-end text-rose-500">{a.fixedDeduction > 0 ? `(${a.fixedDeduction.toLocaleString()})` : '—'}</td>
+                    <td className="px-3 py-1.5 text-xs text-slate-400">{fmtDate(a.effectiveDate)}</td>
+                    <td className="px-3 py-1.5"><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${a.isActive ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500'}`}>{a.isActive ? t('Active') : t('Inactive')}</span></td>
                   </tr>
                 );
               })}
@@ -1573,7 +1618,7 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                       {slipsError && <tr><td colSpan={9} role="alert" className="py-10 text-center text-sm text-rose-600 dark:text-rose-400">{slipsError}</td></tr>}
-                      {!slipsError && slips.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">{t('No slips. Click Process to generate.')}</td></tr>}
+                      {!slipsError && slips.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">{selectedRun.status === 'Draft' ? t('No slips. Click Process to generate.') : t('No payslips came back for this run. Reload the page, or open Payslips.')}</td></tr>}
                       {slips.map(s => (
                         <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                           <td className="px-3 py-2.5">
@@ -1861,6 +1906,8 @@ const GOSI_COHORT_NOT_RECORDED = 'GOSI_COHORT_NOT_RECORDED';
 const GOSI_NEW_ENTRANT_BLOCKED = 'GOSI_NEW_ENTRANT_SCHEDULE_NOT_MODELLED';
 const GOSI_NEW_ENTRANT_APPLIED = 'GOSI_NEW_ENTRANT_SCHEDULE_APPLIED';
 const GOSI_BELOW_MINIMUM_WAGE = 'GOSI_BELOW_MINIMUM_CONTRIBUTORY_WAGE';
+/** PayrollValidationEngine.ZeroNetUnpaidLeave — a Warning, acknowledged by count at approval. */
+const ZERO_NET_UNPAID_LEAVE = 'ZERO_NET_UNPAID_LEAVE';
 
 /**
  * The run a payroll tab works on. The page holds ONE selected run (the pipeline's Run selector and the tabs' own selectors are the same choice):
@@ -1869,23 +1916,26 @@ const GOSI_BELOW_MINIMUM_WAGE = 'GOSI_BELOW_MINIMUM_CONTRIBUTORY_WAGE';
  */
 function useSharedRun(selectedRunId: string | undefined, onRunChange?: (id: string | null) => void): [string, (id: string) => void] {
   const [runId, setLocal] = useState(selectedRunId ?? '');
-  useEffect(() => { if (selectedRunId) setLocal(selectedRunId); }, [selectedRunId]);
+  // The run bar is the source of truth: clearing it there clears it here too.
+  useEffect(() => { setLocal(selectedRunId ?? ''); }, [selectedRunId]);
   const setRunId = React.useCallback((id: string) => { setLocal(id); onRunChange?.(id || null); }, [onRunChange]);
   return [runId, setRunId];
 }
 
 function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string; onRunChange?: (id: string | null) => void }) {
   const t = useT();
-  const [runId, setRunId] = useSharedRun(selectedRunId, onRunChange);
-  const [runs, setRuns] = useState<PayrollRun[]>([]);
+  // The run bar's run (no picker in this section).
+  const [runId] = useSharedRun(selectedRunId, onRunChange);
   const [results, setResults] = useState<PayrollValidationResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [overridableCodes, setOverridableCodes] = useState<string[]>([]);
   const [overriding, setOverriding] = useState<PayrollValidationResult | null>(null);
   const names = useRunEmployeeLabels(runId);
+  // The chosen run's status tells a never-validated Draft from a run with no saved issues.
+  const [runs, setRuns] = useState<PayrollRun[]>([]);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, [runId]);
 
-  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
   useEffect(() => {
     if (!runId) { setResults([]); setError(''); return; }
@@ -1917,6 +1967,7 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
   };
 
 
+  const panelState = validationPanelState({ runId, status: runs.find(r => r.id === runId)?.status, loading, failed: error !== '' });
   const warnings = results.filter(r => r.severity === 'Warning');
   const errors = results.filter(r => r.severity === 'Error');
   // F02 — the GOSI entrant cohort is judged per employee; group it so it reads as one decision, not N rows.
@@ -1924,6 +1975,7 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
   const cohortBlocked = results.filter(r => r.code === GOSI_NEW_ENTRANT_BLOCKED);
   const cohortApplied = results.filter(r => r.code === GOSI_NEW_ENTRANT_APPLIED);
   const belowMinimumWage = results.filter(r => r.code === GOSI_BELOW_MINIMUM_WAGE);
+  const zeroNetLeave = results.filter(r => r.code === ZERO_NET_UNPAID_LEAVE);
   const [cohortOnly, setCohortOnly] = useState(false);
   const shown = cohortOnly && cohortBlocked.length + cohortNotRecorded.length + cohortApplied.length > 0
     ? [...cohortBlocked, ...cohortNotRecorded, ...cohortApplied]
@@ -1931,27 +1983,27 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <select aria-label={t('Select payroll run')} className={`${sel} flex-1 max-w-xs`} value={runId} onChange={e => setRunId(e.target.value)}>
-          <option value="">{t('Select a payroll run…')}</option>
-          <RunSelectOptions runs={runs} />
-        </select>
-        <button type="button" className={btn.primary} onClick={validate} disabled={!runId || loading}>
-          {loading ? t('Validating…') : t('Run Validation')}
-        </button>
-      </div>
+      {/* The run is the run bar's (shared by every Payroll section): no second picker here. */}
+      {runId ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <button type="button" className={`${btn.primary} whitespace-nowrap max-sm:min-h-11 max-sm:w-full max-sm:justify-center`} onClick={validate} disabled={loading || panelState === 'not_run'}
+            title={panelState === 'not_run' ? t('Process the run before validating it.') : undefined}>
+            {loading ? t('Validating…') : t('Run Validation')}
+          </button>
+          {/* The counts share the button's row: one slim toolbar, so the issue list starts in the first screenful. */}
+          {results.length > 0 && (
+            <>
+              <CountChip label={t('Total Issues')} value={results.length} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+              <CountChip label={t('Warnings')} value={warnings.length} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+              <CountChip label={t('Errors')} value={errors.length} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
+            </>
+          )}
+        </div>
+      ) : <NoRunChosen />}
 
       {error && <div className="rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">{error}</div>}
 
       {runId && <AttendanceReconciliationPanel runId={runId} />}
-
-      {results.length > 0 && (
-        <div className="grid grid-cols-3 gap-4">
-          <KpiCard label={t('Total Issues')} value={results.length} icon={AlertTriangle} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
-          <KpiCard label={t('Warnings')} value={warnings.length} icon={AlertTriangle} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
-          <KpiCard label={t('Errors')} value={errors.length} icon={AlertTriangle} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
-        </div>
-      )}
 
       {(cohortNotRecorded.length > 0 || cohortBlocked.length > 0 || cohortApplied.length > 0 || belowMinimumWage.length > 0) && (
         <div className="surface space-y-2 px-5 py-4" data-testid="gosi-cohort-findings">
@@ -1984,17 +2036,29 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
         </div>
       )}
 
-      {results.length === 0 && !loading ? (
-        <div className="surface flex flex-col items-center py-16 text-center">
-          <CheckCircle2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
-            {runId ? t('No saved validation issues. Run validation to refresh the current checks.') : t('Select a run and click validate')}
+      {zeroNetLeave.length > 0 && (
+        <div className="surface space-y-1 px-5 py-4" data-testid="zero-net-unpaid-leave-findings">
+          <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Zero net pay from a full month of unpaid leave')}</p>
+          <p className="text-sm text-amber-700 dark:text-amber-400">
+            {t('{count} employee(s) net zero this month: unpaid leave took the whole wage. Any loan or advance instalment they owe is carried forward to the next run, not written off. Nothing is paid to them, so they are left out of the bank file. This is a warning, not a block: check the leave, then acknowledge it when approving.', { count: zeroNetLeave.length })}
           </p>
         </div>
+      )}
+
+      {results.length === 0 && !loading ? (
+        panelState === 'unavailable' ? null : (
+        <div className="surface flex flex-col items-center py-16 text-center" data-testid="validation-empty" data-state={panelState}>
+          <CheckCircle2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
+            {panelState === 'not_run' ? t('Validation has not been run yet. Process the run first, then run validation.')
+              : runId ? t('No saved validation issues. Run validation to refresh the current checks.') : t('Select a run and click validate')}
+          </p>
+        </div>
+        )
       ) : (
-        <div className="surface divide-y divide-slate-100 dark:divide-white/5">
+        <div className="surface divide-y divide-slate-100 dark:divide-white/5" data-testid="validation-results">
           {shown.map(r => (
-            <div key={r.id} className="flex items-start gap-3 px-5 py-4">
+            <div key={r.id} className="flex items-start gap-3 px-5 py-3">
               <div className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${r.severity === 'Error' ? 'bg-rose-500' : r.severity === 'Warning' ? 'bg-amber-500' : 'bg-sky-400'}`} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
@@ -2002,7 +2066,11 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
                   <span className="font-mono text-xs text-slate-500">{r.code}</span>
                   {r.employeeId && <span className="text-xs text-slate-400"><EmployeeLabelText label={employeeLabel(r.employeeId, names, id => t('Emp #{employeeId}', { employeeId: id }))} /></span>}
                 </div>
-                <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{r.message}</p>
+                <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">
+                  {r.code === ZERO_NET_UNPAID_LEAVE
+                    ? t('Net pay is zero: unpaid leave took the whole wage this month. Any loan or advance instalment is carried forward to the next run, not written off.')
+                    : r.message}
+                </p>
               </div>
               {r.isResolved
                 ? <span className="ms-auto shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">{t('Overridden')}</span>
@@ -2297,7 +2365,8 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
   const monthLabel = useMonthLabel();
   const [reconNotice, setReconNotice] = useState('');
   const [runs, setRuns] = useState<PayrollRun[]>([]);
-  const [runId, setRunId] = useSharedRun(selectedRunId, onRunChange);
+  // The run bar's run (no picker in this section).
+  const [runId] = useSharedRun(selectedRunId, onRunChange);
   const [approvals, setApprovals] = useState<PayrollApproval[]>([]);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
@@ -2316,6 +2385,9 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
   const [ackOverridden, setAckOverridden] = useState(false);
   const [ackOutside, setAckOutside] = useState(false);
   const [ackPayWarnings, setAckPayWarnings] = useState(false);
+  // Employees who net zero because unpaid leave took the whole wage (ZERO_NET_UNPAID_LEAVE): acknowledged by count.
+  const [zeroNetIds, setZeroNetIds] = useState<number[]>([]);
+  const [ackZeroNet, setAckZeroNet] = useState(false);
   // The cash/cheque list names the person (the run's population is already loaded for the gate) and falls back to the number.
   const employeeName = (id: number, ibanOnFile: boolean) => {
     const member = population ? [...population.included, ...population.excluded, ...population.notEligible].find(m => m.employeeId === id) : undefined;
@@ -2328,12 +2400,15 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
     payrollApi.listAllRuns().then(setRuns).catch(() => {});
 
   const refreshGate = React.useCallback((id: string) => {
-    if (!id) { setPopulation(null); setOverrideReport(null); return; }
+    if (!id) { setPopulation(null); setOverrideReport(null); setZeroNetIds([]); return; }
     setGateLoading(true); setGateError('');
-    Promise.allSettled([payrollApi.runPopulation(id), payrollApi.runValidationOverrides(id)])
-      .then(([pop, ovr]) => {
+    Promise.allSettled([payrollApi.runPopulation(id), payrollApi.runValidationOverrides(id), payrollApi.listValidationResults(id)])
+      .then(([pop, ovr, findings]) => {
         setPopulation(pop.status === 'fulfilled' ? pop.value : null);
         setOverrideReport(ovr.status === 'fulfilled' ? ovr.value : null);
+        setZeroNetIds(findings.status === 'fulfilled' && Array.isArray(findings.value)
+          ? [...new Set(findings.value.filter(f => f.code === ZERO_NET_UNPAID_LEAVE && f.employeeId != null).map(f => Number(f.employeeId)))]
+          : []);
         // A failure here is not cosmetic: without the counts the approver cannot acknowledge, and
         // the backend will refuse. Say so rather than presenting a button that 409s.
         if (pop.status === 'rejected' || ovr.status === 'rejected')
@@ -2352,6 +2427,7 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
     setAckOverridden(false);
     setAckOutside(false);
     setAckPayWarnings(false);
+    setAckZeroNet(false);
     refreshGate(runId);
   }, [runId, refreshGate]);
 
@@ -2372,12 +2448,14 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
   const payWarnings = population?.payWarnings ?? [];
   const payWarningCount = population?.payWarningCount ?? 0;
   const needsPayWarningAck = payWarningCount > 0;
+  const zeroNetCount = zeroNetIds.length;
+  const needsZeroNetAck = zeroNetCount > 0;
   const leftOut = population?.leftOut ?? [];
   // S-048: the final approval seals the journal, so with costing on the approver states how many employees post uncosted.
   const sealsJournal = hasPermission('payroll.approve') && (isFinance || isAdmin) && (selectedRun?.status === 'Processed' || selectedRun?.status === 'PendingFinanceReview');
   const uncosted = useUncostedAck(runId, sealsJournal);
   const gateSatisfied =
-    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && (!needsOutsideAck || ackOutside) && (!needsPayWarningAck || ackPayWarnings) && (!uncosted.needed || uncosted.affirmed) && !gateLoading && !gateError && currencyConfirmed;
+    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && (!needsOutsideAck || ackOutside) && (!needsPayWarningAck || ackPayWarnings) && (!needsZeroNetAck || ackZeroNet) && (!uncosted.needed || uncosted.affirmed) && !gateLoading && !gateError && currencyConfirmed;
 
   const handleApprove = async () => {
     if (!runId) return;
@@ -2391,6 +2469,7 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
         expectedOverriddenCount: needsOverriddenAck && ackOverridden ? overriddenCount : null,
         expectedOutsideBankCount: needsOutsideAck && ackOutside ? outsideCount : null,
         expectedPayWarningCount: needsPayWarningAck && ackPayWarnings ? payWarningCount : null,
+        expectedZeroNetCount: needsZeroNetAck && ackZeroNet ? zeroNetCount : null,
         expectedUncostedCount: uncosted.expected(),
       });
       await refreshRuns();
@@ -2401,6 +2480,7 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
       setAckOverridden(false);
       setAckOutside(false);
       setAckPayWarnings(false);
+      setAckZeroNet(false);
       refreshGate(runId);
     } catch (e: unknown) {
       const data = (e as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
@@ -2421,8 +2501,10 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
       // acknowledges the truth rather than a stale number.
       if (data?.error === 'uncosted_not_acknowledged') void uncosted.refresh();
       if (data?.error === 'excluded_employees_not_acknowledged' || data?.error === 'overridden_errors_not_acknowledged'
-          || data?.error === 'outside_bank_payments_not_acknowledged' || data?.error === 'pay_warnings_not_acknowledged') {
+          || data?.error === 'outside_bank_payments_not_acknowledged' || data?.error === 'pay_warnings_not_acknowledged'
+          || data?.error === 'zero_net_not_acknowledged') {
         setAckExcluded(false);
+        setAckZeroNet(false);
         setAckOutside(false);
         setAckPayWarnings(false);
         setAckOverridden(false);
@@ -2475,18 +2557,15 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
           ) : (
             <div key={i} className={`rounded-lg px-2 py-1 text-xs font-medium ${step.color}`}>
               {step.label}
-              {step.badge && <span className="ms-1 opacity-60">({step.badge})</span>}
+              {/* The role in the pill's own colour (at 60% opacity it measured about 2.5:1; the label itself passes 4.8:1). */}
+              {step.badge && <span className="ms-1 font-normal">({step.badge})</span>}
             </div>
           ))}
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
-        <select aria-label={t('Select payroll run to approve')} className={`${sel} flex-1 max-w-xs`} value={runId} onChange={e => setRunId(e.target.value)}>
-          <option value="">{t('Select run…')}</option>
-          <RunSelectOptions runs={runs} />
-        </select>
-      </div>
+      {/* The run is the run bar's (shared by every Payroll section): no second picker here. */}
+      {!runId && <NoRunChosen />}
 
       {selectedRun && (
         <div className="surface p-5 space-y-4">
@@ -2569,6 +2648,19 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
                     primary: `${w.code} — ${w.name}`,
                     secondary: payPopulationReasonLabel(t, w.reasonCode),
                   }))}
+                />
+              )}
+
+              {needsZeroNetAck && (
+                <AcknowledgementPanel
+                  tone="amber"
+                  ackId="ack-zero-net"
+                  title={t('{zeroNetCount} employee(s) net zero because unpaid leave took the whole wage', { zeroNetCount })}
+                  blurb={t('They are paid nothing this month and are left out of the bank file. Any loan or advance instalment is carried forward, not written off. Check the leave before approving.')}
+                  checked={ackZeroNet}
+                  onChange={setAckZeroNet}
+                  confirmLabel={t('I have reviewed the list and confirm exactly {zeroNetCount} employee(s) net zero this month.', { zeroNetCount })}
+                  rows={zeroNetIds.map(id => ({ key: String(id), primary: employeeName(id, false), secondary: '' }))}
                 />
               )}
 
@@ -2757,7 +2849,7 @@ function PayslipsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; o
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No payslips yet — click Generate to create payslips for this run')}</p>
         </div>
       ) : (
-        <div className="surface overflow-hidden">
+        <div className="surface overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
@@ -2815,16 +2907,17 @@ function PayslipsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; o
 type LoadStatus = { status: 'idle' } | { status: 'loading' } | { status: 'ready' } | { status: 'failed'; error: unknown };
 const isForbidden = (error: unknown) => (error as { response?: { status?: number } } | null)?.response?.status === 403;
 
-function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?: string; onRunChange?: (id: string | null) => void; onNavigate?: (tab: string) => void }) {
+function BankWpsTab({ selectedRunId, onNavigate, onRunsChanged, onPayOutContext }: { selectedRunId?: string; onRunChange?: (id: string | null) => void; onNavigate?: (tab: string) => void; onRunsChanged?: () => void; onPayOutContext?: (ctx: PayOutContext | null) => void }) {
   const t = useT();
   // Creating a batch and generating the file need payroll.export (Admin) or payroll.payment_batch.manage. Without either the actions are shown off, with the reason.
   const { hasPermission } = useAuth();
   const canExport = paymentActionsAllowed(hasPermission, ['create']);
   const fmtAmt = useFmtAmt();
+  const monthLabel = useMonthLabel();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
-  // The run the page is showing (the pipeline's "Open Bank / WPS", or ?tab=bank-wps&run=) is the run this tab opens on.
-  const [runId, setRunId] = useSharedRun(selectedRunId, onRunChange);
+  // The run is the page's: the run bar's picker is the only run control (clearing it empties this tab too).
+  const runId = selectedRunId ?? '';
   const [batches, setBatches] = useState<PayrollPaymentBatch[]>([]);
   const [selectedBatch, setSelectedBatch] = useState<PayrollPaymentBatch | null>(null);
   const [records, setRecords] = useState<PayrollPaymentRecord[]>([]);
@@ -2832,6 +2925,8 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
   const [paymentMethod, setPaymentMethod] = useState('WPS');
   const [error, setError] = useState('');
   const openBatchIdRef = useRef<string | null>(null);
+  // Whether the open batch's bank file existed the last time the flow reported (null: not reported yet for this batch).
+  const fileMadeRef = useRef<boolean | null>(null);
   // The run's only batch opens by itself (once per run): there is nothing to choose between.
   const autoOpenedRef = useRef<string | null>(null);
   const currentRunRef = useRef(runId);
@@ -2843,7 +2938,17 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
   const [reloadKey, setReloadKey] = useState(0);
   // Where the open batch is in check -> create -> download, reported by the bank-file gate and panel for the step strip above.
   const [flow, setFlow] = useState<BankFlowProgress | null>(null);
+  const [recordsOpen, setRecordsOpen] = useState(false);
   const runNames = useRunEmployeeLabels(runId);
+  const fx = useFormat();
+  // Several live batches and none open: the one the user picked in step 1, before "Open batch".
+  const [chosenBatchId, setChosenBatchId] = useState<string | null>(null);
+  const [submitOpen, setSubmitOpen] = useState(false);
+  const panelMenu = useRef<GuideSlots['menu'] | null>(null);
+  // How many people each batch pays (its payment records), read only when there are batches to choose between.
+  const [batchCounts, setBatchCounts] = useState<Record<string, number>>({});
+  // The employer's bank (from the company's bank setup), named on each batch row when there are batches to choose between.
+  const [chooseBank, setChooseBank] = useState<string | null>(null);
 
   useEffect(() => {
     setRunsState({ status: 'loading' });
@@ -2854,7 +2959,7 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
     let cancelled = false;
     openBatchIdRef.current = null;
     autoOpenedRef.current = null;
-    setBatches([]); setSelectedBatch(null); setRecords([]); setRecordsState({ status: 'idle' });
+    setBatches([]); setSelectedBatch(null); setRecords([]); setRecordsState({ status: 'idle' }); setRecordsOpen(false); setChosenBatchId(null); setSubmitOpen(false);
     if (!runId) { setBatchesState({ status: 'idle' }); return; }
     setError('');
     setBatchesState({ status: 'loading' });
@@ -2865,42 +2970,125 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
   }, [runId, reloadKey]);
 
   const selectedRun = runs.find(r => r.id === runId);
-  // Backend (C5 control) only allows payment batches for Locked runs — finance must lock first.
-  const runIsLocked = selectedRun?.status === 'Locked';
   const hasExistingBatch = batches.some(b => b.wpsStatus !== 'Voided');
 
   const openBatch = (batch: PayrollPaymentBatch) => {
     openBatchIdRef.current = batch.id;
-    setSelectedBatch(batch); setRecords([]); setRecordsState({ status: 'loading' }); setFlow(null);
+    setSelectedBatch(batch); setRecords([]); setRecordsState({ status: 'loading' }); setFlow(null); setRecordsOpen(false); fileMadeRef.current = null;
     payrollApi.paymentRecords(batch.id)
       .then(rows => { if (openBatchIdRef.current === batch.id) { setRecords(rows); setRecordsState({ status: 'ready' }); } })
       .catch(error => { if (openBatchIdRef.current === batch.id) setRecordsState({ status: 'failed', error }); });
   };
 
+  // The batch opens by itself when there is nothing to choose: the run's only live batch, or the one that has gone furthest (lib/payOut.ts).
   useEffect(() => {
-    if (batches.length !== 1 || selectedBatch || autoOpenedRef.current === batches[0].id) return;
-    autoOpenedRef.current = batches[0].id;
-    openBatch(batches[0]);
+    if (selectedBatch) return;
+    const pick = pickPayOutBatch(batches as PipelineBatch[], null);
+    if (!pick || autoOpenedRef.current === pick.id) return;
+    autoOpenedRef.current = pick.id;
+    openBatch(pick as PayrollPaymentBatch);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batches, selectedBatch]);
 
-  const steps = deriveBankSteps({
-    hasBatch: !!selectedBatch,
-    runLocked: runIsLocked,
-    canCreateBatch: canExport,
-    isSaudi: selectedBatch?.isSaudi === true,
-    progress: flow,
-    wpsStatus: selectedBatch ? (batches.find(b => b.id === selectedBatch.id)?.effectiveWpsStatus || batches.find(b => b.id === selectedBatch.id)?.wpsStatus) : null,
-  });
-  // The flow is the Saudi bank-file flow: shown while no batch is open (what to do first) and for a Saudi batch; a WPS/SIF batch has its own button.
-  const showSteps = !!runId && (!selectedBatch || selectedBatch.isSaudi === true);
-  const jumpStep = (key: BankStepKey) => jumpTo(key === 'batch' ? 'bank-wps-batches' : key === 'download' && document.getElementById('bank-wps-generated-export') ? 'bank-wps-generated-export' : 'bank-wps-bank-file');
-
-  const jumpTo = (id: string) => {
-    const target = document.getElementById(id) ?? document.getElementById('bank-wps-bank-file');
-    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    target?.focus({ preventScroll: true });
+  // ── One stage for the whole page (lib/payOut.ts): this tab's strip, panel and button, and the run bar's chip and run option.
+  const can = {
+    create: canExport, wps: paymentActionsAllowed(hasPermission, ['wps']),
+    settle: paymentActionsAllowed(hasPermission, ['settle']), setup: hasPermission('payroll.structure_manage'),
   };
+  // Someone who can neither prepare, submit nor settle the file has nothing to do here (Finance's settle still sees the flow, read-only).
+  const restricted = !paymentActionsAllowed(hasPermission, ['create', 'wps', 'settle']);
+  // The open batch against the run (run net − paid outside the file): a difference blocks step 3, in the one stage source.
+  const openRow = selectedBatch ? (batches.find(b => b.id === selectedBatch.id) ?? selectedBatch) : null;
+  const tieDifference = openRow ? tieOut(openRow, selectedRun)?.difference ?? null : null;
+  const exportFacts = useMemo(() => (flow ? {
+    gate: flow.gate, setup: flow.setup, validation: flow.validation, fileExists: flow.generated, createRefused: !!flow.createRefused, tieDifference,
+  } : null), [flow?.gate, flow?.setup, flow?.validation, flow?.generated, flow?.createRefused, tieDifference]); // eslint-disable-line react-hooks/exhaustive-deps
+  const recordsRead = recordsState.status === 'ready' ? records : null;
+  const payOut = derivePayOut({
+    run: selectedRun ?? null, batches: batchesState.status === 'ready' ? batches as PipelineBatch[] : null, openBatchId: selectedBatch?.id ?? null,
+    can, exportFacts, downloaded: !!flow?.downloaded, records: recordsRead,
+  });
+  const loadingGuide = runsState.status === 'loading' || batchesState.status === 'loading' || batchesState.status === 'idle';
+
+  // The run bar reads the same facts (its chip and the run option cannot disagree with this tab).
+  const payOutContext = useMemo<PayOutContext | null>(() => (runId && batchesState.status === 'ready' ? {
+    runId, batches: batches as PipelineBatch[], openBatchId: selectedBatch?.id ?? null, exportFacts, downloaded: !!flow?.downloaded, records: recordsRead,
+  } : null), [runId, batches, batchesState.status, selectedBatch?.id, exportFacts, flow?.downloaded, recordsRead]);
+  useEffect(() => { onPayOutContext?.(payOutContext); }, [payOutContext, onPayOutContext]);
+  useEffect(() => () => onPayOutContext?.(null), [onPayOutContext]);
+
+  // What the panel last handed the flow (the bank's name, the file), for the facts strip, step 5 and the confirmations.
+  const panelData = useRef<BankPanelData | null>(null);
+  const submittedRef = useRef<string>('');
+  // The batch was created here (not picked from the list): the hand-over says so.
+  const batchCreatedRef = useRef(false);
+  const handOver = useBankHandOver(payOut.stage, loadingGuide, (from) => {
+    const data = panelData.current;
+    switch (from) {
+      case 'batch': return !selectedBatch ? '' : batchCreatedRef.current ? t('Payment batch {number} created.', { number: selectedBatch.batchNumber }) : t('Payment batch chosen.');
+      case 'setup': return t('Bank setup saved.');
+      case 'check': return t('Checked {n} employees — no blockers.', { n: flow?.checked ?? records.length });
+      case 'create': return data?.file ? t('Bank file created: {count} employees, {amount}.', { count: data.file.employeeCount, amount: fmtAmt(data.file.totalAmount, selectedBatch?.currency) }) : t('Bank file created.');
+      case 'send': return data?.bankName ? t('Recorded as submitted to {bank}, reference {ref}.', { bank: data.bankName, ref: submittedRef.current }) : t('Recorded as submitted, reference {ref}.', { ref: submittedRef.current });
+      default: return '';
+    }
+  });
+
+  // A done step opened read-only (?step= in the address, so it can be shared); a new stage starts clean.
+  const searchParams = useSearchParams();
+  const [viewing, setViewingState] = useState<PayOutStepKey | null>(() => {
+    const s = searchParams?.get('step');
+    return s === 'batch' || s === 'check' || s === 'create' || s === 'send' ? s : null;
+  });
+  const setViewing = (k: PayOutStepKey | null) => {
+    setViewingState(k);
+    try {
+      const u = new URL(window.location.href);
+      if (k) u.searchParams.set('step', k); else u.searchParams.delete('step');
+      window.history.replaceState(window.history.state, '', u.toString());
+    } catch { /* the address just does not follow */ }
+  };
+  const lastStage = useRef(payOut.stage);
+  useEffect(() => {
+    if (lastStage.current !== payOut.stage && !loadingGuide) { lastStage.current = payOut.stage; if (viewing) setViewing(null); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payOut.stage, loadingGuide]);
+
+  // The bank file was made on this screen: the page's pipeline and run list read the batch list, so they are told to read it again.
+  useEffect(() => {
+    if (!selectedBatch || !flow || flow.gate !== 'ready') return;
+    if (fileMadeRef.current === false && flow.generated) {
+      onRunsChanged?.();
+      payrollApi.listPaymentBatches(runId).then(rows => { if (currentRunRef.current === runId) setBatches(rows); }).catch(() => {});
+    }
+    fileMadeRef.current = flow.generated;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flow?.generated, flow?.gate, selectedBatch?.id]);
+
+  useEffect(() => {
+    const live = batches.filter(b => b.wpsStatus !== 'Voided');
+    if (live.length < 2) return;
+    let cancelled = false;
+    for (const b of live) {
+      if (batchCounts[b.id] !== undefined) continue;
+      payrollApi.paymentRecords(b.id)
+        .then(rows => { if (!cancelled && Array.isArray(rows)) setBatchCounts(prev => ({ ...prev, [b.id]: rows.filter(r => r.status !== 'Cancelled').length })); })
+        .catch(() => { /* the count is left out, never guessed */ });
+    }
+    const companyId = runs.find(r => r.id === runId)?.companyId;
+    if (companyId && live.some(b => b.isSaudi === true)) {
+      Promise.all([saudiBankExportsApi.getSettings(companyId), saudiBankExportsApi.listFormats()])
+        .then(([settings, formats]) => {
+          if (cancelled) return;
+          const f = Array.isArray(formats) ? formats.find(x => x.id === settings?.formatId) : undefined;
+          setChooseBank(f ? (isCustomFormatId(f.id) ? t(f.name) : t(f.bank)) : null);
+        })
+        .catch(() => { /* the bank is left out, never guessed */ });
+    }
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batches, runs]);
+
   const currentBatch = batches.find(b => b.wpsStatus !== 'Voided') ?? null;
   const batchFileGenerated = !!currentBatch && (currentBatch.status === 'FileGenerated' || (!!currentBatch.effectiveWpsStatus && currentBatch.effectiveWpsStatus !== 'Draft'));
 
@@ -2933,8 +3121,10 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
         batch = await payrollApi.createPaymentBatch(runId, paymentMethod, undefined, data.outsideBankCount);
       }
       if (currentRunRef.current !== runId) return;
+      batchCreatedRef.current = true;
       setBatches(b => [batch, ...b]);
       openBatch(batch);
+      onRunsChanged?.();
     } catch (e) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
       // A 403 is a missing permission, never "lock the run first" (the run may well be locked).
@@ -2957,46 +3147,80 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
     payrollApi.listPaymentBatches(runId).then(setBatches).catch(() => {});
   };
 
-  return (
-    <div className="space-y-4">
-      {confirmDialog}
-      <div className="flex flex-wrap items-center gap-3">
-        <select aria-label={t('Select payroll run')} className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
-          <option value="">{t('Select payroll run…')}</option>
-          <RunSelectOptions runs={runs} />
-        </select>
-        {runId && (
-          <>
-            <select aria-label={t('Payment method')} className={`${sel} w-40`} value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
-              {['WPS', 'BankTransfer', 'Cash'].map(m => <option key={m} value={m}>{m === 'BankTransfer' ? t('Bank transfer') : m === 'Cash' ? t('Cash') : m}</option>)}
-            </select>
-            {hasExistingBatch && currentBatch ? (
-              <p role="status" data-testid="bank-batch-status" className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                {t(batchFileGenerated ? 'Payment batch {number} created; bank file generated.' : 'Payment batch {number} created; bank file not generated yet.', { number: currentBatch.batchNumber })}
-              </p>
-            ) : (
-              <button type="button" className={btn.primary} onClick={createBatch} disabled={creating || !runIsLocked || !canExport}
-                title={canExport ? undefined : t(PAYMENT_ACTION_DENIED.create)}>
-                {creating ? t('Creating…') : t('Create Payment Batch')}
-              </button>
-            )}
-          </>
-        )}
+  // ── The payment batches of the run (a WPS/SIF batch's own layout).
+  const batchList = (
+    <div id="bank-wps-batches" tabIndex={-1} className="outline-none" data-testid="bank-batch-list">
+      {!runId ? <p className="p-5 text-sm text-fg-muted">{t('Choose a payroll run to see its payment batches.')}</p>
+        : batchesState.status === 'loading' ? <SkeletonRows rows={2} className="p-4" />
+        : batchesState.status === 'failed' ? <LoadFailedNotice error={batchesState.error} onRetry={() => setReloadKey(n => n + 1)} />
+        : batches.length === 0 ? <p className="p-5 text-sm text-slate-400">{t('No batches yet.')}</p> : (
+        <div className="divide-y divide-slate-100 rounded-lg border border-line dark:divide-white/5">
+          {batches.map(b => (
+            <div key={b.id} role="button" tabIndex={0} onClick={() => openBatch(b)}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openBatch(b); } }}
+              className={`w-full cursor-pointer px-4 py-3 text-start hover:bg-slate-50 dark:hover:bg-white/5 ${selectedBatch?.id === b.id ? 'bg-sapphire/5 dark:bg-sapphire/10' : ''}`}>
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium text-slate-800 dark:text-white">{b.batchNumber}</p>
+                {/* One status: the lifecycle's. The file-generation flag is a step toward it, not a second status. */}
+                <StatusBadge status={b.effectiveWpsStatus || b.wpsStatus || b.status} />
+              </div>
+              <p className="mt-1 text-xs text-slate-400">{b.paymentMethod} · {fmtAmt(b.totalAmount, b.currency)}</p>
+              {b.status !== 'FileGenerated' && (
+                <button type="button" onClick={e => { e.stopPropagation(); generateWps(b.id); }} className={`mt-1.5 ${btn.sm} h-6 px-2 text-xs disabled:opacity-50`}
+                  disabled={!canExport}
+                  title={!canExport ? t(PAYMENT_ACTION_DENIED.wps) : b.isSaudi ? t('For review only. The Saudi bank payroll file is the ANB Connect instruction.') : undefined}>
+                  {b.isSaudi ? t('Generate payroll register (internal — not a bank/WPS file)') : t('Generate WPS/SIF (not verified with any gateway)')}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  // ── The payment records table: a drawer in the guided flow, a panel in a WPS/SIF batch's layout.
+  const recordsTable = selectedBatch && (
+    <>
+      {/* A long batch scrolls inside its own region (header stays in view) instead of making the whole tab tall. */}
+      <div role="region" aria-label={t('Payment records')} tabIndex={0} className="max-h-[calc(100dvh-10rem)] overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-primary" data-testid="bank-records-scroll">
+      <table className="w-full min-w-[34rem] text-sm">
+        <thead className="sticky top-0 z-10 bg-surface">
+          <tr className="border-b border-slate-100 dark:border-white/[0.07]">
+            {[t('Employee'), t('Amount'), 'IBAN', t('WPS Reference'), t('Status')].map(h => (
+              <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
+          {recordsState.status === 'loading' && <tr><td colSpan={5} className="p-4"><SkeletonRows rows={4} /></td></tr>}
+          {recordsState.status === 'failed' && (isForbidden(recordsState.error)
+            ? <tr><td colSpan={5} role="alert" data-testid="bank-records-forbidden" className="py-8 text-center text-sm text-fg-muted">{t('The payment records need the Payroll export permission. Ask an administrator to give it to your role.')}</td></tr>
+            : <LoadFailedRow colSpan={5} error={recordsState.error} onRetry={() => openBatch(selectedBatch)} />)}
+          {recordsState.status === 'ready' && records.length === 0 && <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-400">{t('No records.')}</td></tr>}
+          {records.map(r => (
+            <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
+              <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">
+                {r.employeeName
+                  ? <><bdi>{r.employeeName}</bdi>{r.employeeCode && <span className="ms-1.5 whitespace-nowrap text-xs font-normal text-slate-400"><bdi>{r.employeeCode}</bdi></span>}</>
+                  : runNames[r.employeeId] ? <EmployeeLabelText label={runNames[r.employeeId]} /> : t('Emp #{id}', { id: r.employeeId })}
+              </td>
+              <td className="px-4 py-2 font-semibold text-slate-700 dark:text-slate-300">{r.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+              <td className="px-4 py-2 font-mono text-xs text-slate-500">{r.iban || <span className="text-rose-500">{t('Missing IBAN')}</span>}</td>
+              <td className="px-4 py-2 text-xs text-slate-400">{r.wpsReference}</td>
+              <td className="px-4 py-2"><StatusBadge status={r.status} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
       </div>
-      {runId && !runIsLocked && (
-        <div className="flex items-start gap-2 rounded-lg bg-amber-50 px-4 py-2.5 text-sm text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{t('This run is {status}. A payment batch can only be created once the run is Locked — finalise it on the Approvals tab (Lock Run) first.', { status: enumLabel(t, 'PayrollRunStatus', selectedRun?.status) })}</span>
-        </div>
-      )}
-      {runId && !canExport && (
-        <div role="note" className="flex items-start gap-2 rounded-lg bg-amber-50 px-4 py-2.5 text-sm text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{t(PAYMENT_ACTION_DENIED.create)}</span>
-        </div>
-      )}
+    </>
+  );
+
+  const failureBanners = (
+    <>
       {error && (
-        <div className="flex items-start gap-2 rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
+        <div role="alert" className="flex items-start gap-2 rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>{error}</span>
         </div>
@@ -3008,111 +3232,527 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
           <button type="button" className={btn.link} onClick={() => setReloadKey(n => n + 1)}>{t('Retry')}</button>
         </div>
       )}
+    </>
+  );
 
-      {showSteps && <BankFileSteps steps={steps} onJump={jumpStep} onOpenTracking={onNavigate ? () => onNavigate('payment-tracking') : undefined} />}
-      {selectedBatch && (
-        <nav aria-label={t('Jump to a section of this tab')} data-testid="bank-wps-jump" className="flex flex-wrap items-center gap-x-1 gap-y-1 rounded-lg bg-slate-50 px-3 py-1.5 text-xs dark:bg-white/5">
-          <span className="text-slate-500 dark:text-slate-400">{t('Jump to')}</span>
-          <button type="button" className={`${btn.link} px-1.5`} onClick={() => jumpTo('bank-wps-records')}>{t('Records')}</button>
-          {selectedBatch.isSaudi && <>
-            <span aria-hidden="true" className="text-slate-300">·</span>
-            <button type="button" className={`${btn.link} px-1.5`} onClick={() => jumpTo('bank-wps-bank-file')}>{t('Bank file')}</button>
-            <span aria-hidden="true" className="text-slate-300">·</span>
-            <button type="button" className={`${btn.link} px-1.5`} onClick={() => jumpTo('bank-wps-generated-export')}>{t('Generated export')}</button>
-          </>}
-        </nav>
-      )}
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div id="bank-wps-batches" tabIndex={-1} className="surface overflow-hidden outline-none">
-          <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
-            <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Payment Batches')}</p>
+  const header = (menu?: GuideSlots['menu']) => (
+    <PayrollSectionHeader
+      group={t('Pay out')}
+      title={t('Bank / WPS Files')}
+      purpose={t('Prepare this run’s bank salary file, hand it to your bank, and follow the bank’s confirmation.')}
+      actions={selectedBatch?.isSaudi === true || menu ? (
+        <MoreMenu items={[
+          menu?.setup && { label: t('Bank setup'), onSelect: menu.setup },
+          menu?.employeeBank && { label: t('Employee bank details'), onSelect: menu.employeeBank },
+          selectedBatch && recordsState.status === 'ready' && { label: t('Payment records'), onSelect: () => setRecordsOpen(true) },
+          menu?.formats && { label: t('Bank file formats'), onSelect: menu.formats },
+          menu?.about && { label: t('About this file'), onSelect: menu.about },
+        ]} />
+      ) : undefined}
+    />
+  );
+
+  // A WPS/SIF batch (not the Saudi bank-file flow) keeps its own layout: the batch list, its records and the batch's own file button.
+  if (runId && selectedBatch && selectedBatch.isSaudi !== true) {
+    return (
+      <div className="space-y-4">
+        {confirmDialog}
+        {header()}
+        {hasExistingBatch && currentBatch && (
+          <p role="status" data-testid="bank-batch-status" className="text-sm font-medium text-slate-700 dark:text-slate-200">
+            {t(batchFileGenerated ? 'Payment batch {number} created; bank file generated.' : 'Payment batch {number} created; bank file not generated yet.', { number: currentBatch.batchNumber })}
+          </p>
+        )}
+        {failureBanners}
+        <div className="grid gap-4 lg:grid-cols-3">
+          <div className="surface overflow-hidden">
+            <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
+              <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Payment Batches')}</p>
+            </div>
+            {batchList}
           </div>
-          {!runId ? <p className="p-5 text-sm text-fg-muted">{t('Choose a payroll run to see its payment batches.')}</p>
-            : batchesState.status === 'loading' ? <SkeletonRows rows={2} className="p-4" />
-            : batchesState.status === 'failed' ? <LoadFailedNotice error={batchesState.error} onRetry={() => setReloadKey(n => n + 1)} />
-            : batches.length === 0 ? <p className="p-5 text-sm text-slate-400">{t('No batches yet.')}</p> : (
-            <div className="divide-y divide-slate-100 dark:divide-white/5">
-              {batches.map(b => (
-                <div key={b.id} role="button" tabIndex={0} onClick={() => openBatch(b)}
-                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openBatch(b); } }}
-                  className={`w-full cursor-pointer px-4 py-3 text-start hover:bg-slate-50 dark:hover:bg-white/5 ${selectedBatch?.id === b.id ? 'bg-sapphire/5 dark:bg-sapphire/10' : ''}`}>
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-medium text-slate-800 dark:text-white">{b.batchNumber}</p>
-                    {/* One status: the lifecycle's. The file-generation flag is a step toward it, not a second status. */}
-                    <StatusBadge status={b.effectiveWpsStatus || b.wpsStatus || b.status} />
-                  </div>
-                  <p className="mt-1 text-xs text-slate-400">{b.paymentMethod} · {fmtAmt(b.totalAmount, b.currency)}</p>
-                  {b.status !== 'FileGenerated' && (
-                    <button type="button" onClick={e => { e.stopPropagation(); generateWps(b.id); }} className={`mt-1.5 ${btn.sm} h-6 px-2 text-xs disabled:opacity-50`}
-                      disabled={!canExport}
-                      title={!canExport ? t(PAYMENT_ACTION_DENIED.wps) : b.isSaudi ? t('For review only. The Saudi bank payroll file is the ANB Connect instruction.') : undefined}>
-                      {b.isSaudi ? t('Generate payroll register (internal — not a bank/WPS file)') : t('Generate WPS/SIF (not verified with any gateway)')}
-                    </button>
-                  )}
-                </div>
-              ))}
+          <div id="bank-wps-records" tabIndex={-1} className="surface overflow-hidden outline-none lg:col-span-2">
+            <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
+              <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Records — {batchNumber}', { batchNumber: selectedBatch.batchNumber })}</p>
             </div>
-          )}
+            {recordsTable}
+          </div>
         </div>
+        <SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi={false} onProgress={setFlow} suggestedReference={suggestedBatchReference(selectedBatch.batchNumber, selectedRun)}
+          employeeIds={records.map(r => r.employeeId)} employeeLabels={{ ...runNames, ...employeeLabelsFromRecords(records) }} renderGuide={slots => <>{slots.panels?.check?.body ?? null}</>} />
+      </div>
+    );
+  }
 
-        <div id="bank-wps-records" tabIndex={-1} className="surface overflow-hidden outline-none lg:col-span-2">
-          {!selectedBatch ? (
-            <div className="flex flex-col items-center justify-center py-20 text-center">
-              <Landmark className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-              <p className="text-sm text-slate-400">{t('Select a batch to view payment records')}</p>
-            </div>
-          ) : (
-            <>
-              <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
-                <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Records — {batchNumber}', { batchNumber: selectedBatch.batchNumber })}</p>
-              </div>
-              {/* A long batch scrolls inside its own region (header stays in view) instead of making the whole tab tall. */}
-              <div role="region" aria-label={t('Payment records')} tabIndex={0} className="max-h-[22rem] overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-primary" data-testid="bank-records-scroll">
-              <table className="w-full min-w-[34rem] text-sm">
-                <thead className="sticky top-0 z-10 bg-surface">
-                  <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                    {[t('Employee'), t('Amount'), 'IBAN', t('WPS Reference'), t('Status')].map(h => (
-                      <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
-                  {recordsState.status === 'loading' && <tr><td colSpan={5} className="p-4"><SkeletonRows rows={4} /></td></tr>}
-                  {recordsState.status === 'failed' && (isForbidden(recordsState.error)
-                    ? <tr><td colSpan={5} role="alert" data-testid="bank-records-forbidden" className="py-8 text-center text-sm text-fg-muted">{t('The payment records need the Payroll export permission. Ask an administrator to give it to your role.')}</td></tr>
-                    : <LoadFailedRow colSpan={5} error={recordsState.error} onRetry={() => openBatch(selectedBatch)} />)}
-                  {recordsState.status === 'ready' && records.length === 0 && <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-400">{t('No records.')}</td></tr>}
-                  {records.map(r => (
-                    <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-                      <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">
-                        {r.employeeName
-                          ? <><bdi>{r.employeeName}</bdi>{r.employeeCode && <span className="ms-1.5 whitespace-nowrap text-xs font-normal text-slate-400"><bdi>{r.employeeCode}</bdi></span>}</>
-                          : runNames[r.employeeId] ? <EmployeeLabelText label={runNames[r.employeeId]} /> : t('Emp #{id}', { id: r.employeeId })}
-                      </td>
-                      <td className="px-4 py-2 font-semibold text-slate-700 dark:text-slate-300">{r.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                      <td className="px-4 py-2 font-mono text-xs text-slate-500">{r.iban || <span className="text-rose-500">{t('Missing IBAN')}</span>}</td>
-                      <td className="px-4 py-2 text-xs text-slate-400">{r.wpsReference}</td>
-                      <td className="px-4 py-2"><StatusBadge status={r.status} /></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              </div>
-            </>
-          )}
+  if (!runId) {
+    return (
+      <div className="space-y-4">
+        {confirmDialog}
+        {header()}
+        {failureBanners}
+        <div className="surface" data-testid="bank-no-run">
+          <EmptyState kind="first-use" icon={Landmark} title={t('Choose a payroll run')} description={t('The bank file is prepared for one run at a time.')}
+            action={{ label: t('Choose a run'), onClick: () => document.getElementById('pipeline-run-picker')?.focus() }} />
         </div>
       </div>
-      {selectedBatch?.isSaudi && (
-        <div className="flex items-start gap-2 rounded-lg bg-slate-50 px-4 py-2.5 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">
-          <Landmark className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>
-            {t('Saudi bank payroll file: the Payroll payment instruction file (bank format) — the ANB Connect instruction with WPS fields — is the file to send to the bank. Mudad accepts only the WPS file your bank signs — keep the bank’s output file or a Mudad screenshot as evidence before marking the batch Accepted.')}
-          </span>
+    );
+  }
+
+  // The batch list could not be read: say so (never "create one" over a list that failed to load).
+  if (batchesState.status === 'failed') {
+    return (
+      <div className="space-y-4">
+        {confirmDialog}
+        {header()}
+        {failureBanners}
+        <LoadFailedNotice error={batchesState.error} onRetry={() => setReloadKey(n => n + 1)} />
+      </div>
+    );
+  }
+
+  if (restricted) {
+    return (
+      <div className="space-y-4">
+        {header()}
+        <div className="surface" data-testid="bank-restricted">
+          <EmptyState kind="restricted" icon={Landmark} title={t('You can’t prepare bank files')}
+            description={t('Bank files need the payment batch or Payroll export permission. Your HR administrator can give it.')} />
         </div>
+      </div>
+    );
+  }
+
+  // ── What the tab itself puts in the flow: step 1 (the batch) and step 5 (the bank's response)
+  const liveBatches = batches.filter(b => b.wpsStatus !== 'Voided');
+  const runFacts = selectedRun && (
+    <dl className="grid grid-cols-2 gap-3 text-body-sm">
+      <div className="rounded-xl border border-line p-3"><dt className="text-meta text-fg-muted">{t('Employees')}</dt><dd className="mt-1 text-h4 font-semibold tabular-nums text-fg">{selectedRun.employeeCount}</dd></div>
+      <div className="rounded-xl border border-line p-3"><dt className="text-meta text-fg-muted">{t('Run net pay')}</dt><dd className="mt-1 text-h4 font-semibold tabular-nums text-fg"><bdi dir="ltr">{fmtAmt(selectedRun.totalNetSalary, liveBatches[0]?.currency)}</bdi></dd></div>
+    </dl>
+  );
+  const batchBody = payOut.steps[0].reason === 'run_not_locked' ? (
+    <div className="space-y-3">
+      <p className="text-body text-fg">{t('Run status')}: <strong><EnumLabel enum="PayrollRunStatus" value={selectedRun?.status} /></strong></p>
+      {onNavigate && <button type="button" className="btn-secondary btn-sm" onClick={() => onNavigate('approvals')}>{t('Open Approvals')}</button>}
+    </div>
+  ) : liveBatches.length > 1 ? (
+    <fieldset className="space-y-2" data-testid="bank-batch-choices">
+      <legend className="sr-only">{t('Payment batches of this run')}</legend>
+      {liveBatches.map(b => {
+        const others = liveBatches.filter(o => o.id !== b.id);
+        // Tagged only when it is the ONE batch that ties to the run: two that tie cannot both be right, so neither is tagged.
+        const tying = liveBatches.filter(o => { const x = tieOut(o, selectedRun); return !!x && Math.abs(x.difference) < 0.005; });
+        const isTheMatch = tying.length === 1 && tying[0].id === b.id;
+        const count = batchCounts[b.id];
+        return (
+          <div key={b.id} className={`rounded-xl border p-3 ${chosenBatchId === b.id ? 'border-primary bg-primary-soft' : 'border-line'}`} data-batch-row={b.id}>
+            <label className="flex cursor-pointer items-center gap-3">
+              <input type="radio" name="bank-batch-choice" value={b.id} checked={chosenBatchId === b.id} onChange={() => setChosenBatchId(b.id)} />
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-body font-semibold text-fg"><bdi>{b.batchNumber}</bdi></span>
+                  {isTheMatch && <span className="badge badge-neutral" data-testid="bank-batch-matches">{t('Matches the run')}</span>}
+                </span>
+                <span className="block text-meta text-fg-muted">
+                  {count !== undefined && <>{t('{count, plural, one {# employee} other {# employees}}', { count })} · </>}
+                  {paymentMethodLabel(t, b.paymentMethod)}{chooseBank && <> · <bdi>{chooseBank}</bdi></>} · <bdi dir="ltr">{fmtAmt(b.totalAmount, b.currency)}</bdi>
+                </span>
+              </span>
+              <StatusBadge status={b.effectiveWpsStatus || b.wpsStatus || b.status} />
+            </label>
+            {/* A warning, not a block: the server refuses a second live batch for a run, so two here are worth a look. */}
+            {others.map(o => (
+              <p key={o.id} role="note" className="mt-2 flex items-start gap-1.5 text-meta font-medium text-danger-fg" data-testid="bank-batch-overlap">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                {t('Batch {number} also pays this run. Each employee must be in one batch only, or they are paid twice.', { number: o.batchNumber })}
+              </p>
+            ))}
+          </div>
+        );
+      })}
+    </fieldset>
+  ) : (
+    <div className="space-y-4">
+      {batchesState.status === 'ready' && (
+        <Field label={t('Payment method')} info={t('How this batch pays employees. WPS and bank transfer go in the bank file; cash and cheque are paid outside it.')} size="md">
+          <select id="bank-wps-method" className="select w-full max-w-xs" value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)} disabled={!canExport}>
+            {['WPS', 'BankTransfer', 'Cash'].map(m => <option key={m} value={m}>{m === 'BankTransfer' ? t('Bank transfer') : m === 'Cash' ? t('Cash') : m}</option>)}
+          </select>
+        </Field>
       )}
-      {selectedBatch && <div id="bank-wps-bank-file" tabIndex={-1} className="outline-none"><SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi={selectedBatch.isSaudi === true} onProgress={setFlow} suggestedReference={suggestedBatchReference(selectedBatch.batchNumber, selectedRun)} employeeIds={records.map(r => r.employeeId)} employeeLabels={{ ...runNames, ...employeeLabelsFromRecords(records) }} /></div>}
+      {runFacts}
     </div>
   );
+  const runSummary = selectedRun && (
+    <div className="space-y-3" data-testid="bank-run-summary">
+      <p className="text-body font-semibold text-fg">{t('This run')}</p>
+      <dl className="space-y-2">
+        {[
+          [t('Payroll run'), monthLabel(selectedRun.month, selectedRun.year)],
+          [t('Run status'), <EnumLabel key="s" enum="PayrollRunStatus" value={selectedRun.status} />],
+          ...(selectedRun.lockedAtUtc ? [[t('Locked'), fx.dateTime(selectedRun.lockedAtUtc)]] : []),
+          [t('Employees'), fx.integer(selectedRun.employeeCount)],
+          [t('Run net pay'), <bdi key="n" dir="ltr">{fmtAmt(selectedRun.totalNetSalary, liveBatches[0]?.currency)}</bdi>],
+          ...(selectedBatch ? [[t('Payment batch'), <bdi key="b" className="font-mono">{selectedBatch.batchNumber}</bdi>], [t('Payment method'), paymentMethodLabel(t, selectedBatch.paymentMethod)]] : []),
+        ].map(([k, v]) => <div key={String(k)} className="grid grid-cols-[8.5rem_minmax(0,1fr)] items-baseline gap-3"><dt className="text-fg-muted">{k}</dt><dd className="text-end font-medium tabular-nums text-fg">{v}</dd></div>)}
+      </dl>
+    </div>
+  );
+
+  // Everyone the file pays (folded): code, name, IBAN tail and net, so joiners, leavers and partial pay can be seen before the check.
+  const peopleInFile = recordsState.status === 'ready' && records.length > 0 && (
+    <details className="rounded-lg border border-line" data-testid="bank-employees-in-file">
+      <summary className="cursor-pointer px-3 py-2 text-body-sm font-medium text-fg">{t('Employees in this file ({count})', { count: records.length })}</summary>
+      <div className="max-h-64 overflow-auto border-t border-line">
+        <table className="w-full text-body-sm">
+          <thead className="sticky top-0 bg-surface"><tr className="text-meta text-fg-muted">
+            <th className="px-3 py-2 text-start font-medium">{t('Code')}</th>
+            <th className="px-3 py-2 text-start font-medium">{t('Employee')}</th>
+            <th className="px-3 py-2 text-start font-medium">IBAN</th>
+            <th className="px-3 py-2 text-end font-medium">{t('Net pay')}</th>
+          </tr></thead>
+          <tbody className="divide-y divide-line">
+            {records.map(r => (
+              <tr key={r.id}>
+                <td className="whitespace-nowrap px-3 py-1.5 font-mono text-fg-muted"><bdi>{r.employeeCode ?? '—'}</bdi></td>
+                <td className="px-3 py-1.5 text-fg">{r.employeeName ? <bdi>{r.employeeName}</bdi> : runNames[r.employeeId] ? <EmployeeLabelText label={runNames[r.employeeId]} /> : t('Emp #{id}', { id: r.employeeId })}</td>
+                <td className="px-3 py-1.5 font-mono text-fg-muted"><bdi dir="ltr">{r.iban ? `••${r.iban.replace(/\s+/g, '').slice(-4)}` : t('Missing IBAN')}</bdi></td>
+                <td className="px-3 py-1.5 text-end tabular-nums text-fg"><bdi dir="ltr">{fx.number(r.amount, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</bdi></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+
+  const batchView = selectedBatch && (
+    <div className="space-y-3">
+      <dl className="grid grid-cols-2 gap-3 text-body-sm">
+        <div><dt className="text-fg-muted">{t('Payment batch')}</dt><dd className="font-mono font-semibold text-fg"><bdi>{selectedBatch.batchNumber}</bdi></dd></div>
+        <div><dt className="text-fg-muted">{t('Payment method')}</dt><dd className="font-medium text-fg">{paymentMethodLabel(t, selectedBatch.paymentMethod)}</dd></div>
+        <div><dt className="text-fg-muted">{t('Amount')}</dt><dd className="font-medium tabular-nums text-fg"><bdi dir="ltr">{fmtAmt(selectedBatch.totalAmount, selectedBatch.currency)}</bdi></dd></div>
+        <div><dt className="text-fg-muted">{t('Run status')}</dt><dd className="font-medium text-fg"><EnumLabel enum="PayrollRunStatus" value={selectedRun?.status} /></dd></div>
+      </dl>
+      {liveBatches.length > 1 && batchList}
+    </div>
+  );
+
+  const batchRow = selectedBatch ? (batches.find(b => b.id === selectedBatch.id) ?? selectedBatch) : null;
+  const wps = batchRow ? (batchRow.effectiveWpsStatus || batchRow.wpsStatus) : '';
+  const responseBody = (data: BankPanelData | null | undefined) => {
+    const split = payOut.split;
+    const total = payOut.total;
+    const answered = payOut.answered;
+    const pct = total ? Math.round(((answered ?? 0) / total) * 100) : 0;
+    const file = data?.file;
+    const cur = batchRow?.currency;
+    const fileAmount = file?.totalAmount ?? batchRow?.totalAmount ?? null;
+    const gap = split && fileAmount !== null ? Math.round((fileAmount - split.totalAmount) * 100) / 100 : null;
+    const answeredBad = records.filter(r => /^(returned|rejected)$/i.test(r.status ?? ''));
+    return (
+      <div className="space-y-5">
+        {total !== undefined && answered !== undefined && (
+          <div className="rounded-xl border border-line p-4" data-testid="bank-response-tracker">
+            <p className="text-body font-semibold text-fg">{t('The bank has answered for {answered} of {total} payments', { answered, total })}</p>
+            {/* One segment per bucket, sized by its money: green only for what the bank confirmed, amber for returned, red for rejected, grey for waiting. */}
+            <div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={answered} aria-label={t('Bank response')} className="mt-3 flex h-2 gap-px overflow-hidden rounded-full bg-line" data-essential-motion="">
+              {split && split.totalAmount > 0 ? bankResponseBuckets(t, split).map(({ key, tone, amount }) => amount > 0 && (
+                <div key={key} data-bucket={key} className={`h-full ${tone} transition-[width] duration-base ease-standard`} style={{ width: `${(amount / split.totalAmount) * 100}%` }} data-essential-motion="" />
+              )) : (
+                <div data-bucket="answered" className="h-full bg-primary transition-[width] duration-base ease-standard" style={{ width: `${pct}%` }} data-essential-motion="" />
+              )}
+            </div>
+            {split ? (
+              <>
+                {/* Each bucket with its money; together they must be the money in the file. */}
+                <dl className="mt-3 space-y-1.5 text-body-sm" data-testid="bank-response-buckets">
+                  {bankResponseBuckets(t, split).map(({ tone: dot, label, amount }) => (
+                    <div key={label} className="flex items-center justify-between gap-3">
+                      <dt className="inline-flex items-center gap-1.5 text-fg"><span aria-hidden="true" className={`h-2.5 w-2.5 rounded ${dot}`} />{label}</dt>
+                      <dd className="tabular-nums text-fg"><bdi dir="ltr">{fmtAmt(amount, cur)}</bdi></dd>
+                    </div>
+                  ))}
+                </dl>
+                {fileAmount !== null && (
+                  <p className="mt-2 border-t border-line pt-2 text-body-sm text-fg-muted" data-testid="bank-response-tie">
+                    {split.rejected > 0
+                      ? t('Confirmed + Returned + Not paid + Waiting = {amount} (file)', { amount: fmtAmt(split.totalAmount, cur) })
+                      : t('Confirmed + Returned + Waiting = {amount} (file)', { amount: fmtAmt(split.totalAmount, cur) })}
+                  </p>
+                )}
+                {gap !== null && Math.abs(gap) >= 0.005 && (
+                  <p role="alert" className="mt-1 text-body-sm font-semibold text-danger-fg" data-testid="bank-response-mismatch">
+                    {t('Doesn’t match the file by {amount}', { amount: fmtAmt(gap, cur) })}
+                  </p>
+                )}
+              </>
+            ) : (
+              // Without the payment records, only what the batch list says: answered and waiting (never a guessed split or amount).
+              <p className="mt-3 text-body-sm text-fg">{t('{count} waiting', { count: total - answered })}</p>
+            )}
+          </div>
+        )}
+        {answeredBad.length > 0 && (
+          <div className="rounded-xl border border-danger/40 p-4" data-testid="bank-returned-lines">
+            <p className="text-body font-semibold text-fg">{t('Returned or rejected ({count})', { count: answeredBad.length })}</p>
+            <ul className="mt-2 divide-y divide-line text-body-sm">
+              {answeredBad.map(r => (
+                <li key={r.id} className="flex items-start justify-between gap-3 py-1.5">
+                  <span className="min-w-0 text-fg">
+                    {r.employeeName ? <bdi>{r.employeeName}</bdi> : runNames[r.employeeId] ? <EmployeeLabelText label={runNames[r.employeeId]} /> : t('Emp #{id}', { id: r.employeeId })}
+                    {(r.returnReasonText || r.returnReasonCode) && <span className="block text-meta text-fg-muted">{t('Reason')}: <bdi>{r.returnReasonText || r.returnReasonCode}</bdi></span>}
+                  </span>
+                  <span className="shrink-0 tabular-nums text-fg"><bdi dir="ltr">{fmtAmt(r.amount, cur)}</bdi></span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-meta text-fg-muted">{t('Pay them in a new payment batch linked to the original batch. It gets a new file reference; never upload this file again.')}</p>
+            {onNavigate && <button type="button" className="mt-2 text-body-sm font-medium text-primary underline-offset-2 hover:underline" onClick={() => onNavigate('payment-tracking')}>{t('Open Payment Tracking')}</button>}
+          </div>
+        )}
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-body-sm sm:grid-cols-3">
+          {data?.company && <div><dt className="text-fg-muted">{t('Company')}</dt><dd className="font-medium text-fg"><bdi>{data.company}</bdi></dd></div>}
+          {wps === 'Submitted' && batchRow?.wpsStatusChangedAtUtc && <div><dt className="text-fg-muted">{t('Recorded as submitted on')}</dt><dd className="font-medium text-fg">{fx.dateTime(batchRow.wpsStatusChangedAtUtc)}</dd></div>}
+          {batchRow?.wpsSubmissionReference && <div><dt className="text-fg-muted">{t('Bank reference')}</dt><dd className="font-mono font-medium text-fg"><bdi dir="ltr">{batchRow.wpsSubmissionReference}</bdi></dd></div>}
+          {file && <div><dt className="text-fg-muted">{t('File reference')}</dt><dd className="font-mono font-medium text-fg"><bdi dir="ltr">{file.reference}</bdi></dd></div>}
+          {file?.paymentDate && <div><dt className="text-fg-muted">{t('Credit date')}</dt><dd className="font-medium text-fg">{fx.gregorian(file.paymentDate, 'weekdayDate')}</dd></div>}
+          {file && file.files.length > 0 && (
+            <div className="col-span-2 sm:col-span-2"><dt className="text-fg-muted">{t('File fingerprint (SHA-256)')}</dt>
+              <dd><details><summary className="cursor-pointer font-medium text-primary">{t('Show')}</summary><ul className="mt-1 space-y-0.5">{file.files.map(f => <li key={f.name} dir="ltr" className="break-all font-mono text-meta text-fg-muted">{f.name}: {f.sha256}</li>)}</ul></details></dd>
+            </div>
+          )}
+        </dl>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-body-sm">
+          {panelMenu.current?.download && (
+            <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" aria-describedby="bank-submitted-banner" onClick={panelMenu.current.download}>{t('Download again (audit copy)')}</button>
+          )}
+          {recordsState.status === 'ready' && <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => setRecordsOpen(true)} data-testid="bank-records-open">{t('View payment records ({count})', { count: records.length })}</button>}
+        </div>
+      </div>
+    );
+  };
+  const responseAside = (data: BankPanelData | null | undefined) => (
+    <div className="space-y-3">
+      <p className="text-body font-semibold text-fg">{t('What happens next')}</p>
+      <ol className="space-y-3">
+        {[
+          [t('The bank pays and answers for each payment'), null],
+          [t('Record the bank’s response'), t('Record the bank’s response in Payment Tracking: confirmed, returned or rejected. Pay them in a new payment batch linked to the original batch. It gets a new file reference; never upload this file again.')],
+          [t('Finance settles the payments'), t('Settle only payments the bank confirmed. Settling posts the net-pay settlement to the ledger and needs the payment settlement permission.')],
+        ].map(([title, body], i) => (
+          <li key={i} className="flex gap-3">
+            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-line-strong text-caption font-semibold tabular-nums text-fg-muted">{i + 1}</span>
+            <span><span className="block font-medium text-fg">{title}</span>{body && <span className="block text-meta">{body}</span>}</span>
+          </li>
+        ))}
+      </ol>
+      {/* Auto-WPS is an employer choice: with it on the bank reports to Mudad; otherwise someone must upload the bank's WPS file. */}
+      <p className="border-t border-line pt-3 text-meta" data-testid="bank-mudad-route">{data?.autoWps === true
+        ? t('Your bank reports the salaries to WPS (Mudad). KynexOne does not send anything to Mudad.')
+        : t('Your bank produces the signed WPS file. Upload it in Mudad yourself within the legal window. KynexOne does not send anything to Mudad.')}</p>
+    </div>
+  );
+  const responsePurpose = (data: BankPanelData | null | undefined) => {
+    switch (payOut.status) {
+      case 'rejected': return rejectedFilePurpose(t, batchRow?.wpsRejectionReason);
+      case 'confirmed': return confirmedResponsePurpose(t, payOut);
+      case 'settled': return t('Paid and settled.');
+      default: return data?.bankName
+        ? t('Submitted to {bank} — waiting for the bank’s confirmation. Record what the bank confirms or returns in Payment Tracking.', { bank: data.bankName })
+        : t('Submitted to the bank — waiting for the bank’s confirmation. Record what the bank confirms or returns in Payment Tracking.');
+    }
+  };
+
+  const submitSummary = (data: BankPanelData | null | undefined) => {
+    const f = data?.file;
+    return t('{count} employees · {amount} · credit date {date} · file reference {ref}. Record this only after the bank has the file.', {
+      count: f?.employeeCount ?? records.length, amount: fmtAmt(f?.totalAmount ?? selectedBatch?.totalAmount ?? 0, selectedBatch?.currency),
+      date: f?.paymentDate ? fx.gregorian(f.paymentDate, 'weekdayDate') : '—', ref: f?.reference ?? '—',
+    });
+  };
+
+  const tieRow = selectedBatch ? tieOut(batchRow ?? selectedBatch, selectedRun) : null;
+  const tieGap = tieRow && Math.abs(tieRow.difference) >= 0.005 ? tieRow.difference : null;
+
+  // Once the file is with the bank, a standing warning above the step: uploading it again can pay people twice.
+  const submittedBanner = (data: BankPanelData | null | undefined) => {
+    if (!['submitted', 'confirmed', 'rejected'].includes(payOut.status) || !batchRow) return null;
+    const ref = batchRow.wpsSubmissionReference ?? '—';
+    const when = wps === 'Submitted' && batchRow.wpsStatusChangedAtUtc ? fx.dateTime(batchRow.wpsStatusChangedAtUtc) : null;
+    const bank = data?.bankName ?? null;
+    const text = bank && when ? t('Recorded as submitted to {bank} on {date}, ref {ref}. Uploading this file again can pay employees twice.', { bank, date: when, ref })
+      : bank ? t('Recorded as submitted to {bank}, ref {ref}. Uploading this file again can pay employees twice.', { bank, ref })
+      : when ? t('Recorded as submitted on {date}, ref {ref}. Uploading this file again can pay employees twice.', { date: when, ref })
+      : t('Recorded as submitted, ref {ref}. Uploading this file again can pay employees twice.', { ref });
+    return (
+      <p id="bank-submitted-banner" role="note" className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning-soft px-4 py-3 text-body-sm font-medium text-warning-fg" data-testid="bank-submitted-banner">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />{text}
+      </p>
+    );
+  };
+
+  const guide = (panel: GuideSlots) => {
+    panelData.current = panel.data ?? panelData.current;
+    panelMenu.current = panel.menu ?? null;
+    const data = panel.data ?? panelData.current;
+    const response = { purpose: responsePurpose(data), body: responseBody(data), aside: responseAside(data) };
+    return (
+      <div className="space-y-3">
+        {header(panel.menu)}
+        <BankFileGuide
+          payOut={payOut}
+          loading={loadingGuide}
+          confirmation={handOver.confirmation}
+          confirmationSuccess={handOver.confirmationSuccess}
+          onUserAction={handOver.onUserAction}
+          banner={submittedBanner(data)}
+          viewing={viewing}
+          onView={setViewing}
+          facts={selectedBatch && !loadingGuide ? (
+            <BankFileFacts batch={batchRow ?? selectedBatch} run={selectedRun} employeesInFile={recordsState.status === 'ready' ? records.length : null}
+              bankName={data?.bankName} accountTail={data?.accountTail} company={data?.company} checked={payOut.steps[1].state === 'done'}
+              onShowLeftOut={payOut.steps[1].state === 'done' ? () => setViewing('check') : undefined} />
+          ) : null}
+          rail={selectedBatch && !loadingGuide ? (
+            <BankFileFacts variant="rail" batch={batchRow ?? selectedBatch} run={selectedRun} employeesInFile={recordsState.status === 'ready' ? records.length : null}
+              bankName={data?.bankName} accountTail={data?.accountTail} file={data?.file ?? null} company={data?.company} checked={payOut.steps[1].state === 'done'} />
+          ) : null}
+          slots={{
+            ...panel,
+            panels: {
+              ...panel.panels,
+              batch: {
+                purpose: payOut.steps[0].reason === 'run_not_locked' ? t('Lock the run first: a payment batch can only be created once the run is Locked.')
+                  : liveBatches.length > 1 ? t('Choose the payment batch you want to prepare.') : t('Create the payment batch for this run. It lists who is paid and how much.'),
+                body: batchBody, view: batchView, aside: runSummary,
+              },
+              setup: { ...panel.panels?.setup, aside: runSummary },
+              check: panel.panels?.check ? { ...panel.panels.check, body: <>{panel.panels.check.body}{peopleInFile}</> } : undefined,
+              response, finished: response,
+            },
+            actions: {
+              ...panel.actions,
+              // Finance rule: a file that does not tie to the approved run is not created (derivePayOut turns the button off; this names the amount).
+              ...(panel.actions?.create_file && tieGap !== null ? { create_file: { ...panel.actions.create_file, reason: t('The file total differs from the approved run by {amount}', { amount: fmtAmt(Math.abs(tieGap), selectedBatch?.currency) }) } } : {}),
+              create_batch: { label: creating ? t('Creating…') : t('Create payment batch'), onClick: createBatch, busy: creating, disabled: creating || batchesState.status !== 'ready' },
+              open_batch: { label: t('Open batch'), onClick: () => { const b = liveBatches.find(x => x.id === chosenBatchId); if (b) openBatch(b); }, disabled: !chosenBatchId, reason: chosenBatchId ? null : t('Choose the payment batch, then open it.') },
+              record_submitted: { label: t('Record as submitted'), onClick: () => setSubmitOpen(true) },
+              record_response: { label: t('Record the bank’s response'), onClick: () => onNavigate?.('payment-tracking') },
+              prepare_corrected: { label: t('Prepare a corrected file'), onClick: () => onNavigate?.('payment-tracking') },
+              settle: { label: t('Settle payments'), onClick: () => onNavigate?.('payment-tracking') },
+            },
+            live: (
+              <>
+                {error && <div role="alert" className="flex items-start gap-2 rounded-lg bg-danger-soft px-4 py-2.5 text-body-sm text-danger-fg"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" /><span>{error}</span></div>}
+                {/* Payment records that could not be read are never "no records". */}
+                {selectedBatch && recordsState.status === 'failed' && (isForbidden(recordsState.error)
+                  ? <p role="alert" data-testid="bank-records-forbidden" className="text-body-sm text-fg-muted">{t('The payment records need the Payroll export permission. Ask an administrator to give it to your role.')}</p>
+                  : <LoadFailedNotice error={recordsState.error} onRetry={() => openBatch(selectedBatch)} />)}
+                {panel.live}
+              </>
+            ),
+            overlays: (
+              <>
+                {panel.overlays}
+                <SideDrawer isOpen={recordsOpen && !!selectedBatch} title={t('Records — {batchNumber}', { batchNumber: selectedBatch?.batchNumber ?? '' })} size="xl" placement="end" onClose={() => setRecordsOpen(false)} closeLabel={t('Close')}>
+                  {recordsTable}
+                </SideDrawer>
+                {selectedBatch && (
+                  <RecordSubmittedDialog open={submitOpen} batchId={selectedBatch.id} bankName={data?.bankName ?? null} summary={submitSummary(data)}
+                    onClose={() => setSubmitOpen(false)}
+                    onRecorded={ref => {
+                      submittedRef.current = ref;
+                      setSubmitOpen(false);
+                      handOver.onUserAction();
+                      onRunsChanged?.();
+                      payrollApi.listPaymentBatches(runId).then(rows => { if (currentRunRef.current === runId) setBatches(rows); }).catch(() => {});
+                    }} />
+                )}
+              </>
+            ),
+          }}
+        />
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-4">
+      {confirmDialog}
+      {runsState.status === 'failed' && <>{header()}{failureBanners}</>}
+      {runsState.status !== 'failed' && (
+        selectedBatch
+          ? <SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi onProgress={setFlow} suggestedReference={suggestedBatchReference(selectedBatch.batchNumber, selectedRun)}
+              employeeIds={records.map(r => r.employeeId)} employeeLabels={{ ...runNames, ...employeeLabelsFromRecords(records) }} renderGuide={guide}
+              batch={batchRow} recordsCount={recordsState.status === 'ready' ? records.length : null} onOpenRecords={() => setRecordsOpen(true)} />
+          : guide({})
+      )}
+    </div>
+  );
+}
+
+/** A section that works on the run bar's run, with none chosen: where to choose one. */
+function NoRunChosen() {
+  const t = useT();
+  return (
+    <div className="surface p-5 text-body text-fg-muted" data-testid="payroll-no-run">
+      {t('Choose a payroll run in the run bar above.')}
+    </div>
+  );
+}
+
+/** "More ⌄": the section's secondary tools (drawers and dialogs). A menu button: arrows move, Escape closes and returns focus. */
+function MoreMenu({ items }: { items: (false | null | undefined | { label: string; onSelect: () => void })[] }) {
+  const t = useT();
+  const list = items.filter((x): x is { label: string; onSelect: () => void } => !!x);
+  const [open, setOpen] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    menu.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    const onDoc = (e: MouseEvent) => { if (!menu.current?.contains(e.target as Node) && !button.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  if (list.length === 0) return null;
+  return (
+    <div className="relative">
+      <button ref={button} type="button" className="btn-secondary btn-sm" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(v => !v)} data-testid="bank-more">
+        {t('More')}<ChevronDown className={`h-4 w-4 transition-transform motion-reduce:transition-none ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
+      </button>
+      {open && (
+        <ul ref={menu} role="menu" className="surface absolute end-0 top-full z-30 mt-1 min-w-[14rem] p-1 shadow-e3"
+          onKeyDown={e => {
+            if (e.key === 'Escape') { e.preventDefault(); setOpen(false); button.current?.focus(); }
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              const all = Array.from(menu.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+              const at = all.indexOf(document.activeElement as HTMLElement);
+              all[(at + (e.key === 'ArrowDown' ? 1 : all.length - 1)) % all.length]?.focus();
+            }
+          }}>
+          {list.map(item => (
+            <li key={item.label} role="none">
+              <button type="button" role="menuitem" className="flex min-h-9 w-full items-center rounded-lg px-3 text-start text-body text-fg hover:bg-surface-sunken" onClick={() => { setOpen(false); button.current?.focus(); item.onSelect(); }}>{item.label}</button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** A payment method as people say it ("Bank transfer", not "BankTransfer"). */
+function paymentMethodLabel(t: ReturnType<typeof useT>, method: string): string {
+  switch (method) {
+    case 'WPS': return t('WPS bank file');
+    case 'BankTransfer': return t('Bank transfer');
+    case 'Cash': return t('Cash');
+    case 'Cheque': return t('Cheque');
+    default: return method;
+  }
 }
 
 // ── Payment Tracking Tab ────────────────────────────────────────────────────────
@@ -3888,12 +4528,8 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
 
   return (
     <div className="space-y-4">
-      <div className="surface p-4">
-        <p className="text-xs text-slate-500 dark:text-slate-400">
-          {t('Double-entry GL journal generated from processed payroll earnings and deductions. Use this to post payroll to your accounting system.')}
-        </p>
-      </div>
-      <div className="flex items-center gap-3">
+      {/* The picker, the button and the one-line explanation share a row (the explanation was a card of its own above them). */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <select aria-label={t('Select payroll run for GL journal')} data-testid="cc-lock-run-select" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">{t('Select payroll run…')}</option>
           <RunSelectOptions runs={runs} />
@@ -3901,6 +4537,9 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
         <button type="button" className={btn.primary} onClick={() => void load()} disabled={!runId || loading}>
           <BookOpen className="h-4 w-4" /> {loading ? t('Loading…') : t('Generate Journal')}
         </button>
+        <p className="min-w-56 flex-1 text-xs text-slate-500 dark:text-slate-400">
+          {t('Double-entry GL journal generated from processed payroll earnings and deductions. Use this to post payroll to your accounting system.')}
+        </p>
       </div>
       {runsError && <LoadError message={runsError} onRetry={loadRuns} />}
       {journalError && <LoadError message={journalError} onRetry={() => void load()} />}
@@ -3926,17 +4565,17 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
       {journal && !journal.costing?.enabled && !(journal.isPosted && (journal.journals?.length ?? 0) > 0) && (
         <div className="space-y-4">
           <div className="grid grid-cols-3 gap-4">
-            <div className="surface p-4">
+            <div className="surface px-4 py-2.5">
               <p className="text-xs text-slate-400">{t('Period')}</p>
-              <p className="text-lg font-bold text-slate-900 dark:text-white">{journal.period}</p>
+              <p className="text-base font-bold text-slate-900 dark:text-white">{journal.period}</p>
             </div>
-            <div className="surface p-4">
+            <div className="surface px-4 py-2.5">
               <p className="text-xs text-slate-400">{t('Total Debits')}</p>
-              <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalDebits, journal.currency)}</p>
+              <p className="text-base font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalDebits, journal.currency)}</p>
             </div>
-            <div className="surface p-4">
+            <div className="surface px-4 py-2.5">
               <p className="text-xs text-slate-400">{t('Total Credits')}</p>
-              <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalCredits, journal.currency)}</p>
+              <p className="text-base font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalCredits, journal.currency)}</p>
             </div>
           </div>
 
@@ -3968,7 +4607,7 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
                     {side.entries.map((e, i) => (
                       <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                         <td className="px-3 py-2 font-mono text-xs text-slate-500">{e.glAccount}</td>
-                        <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{e.glAccountName}</td>
+                        <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{glAccountName(t, e.glAccountName)}</td>
                         <td className={`px-3 py-2 text-end font-semibold tabular-nums ${side.color}`}>{fmtAmt(e.amount, journal.currency)}</td>
                       </tr>
                     ))}
@@ -4206,7 +4845,9 @@ function FinalSettlementTab() {
     try {
       // Empty terminationReason ⇒ backend uses the employee's recorded separation type.
       const res = await payrollApi.finalSettlement(Number(form.employeeId), form.lastWorkingDay, Number(form.noticePeriodDaysShort), form.terminationReason || undefined);
-      setResult(res);
+      // The calculation response does not carry unpaid-leave money no run collected; the settlement detail does.
+      const detail = await payrollApi.getFinalSettlement(res.settlementId).catch(() => null);
+      setResult({ ...res, outstandingLeaveDeductions: detail?.outstandingLeaveDeductions ?? null });
       await loadSettlements();
     } catch (e: unknown) {
       setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('Calculation failed.'));
@@ -4214,22 +4855,22 @@ function FinalSettlementTab() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <SettlementRunDutyPanel settlements={settlements} onChanged={() => void loadSettlements()} />
       {confirmDialog}
-      <div className="surface p-4">
-        <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Final Settlement Lifecycle')}</p>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          {t('Calculate and save a Draft payable, submit it, approve the GL accrual, disburse it through an off-cycle payroll run, then settle the accepted payment batch.')}
-        </p>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          {t('Approval needs a second person: whoever calculated, recalculated or submitted a settlement cannot approve it.')}
-        </p>
-        <p className="mt-2 text-sm font-semibold text-sapphire dark:text-cyanAccent">{t('Outstanding approved/disbursing payable: {toLocaleString}', { toLocaleString: outstandingTotal.toLocaleString('en-US', { minimumFractionDigits: 2 }) })}</p>
+      <div className="surface flex flex-wrap items-start justify-between gap-x-6 gap-y-1 px-4 py-3">
+        <div className="min-w-0 flex-1 basis-80">
+          <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Final Settlement Lifecycle')}</p>
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+            {t('Calculate and save a Draft payable, submit it, approve the GL accrual, disburse it through an off-cycle payroll run, then settle the accepted payment batch.')}{' '}
+            {t('Approval needs a second person: whoever calculated, recalculated or submitted a settlement cannot approve it.')}
+          </p>
+        </div>
+        <p className="shrink-0 text-sm font-semibold text-sapphire dark:text-cyanAccent">{t('Outstanding approved/disbursing payable: {toLocaleString}', { toLocaleString: outstandingTotal.toLocaleString('en-US', { minimumFractionDigits: 2 }) })}</p>
       </div>
 
-      <div className="surface p-5 space-y-4">
-        <div className="grid grid-cols-2 gap-4">
+      <div className="surface space-y-3 p-4">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-3 lg:grid-cols-4">
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Employee ID *')}</label>
             <input type="number" className={inp} placeholder="e.g. 1" value={form.employeeId} onChange={e => setForm(f => ({ ...f, employeeId: e.target.value }))} />
@@ -4292,6 +4933,35 @@ function FinalSettlementTab() {
             <p className="text-2xl font-extrabold text-sapphire dark:text-cyanAccent">{result.currency} {result.totalPayable.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
           </div>
 
+          {(() => {
+            const exitLeave = exitLeaveMoney(result.outstandingLeaveDeductions);
+            if (!exitLeave) return null;
+            const money = (v: number) => fmtAmt(v, result.currency);
+            return (
+              <div className="rounded-xl border border-amber-200 px-4 py-3 text-sm dark:border-amber-500/30" data-testid="settlement-exit-arrears">
+                {exitLeave.owedByEmployee > 0 && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-slate-600 dark:text-slate-300">{t('Unpaid-leave arrears still owed at exit')}</span>
+                    <span className="font-semibold tabular-nums text-rose-500">{money(exitLeave.owedByEmployee)}</span>
+                  </div>
+                )}
+                {exitLeave.owedToEmployee > 0 && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-slate-600 dark:text-slate-300">{t('Leave deduction refunds still owed to the employee')}</span>
+                    <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{money(exitLeave.owedToEmployee)}</span>
+                  </div>
+                )}
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  {t('Leave months: {months}. No payroll run has collected these. They are shown for your information and are not included in the payable above.', { months: exitLeave.months.join(', ') })}
+                </p>
+              </div>
+            );
+          })()}
+
+          {result.openDebts && (
+            <ExitDebtsPanel debts={result.openDebts} employeeName={result.employeeName} fallbackCurrency={result.currency}
+              showPlanned unrecovered={result.unrecoveredDebt ?? 0} testId="settlement-open-debts" />
+          )}
           <p className="text-xs text-amber-600 dark:text-amber-400">{t('This is a persisted Draft payable. Review every warning and component before submitting or approving it.')}</p>
           {result.warnings?.map(w => <p key={w} className="text-xs text-amber-600 dark:text-amber-400">{w}</p>)}
         </div>
@@ -4405,6 +5075,8 @@ export function PayrollPage() {
   const firstTabRender = useRef(true);
   useEffect(() => {
     if (firstTabRender.current) { firstTabRender.current = false; return; }
+    // From 1280px the section nav is a sticky column beside the section: it is always in view, so the page does not move.
+    if (typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 1280px)').matches) return;
     const el = tabsAnchor.current;
     if (!el) return;
     const top = el.getBoundingClientRect().top;
@@ -4417,6 +5089,12 @@ export function PayrollPage() {
   };
   const selectRunId = React.useCallback((id: string | null) => setContextRunId(id ?? undefined), []);
   const navigateTab = React.useCallback((key: string) => { if (TABS.some(x => x.key === key)) setActiveTab(key as Tab); }, []);
+  // What the Bank / WPS tab knows about the run's pay out: the run bar reads the same facts (one stage for the whole page).
+  const [payOutContext, setPayOutContext] = useState<PayOutContext | null>(null);
+  useEffect(() => { if (activeTab !== 'bank-wps') setPayOutContext(null); }, [activeTab]);
+  // The section list folds away below 1280px (a button under the run bar opens it; a bottom sheet on a phone).
+  const [navOpen, setNavOpen] = useState(false);
+  const navToggle = useRef<HTMLButtonElement>(null);
 
   const renderTab = () => {
     switch (activeTab) {
@@ -4427,7 +5105,7 @@ export function PayrollPage() {
       case 'validation':      return <ValidationTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
       case 'approvals':       return <ApprovalsTab selectedRunId={contextRunId} onRunChange={selectRunId} isAdmin={isAdmin} isFinance={isFinance} isHROrPayroll={isHROrPayroll || isAdmin} onReconNotReviewed={reconNotReviewed} />;
       case 'payslips':        return <PayslipsTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
-      case 'bank-wps':        return <BankWpsTab selectedRunId={contextRunId} onRunChange={selectRunId} onNavigate={navigateTab} />;
+      case 'bank-wps':        return <BankWpsTab selectedRunId={contextRunId} onRunChange={selectRunId} onNavigate={navigateTab} onRunsChanged={bumpRuns} onPayOutContext={setPayOutContext} />;
       case 'payment-tracking': return <PaymentTrackingTab selectedRunId={contextRunId} />;
       case 'reports':         return <ReportsTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
       case 'eosb':            return <EOSBTab />;
@@ -4439,21 +5117,21 @@ export function PayrollPage() {
     }
   };
 
-  const roleBadge = isAdmin ? { label: t('Admin'), cls: 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300' }
-    : isFinance ? { label: t('Finance'), cls: 'bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300' }
-    : isHROrPayroll ? { label: t('HR / Payroll'), cls: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' }
-    : null;
+  const activeLabel = t(TABS.find(x => x.key === activeTab)?.label ?? 'Dashboard');
+  const activeGroup = groupOf(activeTab);
+  const navGroups = TAB_GROUPS
+    .map(g => ({
+      id: g.id,
+      label: t(g.label),
+      items: visibleTabs.filter(x => g.ids.includes(x.key)).map(({ key, label, icon }) => ({
+        id: key, label: t(label), icon,
+        href: `${pathname}?${withDeepLink('', { tab: key, runId: contextRunId ?? null }, 'dashboard')}`,
+      })),
+    }))
+    .filter(g => g.items.length > 0);
 
   return (
-    <div className="kx-scroll-tables space-y-5">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">{t('Payroll Management')}</h1>
-          <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{t('End-to-end payroll lifecycle — structures, processing, Finance Controller approval, GL journal, WPS files, and final settlement.')}</p>
-        </div>
-        {roleBadge && <span className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-1 text-xs font-semibold ${roleBadge.cls}`}>{roleBadge.label}</span>}
-      </div>
-
+    <div className="kx-scroll-tables space-y-3">
       <RunPipeline
         runId={contextRunId ?? null}
         onSelectRun={selectRunId}
@@ -4461,22 +5139,59 @@ export function PayrollPage() {
         version={runsVersion}
         onRunsChanged={bumpRuns}
         reviewRequestKey={reviewRequest}
+        activeTab={activeTab}
+        payOutContext={payOutContext}
       />
 
-      <div ref={tabsAnchor} data-testid="payroll-tabs-anchor">
-        <RovingTabList
-          items={visibleTabs.map(({ key, label, icon }) => ({ id: key, label: t(label), icon }))}
-          activeId={activeTab}
-          onChange={setActiveTab}
-          idPrefix="payroll"
-          label={t('Payroll workspace sections')}
-          compact
-          scrollCue
-          groups={TAB_GROUPS.map(g => ({ label: t(g.label), ids: g.ids }))}
-        />
-      </div>
+      {/* The Payroll sections: a sticky grouped column beside the section from 1280px; below that a "{group} › {section}" button opens
+          the same list (inline from 640px, a bottom sheet on a phone). The app menu folds to icons inside Payroll to make the room. */}
+      <div className="xl:grid xl:grid-cols-[208px_minmax(0,1fr)] xl:items-start xl:gap-6">
+        {/* The grid item is what sticks (a sticky child of a wrapper of its own height never moves); it scrolls inside when taller than the screen. */}
+        <div ref={tabsAnchor} data-testid="payroll-tabs-anchor" className="mb-3 min-w-0 xl:sticky xl:top-32 xl:mb-0 xl:max-h-[calc(100vh-9rem)] xl:self-start xl:overflow-y-auto">
+          <button
+            ref={navToggle}
+            type="button"
+            aria-expanded={navOpen}
+            aria-controls="payroll-section-list"
+            onClick={() => setNavOpen(v => !v)}
+            className="surface flex min-h-11 w-full items-center gap-2 px-3 py-2 text-start text-body xl:hidden"
+            data-testid="payroll-section-toggle"
+          >
+            <span className="sr-only">{t('Payroll section')}: </span>
+            <span className="text-fg-muted">{t(activeGroup.label)}</span>
+            <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-fg-muted" />
+            <span className="min-w-0 flex-1 font-semibold text-fg">{activeLabel}</span>
+            <ChevronDown aria-hidden="true" className={`h-4 w-4 shrink-0 text-fg-muted transition-transform motion-reduce:transition-none ${navOpen ? 'rotate-180' : ''}`} />
+          </button>
+          <SectionNav
+            groups={navGroups}
+            selectedId={activeTab}
+            currentLabel={activeLabel}
+            open={navOpen}
+            onOpenChange={setNavOpen}
+            toggleRef={navToggle}
+            onSelect={id => setActiveTab(id)}
+            ariaLabel={t('Payroll sections')}
+            sheetTitle={t('Payroll sections')}
+            listId="payroll-section-list"
+            headingId={PAYROLL_SECTION_HEADING_ID}
+            classPrefix="payroll"
+            testId="payroll-section-nav"
+            stickyClass=""
+            itemIdPrefix="payroll-tab-"
+          />
+        </div>
 
-      <TabPanel idPrefix="payroll" tabId={activeTab}>{renderTab()}</TabPanel>
+        <div className="min-w-0 space-y-3">
+          {/* Bank / WPS Files draws its own header (its "More" menu opens the flow's drawers). */}
+          {activeTab !== 'bank-wps' && (
+            <PayrollSectionHeader group={t(activeGroup.label)} title={activeLabel} purpose={t(TAB_PURPOSE[activeTab] ?? activeGroup.purpose)} />
+          )}
+          <section role="region" aria-labelledby={PAYROLL_SECTION_HEADING_ID} id={`payroll-panel-${activeTab}`} data-testid="payroll-section-panel" className="min-w-0">
+            {renderTab()}
+          </section>
+        </div>
+      </div>
     </div>
   );
 }

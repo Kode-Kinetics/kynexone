@@ -10,6 +10,8 @@ public sealed class OfferLifecycleException(string code, string message, int sta
 {
     public string Code { get; } = code;
     public int Status { get; } = status;
+    /// <summary>The same refusal in Arabic, shown to an Arabic reader by the client (apiErrorReason reads <c>messageAr</c>).</summary>
+    public string? MessageAr { get; init; }
 }
 
 /// <summary>Every competing offer/application mutation locks the application before any offer write.

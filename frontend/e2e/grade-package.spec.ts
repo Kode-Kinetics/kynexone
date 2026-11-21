@@ -148,7 +148,8 @@ test('Edit Grade: lines come from the catalogue, a legacy line becomes a new com
 
 test('Payroll → Grade packages is read-only and links each package back to its grade', async ({ page }) => {
   const { writes, errors } = await boot(page, '/payroll');
-  await page.getByRole('tab', { name: 'Grade Packages' }).click();
+  // Payroll's sections are links in its section nav.
+  await page.getByTestId('payroll-section-nav').getByRole('link', { name: 'Grade Packages' }).click();
   const view = page.getByTestId('grade-packages');
   await expect(view).toBeVisible({ timeout: 30_000 });
   const card = view.getByTestId('grade-package-card');

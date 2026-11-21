@@ -64,8 +64,8 @@ const AR_SAME_ALLOWED: Record<string, string> = {
   KynexOne: 'this product’s own name — the variance table column that sits beside “Legacy”',
 };
 
-/** Not a sentence fragment even though it matches the shape: namespaced machine keys (suc. = succession, src/i18n/succession.ts). */
-const NAMESPACED = /^(enum|error|suc|ess|onboarding|esign)\./;
+/** Not a sentence fragment even though it matches the shape: namespaced machine keys (suc. = succession, src/i18n/succession.ts; apr. = appraisal screens, src/i18n/appraisalsUi.ts). */
+const NAMESPACED = /^(enum|error|suc|apr|ess|onboarding|esign)\./;
 
 /** Formatting is the formatter's job; its own locale literals are the point of it. */
 const LOCALE_RATCHET_EXCLUDED = new Set(['src/lib/format.ts']);

@@ -1,9 +1,11 @@
+import type { ExitDebt } from '../lib/exitDebts';
 import client from './client';
 import type { SalaryAllowanceView } from '../lib/salaryAllowances';
 import { requireList } from '../lib/listResponse';
 import { fetchAllPages } from '../lib/paging';
 import type { PagedResult } from './organization';
 import type { JournalCosting } from '../lib/payrollCostLock';
+import type { OutstandingLeaveDeductions } from '../lib/settlementExitArrears';
 
 export interface SalaryStructure {
   id: string;
@@ -429,6 +431,10 @@ export interface PayrollPaymentBatch {
   mudadNote?: string | null;
   /** Payments the bank has not confirmed yet (neither paid, returned nor rejected). Absent from an older API. */
   unconfirmedPayments?: { count: number; total: number };
+  /** Payments the bank returned or rejected that are not paid again yet (money that did NOT reach the employee). Absent from an older API. */
+  unresolvedReturns?: { count: number; total: number };
+  /** Payments the bank rejected (the bank refused the instruction: not paid), counted apart from the returned ones. Absent from an older API. */
+  unresolvedRejections?: { count: number; total: number };
   /** Share (0..1) of the batch's payments the bank has spoken about: paid, returned or rejected. Absent from an older API. */
   confirmationCoverage?: number;
 }
@@ -470,6 +476,9 @@ export interface PayrollPaymentRecord {
   iban: string;
   status: string;
   wpsReference: string;
+  /** The bank's reason for a returned payment (latest bank confirmation), when the bank gave one. Absent from an older server. */
+  returnReasonCode?: string | null;
+  returnReasonText?: string | null;
 }
 
 export interface PayrollApproval {
@@ -633,6 +642,14 @@ export interface FinalSettlementResult {
   wagesPaidByRunId: string | null;
   warnings: string[];
   breakdown: FinalSettlementBreakdown[];
+  /** Only on the settlement detail (GET), not on the calculation response. */
+  outstandingLeaveDeductions?: OutstandingLeaveDeductions | null;
+  /** Every open loan and advance of the leaver at this company, whatever its repayment method (held loans flagged). */
+  openDebts?: ExitDebt[];
+  /** Loan balance on hold: listed, never recovered by the settlement. */
+  heldDebt?: number;
+  /** What this settlement cannot fund; moved to the employee receivable when the settlement is paid. */
+  unrecoveredDebt?: number;
 }
 
 export interface FinalSettlementListRow {
@@ -889,7 +906,7 @@ export const payrollApi = {
   // cash count, so a client that silently echoes the server's number back would be no control.
   approveRun: (
     id: string,
-    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null; expectedOutsideBankCount?: number | null; expectedUncostedCount?: number | null; expectedPayWarningCount?: number | null } = {},
+    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null; expectedOutsideBankCount?: number | null; expectedUncostedCount?: number | null; expectedPayWarningCount?: number | null; expectedZeroNetCount?: number | null } = {},
   ) =>
     client
       .post<PayrollRun>(`/api/payroll/runs/${id}/approve`, {
@@ -899,6 +916,8 @@ export const payrollApi = {
         expectedOutsideBankCount: body.expectedOutsideBankCount ?? null,
         // People paid with a warning (no last working day, "On leave" with no leave, deleted but owed).
         expectedPayWarningCount: body.expectedPayWarningCount ?? null,
+        // People who net zero because unpaid leave took the whole wage (ZERO_NET_UNPAID_LEAVE).
+        expectedZeroNetCount: body.expectedZeroNetCount ?? null,
         // S-048: the uncosted-Optional count the approver affirmed (costing on only).
         expectedUncostedCount: body.expectedUncostedCount ?? null,
       })

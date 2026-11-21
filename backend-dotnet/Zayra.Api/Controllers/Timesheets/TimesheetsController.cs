@@ -147,7 +147,10 @@ public class TimesheetsController : ControllerBase
         if (tenantId is null) return Unauthorized();
         if (to < from) return BadRequest(new { code = "bad_range", message = "'to' must not be before 'from'." });
 
-        var rows = await _service.GetAttendanceVarianceAsync(tenantId.Value, from, to, employeeId, overAllocatedOnly, ct);
+        // The register and the detail honour the caller's employee scope (a line manager sees their team); so does this report.
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        var (single, set) = scope.Constrain(employeeId);
+        var rows = await _service.GetAttendanceVarianceAsync(tenantId.Value, from, to, single, overAllocatedOnly, ct, set);
         return Ok(new
         {
             from,

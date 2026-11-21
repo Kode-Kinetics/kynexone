@@ -140,6 +140,18 @@ for (const locale of ['en', 'ar'] as const) {
       expect(errors).toEqual([]);
     });
 
+    test('a benefit nothing pays or claims yet says so on its row; a paid one does not', async ({ page }) => {
+      const { errors } = await boot(page, locale);
+      const note = say(locale, 'Recorded entitlement. Payout and claims for this benefit are not connected yet.');
+      const notes = page.getByTestId('recorded-only-note');
+      await expect(notes).toHaveCount(4);
+      for (const code of ['AIR_TICKET', 'MEDICAL', 'EDUCATION', 'PER_DIEM'])
+        await expect(page.getByRole('rowheader').filter({ hasText: benefitName(locale, code) }).getByTestId('recorded-only-note'), code).toHaveText(note);
+      for (const code of ['HOUSING', 'TRANSPORT', 'OTHER_ALLOWANCES'])
+        await expect(page.getByRole('rowheader').filter({ hasText: benefitName(locale, code) }).getByTestId('recorded-only-note'), code).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
     test('publish dry run: what changes, who it reaches, and the not-yet-started value it replaces', async ({ page }) => {
       const { errors, publishes } = await boot(page, locale);
       await cellButton(page, locale, 'HOUSING', 'G3').click();
@@ -475,7 +487,9 @@ for (const locale of ['en', 'ar'] as const) {
       const box = await trigger.boundingBox();
       expect(box!.width).toBeGreaterThanOrEqual(24);
       expect(box!.height).toBeGreaterThanOrEqual(24);
-      await trigger.click();
+      // The row can sit near the fold (the Arabic rows are taller): scroll it in and let the scroll land before the click,
+      // or the click's own scroll closes the menu it just opened.
+      await openRowMenu(page, locale, benefitName(locale, 'PER_DIEM'));
       await expect(page.getByRole('menu')).toBeVisible();
       await expect(page.getByRole('menuitem', { name: say(locale, 'Mark the rest Not offered') })).toBeVisible();
       await page.keyboard.press('Escape');

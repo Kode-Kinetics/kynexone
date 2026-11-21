@@ -1081,6 +1081,7 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             // It is "pending Finance" until another Finance user confirms it.
             row.EosbExclusionCategory = eosbCategory;
             row.FinanceConfirmedAtUtc = null; row.FinanceConfirmedByUserId = null;
+            row.LastConfirmedTermsJson = null;   // a new proposal (or a removed one coming back) has no confirmed terms to keep paying
             if (cash) row.CreatedBy = actor.UserId;   // the maker of THIS definition (a removed one coming back is a new proposal)
             if (d is not null)
             {
@@ -1299,17 +1300,142 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             var before = TermsOf(row);
             row.GlDriverKey = terms.Driver; row.EosbIncluded = terms.EosbIncluded;
             row.EosbExclusionCategory = terms.Category; row.EosbExclusionReason = terms.Note;
-            row.FinanceConfirmedAtUtc = DateTime.UtcNow; row.FinanceConfirmedByUserId = actor.UserId;
-            row.UpdatedAtUtc = DateTime.UtcNow; row.UpdatedBy = actor.UserId;
-            var warnings = CashAllowanceDefinitions.Warnings(row.NameEn, row.NameAr, row.EosbIncluded, row.EosbExclusionCategory, atCreation: false);
+
+            // A change that waited for Finance was never paid: payroll paid the terms Finance last confirmed (kept on the row). Months already approved, locked,
+            // paid or closed keep those terms; the change takes effect from the month after the latest of them (split into two dated versions).
+            var now = DateTime.UtcNow;
+            var kept = CashAllowanceDefinitions.KeptTerms(row);
+            DateOnly? committedThrough = null;
+            PayComponent? successor = null;
+            if (kept is not null && await PayComponentPolicy.LatestCommittedPeriodAsync(db, tid, row.CompanyId, ct) is DateOnly committed
+                && ConfirmReachesCommitted(committed, kept, row))
+            {
+                var (refusal, next) = await SplitAtCommittedAsync(tid, row, kept, committed, now, actor.UserId.Value, ct);
+                if (refusal is not null) { db.ChangeTracker.Clear(); return refusal; }
+                committedThrough = committed;
+                successor = next;
+            }
+            else
+            {
+                row.FinanceConfirmedAtUtc = now; row.FinanceConfirmedByUserId = actor.UserId;
+            }
+            row.LastConfirmedTermsJson = null;   // confirmed: nothing is held back any more
+            row.UpdatedAtUtc = now; row.UpdatedBy = actor.UserId;
+            var current = successor ?? row;
+            // Why the closed version ends where it does, and carries the earlier confirmation: said in the confirmation entry (no column).
+            string? note = null, noteAr = null;
+            if (committedThrough is DateOnly closedAt)
+            {
+                var confirmerName = await db.Users.AsNoTracking().Where(u => u.Id == actor.UserId && u.TenantId == tid).Select(u => u.FullName).FirstOrDefaultAsync(ct);
+                var who = string.IsNullOrWhiteSpace(confirmerName) ? actor.UserId.Value.ToString() : confirmerName;
+                note = $"Closed at the end of {closedAt:yyyy-MM} when the pending change was confirmed by {who}.";
+                noteAr = $"أُغلقت بنهاية {closedAt:yyyy-MM} عند تأكيد التغيير المعلّق من قِبل {who}.";
+            }
+            var warnings = CashAllowanceDefinitions.Warnings(current.NameEn, current.NameAr, current.EosbIncluded, current.EosbExclusionCategory, atCreation: false);
             db.AuditLogs.Add(Audit(actor, row.CompanyId, AuditBenefitConfirmed, row.Id, new
             {
                 componentCode = code, ownerCompanyId = row.CompanyId, addedBy = row.CreatedBy, confirmedBy = actor.UserId, before = TermsAudit(before), after = TermsAudit(terms),
                 changed = before != terms, warnings = warnings.Select(w => w.Code).ToArray(),
+                // Set when the change reached months already committed: those months keep the last confirmed terms (row), the change applies from the next one.
+                committedThrough, keptVersionId = committedThrough is null ? (Guid?)null : row.Id, newVersionId = successor?.Id,
+                newVersionFrom = successor?.EffectiveFrom, note, noteAr,
             }));
             await db.SaveChangesAsync(ct);
-            return Ok(ToDto(EntitlementComponentRules.CustomRuleFor(code, row.NameEn, row.NameAr), InfoOf(row), warnings, owner: row.CompanyId));
+            return Ok(ToDto(EntitlementComponentRules.CustomRuleFor(code, current.NameEn, current.NameAr), InfoOf(current), warnings, owner: current.CompanyId));
         }, ct);
+
+    /// <summary>The paying terms a confirmation compares: GL driver, end-of-service answer and taxable flag (names and the policy class are labels).</summary>
+    private static bool SamePayingTerms(CashAllowanceDefinitions.ConfirmedTerms kept, PayComponent pending) =>
+        kept.GlDriverKey == pending.GlDriverKey && kept.EosbIncluded == pending.EosbIncluded
+        && kept.EosbExclusionCategory == pending.EosbExclusionCategory && kept.IsTaxable == pending.IsTaxable;
+
+    /// <summary>
+    /// Whether confirming <paramref name="pending"/> would change what a month at or before <paramref name="committed"/> (approved, locked, paid or GL-closed for
+    /// some company) is paid, compared with the terms Finance last confirmed (<paramref name="kept"/>), which payroll read for those months: a month moves in or
+    /// out of the window or the switch, or a month in both windows gets other paying terms.
+    /// </summary>
+    internal static bool ConfirmReachesCommitted(DateOnly committed, CashAllowanceDefinitions.ConfirmedTerms kept, PayComponent pending)
+    {
+        var old = new Window(kept.IsActive, kept.EffectiveFrom, kept.EffectiveTo);
+        var next = new Window(pending.IsActive, pending.EffectiveFrom, pending.EffectiveTo);
+        if (ChangeReachesCommitted(committed, old, next)) return true;
+        if (SamePayingTerms(kept, pending)) return false;
+        // The first month both windows cover (they are contiguous ranges of whole months): its terms change if it is committed.
+        var first = MonthStart(new[] { kept.EffectiveFrom ?? DateOnly.MinValue, pending.EffectiveFrom ?? DateOnly.MinValue }.Max());
+        return first <= committed && InWindow(old, first) && InWindow(next, first);
+    }
+
+    /// <summary>
+    /// Confirms a change that reached committed months as two dated versions, so no committed month is rewritten: <paramref name="row"/> goes back to the
+    /// terms Finance last confirmed (<paramref name="kept"/>: its window, switch, names-independent paying terms and confirmation) up to the end of the
+    /// committed month, and a new confirmed version carries the change from the month after (when the change still covers a month after it). A change whose
+    /// kept terms covered no committed month moves its own start to the month after instead. Refused (409, nothing written) when neither covers a month on its
+    /// side, or when another version of the code (removed ones too: the unique key counts them) already starts on that month.
+    /// </summary>
+    private async Task<(MatrixResult? Refusal, PayComponent? Successor)> SplitAtCommittedAsync(Guid tid, PayComponent row, CashAllowanceDefinitions.ConfirmedTerms kept,
+        DateOnly committed, DateTime now, Guid confirmer, CancellationToken ct)
+    {
+        var committedEnd = committed.AddMonths(1).AddDays(-1);
+        var nextMonth = committed.AddMonths(1);
+        var keptCoversCommitted = kept.EffectiveFrom is null || kept.EffectiveFrom <= committedEnd;
+        var changeFrom = row.EffectiveFrom is DateOnly f && f > nextMonth ? f : nextMonth;
+        // A switch-off adds no version: the confirmed one ends with the committed month, and nothing is in effect after it. An inactive version would lock the
+        // allowance's dates and switch for good (dates_locked_by_versions), so it could never be switched back on.
+        var changeCoversLater = row.IsActive && (row.EffectiveTo is null || row.EffectiveTo >= changeFrom);
+        // The change only rewrites committed months: it is changed again to start after them (the edit compares with what payroll paid, so that is allowed).
+        if (!keptCoversCommitted && !changeCoversLater)
+            return (new(StatusCodes.Status409Conflict, new
+            {
+                error = "period_committed",
+                message = $"Payroll for {committed:yyyy-MM} is already approved, locked or paid, and this change would only rewrite months up to then. Nothing was confirmed. "
+                    + $"Change it again so it starts in {nextMonth:yyyy-MM} or later, then confirm it.",
+                messageAr = $"رواتب {committed:yyyy-MM} معتمدة أو مقفلة أو مدفوعة، وهذا التغيير لن يغيّر إلا أشهرًا حتى ذلك الشهر. لم يُؤكَّد شيء. "
+                    + $"عدّل التغيير ليبدأ في {nextMonth:yyyy-MM} أو بعده، ثم أكّده.",
+                earliestEffectiveFrom = nextMonth,
+            }), null);
+        // Another version (a removed one counts: the unique key holds it) already starts on the month the change would take: nothing an edit can do; it
+        // clears once that month is committed too and the change moves to the month after.
+        if (changeCoversLater && await ScopedBypass.TenantWide(db.PayComponents, tid, "The unique key counts removed rows: a start date another version of the code already holds is taken.")
+                .AsNoTracking().AnyAsync(x => x.CompanyId == row.CompanyId && x.Code == row.Code && x.ComponentType == row.ComponentType && x.Id != row.Id
+                    && x.EffectiveFrom == changeFrom, ct))
+            return (new(StatusCodes.Status409Conflict, new
+            {
+                error = "period_committed",
+                message = $"Payroll for {committed:yyyy-MM} is already approved, locked or paid, so this change would start in {changeFrom:yyyy-MM}, where another version of this allowance "
+                    + $"already starts. Nothing was confirmed. It can be confirmed once payroll for {changeFrom:yyyy-MM} is approved.",
+                messageAr = $"رواتب {committed:yyyy-MM} معتمدة أو مقفلة أو مدفوعة، لذلك سيبدأ هذا التغيير في {changeFrom:yyyy-MM} حيث تبدأ نسخة أخرى من هذا البدل. "
+                    + $"لم يُؤكَّد شيء. يمكن تأكيده بعد اعتماد رواتب {changeFrom:yyyy-MM}.",
+                earliestEffectiveFrom = changeFrom.AddMonths(1),
+            }), null);
+
+        if (!keptCoversCommitted)
+        {
+            // The confirmed terms never reached a committed month: the change itself is confirmed, from the month after.
+            row.EffectiveFrom = changeFrom;
+            row.FinanceConfirmedAtUtc = now; row.FinanceConfirmedByUserId = confirmer;
+            return (null, null);
+        }
+
+        PayComponent? successor = null;
+        if (changeCoversLater)
+        {
+            successor = row.DetachedCopy();
+            successor.Id = Guid.NewGuid();
+            successor.EffectiveFrom = changeFrom;
+            successor.CreatedAtUtc = now; successor.UpdatedAtUtc = now; successor.UpdatedBy = confirmer;
+            successor.FinanceConfirmedAtUtc = now; successor.FinanceConfirmedByUserId = confirmer;
+            successor.LastConfirmedTermsJson = null;
+            db.PayComponents.Add(successor);
+        }
+        // The committed months keep exactly what payroll paid them on.
+        row.EffectiveFrom = kept.EffectiveFrom;
+        row.EffectiveTo = kept.EffectiveTo is DateOnly keptTo && keptTo < committedEnd ? keptTo : committedEnd;
+        row.IsActive = kept.IsActive;
+        row.GlDriverKey = kept.GlDriverKey; row.EosbIncluded = kept.EosbIncluded;
+        row.EosbExclusionCategory = kept.EosbExclusionCategory; row.EosbExclusionReason = kept.EosbExclusionReason; row.IsTaxable = kept.IsTaxable;
+        row.FinanceConfirmedAtUtc = kept.FinanceConfirmedAtUtc; row.FinanceConfirmedByUserId = kept.FinanceConfirmedByUserId;
+        return (null, successor);
+    }
 
     /// <summary>
     /// Finance changes a confirmed cash allowance's GL driver and/or end-of-service setting FROM the first day of a month, with a reason. It is a new
@@ -1377,6 +1503,8 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             if (BeforeCorrectionSaveHook is { } beforeSave) await beforeSave();
             if (await CommittedPeriodRefusalAsync() is { } lateRefusal) return lateRefusal;
 
+            // The terms Finance confirmed for the months from the correction on, kept until another Finance user confirms it (payroll keeps paying them).
+            var keptTerms = CashAllowanceDefinitions.ConfirmedSnapshot(head, (from, head.EffectiveTo));
             PayComponent result;
             var inPlace = head.EffectiveFrom == from;
             if (inPlace)
@@ -1409,6 +1537,7 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             // Nobody confirms what they changed (owner rule, Finance included): the corrected version is pending until ANOTHER Finance user confirms it, and
             // the corrector is its maker. The months before it keep their confirmed version.
             result.FinanceConfirmedAtUtc = null; result.FinanceConfirmedByUserId = null; result.CreatedBy = actor.UserId;
+            result.LastConfirmedTermsJson = keptTerms;
             var warnings = CashAllowanceDefinitions.Warnings(result.NameEn, result.NameAr, result.EosbIncluded, result.EosbExclusionCategory, atCreation: false);
             db.AuditLogs.Add(Audit(actor, owner, AuditBenefitCorrected, result.Id, new
             {

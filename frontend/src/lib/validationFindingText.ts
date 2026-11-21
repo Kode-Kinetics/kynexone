@@ -18,8 +18,34 @@ const BY_CODE: Record<string, string> = {
 const PERMIT_ACTIVE = 'Records required before payroll are missing. Until they are recorded, exporting the WPS or bank file needs an explicit acknowledgement to include this employee.';
 const PERMIT_LEFT = 'Records required before payroll are missing. The WPS or bank file will refuse this employee until they are recorded.';
 
+/**
+ * Findings whose English sentence carries details (a name, a code, a date) the translation must keep: the server's sentence has a fixed shape, its
+ * details are read back out and put into the translated template. A sentence that does not match keeps the API's text.
+ */
+const WITH_DETAILS: Record<string, { pattern: RegExp; names: string[]; template: string }> = {
+  CASH_ALLOWANCE_CHANGE_WAITING_FOR_FINANCE: {
+    pattern: /^(.+) \(([A-Z0-9_]+)\): a change is waiting for Finance since (\d{4}-\d{2}-\d{2});/,
+    names: ['name', 'code', 'date'],
+    template: '{name} ({code}): a change is waiting for Finance since {date}, so this run paid the last confirmed terms. Ask another Finance approver to confirm the change in Benefits by grade.',
+  },
+  LEGACY_BENEFIT_ENROLMENT_SKIPPED: {
+    pattern: /^(.+) \(([^)]*)\): the previous benefits system's enrolment ([0-9a-f-]+) in (.+) \(([A-Za-z]+)\) was not paid\./,
+    names: ['name', 'code', 'enrolment', 'plan', 'delivery'],
+    template: '{name} ({code}): the previous benefits system’s enrolment in {plan} was not paid (reference {enrolment}). Benefits are now set in Benefits by grade. Review it in the legacy enrolment reconcile report, and end it or move it to the employee’s grade package.',
+  },
+};
+const OVERTIME_UNPAID = 'Approved overtime of {amount} from an earlier pay period has not been paid by any run. Settle it through the overtime record, or override this finding with a written reason if it was settled outside payroll.';
+
 export function findingText(t: T, finding: { code: string; message: string }): string {
+  // Late overtime no run pays (rule 11b): the amount owed, in the reader's language. The row already names the employee.
+  if (finding.code === 'OVERTIME_PRIOR_PERIOD_UNPAID') {
+    const amount = /\(([\d.,]+) owed\)/.exec(finding.message)?.[1];
+    if (amount) return t(OVERTIME_UNPAID, { amount });
+  }
   if (finding.code === 'READINESS_PAY_BLOCKED') return t(/explicit acknowledgement/.test(finding.message) ? PERMIT_ACTIVE : PERMIT_LEFT);
+  const detailed = WITH_DETAILS[finding.code];
+  const match = detailed?.pattern.exec(finding.message);
+  if (detailed && match) return t(detailed.template, Object.fromEntries(detailed.names.map((name, i) => [name, match[i + 1]])));
   const known = BY_CODE[finding.code];
   if (known) return t(known);
   return finding.message.replace(/payparameter\.[a-z0-9_]+/gi, t('Payroll setting').toLowerCase());

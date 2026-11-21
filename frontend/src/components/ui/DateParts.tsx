@@ -46,22 +46,23 @@ export function MonthPicker({ value, onChange, className = '', 'aria-label': ari
   );
 }
 
-export function DatePicker({ value, onChange, className = '', 'aria-label': ariaLabel }: { value: string; onChange: (v: string) => void; className?: string; 'aria-label'?: string }) {
+/** `placeholders`: an unset part shows its name (Day, Month, Year) instead of a blank, so an empty date reads as a date still to be chosen. */
+export function DatePicker({ value, onChange, className = '', 'aria-label': ariaLabel, placeholders = false }: { value: string; onChange: (v: string) => void; className?: string; 'aria-label'?: string; placeholders?: boolean }) {
   const { t } = useLocale();
   const { parts, names, years, set } = useParts(value, 'date', onChange);
   const days = Array.from({ length: parts.year != null && parts.month != null ? daysInMonth(parts.year, parts.month) : 31 }, (_, i) => i + 1);
   return (
     <span className={`flex gap-1.5 ${className}`} role="group" aria-label={ariaLabel}>
       <select className="select w-16" aria-label={t('Day')} value={parts.day ?? ''} onChange={e => set({ day: Number(e.target.value) })}>
-        {parts.day == null && <option value="" />}
+        {parts.day == null && <option value="">{placeholders ? t('Day') : ''}</option>}
         {days.map(d => <option key={d} value={d}>{d}</option>)}
       </select>
       <select className="select w-full" aria-label={t('Month')} value={parts.month ?? ''} onChange={e => set({ month: Number(e.target.value) })}>
-        {parts.month == null && <option value="" />}
+        {parts.month == null && <option value="">{placeholders ? t('Month') : ''}</option>}
         {names.map((n, i) => <option key={n} value={i + 1}>{n}</option>)}
       </select>
       <select className="select w-24" aria-label={t('Year')} value={parts.year ?? ''} onChange={e => set({ year: Number(e.target.value) })}>
-        {parts.year == null && <option value="" />}
+        {parts.year == null && <option value="">{placeholders ? t('Year') : ''}</option>}
         {years.map(y => <option key={y} value={y}>{y}</option>)}
       </select>
     </span>
@@ -79,15 +80,18 @@ export function DateTimePicker({ value, onChange, className = '', 'aria-label': 
   return (
     <span className={`flex flex-wrap items-center gap-1.5 ${className}`} role="group" aria-label={ariaLabel}>
       <DatePicker value={date ?? ''} onChange={d => emit(d, hour, minute)} />
-      <select className="select w-16" aria-label={t('Hour')} value={hour ?? ''} onChange={e => emit(date ?? '', Number(e.target.value), minute)}>
-        {hour == null && <option value="" />}
-        {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{String(h).padStart(2, '0')}</option>)}
-      </select>
-      <span aria-hidden="true">:</span>
-      <select className="select w-16" aria-label={t('Minute')} value={minute ?? ''} onChange={e => emit(date ?? '', hour, Number(e.target.value))}>
-        {minute == null && <option value="" />}
-        {Array.from({ length: 60 }, (_, m) => <option key={m} value={m}>{String(m).padStart(2, '0')}</option>)}
-      </select>
+      {/* hour:minute is one unbreakable group, left to right in every language, so the colon never strands and the minutes never drop alone */}
+      <span dir="ltr" className="inline-flex flex-nowrap items-center gap-1.5">
+        <select className="select w-16" aria-label={t('Hour')} value={hour ?? ''} onChange={e => emit(date ?? '', Number(e.target.value), minute)}>
+          {hour == null && <option value="" />}
+          {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{String(h).padStart(2, '0')}</option>)}
+        </select>
+        <span aria-hidden="true">:</span>
+        <select className="select w-16" aria-label={t('Minute')} value={minute ?? ''} onChange={e => emit(date ?? '', hour, Number(e.target.value))}>
+          {minute == null && <option value="" />}
+          {Array.from({ length: 60 }, (_, m) => <option key={m} value={m}>{String(m).padStart(2, '0')}</option>)}
+        </select>
+      </span>
     </span>
   );
 }

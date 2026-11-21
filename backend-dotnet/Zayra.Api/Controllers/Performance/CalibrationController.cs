@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Performance;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Models;
 
@@ -74,6 +75,9 @@ public class CalibrationController : ControllerBase
                 AvgScore    = Math.Round(g.Average(r => r.FinalScore), 1),
                 Count       = g.Count(),
                 PossibleBias = g.Average(r => r.FinalScore) > 85 || g.Average(r => r.FinalScore) < 50,
+                // Which way: the board's bias alert names it (the screen read these two and never got them).
+                PossibleLeniency = g.Average(r => r.FinalScore) > 85,
+                PossibleSeverity = g.Average(r => r.FinalScore) < 50,
             })
             .ToList();
 
@@ -113,6 +117,10 @@ public class CalibrationController : ControllerBase
             _db.AppraisalReviews.Where(r => r.Id == req.ReviewId && r.TenantId == tenantId && r.CycleId == cycleId),
             r => r.EmployeeId, ct);
         if (review is null) return NotFound();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, review.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal(
+                "This review is about you. Someone else has to adjust its score.",
+                "هذا التقييم يخصّك. يجب أن يعدّل درجته شخص آخر."));
         if (review.Status != "ManagerReviewComplete")
             return Conflict(new { error = "review_not_calibratable", message = $"Manager review must be complete before calibration (current: {review.Status})." });
         if (string.IsNullOrWhiteSpace(req.Reason))

@@ -1,6 +1,6 @@
 import { test, expect, request as pwRequest, type APIRequestContext } from '@playwright/test';
 import fs from 'node:fs';
-import { BASE_URL, GROUP_SLUG, roleByKey, tokenPath } from './roles';
+import { BASE_URL, GROUP_SLUG, roleByKey, roleToken } from './roles';
 import { collectAllPages, pageItems, pageTotal } from '../paging';
 
 /**
@@ -17,16 +17,6 @@ import { collectAllPages, pageItems, pageTotal } from '../paging';
 // Every direct-API caller below records the persona it acts as (e2e/identity/actor.ts).
 import { stampActor } from '../identity/actor';
 
-const tokenFor = (key: string): string => {
-  const p = tokenPath(key);
-  if (!fs.existsSync(p)) {
-    throw new Error(
-      `No stored token for role '${key}'. The security-gate setup project must run first — `
-      + `it authenticates each role exactly once to stay under the login rate limit.`,
-    );
-  }
-  return JSON.parse(fs.readFileSync(p, 'utf8')).token;
-};
 
 /** A direct-API caller carrying a role's real bearer token. */
 async function apiAs(key: string, extraHeaders: Record<string, string> = {}): Promise<APIRequestContext> {
@@ -35,7 +25,7 @@ async function apiAs(key: string, extraHeaders: Record<string, string> = {}): Pr
   return pwRequest.newContext({
     baseURL: BASE_URL,
     timeout: 30_000,
-    extraHTTPHeaders: { Authorization: `Bearer ${tokenFor(key)}`, ...extraHeaders },
+    extraHTTPHeaders: { Authorization: `Bearer ${await roleToken(key)}`, ...extraHeaders },
   });
 }
 
@@ -86,7 +76,7 @@ test.describe('Chrome security gate — identity boundaries', () => {
     const ctx = await browser.newContext({ baseURL: BASE_URL, storageState: 'e2e/.auth/tenant-owner.json' });
     const page = await ctx.newPage();
     await page.goto('/');
-    await page.evaluate(t => localStorage.setItem('platform_access_token', t), tokenFor('tenant-owner'));
+    await page.evaluate(t => localStorage.setItem('platform_access_token', t), await roleToken('tenant-owner'));
 
     const platformApiStatuses: number[] = [];
     page.on('response', r => {

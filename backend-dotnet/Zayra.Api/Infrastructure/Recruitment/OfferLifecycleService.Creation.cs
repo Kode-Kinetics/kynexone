@@ -18,11 +18,15 @@ public sealed partial class OfferLifecycleService
             if (input.ExpectedApplicationVersion is { } expected && app.Version != expected)
                 throw new OfferLifecycleException("application_version_conflict", "The application changed. Reload before creating another offer.");
             OfferApplicationBoundary.RequireUnreserved(app); OfferApplicationBoundary.RequireActive(app);
+            if (await CandidateStanding.IsBlacklistedAsync(db, actor.TenantId, app.CandidateId, ct))
+                throw new OfferLifecycleException(CandidateStanding.ErrorCode, CandidateStanding.Message) { MessageAr = CandidateStanding.MessageAr };
             if (app.Stage != "Offer") throw new OfferLifecycleException("application_offer_stage_required", "Move the application to Offer before generating its offer.");
             if (Enabled && actor.CompanyId is null) throw new OfferLifecycleException("offer_company_required", "Managed offers require a legal company.", 422);
             var deadline = input.ResponseDeadline ?? DateTime.UtcNow.AddDays(7);
             if (input.StartDate == DateOnly.MinValue || input.ProbationMonths is < 0 or > 12 || deadline.Kind != DateTimeKind.Utc || deadline <= DateTime.UtcNow)
                 throw new OfferLifecycleException("offer_terms_invalid", "Choose a start date, future UTC deadline and probation from zero to twelve months.", 422);
+            if (OfferContractTerm.Validate(input.ContractType, input.ContractTermMonths) is { } termError)
+                throw new OfferLifecycleException(termError, OfferContractTerm.ErrorMessage(termError), 422) { MessageAr = OfferContractTerm.ErrorMessageAr(termError) };
             if (Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ProbationOverLimit(
                     await Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ResolveAsync(db, actor.TenantId, actor.CompanyId, ct),
                     input.StartDate, input.ProbationMonths) is { } probationMessage)
@@ -54,12 +58,17 @@ public sealed partial class OfferLifecycleService
             }
             var offer = new OfferLetter { TenantId = actor.TenantId, CompanyId = actor.CompanyId, ApplicationId = app.Id,
                 CandidateId = app.CandidateId, CandidateName = candidateName, RecipientEmail = email, OfferedJobTitle = placement.Designation,
-                OfferedDepartment = placement.Department, StartDate = input.StartDate, ProbationMonths = input.ProbationMonths, ResponseDeadline = deadline };
+                OfferedDepartment = placement.Department, StartDate = input.StartDate, ProbationMonths = input.ProbationMonths, ResponseDeadline = deadline,
+                ContractType = OfferContractTerm.Normalize(input.ContractType), ContractTermMonths = OfferContractTerm.Normalize(input.ContractType) == OfferContractTerm.FixedTerm ? input.ContractTermMonths : null };
             OfferCompensation.ApplySnapshot(offer, compensation);
             offer.ContentHtml = input.ContentHtml is not null ? HtmlEncoder.Default.Encode(input.ContentHtml)
-                : new RecruitmentService(db).GenerateOfferLetterHtml(new(candidateName, placement.Designation, placement.Department,
+                : new RecruitmentService(db).GenerateOfferLetterHtml(new(candidateName, placement.Designation,
+                    await OfferPlacement.DisplayDepartmentAsync(db, actor.TenantId, actor.CompanyId, placement.Department, false, ct),
                     input.StartDate, compensation.BasicSalary, compensation.HousingAllowance, compensation.TransportAllowance,
-                    compensation.OtherAllowances, compensation.MonthlyCash, input.ProbationMonths, compensation.Currency));
+                    compensation.OtherAllowances, compensation.MonthlyCash, input.ProbationMonths, compensation.Currency,
+                    offer.ContractType, offer.ContractTermMonths,
+                    await db.Companies.AsNoTracking().Where(c => c.TenantId == actor.TenantId && c.Id == actor.CompanyId).Select(c => c.CountryCode).FirstOrDefaultAsync(ct),
+                    deadline));
             try
             {
                 await OfferLetterDesign.ApplyTemplateAsync(db, offer, input.TemplateId, ct);

@@ -27,6 +27,8 @@ public class EmployeeDraft : ITenantOwned
     public int? ManagerEmployeeId { get; set; }
     public DateTime? JoiningDate { get; set; }
     public string ContractType { get; set; } = string.Empty;
+    /// <summary>The employment type (a reference-list code) an offer hire carries from its opening or hire template; empty when none was stated.</summary>
+    public string EmploymentType { get; set; } = string.Empty;
     public string Grade { get; set; } = string.Empty;
     public string CostCenter { get; set; } = string.Empty;
     public DateOnly? ContractStartDate { get; set; }

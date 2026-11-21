@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { EssDashboard, EssHrRequest } from '../src/api/ess';
 import type { LeaveRequest } from '../src/api/leave';
 import {
-  advanceItem, buildNextStep, clockParts, daysBetween, deriveDay, hrRequestItem, leaveItem, liveWorkedSeconds, orderTracker, pickUpcoming, whenLabel,
+  advanceItem, buildNextStep, loanItem, clockParts, daysBetween, deriveDay, hrRequestItem, leaveItem, liveWorkedSeconds, orderTracker, pickUpcoming, whenLabel,
   type MyDayFormat, type UpcomingEntry,
 } from '../src/lib/myDay';
 
@@ -136,6 +136,21 @@ test('an advance is in the tracker until it is paid out', () => {
   expect(advanceItem(adv('Approved'), ctx, null)!.steps.map((s) => s.state)).toEqual(['done', 'done', 'current', 'todo']);
   expect(advanceItem(adv('Approved', { paidAtUtc: '2026-11-14T00:00:00Z' }), ctx, null)).toBeNull();
   expect(advanceItem(adv('Cancelled'), ctx, null)).toBeNull();
+});
+
+test('a loan is in the tracker until it is paid out, as an advance is', () => {
+  const loan = (status: string, extra: Record<string, unknown> = {}) => ({ id: 'ln', employeeId: '7', loanNumber: 'LN-1', loanTypeName: 'Personal', status, createdAtUtc: '2026-11-13T09:00:00Z', ...extra }) as never;
+  const pending = loanItem(loan('Pending'), ctx, '/ess/loans')!;
+  expect(pending.kind).toBe('loan');
+  expect(pending.steps.map((s) => s.state)).toEqual(['done', 'current', 'todo', 'todo']);
+  expect(pending.meta).toContain('LN-1');
+  expect(pending.action?.href).toBe('/ess/loans');
+  expect(loanItem(loan('Approved'), ctx, null)!.steps.map((s) => s.state)).toEqual(['done', 'done', 'current', 'todo']);
+  expect(loanItem(loan('Approved', { disbursementDate: '2026-11-14' }), ctx, null)).toBeNull();
+  expect(loanItem(loan('Active'), ctx, null)).toBeNull();
+  expect(loanItem(loan('Rejected'), ctx, null)!.tone).toBe('rose');
+  expect(loanItem(loan('Rejected', { createdAtUtc: '2026-10-01T00:00:00Z' }), ctx, null)).toBeNull();
+  expect(loanItem(loan('Cancelled'), ctx, null)).toBeNull();
 });
 
 test('the tracker puts what waits for the employee first, then the newest', () => {

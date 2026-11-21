@@ -46,7 +46,7 @@ public static class KsaStarterTemplate
             "Once the Iqama is issued, link it and record its expiry date on the employee record.", "بعد إصدار الإقامة، اربطها وسجّل تاريخ انتهائها في سجل الموظف.",
             OnboardingOwnerRoles.Gov, 35, NationalityClasses.Expat, true, "id"),
         new("WPS and Mudad inclusion: salary account and wage file", "الإدراج في حماية الأجور ومدد: حساب الراتب وملف الأجور",
-            "The salary account is on the wage file before the first pay cycle. Upload the wage file to Mudad within the Mudad window (30 days).", "يكون حساب الراتب ضمن ملف الأجور قبل أول دورة رواتب. ارفع ملف الأجور على مُدد ضمن المهلة المحددة (30 يومًا حاليًا).",
+            "The salary account is on the wage file before the first pay cycle. Upload the wage file as your bank or Mudad process requires, within the Mudad window (30 days).", "يكون حساب الراتب ضمن ملف الأجور قبل أول دورة رواتب. ارفع ملف الأجور وفق ما يتطلبه بنكك أو مدد، ضمن المهلة المحددة (30 يومًا حاليًا).",
             OnboardingOwnerRoles.Payroll, 25, NationalityClasses.Any, true, "bank"),
         new("Company email, laptop and access (IT creates the mailbox)", "البريد الإلكتروني للشركة والحاسوب والصلاحيات (تنشئ تقنية المعلومات صندوق البريد)",
             "IT creates the company mailbox and accounts. KynexOne never creates mailboxes.", "تنشئ تقنية المعلومات صندوق البريد والحسابات. لا تنشئ المنصة صناديق بريد.",

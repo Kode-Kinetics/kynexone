@@ -8,6 +8,7 @@ using QuestPDF.Fluent;
 using QuestPDF.Helpers;
 using QuestPDF.Infrastructure;
 using SkiaSharp;
+using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
@@ -87,7 +88,7 @@ public static class OfferLetterDesign
     public static string SerializeSnapshot(OfferDesignSnapshot snapshot) => JsonSerializer.Serialize(snapshot, Json);
     public static readonly string[] Tokens = ["company_name", "candidate_name", "job_title", "department", "start_date", "issue_date", "response_deadline", "basic_salary", "housing_allowance", "transport_allowance", "other_allowances", "gross_salary", "currency", "probation_months", "probation_period", "offer_reference",
         // The Saudi default letter's clauses (OfferLetterClauses): filled for every offer, whatever the design.
-        "work_location", "contract_term_clause", "notice_period_employer", "notice_period_employee", "gosi_clause", "health_residency_clause", "compensation_lines"];
+        "work_location", "contract_term_clause", "notice_period_employer", "notice_period_employee", "gosi_clause", "health_residency_clause", "compensation_lines", "probation_clause"];
     private static readonly Regex TokenPattern = new(@"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}", RegexOptions.Compiled);
     private static readonly object FontGate = new();
     private static readonly HashSet<string> RegisteredFonts = [];
@@ -124,6 +125,7 @@ public static class OfferLetterDesign
         ["gross_salary"] = "16,000.00", ["currency"] = "SAR", ["probation_months"] = "3", ["probation_period"] = "3 months", ["offer_reference"] = "SAMPLE-001",
         ["work_location"] = "Riyadh", ["contract_term_clause"] = "The contract will be fixed-term or indefinite as agreed.", ["notice_period_employer"] = "60 days", ["notice_period_employee"] = "60 days",
         ["gosi_clause"] = "You will be registered with the General Organization for Social Insurance.", ["health_residency_clause"] = "",
+        ["probation_clause"] = OfferLetterClauses.ProbationClause(false, 3, false, true),
         ["compensation_lines"] = "Basic salary: SAR 12,000.00\nHousing allowance: SAR 3,000.00\nTransport allowance: SAR 1,000.00\nTotal monthly salary: SAR 16,000.00"
     };
 
@@ -210,6 +212,14 @@ public static class OfferLetterDesign
         }
     }
 
+    /// <summary>Reads the fixed 90-day probation paragraph that older default letters carried as {{probation_clause}}, so a saved template or an
+    /// unfrozen draft design generates the offer's recorded probation. Only the exact old paragraph is replaced; a paragraph HR edited stays as written.</summary>
+    internal static void UseProbationClause(OfferDesign design)
+    {
+        foreach (var b in design.Blocks)
+            if (b.Text == OfferLetterClauses.LegacyProbationEn || b.Text == OfferLetterClauses.LegacyProbationAr) b.Text = "{{probation_clause}}";
+    }
+
     public static async Task<OfferDesignSnapshot> SnapshotAsync(ZayraDbContext db, OfferLetter offer, OfferDesign design, Guid? templateId, int? version, CancellationToken ct)
     {
         Validate(design);
@@ -221,19 +231,23 @@ public static class OfferLetterDesign
         var probationPeriod = Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ProbationPeriodText(companyRow?.CountryCode, offer.StartDate, offer.ProbationMonths);
         // A design saved before {{probation_period}} existed says "{{probation_months}} months"; where the Saudi 180-day ceiling
         // applies that would print "6 months" for a probation served as 180 days, so the letter states the period instead.
-        if (probationPeriod.EndsWith(" days", StringComparison.Ordinal)) UseProbationPeriod(design);
+        var probationAtCeiling = probationPeriod.EndsWith(" days", StringComparison.Ordinal);
+        if (probationAtCeiling) UseProbationPeriod(design);
+        UseProbationClause(design);
+        var arabic = design.Direction == "rtl";
         string Money(decimal value) => value.ToString("N2", CultureInfo.InvariantCulture);
         values["company_name"] = company; values["candidate_name"] = offer.CandidateName;
-        values["job_title"] = offer.OfferedJobTitle; values["department"] = offer.OfferedDepartment;
+        values["job_title"] = offer.OfferedJobTitle;
+        // The offer may hold the department's code (so activation finds the same record); the letter names the department.
+        values["department"] = await OfferPlacement.DisplayDepartmentAsync(db, offer.TenantId, offer.CompanyId, offer.OfferedDepartment, arabic, ct);
         values["start_date"] = offer.StartDate.ToString("dd MMMM yyyy", CultureInfo.InvariantCulture);
         values["issue_date"] = offer.GeneratedAtUtc.ToString("dd MMMM yyyy", CultureInfo.InvariantCulture);
         values["response_deadline"] = offer.ResponseDeadline?.ToString("dd MMMM yyyy", CultureInfo.InvariantCulture) ?? "the agreed response date";
         values["basic_salary"] = Money(offer.BasicSalary); values["housing_allowance"] = Money(offer.HousingAllowance);
         values["transport_allowance"] = Money(offer.TransportAllowance); values["other_allowances"] = Money(offer.OtherAllowances); values["gross_salary"] = Money(offer.GrossSalary);
         values["currency"] = await OfferRules.ResolveCurrencyAsync(db, offer.TenantId, offer.CompanyId, ct);
-        values["probation_months"] = offer.ProbationMonths.ToString(CultureInfo.InvariantCulture); values["probation_period"] = probationPeriod; values["offer_reference"] = offer.Id.ToString();
+        values["probation_months"] = offer.ProbationMonths.ToString(CultureInfo.InvariantCulture); values["probation_period"] = OfferLetterClauses.ProbationPeriod(arabic, offer.ProbationMonths, probationAtCeiling); values["offer_reference"] = offer.Id.ToString();
         // The clauses that depend on the hire: GOSI/residency on the candidate's nationality, notice on the company's own rule, the place of work on the job's location.
-        var arabic = design.Direction == "rtl";
         var nationality = offer.CandidateId is { } candidateId
             ? await db.Candidates.AsNoTracking().Where(x => x.TenantId == offer.TenantId && x.Id == candidateId).Select(x => x.Nationality).FirstOrDefaultAsync(ct) : null;
         var noticeDays = await Zayra.Api.Infrastructure.Employees.EmployeeHireDefaults.NoticePeriodDaysAsync(db, offer.TenantId, companyRow?.CountryCode, ct);
@@ -241,7 +255,8 @@ public static class OfferLetterDesign
                                  join o in db.JobOpenings.AsNoTracking() on a.JobOpeningId equals o.Id
                                  where a.TenantId == offer.TenantId && a.Id == offer.ApplicationId
                                  select o.Location).FirstOrDefaultAsync(ct);
-        foreach (var (key, value) in OfferLetterClauses.Values(arabic, OfferLetterClauses.IsSaudi(nationality), noticeDays, jobLocation, null)) values[key] = value;
+        foreach (var (key, value) in OfferLetterClauses.Values(arabic, OfferLetterClauses.IsSaudi(nationality), noticeDays, jobLocation, OfferContractTerm.LetterTerm(offer.ContractType, offer.ContractTermMonths, arabic),
+            offer.ProbationMonths, probationAtCeiling, Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.IsSaudiCountry(companyRow?.CountryCode))) values[key] = value;
         values["compensation_lines"] = OfferLetterClauses.CompensationLines(arabic, values["currency"], offer.BasicSalary, offer.HousingAllowance, offer.TransportAllowance, offer.OtherAllowances, offer.GrossSalary);
         var compensation = offer.CompensationSnapshotJson is null ? null
             : JsonSerializer.Deserialize<OfferCompensationSnapshot>(offer.CompensationSnapshotJson, OfferCompensation.Json);

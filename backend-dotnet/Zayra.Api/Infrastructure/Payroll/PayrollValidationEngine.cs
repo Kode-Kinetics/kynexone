@@ -32,6 +32,15 @@ public static class PayrollValidationEngine
     public const string NationalityUnrecognised = "NATIONALITY_UNRECOGNISED";
 
     /// <summary>
+    /// Warning, never a block (but acknowledged by count at Approve): a recurring-run employee nets exactly zero because this
+    /// month's unpaid leave took the whole earned wage (the per-slice cap stops it taking more). Any loan or advance instalment
+    /// due, with nothing left to fund it, is carried forward, never written off. Raised only when gross − deductions is exactly
+    /// the zero net (nothing hidden by the clamp at zero) and the month's own unpaid-leave deduction is the whole of the
+    /// employee's deductions. Any other zero net keeps the non-overridable ZERO_NET_WITH_GROSS Error.
+    /// </summary>
+    public const string ZeroNetUnpaidLeave = "ZERO_NET_UNPAID_LEAVE";
+
+    /// <summary>
     /// S1/A2(c) — the LAST-RESORT default only. The ceiling was a compiled constant checked against a
     /// tenant-overridable statutory rule: when GOSI moves the ceiling, the rule updates and a compiled
     /// constant keeps warning on the old number forever. Callers now pass the resolved
@@ -294,6 +303,23 @@ public static class PayrollValidationEngine
                     "is reported separately as WARN_RECEIVABLE_RESIDUAL and still ages on " +
                     "GET /api/payroll/receivables. A zero-net employee has no payable line: exclude them from the " +
                     "WPS file (WpsSifValidator blocks a non-positive net by design).",
+                    slip.EmployeeId);
+            // ── A full month of unpaid leave: explained, so a Warning ──────────────────────────────────────────────────────
+            // Same shape as the recovery carve-out above, and just as narrow: the arithmetic is exact (nothing swallowed by
+            // the clamp) and the month's own unpaid-leave deduction IS every employee deduction on the slip. The per-slice cap
+            // means unpaid leave never takes more than the wage earned, so a full unpaid month legitimately earns nothing; the
+            // Error below was for deductions EXCEEDING the wage, which this is not. Any instalment due was carried forward
+            // (never written off), and nothing is owed to the bank: the person is left out of the bank file at batch creation.
+            // Anything else that reads zero keeps the Error below.
+            else if (paysRecurring && slip.NetSalary == 0m && slip.GrossSalary > 0m
+                     && slip.GrossSalary - slip.Deductions == slip.NetSalary
+                     && UnpaidLeaveIsTheWholeDeduction(ctx, slip))
+                Warn(ZeroNetUnpaidLeave,
+                    $"Employee {slip.EmployeeCode} nets zero: unpaid leave took the whole wage ({slip.GrossSalary:N2}) this month" +
+                    (ctx.DebtDeferredEmployeeIds.Contains(slip.EmployeeId)
+                        ? ", and the loan or advance instalment due was carried forward to the next run, not written off. "
+                        : ". ") +
+                    "Nothing is paid to them, so they are left out of the bank file. Check the leave, then acknowledge it when approving.",
                     slip.EmployeeId);
             else if (slip.NetSalary == 0m && slip.GrossSalary > 0m)
                 Err("ZERO_NET_WITH_GROSS",
@@ -730,7 +756,8 @@ public static class PayrollValidationEngine
                   "belongs to another company's period (the request is recorded under the company the employee used to work for), so no run of this company pays it: " +
                   "settle it through the overtime record, or override this error with a written basis if it was already settled.";
             Err(PriorPeriodOvertimeUnpaid,
-                $"Employee {otEmp?.EmployeeCode ?? byEmp.Key.ToString()} has {minutes / 60m:0.00##} h of approved overtime from an " +
+                $"Employee {otEmp?.EmployeeCode ?? byEmp.Key.ToString()} has {minutes / 60m:0.00##} h of approved overtime " +
+                $"({byEmp.Sum(x => x.Amount).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)} owed) from an " +
                 $"earlier pay period ({dates}) that no payroll run has paid. This run pays only its own period's overtime and will not pay it." +
                 (otherCompany.Count == byEmp.Count() ? string.Empty : " " + LateApprovalAdvice(ctx)) + otherCompanyNote,
                 byEmp.Key);
@@ -863,6 +890,16 @@ public static class PayrollValidationEngine
 
     private static bool IsGosiEeCode(string code) => IsGosiEmployeeCode(code);
 
+    /// <summary>The month's own unpaid-leave line (component LEAVE, source Leave) is every employee deduction on the slip and
+    /// equals the slip's deductions exactly. Employer contributions are not taken from the employee and are ignored.</summary>
+    private static bool UnpaidLeaveIsTheWholeDeduction(PayrollValidationContext ctx, PayrollSlip slip)
+    {
+        var employeeLines = ctx.Deductions.Where(d => d.EmployeeId == slip.EmployeeId && !d.IsEmployerContribution && d.Amount != 0m).ToList();
+        return employeeLines.Count > 0
+            && employeeLines.All(d => d.ComponentCode == "LEAVE" && d.Source == "Leave")
+            && employeeLines.Sum(d => d.Amount) == slip.Deductions;
+    }
+
     /// <summary>F02 — a Gregorian ISO date whatever the server culture (ar-SA defaults to Umm al-Qura).</summary>
     private static string IsoDate(DateOnly d) => d.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
@@ -897,6 +934,12 @@ public sealed record PayrollValidationContext(
     /// populated identically by Process and by /validate (which replaces the stored results wholesale).
     /// </summary>
     public IReadOnlySet<int> UnverifiedImportedBankDetails { get; init; } = new HashSet<int>();
+
+    /// <summary>
+    /// Employees whose loan or advance instalment this run could not fund and carried forward (Process's
+    /// WARN_EMI_DEFERRED_PRORATED_PERIOD). Process and /validate must populate it identically. Empty (the default) raises nothing.
+    /// </summary>
+    public IReadOnlySet<int> DebtDeferredEmployeeIds { get; init; } = new HashSet<int>();
 
     /// <summary>
     /// Overtime requests still awaiting approval per employee, for work dates in this pay period. Process and

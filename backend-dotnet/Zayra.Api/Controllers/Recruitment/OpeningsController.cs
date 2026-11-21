@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
@@ -25,6 +27,7 @@ public class OpeningsController : ControllerBase
         _db = db; _svc = svc; _notify = notify;
     }
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] string? status,
@@ -62,6 +65,7 @@ public class OpeningsController : ControllerBase
         return Ok(new { items = enriched, total, page, pageSize });
     }
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
@@ -84,6 +88,21 @@ public class OpeningsController : ControllerBase
     {
         var tenantId = this.GetTenantId()!.Value;
         var userId = this.GetUserId();
+
+        // An opening with no requisition has nothing to guard. One made from a requisition runs as ONE serialized unit per requisition
+        // (advisory lock, re-read, guard, stamp Converted, insert, commit): two creates that arrive together would otherwise both read
+        // Approved and each insert an opening. Under the lock the second reads the committed Converted status and is refused.
+        // The delegate is re-run from scratch on a retry (see FinanceDecisionSerializer), so it reads everything after the lock.
+        if (req.RequisitionId is not Guid requisitionId)
+            return await CreateCoreAsync(tenantId, userId, req, ct);
+        return await FinanceDecisionSerializer.SerializeAsync(_db, OpeningFromRequisitionLockScope, tenantId, requisitionId,
+            () => CreateCoreAsync(tenantId, userId, req, ct), ct);
+    }
+
+    private const string OpeningFromRequisitionLockScope = "recruitment.opening-from-requisition";
+
+    private async Task<IActionResult> CreateCoreAsync(Guid tenantId, Guid? userId, CreateOpeningRequest req, CancellationToken ct)
+    {
         var code = await _svc.GenerateJobCodeAsync(tenantId, ct);
 
         // The opening belongs to the company that raised the requisition; a requisition outside the caller's company scope is not found,
@@ -95,6 +114,15 @@ public class OpeningsController : ControllerBase
             requisition = await _db.ManpowerRequisitions
                 .FirstOrDefaultAsync(r => r.Id == req.RequisitionId && r.TenantId == tenantId, ct);
             if (requisition is null) return BadRequest(new { message = "Requisition not found." });
+            // Create Opening is for an APPROVED requisition only. Any other status is refused, and says which one blocked it.
+            if (requisition.Status != "Approved")
+                return Conflict(new
+                {
+                    message = requisition.Status == "Converted"
+                        ? "This requisition already has an opening."
+                        : "Only an approved requisition can be opened as a job.",
+                    status = requisition.Status,
+                });
             if (req.CompanyId is Guid named && requisition.CompanyId is Guid owner && named != owner)
                 return BadRequest(new { message = "The requisition belongs to a different company than the one named." });
             companyId = requisition.CompanyId ?? req.CompanyId;
@@ -105,9 +133,9 @@ public class OpeningsController : ControllerBase
         var (catalogueDepartment, catalogueDesignation, placementError) = await CataloguePlacementAsync(tenantId, terms.DepartmentId, terms.DesignationId, terms.GradeId, ct);
         if (placementError is not null) return placementError;
 
-        // The source requisition becomes Converted in the same save as the opening, so a refusal above leaves it Approved (the only
-        // status Create Opening is offered for) and never Converted with no opening.
-        if (requisition?.Status == "Approved")
+        // The source requisition (Approved, checked above under the lock) becomes Converted in the same save as the opening, so a refusal
+        // above leaves it Approved and it is never Converted with no opening.
+        if (requisition is not null)
             requisition.Status = "Converted";
 
         var j = new JobOpening
@@ -192,6 +220,7 @@ public class OpeningsController : ControllerBase
         return Ok(j);
     }
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("stats")]
     public async Task<IActionResult> Stats(CancellationToken ct)
     {
@@ -216,6 +245,7 @@ public class OpeningsController : ControllerBase
     private static readonly string[] JobOpeningCsvExampleRow =
         { "Example Job Title", "Operations", "Operations Officer", "Full-Time", "1", "Main City", "8000", "12000", "Example description", "Example requirements", "Example responsibilities", "", "Open" };
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("export")]
     public async Task<IActionResult> Export(CancellationToken ct)
     {
@@ -234,6 +264,7 @@ public class OpeningsController : ControllerBase
         return CsvDownload.Result(csv);
     }
 
+    [HasPermission("recruitment.read", "recruitment.write")]
     [HttpGet("import-template")]
     public IActionResult ImportTemplate()
     {

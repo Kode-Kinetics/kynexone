@@ -252,13 +252,13 @@ export function GosiFilingPage() {
         </div>
       )}
 
-      <div className="flex items-start gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs font-medium text-blue-800 dark:border-blue-500/20 dark:bg-blue-500/[0.06] dark:text-blue-300">
+      <div className="flex items-start gap-1.5 text-xs text-slate-500 dark:text-slate-400" data-testid="gosi-readiness-note">
         <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <span>
           {t('Employee GOSI readiness (missing IDs, classification, blocked employees) lives on {link}. This screen reconciles what payroll actually deducted.', {
             link: '\u0000',
           }).split('\u0000').flatMap((part, i, all) => i < all.length - 1
-            ? [part, <Link key={i} href="/saudi-compliance" className="font-semibold underline underline-offset-2">{t('Saudi Compliance')}</Link>]
+            ? [part, <Link key={i} href="/saudi-compliance" className="font-semibold text-sapphire underline underline-offset-2 dark:text-cyanAccent">{t('Saudi Compliance')}</Link>]
             : [part])}
         </span>
       </div>
@@ -297,8 +297,11 @@ export function GosiFilingPage() {
                 expectedIsPeriodPartial={scope.kind === 'run' ? runSummary?.expectedIsPeriodPartial ?? false : false}
                 runCount={scope.kind === 'period' ? period?.runCount ?? 0 : 1}
               />
-              <HeaderTiles tie={tie} />
-              <TieOut tie={tie} run={scope.kind === 'run' ? runSummary : null} />
+              {/* From 1280px the four figures and the tie-out sit side by side, so the verdict is in the first screenful. */}
+              <div className="grid gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] xl:items-start">
+                <HeaderTiles tie={tie} />
+                <TieOut tie={tie} run={scope.kind === 'run' ? runSummary : null} />
+              </div>
               <ComponentBreakdown rows={tie.branchBreakdown} />
               {scope.kind === 'period' && period ? (
                 <PeriodEmployeeTable period={period} />
@@ -419,7 +422,7 @@ function HeaderTiles({ tie }: { tie: Tie }) {
   const expDelta = tie.expectedVsActualEmployeeDelta + tie.expectedVsActualEmployerDelta;
   const glDelta = tie.glPosted ? (tie.glEmployeeDelta ?? 0) + (tie.glEmployerDelta ?? 0) : null;
   return (
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-2">
       <Tile label={t('Employee contributions')} value={money(tie.totalEmployeeContrib)} sub={t('Deducted from pay')} testId="tile-employee" />
       <Tile label={t('Employer contributions')} value={money(tie.totalEmployerContrib)} sub={t('Employer cost')} testId="tile-employer" />
       <Tile label={t('Expected vs actual')} value={signed(expDelta)} testId="tile-expected-delta"
@@ -448,7 +451,7 @@ function Tile({ label, value, sub, tone = 'neutral', testId }: {
     muted: 'text-slate-500 dark:text-slate-400',
   }[tone];
   return (
-    <div data-testid={testId} className={`rounded-2xl border p-4 ${toneCls}`}>
+    <div data-testid={testId} className={`rounded-2xl border p-3 ${toneCls}`}>
       <p className="text-caption font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{label}</p>
       <p className={`mt-1 font-mono text-xl font-semibold tabular-nums ${valueCls}`}>{value}</p>
       <p className="mt-0.5 text-caption text-slate-500 dark:text-slate-400">{sub}</p>

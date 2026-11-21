@@ -35,8 +35,10 @@ public class AuthSeeder : IAuthSeeder
     /// a candidate, an assessment, a slate, a development plan or a report is withheld: succession is HR-confidential and
     /// Admin is the technical role. HR Director and HR Manager receive them by explicit grant below, and an Admin can still
     /// grant them to anyone (PrivilegeCeiling).</para>
+    /// <para>gov.credentials.manage: government and bank integration credentials are given to no built-in role, Admin included;
+    /// the tenant grants the key to a named person (an Admin may grant it, PrivilegeCeiling).</para>
     public static readonly IReadOnlyList<string> AdminWithheldPermissions =
-        ["attendance.evidence.view", "succession.nominate", "succession.assess", "succession.calibrate", "succession.slates.read", "succession.slates.manage", "succession.devplans.read", "succession.devplans.manage", "succession.reports.read", "succession.self"];
+        ["attendance.evidence.view", "succession.nominate", "succession.assess", "succession.calibrate", "succession.slates.read", "succession.slates.manage", "succession.devplans.read", "succession.devplans.manage", "succession.reports.read", "succession.self", "gov.credentials.manage"];
 
     /// <summary>
     /// SUC — the 12 succession keys. Granted ONLY by these explicit lists, never by a prefix bundle (a future succession.*
@@ -78,7 +80,7 @@ public class AuthSeeder : IAuthSeeder
                   FROM roles r
                   CROSS JOIN permissions p
                   WHERE r.name = 'Admin'
-                    AND p.permission_key NOT IN ('attendance.evidence.view', 'succession.nominate', 'succession.assess', 'succession.calibrate', 'succession.slates.read', 'succession.slates.manage', 'succession.devplans.read', 'succession.devplans.manage', 'succession.reports.read', 'succession.self')
+                    AND p.permission_key NOT IN ('attendance.evidence.view', 'succession.nominate', 'succession.assess', 'succession.calibrate', 'succession.slates.read', 'succession.slates.manage', 'succession.devplans.read', 'succession.devplans.manage', 'succession.reports.read', 'succession.self', 'gov.credentials.manage')
                     AND NOT EXISTS (
                         SELECT 1 FROM role_permissions rp
                         WHERE rp.role_id = r.id AND rp.permission_id = p.id)
@@ -175,7 +177,7 @@ public class AuthSeeder : IAuthSeeder
         // and does not by default open employees' face images; the tenant can still grant the key to anyone, Admin users
         // included, and an Admin can grant it: PrivilegeCeiling treats withheld keys as within an Admin's reach).
         var adminRole = await EnsureRole(tenantId, "Admin", "Tenant system administrator with full access",
-            permissions.Where(x => x.Key is not "attendance.evidence.view" and not "succession.nominate" and not "succession.assess" and not "succession.calibrate" and not "succession.slates.read" and not "succession.slates.manage" and not "succession.devplans.read" and not "succession.devplans.manage" and not "succession.reports.read" and not "succession.self").ToList(), 1, false, cancellationToken);
+            permissions.Where(x => x.Key is not "attendance.evidence.view" and not "succession.nominate" and not "succession.assess" and not "succession.calibrate" and not "succession.slates.read" and not "succession.slates.manage" and not "succession.devplans.read" and not "succession.devplans.manage" and not "succession.reports.read" and not "succession.self" and not "gov.credentials.manage").ToList(), 1, false, cancellationToken);
 
         // Level 2 — HR Director: full HR + payroll visibility + reports + compliance.
         // Release A: entitlements.* (benefits by grade) and contracts.renewal.* (decides renewals).
@@ -255,7 +257,12 @@ public class AuthSeeder : IAuthSeeder
             "finance.gl.read", "finance.gl.manage", "finance.gl.export", "finance.gl.drivers.manage",
             "payroll.rates.read", "payroll.rates.manage",
             // M2: prepares the bank file and nothing else. It confirms nothing and moves no cash: no WPS status, no settle, no remit.
-            "payroll.payment_batch.manage"
+            "payroll.payment_batch.manage",
+            // Company Finance confirms monthly cash allowances (payroll.approve); the list waiting for Finance is on Benefits by grade. Read only:
+            // entitlements.manage (edit, publish, add, remove) stays with HR.
+            "entitlements.read",
+            // Decides benefit usage requests (HR makes, Finance approves).
+            "benefits.usage.approve"
         }), 4, true, cancellationToken);
 
         // Level 5 — HR Officer: HR operations specialist
@@ -270,7 +277,10 @@ public class AuthSeeder : IAuthSeeder
             // for someone else is gated on overtime.write (OvertimeController.CreateRequest), not on data scope.
             "leave.read", "leave.write", "attendance.read", "overtime.read", "overtime.write", "profile.read",
             // LRN: sees the catalogue and assigns training; does not author courses, correct records or report.
-            "learning.read", "learning.assign"
+            "learning.read", "learning.assign",
+            // Recruitment: works the pipeline (read and write) and decides nothing: no recruitment.approve (offers, requisitions) and no
+            // recruitment.delete (owner decision 2026-11-16). Existing tenants: migration GrantManagerHrOfficerRecruitment.
+            "recruitment.read", "recruitment.write"
         }), 5, true, cancellationToken);
 
         // Level 6 — Payroll Officer: payroll processing
@@ -286,7 +296,9 @@ public class AuthSeeder : IAuthSeeder
             // Imports the opening-balance loans and advances (rows that post an opening journal), and no other import section.
             "finance.opening_balances.import",
             // CMP: Finance sees merit budgets and totals and may decide a worksheet step routed to it.
-            "compensation.read", "compensation.approve"
+            "compensation.read", "compensation.approve",
+            // Decides benefit usage requests and reads the queue it decides (no entitlements.read: not the benefits grid or packages).
+            "benefits.usage.approve"
         }), 7, true, cancellationToken);
 
         // Level 8 — Finance Approver: finance approvals
@@ -305,7 +317,11 @@ public class AuthSeeder : IAuthSeeder
             // both prepares the bank file and pays it.
             "payroll.wps_status.update", "payroll.payment.settle", "payroll.remit.manage",
             // CMP: the default final step of a merit worksheet (HR Manager → Finance Approver) and the cycle approver.
-            "compensation.read", "compensation.approve"
+            "compensation.read", "compensation.approve",
+            // Company Finance confirms monthly cash allowances (payroll.approve); the list waiting for Finance is on Benefits by grade. Read only.
+            "entitlements.read",
+            // Decides benefit usage requests (HR makes, Finance approves).
+            "benefits.usage.approve"
         }), 8, true, cancellationToken);
 
         // Level 9 — Compliance Officer: compliance and contracts
@@ -325,6 +341,9 @@ public class AuthSeeder : IAuthSeeder
             "dashboard.read", "employees.read", "approvals.read", "approvals.write", "approvals.decide", "notifications.read",
             "manager.read", "manager.approve", "ess.read", "ess.write", "leave.read", "leave.approve",
             "attendance.read", "overtime.read", "overtime.approve", "profile.read", "loans.read",
+            // File overtime for a member of the manager's OWN team (data scope), while the company allows it
+            // (overtime_manager_files_for_team, default on). Never overtime.write, which files for anyone.
+            "overtime.file_for_team",
             "performance.read", "performance.write",
             // CMP: a line manager plans merit for their own direct reports only (their own line sits on their manager's sheet).
             "compensation.plan",
@@ -333,7 +352,11 @@ public class AuthSeeder : IAuthSeeder
             // LRN: the team training report. Scoped to the manager's own reporting tree by IDataScopeService.
             "learning.report",
             // SUC: nominate own reports and keep their development plans (data-scoped); never slates or the 9-box.
-            "succession.nominate", "succession.devplans.read", "succession.devplans.manage", "succession.self"
+            "succession.nominate", "succession.devplans.read", "succession.devplans.manage", "succession.self",
+            // Recruitment, narrowly (owner decision 2026-11-16): raise requisitions for their own department, and give feedback on the
+            // interviews they are named on. Not recruitment.read/write: no candidate lists, offers or hiring. Existing tenants: migration
+            // GrantManagerHrOfficerRecruitment.
+            "recruitment.requisition.raise", "recruitment.interview.feedback"
         }), 10, true, cancellationToken);
 
         // Level 11 — Supervisor: front-line supervision
@@ -451,6 +474,7 @@ public class AuthSeeder : IAuthSeeder
             ("overtime.read", "Overtime", "Read overtime requests"),
             ("overtime.write", "Overtime", "Submit overtime requests"),
             ("overtime.approve", "Overtime", "Approve or reject overtime requests"),
+            ("overtime.file_for_team", "Overtime", "File overtime for a member of your own team, when the company allows line managers to"),
             ("overtime.policy_manage", "Overtime", "Manage overtime types and policies"),
             // Payroll
             ("payroll.read", "Payroll", "Read payroll runs and slips"),
@@ -479,6 +503,9 @@ public class AuthSeeder : IAuthSeeder
             // Release A — benefits by grade and contract renewals (Admin via backfill; HR Director and HR Manager below)
             ("entitlements.read", "Entitlements", "Read benefits by grade and employee packages"),
             ("entitlements.manage", "Entitlements", "Set benefits by grade and freeze employee packages"),
+            // HR makes a benefit usage request, Finance decides it: a key of its own, so HR Manager (who holds payroll.approve) cannot approve what HR raised.
+            // Existing tenants: migration GrantBenefitUsageApprove (Finance roles), boot backfill (Admin).
+            ("benefits.usage.approve", "Entitlements", "Approve or reject benefit usage requests (Finance; never the requester or the employee it is for)"),
             ("contracts.renewal.read", "Contracts", "Read contract renewal cases and contract chains"),
             ("contracts.renewal.manage", "Contracts", "Run contract renewals: offers, Qiwa evidence and apply"),
             // Recruitment
@@ -486,6 +513,9 @@ public class AuthSeeder : IAuthSeeder
             ("recruitment.write", "Recruitment", "Manage recruitment pipeline"),
             ("recruitment.approve", "Recruitment", "Approve requisitions and offers"),
             ("recruitment.delete", "Recruitment", "Delete recruitment records"),
+            // Narrow keys for a line manager, who is not a recruiter: neither opens the pipeline, a candidate or an offer.
+            ("recruitment.requisition.raise", "Recruitment", "Raise and submit your own manpower requisitions for your own department"),
+            ("recruitment.interview.feedback", "Recruitment", "See and give feedback on the interviews you are assigned to"),
             // Performance
             ("performance.read", "Performance", "Read appraisal and performance data"),
             ("performance.write", "Performance", "Create and update performance reviews"),
@@ -541,6 +571,10 @@ public class AuthSeeder : IAuthSeeder
             ("shifts.manage", "Shifts", "Manage shift definitions and policies"),
             // QIWA (Saudi workforce platform)
             ("qiwa.configure", "QIWA", "Configure QIWA establishment credentials and connection"),
+            // Government and bank integration credentials (GovernmentCredentialsController). Held by NO built-in role, Admin
+            // included (AdminWithheldPermissions): the tenant gives it to a named person deliberately. Save, rotate and remove
+            // also need a fresh step-up, and nothing is stored until the server's field-encryption key wrapping is on.
+            ("gov.credentials.manage", "Government", "Save, rotate and remove the credentials KynexOne uses to connect to government and bank services (never shown back)"),
             ("qiwa.sync", "QIWA", "Trigger and manage QIWA employee sync operations"),
             ("qiwa.read", "QIWA", "View QIWA connection status and sync logs"),
             // Finance — GL configuration (Phase 2)

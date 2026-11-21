@@ -690,9 +690,11 @@ public class ReportsController : ControllerBase
         var q = _db.OvertimeRequests
             .Where(x => x.TenantId == tid && x.Status == "Approved" && x.WorkDate >= from && x.WorkDate <= to);
         if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
+        // The APPROVED minutes, which payroll pays: HR may approve fewer than were requested, and summing the request
+        // overstated every trimmed one. Grouped by employee, not display name, so two people who share a name stay two rows.
         return await q
-            .GroupBy(x => x.EmployeeName)
-            .Select(g => new { Employee = g.Key, TotalHours = g.Sum(x => x.RequestedMinutes) / 60.0, Count = g.Count() })
+            .GroupBy(x => new { x.EmployeeId, x.EmployeeName })
+            .Select(g => new { g.Key.EmployeeId, Employee = g.Key.EmployeeName, TotalHours = g.Sum(x => x.ApprovedMinutes) / 60.0, Count = g.Count() })
             .OrderByDescending(x => x.TotalHours).ToListAsync(ct);
     }
 
@@ -922,12 +924,32 @@ public class ReportsController : ControllerBase
 
     private async Task<object> RunLoanBalance(Guid tid, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
+        // Every open loan, Overdue included (still owed, still in 1400), each with its status and currency so a book in several
+        // currencies is never read as one total.
         var q = _db.EmployeeLoans
-            .Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active");
+            .Where(x => x.TenantId == tid && !x.IsDeleted && (x.Status == "Active" || x.Status == "Overdue"));
         if (employeeIds is not null) q = q.Where(x => x.EmployeeIntId.HasValue && employeeIds.Contains(x.EmployeeIntId.Value));
-        return await q
-            .Select(x => new { x.EmployeeName, x.LoanNumber, x.LoanTypeName, x.ApprovedAmount, x.TotalRepaid, x.OutstandingBalance, x.RepaymentStartDate })
+        var rows = await q
+            .Select(x => new { x.EmployeeName, x.LoanNumber, x.LoanTypeName, x.Status, x.Currency, x.CompanyId, x.ApprovedAmount, x.TotalRepaid, x.OutstandingBalance, x.RepaymentStartDate })
             .OrderByDescending(x => x.OutstandingBalance).ToListAsync(ct);
+        var currencies = await LoanCurrencyLookupAsync(tid, rows.Select(r => r.CompanyId), ct);
+        return rows.Select(x => new
+        {
+            x.EmployeeName, x.LoanNumber, x.LoanTypeName, x.Status,
+            Currency = string.IsNullOrWhiteSpace(x.Currency) ? currencies.GetValueOrDefault(x.CompanyId ?? Guid.Empty) : x.Currency,
+            x.ApprovedAmount, x.TotalRepaid, x.OutstandingBalance, x.RepaymentStartDate,
+        }).ToList();
+    }
+
+    /// <summary>A loan with no currency of its own (written before loans carried one) is in its company's currency, or the
+    /// tenant's when it has no company.</summary>
+    private async Task<Dictionary<Guid, string>> LoanCurrencyLookupAsync(Guid tid, IEnumerable<Guid?> companyIds, CancellationToken ct)
+    {
+        var ids = companyIds.Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToList();
+        var map = ids.Count == 0 ? new Dictionary<Guid, string>() : await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tid && ids.Contains(c.Id)).ToDictionaryAsync(c => c.Id, c => c.DefaultCurrency, ct);
+        map[Guid.Empty] = await _db.ResolveTenantCurrencyAsync(tid, ct);
+        return map;
     }
 
     private async Task<object> RunAdvanceReport(Guid tid, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)

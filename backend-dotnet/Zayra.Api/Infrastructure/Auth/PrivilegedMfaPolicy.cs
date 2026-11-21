@@ -86,6 +86,9 @@ public static class PrivilegedMfaPolicy
         // Read-only views.
         "dashboard.read", "employees.read", "organization.read", "attendance.read", "leave.read",
         "overtime.read", "payroll.rates.read", "loans.read", "recruitment.read",
+        // A line manager's own requisitions and the interviews they are named on: scoped to their own department and panels, no candidate,
+        // offer or hiring access, so not privileged (the role would otherwise be pushed into two-factor).
+        "recruitment.requisition.raise", "recruitment.interview.feedback",
         "performance.read", "compliance.read", "manager.read", "approvals.read", "reports.read",
         "notifications.read", "localization.read", "shifts.read", "qiwa.read", "audit.read",
         "finance.gl.read", "ai.query", "ai.insights_view",
@@ -98,6 +101,8 @@ public static class PrivilegedMfaPolicy
         "succession.read", "succession.self", "succession.nominate", "succession.devplans.read", "succession.devplans.manage",
         // A line manager's decisions on their own reporting line (data-scoped, approval-routed).
         "manager.approve", "approvals.write", "approvals.decide", "leave.approve", "overtime.approve",
+ // A line manager files overtime for own team only (reporting-line scoped, company can switch it off).
+ "overtime.file_for_team",
         "performance.write",
         // CMP: a line manager plans merit for their own direct reports only (reporting-line scoped, approval-routed).
         "compensation.plan",
@@ -124,6 +129,8 @@ public static class PrivilegedMfaPolicy
         "payroll.structure_manage", "payroll.rules.manage", "payroll.rates.manage", "payroll.rates.statutory_override",
         ReportAccessPolicy.SensitivePermission, // employees.sensitive — salary, IBAN, identity fields
         "loans.write", "loans.approve", "loans.policy_manage",
+        // Deciding a benefit usage request (Finance approves what HR requested): a money-adjacent decision, classified like loans.approve.
+        "benefits.usage.approve",
         "finance.gl.manage", "finance.gl.export", "finance.gl.drivers.manage", "finance.gl.drivers.author_predicates", "finance.erp.confirm",
         "finance.opening_balances.import", // posts opening journals to the receivables
         "finance.gl.period.reopen", // un-freezes closed books
@@ -138,6 +145,8 @@ public static class PrivilegedMfaPolicy
         "organization.costcenter.manage",
         "leave.policy_manage", "leave.cancel", "overtime.policy_manage", "attendance.policy_manage", "notifications.manage", "localization.manage",
         "shifts.write", "shifts.manage", "qiwa.configure", "qiwa.sync",
+        // Government and bank integration credentials: a bank credential can move money.
+        "gov.credentials.manage",
         // Attendance that drives pay.
         "attendance.write", "attendance.delete", "attendance.bulk_import", "attendance.lock",
         // Selfie attendance: opening an employee's stored face image (sensitive personal data under the PDPL).

@@ -13,6 +13,7 @@ using Zayra.Api.Models;
 
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Common;
+using Zayra.Api.Infrastructure.Performance;
 
 namespace Zayra.Api.Controllers.Performance;
 
@@ -107,10 +108,13 @@ public class ReviewsController : ControllerBase
             .OrderByDescending(r => r.CreatedAtUtc)
             .Skip((page - 1) * pageSize).Take(pageSize)
             .ToListAsync(ct);
-        // The same redaction as GET /{id}: the manager's and HR's notes are for the rating-approver tier.
-        // (AsNoTracking rows — nothing here is written back.)
+        // The same redaction as GET /{id}: the manager's and HR's notes are for the rating-approver tier, and the
+        // employee's own row carries no unpublished result. (AsNoTracking rows — nothing here is written back.)
         if (!HasPermission(RatingApproverPermission))
             foreach (var item in items) { item.ManagerNotes = string.Empty; item.HrNotes = string.Empty; }
+        var callerEmployeeId = await OwnEmployeeIdAsync(scope, tenantId, ct);
+        foreach (var item in items.Where(i => callerEmployeeId is int me && i.EmployeeId == me))
+            WithholdFromSubject(item);
         return Ok(new { items, total, page, pageSize });
     }
 
@@ -161,6 +165,8 @@ public class ReviewsController : ControllerBase
             .Where(a => a.TenantId == tenantId && a.ReviewId == id)
             .FirstOrDefaultAsync(ct);
 
+        var goalKpi = await GoalKpi.ForReviewAsync(_db, tenantId, review.EmployeeId, review.CycleId, ct);
+
         // GAP 7: the manager's and HR's notes, and anonymous 360 feedback, are for the rating approver
         // tier only. Everyone else gets the review with the notes blanked and anonymous entries removed.
         var canViewSensitive = HasPermission(RatingApproverPermission);
@@ -168,13 +174,37 @@ public class ReviewsController : ControllerBase
         {
             review.ManagerNotes = string.Empty;
             review.HrNotes = string.Empty;
+            // The audit trail stays readable (who did what, when), but its Reason is the reviewers' text: the
+            // manager review logs the manager's notes and an HR correction its reason (HR's notes) there.
+            foreach (var entry in auditLog) entry.Reason = string.Empty;
         }
         // 360 feedback goes through the ONE projection FeedbackController.List360 also uses, so the two
         // endpoints cannot disagree: anonymous entries only for the approver tier, never with an author or
         // a timestamp, and roles hidden when any anonymous role group is small (Feedback360View).
         var feedback = Feedback360View.Project(feedback360, canViewSensitive);
 
-        return Ok(new { review, template, breakdown, competencies, goals, feedback360 = feedback, auditLog, calibration, appeal });
+        // THE EMPLOYEE THE REVIEW IS ABOUT, whatever their tier. Before HR publishes, the scores, the rating, the
+        // calibration and the 360 input are the reviewers' working material; the employee sees their own
+        // self-assessment and the stage. After publication they see the result and its breakdown. The reviewers'
+        // narrative and HR's calibration reasoning are never theirs (unchanged for the notes; now also the
+        // calibration notes and record, and the Reason of every audit row).
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (await OwnEmployeeIdAsync(scope, tenantId, ct) == review.EmployeeId)
+        {
+            var released = WithholdFromSubject(review);
+            calibration = null;
+            // The trail shows them what happened and when; the values and reasons in it (scores before and after a
+            // manager review, a calibration or a correction) are the reviewers' working record.
+            foreach (var entry in auditLog) { entry.Reason = string.Empty; entry.OldValue = string.Empty; entry.NewValue = string.Empty; }
+            if (!released)
+            {
+                breakdown = [];
+                feedback = [];
+                foreach (var c in competencies) { c.ManagerRating = 0m; c.ManagerComments = string.Empty; }
+            }
+        }
+
+        return Ok(new { review, template, breakdown, competencies, goals, feedback360 = feedback, auditLog, calibration, appeal, goalKpi });
     }
 
     // ── Self-assessment ────────────────────────────────────────────────────────
@@ -210,6 +240,8 @@ public class ReviewsController : ControllerBase
             .FirstOrDefaultAsync(c => c.Id == review.CycleId && c.TenantId == tenantId, ct);
         if (cycle is not null && cycle.Status is not ("Active" or "InReview"))
             return BadRequest(new { message = $"Performance cycle is in '{cycle.Status}' status. Self-assessment requires an Active or InReview cycle." });
+        if (ScoreRangeRefusal(("KPI", req.KpiScore), ("Competency", req.CompetencyScore), ("Productivity", req.ProductivityScore)) is { } outOfRange)
+            return outOfRange;
 
         var old = review.SelfAssessmentNotes;
         review.SelfAssessmentNotes         = req.Notes;
@@ -294,9 +326,27 @@ public class ReviewsController : ControllerBase
         if (cycle is not null && cycle.Status is not ("InReview" or "Active" or "Calibration"))
             return BadRequest(new { message = $"Performance cycle is in '{cycle.Status}' status. Manager review requires the cycle to be InReview or Active." });
 
+        if (ScoreRangeRefusal(("KPI", req.KpiScore), ("Competency", req.CompetencyScore), ("Attendance", req.AttendanceScore),
+                ("Productivity", req.ProductivityScore), ("Feedback", req.FeedbackScore), ("Discipline", req.DisciplineScore)) is { } outOfRange)
+            return outOfRange;
+
+        // KPI GOALS FEED THE KPI SCORE. When the employee has agreed (approved, not cancelled) goals in this cycle, the
+        // KPI score is their weighted achievement and the weights must make up the whole scorecard. A typed number
+        // beside them was never compared with them. No goals in the cycle: the reviewer's KPI score stands.
+        var goalKpi = await GoalKpi.ForReviewAsync(_db, tenantId, review.EmployeeId, review.CycleId, ct);
+        if (goalKpi is not null && goalKpi.TotalWeight != 100m)
+            return Conflict(new
+            {
+                error = "goal_weights_not_100",
+                message = $"This employee's agreed goals in the cycle carry {goalKpi.TotalWeight:0.##}% of the scorecard. Their weights must " +
+                          "total 100% before the review can be submitted: change a goal's weight, or approve or cancel a goal.",
+                totalWeight = goalKpi.TotalWeight,
+                goalCount = goalKpi.GoalCount,
+            });
+
         var oldScore = review.FinalScore.ToString("F2");
 
-        review.KpiScore          = req.KpiScore;
+        review.KpiScore          = goalKpi?.KpiScore ?? req.KpiScore;
         review.CompetencyScore   = req.CompetencyScore;
         review.AttendanceScore   = req.AttendanceScore;
         review.ProductivityScore = req.ProductivityScore;
@@ -361,6 +411,23 @@ public class ReviewsController : ControllerBase
             return BadRequest(SubjectDecisionBar.Refusal("You cannot change the score of your own appraisal. Ask another HR administrator."));
         if (string.IsNullOrWhiteSpace(req.Reason))
             return BadRequest(new { message = "A reason is required for any score override." });
+        if (ScoreRangeRefusal(("KPI", req.KpiScore), ("Competency", req.CompetencyScore), ("Attendance", req.AttendanceScore),
+                ("Productivity", req.ProductivityScore), ("Feedback", req.FeedbackScore), ("Discipline", req.DisciplineScore)) is { } outOfRange)
+            return outOfRange;
+        // A correction needs a manager result to correct, and an open appeal is decided first (its decision is what
+        // moves the review). After publication a correction WITHDRAWS the result: it goes back to Final Approval, HR
+        // publishes it again and the employee acknowledges the corrected result. It used to change the score of an
+        // acknowledged review silently, with nothing re-issued.
+        if (review.Status is not ("ManagerReviewComplete" or "Calibration" or "FinalApproval" or "Published" or "Acknowledged"))
+            return Conflict(new
+            {
+                error = "review_not_correctable",
+                message = review.Status == "Appealed"
+                    ? "This review is under appeal. Decide the appeal first; an upheld appeal returns it to Final Approval for correction."
+                    : $"There is no manager result to correct yet (the review is {review.Status}).",
+                status = review.Status,
+            });
+        var withdrawn = review.Status is "Published" or "Acknowledged" ? review.Status : null;
 
         var old = $"KPI:{review.KpiScore},Comp:{review.CompetencyScore},Att:{review.AttendanceScore}," +
                   $"Prod:{review.ProductivityScore},FB:{review.FeedbackScore},Disc:{review.DisciplineScore}";
@@ -373,11 +440,15 @@ public class ReviewsController : ControllerBase
         review.DisciplineScore   = req.DisciplineScore   ?? review.DisciplineScore;
         review.HrNotes           = (review.HrNotes + "\n" + req.Reason).Trim();
         review.UpdatedAtUtc      = DateTime.UtcNow;
+        if (withdrawn is not null) review.Status = "FinalApproval";
 
         var newScore = await _svc.CalculateAndSaveFinalScoreAsync(tenantId, id, ct);
 
         await _svc.LogAuditAsync(tenantId, "AppraisalReview", id.ToString(),
             "ScoreOverride", old, $"FinalScore:{newScore}", req.Reason, userId, "HR", ct);
+        if (withdrawn is not null)
+            await _svc.LogAuditAsync(tenantId, "AppraisalReview", id.ToString(),
+                "WithdrawnForCorrection", withdrawn, "FinalApproval", req.Reason, userId, "HR", ct);
 
         return Ok(review);
     }
@@ -641,6 +712,117 @@ public class ReviewsController : ControllerBase
         return Ok(new { attendanceScore = score });
     }
 
+    // ── HR: waive a self-assessment, exclude from the cycle ─────────────────────────
+
+    /// <summary>
+    /// HR opens the manager review without the employee's self-assessment (long absence, no system access), with a
+    /// written reason in the review's audit trail. Without it one employee who never submits held the whole cycle at
+    /// Active: the cycle advances only when every review has completed manager review.
+    /// </summary>
+    [HttpPost("{id:guid}/waive-self-assessment")]
+    [HasPermission(PerformancePermissions.Approve)]
+    public async Task<IActionResult> WaiveSelfAssessment(Guid id, [FromBody] ReasonRequest req, CancellationToken ct)
+    {
+        if (!HasPermission(RatingApproverPermission)) return Forbid();
+        var tenantId = this.GetTenantId()!.Value;
+        var userId   = this.GetUserId();
+        var review = await _scopeService.FindInScopeAsync(User, tenantId,
+            _db.AppraisalReviews.Where(r => r.Id == id && r.TenantId == tenantId), r => r.EmployeeId, ct);
+        if (review is null) return NotFound();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, review.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("You cannot waive the self-assessment of your own appraisal. Ask another HR administrator."));
+        if (string.IsNullOrWhiteSpace(req?.Reason))
+            return BadRequest(new { error = "reason_required", message = "Write why the self-assessment is waived. The reason is kept in the review's audit trail." });
+        if (review.Status != "SelfAssessmentDue")
+            return Conflict(new { error = "self_assessment_not_outstanding", message = $"Only an outstanding self-assessment can be waived (the review is {review.Status}).", status = review.Status });
+
+        review.Status       = "ManagerReview";
+        review.UpdatedAtUtc = DateTime.UtcNow;
+        await _svc.LogAuditAsync(tenantId, "AppraisalReview", id.ToString(),
+            "SelfAssessmentWaived", "SelfAssessmentDue", "ManagerReview", req.Reason.Trim(), userId, CallerName("HR"), ct);
+        return Ok(review);
+    }
+
+    /// <summary>
+    /// HR takes an unpublished review out of its cycle (a leaver, a wrong enrolment), with a written reason in the audit
+    /// trail. The cycle then advances without it, and the employee has no rating from this cycle (FinalRatingRule:
+    /// an excluded review is never final). A published result is not excluded: it is corrected or appealed.
+    /// </summary>
+    [HttpPost("{id:guid}/exclude")]
+    [HasPermission(PerformancePermissions.Approve)]
+    public async Task<IActionResult> Exclude(Guid id, [FromBody] ReasonRequest req, CancellationToken ct)
+    {
+        if (!HasPermission(RatingApproverPermission)) return Forbid();
+        var tenantId = this.GetTenantId()!.Value;
+        var userId   = this.GetUserId();
+        var review = await _scopeService.FindInScopeAsync(User, tenantId,
+            _db.AppraisalReviews.Where(r => r.Id == id && r.TenantId == tenantId), r => r.EmployeeId, ct);
+        if (review is null) return NotFound();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, review.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("You cannot exclude your own appraisal. Ask another HR administrator."));
+        if (string.IsNullOrWhiteSpace(req?.Reason))
+            return BadRequest(new { error = "reason_required", message = "Write why the employee is excluded from this cycle. The reason is kept in the review's audit trail." });
+        if (review.Status is not ("Pending" or "SelfAssessmentDue" or "SelfAssessmentSubmitted" or "ManagerReview" or "ManagerReviewComplete" or "Calibration"))
+            return Conflict(new { error = "review_not_excludable", message = $"Only a review that has not reached Final Approval can be excluded (the review is {review.Status}).", status = review.Status });
+
+        var oldStatus = review.Status;
+        review.Status       = ExcludedStatus;
+        review.UpdatedAtUtc = DateTime.UtcNow;
+        var enrolment = await _db.PerformanceCycleEmployees
+            .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.CycleId == review.CycleId && e.EmployeeId == review.EmployeeId, ct);
+        if (enrolment is not null) enrolment.Status = ExcludedStatus;
+        await _svc.LogAuditAsync(tenantId, "AppraisalReview", id.ToString(),
+            "ExcludedFromCycle", oldStatus, ExcludedStatus, req.Reason.Trim(), userId, CallerName("HR"), ct);
+        return Ok(review);
+    }
+
+    /// <summary>The status of a review (and enrolment) HR took out of its cycle.</summary>
+    public const string ExcludedStatus = "Excluded";
+
+    // ── What the employee a review is about may read ────────────────────────────
+
+    /// <summary>Review statuses at which the result has been issued to the employee.</summary>
+    public static readonly string[] ResultReleasedStatuses = ["Published", "Acknowledged", "Appealed", "Closed"];
+
+    /// <summary>Statuses in which the scores on the review are still the employee's own self-assessment (or none).</summary>
+    private static readonly string[] SelfStageStatuses = ["Pending", "SelfAssessmentDue", "SelfAssessmentSubmitted"];
+
+    /// <summary>
+    /// Blanks, on a no-tracking copy, what the employee the review is about does not read: always the reviewers'
+    /// narrative and HR's calibration reasoning; and, until the result is issued (after their own self-assessment
+    /// stage), every score, the rating and the calibration adjustment. Returns whether the result is issued.
+    /// </summary>
+    private static bool WithholdFromSubject(AppraisalReview review)
+    {
+        review.ManagerNotes = string.Empty;
+        review.HrNotes = string.Empty;
+        review.CalibrationNotes = string.Empty;
+        var released = ResultReleasedStatuses.Contains(review.Status);
+        if (!released && !SelfStageStatuses.Contains(review.Status))
+        {
+            review.KpiScore = 0m; review.CompetencyScore = 0m; review.AttendanceScore = 0m;
+            review.ProductivityScore = 0m; review.FeedbackScore = 0m; review.DisciplineScore = 0m;
+            review.FinalScore = 0m; review.FinalRating = string.Empty; review.CalibrationAdjustment = 0m;
+        }
+        return released;
+    }
+
+    /// <summary>A 400 naming the first component score outside 0-100, or null when all are in range (absent = not given).</summary>
+    private BadRequestObjectResult? ScoreRangeRefusal(params (string Name, decimal? Value)[] scores)
+    {
+        foreach (var (name, value) in scores)
+            if (value is decimal v && (v < 0m || v > 100m))
+                return BadRequest(new
+                {
+                    error = "score_out_of_range",
+                    message = $"The {name} score must be between 0 and 100 (received {v:0.##}).",
+                    component = name,
+                });
+        return null;
+    }
+
+    private string CallerName(string fallback) => User.FindFirst("FullName")?.Value ?? User.Identity?.Name ?? fallback;
+
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
 
@@ -679,5 +861,7 @@ public record ScoreOverrideRequest(
     string Reason);
 
 public record AppealRequest(string AppealReason, string? Justification);
+
+public record ReasonRequest(string Reason);
 
 public record AppealResponseRequest(string Decision, string Response);

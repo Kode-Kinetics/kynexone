@@ -197,6 +197,14 @@
       "disposition": "covered-by-chromium",
       "reason": "Route-mocked launch-hiring forms spec (e2e/launch-hiring-forms.spec.ts): catalogue pickers, opening from requisition, offer suggestion and grade-band warning, stage-gate reason, EN and AR; also collected by the root chromium project on PRs, this config is the focused fast run."
     },
+    "playwright.ess-jobs.config.ts": {
+      "disposition": "covered-by-chromium",
+      "reason": "Route-mocked Self-Service Open positions spec (e2e/ess-jobs.spec.ts): list, search, paging, detail panel, empty, error and unlinked states at desktop and phone, EN and AR; also collected by the root chromium project on PRs, this config is the focused fast run."
+    },
+    "playwright.recruitment-fixes.config.ts": {
+      "disposition": "covered-by-chromium",
+      "reason": "Route-mocked recruitment walkthrough fixes (e2e/recruitment-fixes-A|B|C.spec.ts): phone tables, dialogs, requisition reject and resubmit, pipeline blacklist and duplicate handling, interview and offer screens, EN and AR at desktop and phone; also collected by the root chromium project on PRs, this config is the focused fast run."
+    },
     "playwright.recruitment-demo.config.ts": {
       "disposition": "covered-by-chromium",
       "reason": "Route-mocked recruitment drawer, offers, interviews and onboarding display spec (e2e/recruitment-demo-ux.spec.ts) at desktop and phone, EN and AR; also collected by the root chromium project on PRs, this config is the focused fast run."

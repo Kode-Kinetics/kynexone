@@ -840,3 +840,12 @@ textarea:focus-visible {
   --wg-hero-deep: #041f27;
   --wg-hero-shadow: rgba(0, 0, 0, 0.6);
 }
+
+/* A step's sticky action bar sits above the phone's bottom tab bar: the assistant button moves above both so it never covers the primary. */
+@media (max-width: 639.98px) {
+  /* Above the bar it still covered the step's content (counters, cards): on a phone, a screen with a step action bar hides it. */
+  html[data-has-action-bar] [data-assistant-launcher] { display: none; }
+}
+
+/* Content scrolled or tabbed into view stops 16px above a step's action bar, at every width (the bar measures what it covers). */
+html[data-has-action-bar] { scroll-padding-bottom: calc(var(--action-bar-cover, 6rem) + 16px); }

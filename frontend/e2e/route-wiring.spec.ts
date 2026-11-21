@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import * as ts from 'typescript';
 import { FRONTEND_ROOT, HOLE, REPO_ROOT, lineOf, literalsOf, parseSource, rel, walkSource } from './source-scan';
@@ -106,12 +107,16 @@ function frontendLinks(): Link[] {
 // ── Links the server supplies ───────────────────────────────────────────────
 
 const TOP_LEVEL = new Set(PATTERNS.map(p => p[0]).filter(Boolean));
-function serverLinks(): Link[] {
+// Outbound API clients (the backend calling a bank's HTTP API): their "/payroll/v2" literals are the bank's URL paths, never links
+// the server hands the UI. Only this folder is skipped; the ANB client folder is the one outbound client folder that exists.
+const OUTBOUND_API_DIRS = ['Infrastructure/Payroll/SaudiBankExports/Api'];
+function serverLinks(root = path.join(REPO_ROOT, 'backend-dotnet/Zayra.Api')): Link[] {
   const links: Link[] = [];
   const visit = (dir: string) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (['bin', 'obj', 'Migrations'].includes(entry.name)) continue;
       const full = path.join(dir, entry.name);
+      if (entry.isDirectory() && OUTBOUND_API_DIRS.includes(path.relative(root, full).replaceAll('\\', '/'))) continue;
       if (entry.isDirectory()) visit(full);
       else if (entry.name.endsWith('.cs')) {
         const lines = fs.readFileSync(full, 'utf8').split('\n');
@@ -125,7 +130,7 @@ function serverLinks(): Link[] {
       }
     }
   };
-  visit(path.join(REPO_ROOT, 'backend-dotnet/Zayra.Api'));
+  visit(root);
   return links;
 }
 
@@ -174,6 +179,27 @@ test('server-supplied links resolve to a page, and to a People filter the page u
     else if (pathname === '/people') for (const k of keys) if (!allowed.has(k)) bad.push(`${show(l)} -> ${resolved}: the People list ignores "${k}"`);
   }
   expect(bad).toEqual([]);
+});
+
+test('an outbound bank-API client is not a server-supplied UI link, but a UI link in any other file still is', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'route-wiring-'));
+  try {
+    const api = path.join(tmp, 'Infrastructure/Payroll/SaudiBankExports/Api');
+    const ctl = path.join(tmp, 'Controllers');
+    fs.mkdirSync(api, { recursive: true });
+    fs.mkdirSync(ctl, { recursive: true });
+    fs.writeFileSync(path.join(api, 'Client.cs'), 'var u = endpoint.Url("/payroll/v2");\nvar w = $"/payroll/{id}/WPS";\n');
+    fs.writeFileSync(path.join(ctl, 'Thing.cs'), 'var link = "/payroll/v2";\n');
+    const found = serverLinks(tmp).map(l => `${l.file.split('/').pop()}:${l.href}`);
+    expect(found, 'the outbound client is skipped').not.toContain('Client.cs:/payroll/v2');
+    expect(found.some(f => f.startsWith('Client.cs')), 'nothing in the outbound client folder is scanned').toBe(false);
+    expect(found, 'a link in any other file is still scanned').toContain('Thing.cs:/payroll/v2');
+    // The exclusion is exactly the outbound API client folder: the real scan reads no path from it.
+    expect(serverLinks().some(l => l.file.includes('SaudiBankExports/Api/'))).toBe(false);
+    expect(OUTBOUND_API_DIRS).toEqual(['Infrastructure/Payroll/SaudiBankExports/Api']);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('server-supplied People links carry NO readiness or gap filter until the backend exposes ?gap=', () => {

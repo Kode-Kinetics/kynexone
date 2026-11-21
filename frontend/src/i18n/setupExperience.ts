@@ -53,6 +53,8 @@ const ar: Record<string, string> = {
   'No country rules yet': 'لا توجد قواعد دول بعد',
   'No audit log entries yet': 'لا توجد إدخالات في سجل التدقيق بعد',
   'Setup sections': 'أقسام الإعداد',
+  'Collapse all groups': 'طيّ كل المجموعات',
+  'Expand all groups': 'توسيع كل المجموعات',
   'Setup section': 'قسم الإعداد',
   'All sections': 'كل الأقسام',
   'Setup tools': 'أدوات الإعداد',

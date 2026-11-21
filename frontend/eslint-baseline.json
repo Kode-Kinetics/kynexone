@@ -209,11 +209,6 @@
  "src/views/ComplianceProfilesPage.tsx": {
   "react-hooks/exhaustive-deps": 1
  },
- "src/views/EmployeeSelfServicePage.tsx": {
-  "@next/next/no-img-element": 1,
-  "react-hooks/exhaustive-deps": 1,
-  "react-hooks/rules-of-hooks": 1
- },
  "src/views/EmployeesPage.tsx": {
   "@typescript-eslint/no-unused-vars": 41
  },
@@ -247,7 +242,7 @@
   "react-hooks/exhaustive-deps": 3
  },
  "src/views/PayrollPage.tsx": {
-  "@typescript-eslint/no-unused-vars": 2,
+  "@typescript-eslint/no-unused-vars": 1,
   "react-hooks/exhaustive-deps": 2
  },
  "src/views/PerformancePage.tsx": {
@@ -258,8 +253,6 @@
  },
  "src/views/RecruitmentPage.tsx": {
   "@typescript-eslint/no-unused-vars": 8,
-  "jsx-a11y/click-events-have-key-events": 1,
-  "jsx-a11y/no-static-element-interactions": 1,
   "react-hooks/exhaustive-deps": 11
  },
  "src/views/ReportsPage.tsx": {

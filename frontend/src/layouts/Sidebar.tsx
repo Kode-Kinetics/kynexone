@@ -32,6 +32,9 @@ function pathIsActive(pathname: string | null, path: string | undefined, allPath
   return false;
 }
 
+/** The section that stays open and has no collapse control (see toggleGroup). */
+const ALWAYS_OPEN_GROUP = 'Overview';
+
 export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, navigationRestoreTarget }: SidebarProps) {
   const router = useRouter();
   const navigationGuard = useNavigationGuard();
@@ -102,18 +105,18 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
   // Keep the overview shortcuts and the current work area open. One work area at a time keeps
   // every section header visible on laptop screens instead of turning the sidebar into a long page.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
-    () => new Set(['Overview', ...(activeGroupLabel ? [activeGroupLabel] : [])]),
+    () => new Set([ALWAYS_OPEN_GROUP, ...(activeGroupLabel ? [activeGroupLabel] : [])]),
   );
 
   useEffect(() => {
     if (!activeGroupLabel) return;
-    setExpandedGroups(new Set(['Overview', activeGroupLabel]));
+    setExpandedGroups(new Set([ALWAYS_OPEN_GROUP, activeGroupLabel]));
   }, [activeGroupLabel]);
 
   const toggleGroup = (label: string) => {
     setExpandedGroups((prev) => {
-      if (label === 'Overview') return prev;
-      const next = new Set(['Overview']);
+      if (label === ALWAYS_OPEN_GROUP) return prev;
+      const next = new Set([ALWAYS_OPEN_GROUP]);
       if (!prev.has(label)) next.add(label);
       return next;
     });
@@ -222,18 +225,35 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
             const isExpanded = expandedGroups.has(group.label);
             const hasActiveItem = visibleItems.some((item) => isActive(item.path));
             const groupId = `sidebar-group-${group.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+            // The always-open group has nothing to toggle, so its header is a label, not a button that does nothing.
+            const collapsible = group.label !== ALWAYS_OPEN_GROUP;
 
             return (
               <div key={group.label} className={gi > 0 ? 'mt-1' : ''}>
 
                 {/* ── Group header ── */}
-                {!isCollapsed ? (
+                {!collapsible ? (
+                  isCollapsed ? (
+                    <div className="mx-auto mb-1 grid h-4 w-9 place-items-center" aria-hidden="true">
+                      <span className={`block h-px w-5 ${hasActiveItem ? 'bg-sapphire/60 dark:bg-primary-fg/60' : 'bg-slate-300 dark:bg-white/15'}`} />
+                    </div>
+                  ) : (
+                    <p
+                      id={`${groupId}-label`}
+                      className={`mb-0.5 flex min-h-7 w-full items-center px-3 py-1 text-caption font-semibold uppercase tracking-[0.14em] rtl:text-body-sm rtl:normal-case rtl:tracking-normal ${
+                        hasActiveItem ? 'text-sapphire dark:text-primary-fg' : 'text-slate-400 dark:text-slate-600'
+                      }`}
+                    >
+                      {t(group.label)}
+                    </p>
+                  )
+                ) : !isCollapsed ? (
                   <button
                     type="button"
                     onClick={() => toggleGroup(group.label)}
                     aria-expanded={isExpanded}
                     aria-controls={groupId}
-                    className={`group/hdr mb-0.5 flex w-full items-center justify-between rounded-lg px-3 py-1 transition-all duration-150 ${
+                    className={`group/hdr mb-0.5 flex min-h-7 w-full items-center justify-between rounded-lg px-3 py-1 transition-all duration-150 ${
                       isExpanded
                         ? 'hover:bg-slate-100/70 dark:hover:bg-white/[0.04]'
                         : 'hover:bg-slate-100/70 dark:hover:bg-white/[0.04]'
@@ -264,15 +284,16 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                     aria-expanded={isExpanded}
                     aria-controls={groupId}
                     onClick={() => toggleGroup(group.label)}
-                    className={`mx-auto mb-1 grid h-7 w-9 place-items-center rounded-lg text-caption font-semibold uppercase tracking-wider transition rtl:normal-case rtl:tracking-normal ${hasActiveItem ? 'bg-sapphire/10 text-sapphire dark:text-primary-fg' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.06]'}`}
+                    className={`mx-auto mb-1 grid h-4 w-9 place-items-center rounded-lg transition hover:bg-slate-100 dark:hover:bg-white/[0.06]`}
                   >
-                    {group.label.split(/\s+/).map((word) => word[0]).join('').slice(0, 2)}
+                    {/* Folded: icons only. A group is a short rule (its name is the button's label and tooltip), never cut-off letters. */}
+                    <span aria-hidden="true" className={`block h-px w-5 ${hasActiveItem ? 'bg-sapphire/60 dark:bg-primary-fg/60' : 'bg-slate-300 dark:bg-white/15'}`} />
                   </button>
                 )}
 
                 {/* Closed sections leave the tab order; clipped controls previously remained focusable. */}
                 {isExpanded && (
-                  <div id={groupId} className="px-2 pb-1">
+                  <div id={groupId} className="px-2 pb-1" {...(!collapsible ? { role: 'group', 'aria-labelledby': `${groupId}-label` } : {})}>
                     <div className="space-y-px">
                       {visibleItems.map((item) => {
                         const Icon = item.icon;
@@ -289,6 +310,8 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                             onBlur={hideTip}
                             onClick={(event) => { hideTip(); handleNav(item.path, event.currentTarget); }}
                             aria-current={active ? 'page' : undefined}
+                            // Folded to icons the label is not drawn: it is still the item's accessible name (the hover/focus tip shows it).
+                            aria-label={isCollapsed ? t(item.label) : undefined}
                             className={`nav-item group ${active ? 'nav-item-active' : 'nav-item-idle'} ${
                               isCollapsed ? 'justify-center' : ''
                             } min-h-11 lg:min-h-8`}
@@ -350,7 +373,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                 type="button"
                 aria-label={t('Sign out')}
                 onClick={(event) => handleLogout(event.currentTarget)}
-                className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
               >
                 <LogOut className="h-3.5 w-3.5" />
               </button>
@@ -374,14 +397,14 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                     {user?.fullName ?? 'User'}
                   </p>
                   <p className="truncate text-caption text-slate-400 dark:text-slate-500">
-                    {primaryRole(user?.roles) ?? 'Member'}
+                    {t(primaryRole(user?.roles) ?? 'Member')}
                   </p>
                 </div>
                 <button
                   type="button"
                   aria-label={t('Sign out')}
                   onClick={(event) => handleLogout(event.currentTarget)}
-                  className="grid h-6 w-6 shrink-0 place-items-center rounded-lg text-slate-300 hover:bg-rose-50 hover:text-rose-500 dark:text-slate-600 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-300 hover:bg-rose-50 hover:text-rose-500 dark:text-slate-600 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
                 >
                   <LogOut className="h-3.5 w-3.5" />
                 </button>

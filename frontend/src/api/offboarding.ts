@@ -1,4 +1,5 @@
 import client from './client';
+import type { ExitDebt } from '../lib/exitDebts';
 
 export interface Offboarding {
   id: string;
@@ -91,6 +92,11 @@ export const offboardingApi = {
   /** S2-B2 — a settlement paid by bank transfer / cheque / cash. Posts the discharge journal. */
   recordExternalSettlementPayment: (id: string, body: { method: string; reference: string; amount: number; paidOn?: string }) =>
     client.post(`/api/offboarding/${id}/settlement/external-payment`, body).then(r => r.data),
+  /** Every loan and salary advance the leaver still owes (any repayment method; held loans flagged). 403 for an offboarding
+   *  reader who may not see loan balances (no loans.read, loans.write or payroll.approve): the card then leaves the section out. */
+  openDebts: (id: string) =>
+    client.get<{ items: ExitDebt[]; totalOutstanding: number | null; heldOutstanding: number | null; currencyCode: string | null }>(
+      `/api/offboarding/${id}/open-debts`).then(r => r.data),
   complete: (id: string) => client.post<Offboarding>(`/api/offboarding/${id}/complete`).then(r => r.data),
   cancel: (id: string, reason?: string) =>
     client.post<{ offboarding: Offboarding; accessRestored: boolean; backfillWithdrawn: boolean }>(
