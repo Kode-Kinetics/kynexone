@@ -19,6 +19,8 @@ export interface NavItem {
   hiddenWhenFeatureKey?: string;
   /** Show only for Group account tenants (multi-company). */
   groupAccountOnly?: boolean;
+  /** When listed, the entry shows only to someone holding one of these roles (the page's API admits only them). */
+  requiredRoles?: readonly string[];
   /** Shown only when Setup has a section this user may open (lib/setupAreas.ts setupHasEntries), not on a permission alone. */
   requiresSetupSection?: boolean;
 }

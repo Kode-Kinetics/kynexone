@@ -13,6 +13,7 @@ import { useCompany } from '../contexts/CompanyContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { useNavigationGuard } from '../contexts/NavigationGuardContext';
 import { primaryRole } from '../lib/primaryRole';
+import { navItemRoleAllowed } from '../lib/navRoles';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -39,7 +40,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
   const router = useRouter();
   const navigationGuard = useNavigationGuard();
   const pathname = usePathname();
-  const { user, logout, hasPermission } = useAuth();
+  const { user, logout, hasPermission, hasRole } = useAuth();
   const { isFeatureEnabled, verdictForPath } = useFeatureFlags();
   const canOpenSetup = useCanOpenSetup();
   const { t } = useLocale();
@@ -218,6 +219,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                 (!item.hiddenWhenFeatureKey || !isFeatureEnabled(item.hiddenWhenFeatureKey)) &&
                 (!item.path || verdictForPath(item.path).allowed) &&
                 (!item.groupAccountOnly || canSeeGroupItem) &&
+                navItemRoleAllowed(item.requiredRoles, hasRole) &&
                 (!item.requiresSetupSection || canOpenSetup),
             );
             if (visibleItems.length === 0) return null;
