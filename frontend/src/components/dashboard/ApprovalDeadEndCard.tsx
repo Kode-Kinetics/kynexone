@@ -44,13 +44,13 @@ export function ApprovalDeadEndCard({ companyId, canManage, onCreate }: {
   const create = 'btn-primary';
   return (
     <section aria-labelledby="dead-end-heading" data-testid="approval-dead-end"
-      className="min-w-0 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-amber-950 motion-safe:animate-fade-in-fast dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-100">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-3">
-          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
-          <div className="min-w-0">
-            <h2 id="dead-end-heading" className="text-base font-semibold">{t('Approval dead end')}</h2>
-            <p className="mt-0.5 text-sm">{t('{count, plural, one {No reviewer can approve # pay package.} other {No reviewer can approve # pay packages.}}', { count: view.count })}</p>
+      className="min-w-0 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-amber-950 motion-safe:animate-fade-in-fast dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-100">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
+          <div className="min-w-0 sm:flex sm:flex-wrap sm:items-baseline sm:gap-x-2">
+            <h2 id="dead-end-heading" className="text-sm font-semibold">{t('Approval dead end')}</h2>
+            <p className="text-sm">{t('{count, plural, one {No reviewer can approve # pay package.} other {No reviewer can approve # pay packages.}}', { count: view.count })}</p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -61,7 +61,7 @@ export function ApprovalDeadEndCard({ companyId, canManage, onCreate }: {
         </div>
       </div>
       {stranded.length > 0 && (
-        <div className="mt-3">
+        <div className="mt-2">
           <button type="button" aria-expanded={open} aria-controls={listId} onClick={() => setOpen(o => !o)}
             className={`inline-flex items-center gap-1 rounded text-sm font-semibold ${FOCUS_RING}`}>
             <ChevronDown className={`h-4 w-4 transition-transform motion-reduce:transition-none ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
