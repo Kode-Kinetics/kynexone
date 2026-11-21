@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import ts from 'typescript';
 import { LOCALE_DICTS } from '../src/i18n/translations';
-import { offerLetterArabic } from '../src/i18n/offerLetter';
+import { mergeFieldKey, offerLetterArabic } from '../src/i18n/offerLetter';
 
 /**
  * Two screens used to show English under Arabic (live crawl, HR Manager): /reports (section headings, chart titles, tab labels,
@@ -100,7 +100,7 @@ test('every merge field the offer-letter designer lists has an Arabic name', () 
   const block = /Tokens\s*=\s*\[([\s\S]*?)\];/.exec(cs)?.[1] ?? '';
   const tokens = [...block.matchAll(/"([a-z_]+)"/g)].map(m => m[1]);
   expect(tokens.length).toBeGreaterThan(20);
-  // The designer shows t(token.replaceAll('_', ' ')) through useOfferLetterT, which falls back to the app dictionary.
-  const missing = tokens.map(tok => tok.replaceAll('_', ' ')).filter(label => !(offerLetterArabic[label] ?? LOCALE_DICTS.ar[label]));
+  // The designer shows t(mergeFieldKey(token)) through useOfferLetterT, which falls back to the app dictionary.
+  const missing = tokens.map(mergeFieldKey).filter(label => !(offerLetterArabic[label] ?? LOCALE_DICTS.ar[label]));
   expect(missing, missing.join(', ')).toEqual([]);
 });

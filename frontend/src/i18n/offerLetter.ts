@@ -93,9 +93,9 @@ export const offerLetterArabic: Record<string, string> = {
   'basic salary': 'الراتب الأساسي', 'housing allowance': 'بدل السكن', 'transport allowance': 'بدل النقل', 'other allowances': 'بدلات أخرى',
   'gross salary': 'إجمالي الراتب', 'currency': 'العملة', 'probation months': 'أشهر التجربة', 'offer reference': 'مرجع العرض',
   // Merge fields the server adds for the Saudi default letter (OfferLetterDesign.Tokens); the designer lists each as t(token with spaces).
-  'probation period': 'مدة التجربة', 'work location': 'موقع العمل', 'contract term clause': 'بند مدة العقد',
-  'notice period employer': 'مدة إشعار صاحب العمل', 'notice period employee': 'مدة إشعار الموظف', 'gosi clause': 'بند GOSI',
-  'health residency clause': 'بند التأمين الصحي والإقامة', 'compensation lines': 'بنود الراتب والبدلات', 'probation clause': 'بند فترة التجربة',
+  'Probation period': 'مدة التجربة', 'Work location': 'موقع العمل', 'Contract term clause': 'بند مدة العقد',
+  'Notice period employer': 'مدة إشعار صاحب العمل', 'Notice period employee': 'مدة إشعار الموظف', 'GOSI clause': 'بند GOSI',
+  'Health residency clause': 'بند التأمين الصحي والإقامة', 'Compensation lines': 'بنود الراتب والبدلات', 'Probation clause': 'بند فترة التجربة',
   'Unsupported design version.': 'إصدار التصميم غير مدعوم.', 'Choose A4, Letter or Legal paper.': 'اختر ورق A4 أو Letter أو Legal.',
   'Choose left-to-right or right-to-left.': 'اختر اتجاه القراءة من اليسار أو من اليمين.',
   'Typography or page margins are outside the supported range.': 'إعدادات الخط أو هوامش الصفحة خارج النطاق المدعوم.',
@@ -136,4 +136,11 @@ export function useOfferLetterT() {
   const { locale, t } = useLocale();
   return (key: string, params: Record<string, string | number> = {}) =>
     locale === 'ar' && !offerLetterArabic[key] && !/^(Unknown merge field: |Text exceeds \d+ characters\.)/.test(key) ? t(key, params) : translateOfferLetter(locale, key, params);
+}
+
+/** The dictionary key for a merge field's name. Older fields keep their lower-case keys; newer ones use a capitalised key (a sentence start, not a fragment). */
+export function mergeFieldKey(token: string): string {
+  const base = token.replaceAll('_', ' ');
+  if (offerLetterArabic[base]) return base;
+  return (base.charAt(0).toUpperCase() + base.slice(1)).replace(/^Gosi\b/, 'GOSI');
 }

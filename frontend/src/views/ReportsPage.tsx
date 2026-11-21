@@ -459,7 +459,7 @@ function ReportLibrary() {
               <input type="date" value={filters.dateTo ?? ''} onChange={(e) => setFilters(x => ({ ...x, dateTo: e.target.value || undefined }))} className="input w-full" />
             </FormField>
             <FormField label={t('Status')}>
-              <input type="text" value={filters.status ?? ''} onChange={(e) => setFilters(x => ({ ...x, status: e.target.value || undefined }))} className="input w-full" placeholder={t('e.g. Active')} />
+              <input type="text" value={filters.status ?? ''} onChange={(e) => setFilters(x => ({ ...x, status: e.target.value || undefined }))} className="input w-full" placeholder={t('Example: Active')} />
             </FormField>
             <FormField label={t('Department')}>
               <input type="text" value={filters.department ?? ''} onChange={(e) => setFilters(x => ({ ...x, department: e.target.value || undefined }))} className="input w-full" placeholder={t('Optional')} />
@@ -468,7 +468,7 @@ function ReportLibrary() {
               <input type="text" value={filters.location ?? ''} onChange={(e) => setFilters(x => ({ ...x, location: e.target.value || undefined }))} className="input w-full" placeholder={t('Optional')} />
             </FormField>
             <FormField label={t('Period')}>
-              <input type="text" value={filters.period ?? ''} onChange={(e) => setFilters(x => ({ ...x, period: e.target.value || undefined }))} className="input w-full" placeholder={t('e.g. 2025-01')} />
+              <input type="text" value={filters.period ?? ''} onChange={(e) => setFilters(x => ({ ...x, period: e.target.value || undefined }))} className="input w-full" placeholder={t('Example: 2025-01')} />
             </FormField>
             <FormField label={t('Days Ahead')}>
               <input type="number" value={filters.daysAhead ?? ''} onChange={(e) => setFilters(x => ({ ...x, daysAhead: e.target.value ? Number(e.target.value) : undefined }))} className="input w-full" placeholder="30" />
