@@ -521,8 +521,8 @@
       "hardcoded": 9
     },
     "src/views/ParallelRunVariancePage.tsx": {
-      "hardcoded": 58,
-      "rawStatus": 2,
+      "hardcoded": 3,
+      "rawStatus": 0,
       "locale": 2
     },
     "src/views/PayrollPage.tsx": {

@@ -69,6 +69,7 @@ import { engagement } from './engagement';
 import { payrollAttendance } from './payrollAttendance';
 import { payrollPipeline } from './payrollPipeline';
 import { payrollRecon } from './payrollRecon';
+import { payrollVariance } from './payrollVariance';
 import { launchPolish } from './launchPolish';
 import { glAccountNames } from './glAccountNames';
 import { polishB } from './polishB';
@@ -1691,6 +1692,8 @@ const en: Dict = {
   ...payrollPipeline.en,
   // Payroll's manpower + value reconciliation and its sign-off — see ./payrollRecon.
   ...payrollRecon.en,
+  // Parallel-run variance screen — see ./payrollVariance.
+  ...payrollVariance.en,
   // Launch polish: payment readiness, compliance, home and offer sentences — see ./launchPolish.
   ...launchPolish.en,
   // The seeded chart-of-accounts names, so a journal reads in Arabic — see ./glAccountNames.
@@ -3325,6 +3328,7 @@ const ar: Dict = {
   // Payroll's run pipeline — see ./payrollPipeline.
   ...payrollPipeline.ar,
   ...payrollRecon.ar,
+  ...payrollVariance.ar,
   ...launchPolish.ar,
   ...glAccountNames.ar,
   ...complianceActions.ar,

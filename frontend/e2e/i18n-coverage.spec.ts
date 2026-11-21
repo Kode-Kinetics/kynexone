@@ -61,6 +61,7 @@ const HARD_CHECK_EXCLUDED = [/^app\/platform\//, /^src\/components\/platform\//,
 /** Arabic may equal English only for these keys — names that are never translated. */
 const AR_SAME_ALLOWED: Record<string, string> = {
   Kody: 'the assistant’s product name',
+  KynexOne: 'this product’s own name — the variance table column that sits beside “Legacy”',
 };
 
 /** Not a sentence fragment even though it matches the shape: namespaced machine keys (suc. = succession, src/i18n/succession.ts; apr. = appraisal screens, src/i18n/appraisalsUi.ts). */
