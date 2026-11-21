@@ -86,6 +86,8 @@ test.describe('Pay approvals queue', () => {
     await expect(section).toBeVisible({ timeout: 30_000 });
     await expect(section.getByText('Pending pay packages: 46')).toBeVisible();
     await expect(section.getByText('No eligible reviewer for 1 checked packages.')).toBeVisible();
+    // The explanation and the reviewer list sit behind Details (the section is one status line until it is opened).
+    await section.getByRole('button', { name: 'Details' }).click();
     await section.getByText('See who can review each pending package').click();
     await expect(section.getByText('Another independent reviewer is needed')).toBeVisible();
     await expect(section.getByText('Fatima Finance Approver', { exact: false })).toBeVisible();
