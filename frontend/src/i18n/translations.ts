@@ -40,6 +40,7 @@ import { approvers } from './approvers';
 import { accessStates } from './accessStates';
 import { userPasswordReset } from './userPasswordReset';
 import { reportsAnalytics } from './reportsAnalytics';
+import { reportsPage } from './reportsPage';
 import { approvalChanges } from './approvalChanges';
 import { compensation } from './compensation';
 import { learning } from './learning';
@@ -1721,6 +1722,7 @@ const en: Dict = {
   // Resetting another user's password, readable user statuses — see ./userPasswordReset.
   ...userPasswordReset.en,
   ...reportsAnalytics.en,
+  ...reportsPage.en,
   ...approvalChanges.en,
   ...compensation.en,
   // Engagement surveys — see ./engagement.
@@ -3340,6 +3342,7 @@ const ar: Dict = {
   ...accessStates.ar,
   ...userPasswordReset.ar,
   ...reportsAnalytics.ar,
+  ...reportsPage.ar,
   ...approvalChanges.ar,
   ...compensation.ar,
   ...engagement.ar,

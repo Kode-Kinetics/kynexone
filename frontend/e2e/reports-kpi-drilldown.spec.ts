@@ -104,3 +104,24 @@ test('the KPI definitions and links read in Arabic', async ({ page }) => {
   await expect(page.getByRole('link', { name: 'فتح تقرير أرصدة القروض' })).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+test('the Analytics tab headings, chart titles and tab strip read in Arabic', async ({ page }) => {
+  const errors = await boot(page, 'ar');
+  await expect(page.getByRole('tablist', { name: 'أقسام التقارير' })).toBeVisible();
+  for (const name of ['لوحة التحليلات', 'مكتبة التقارير', 'التقارير المحفوظة', 'التقارير المجدولة', 'سجل التنفيذ']) {
+    await expect(page.getByRole('tab', { name })).toBeVisible();
+  }
+  await expect(page.getByText('تقارير المؤسسة وتحليلات مباشرة وتسليم مجدول')).toBeVisible();
+  const groups = page.getByTestId('kpi-groups');
+  for (const heading of ['القوى العاملة', 'اليوم', 'المالية والامتثال']) await expect(groups.getByRole('heading', { name: heading })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'آخر مسير رواتب' })).toBeVisible();
+  // Trend endpoints return no rows: each chart card still carries its Arabic title and the empty note.
+  for (const title of ['اتجاه عدد الموظفين', 'اتجاه الرواتب (صافي الراتب)', 'الحضور (آخر 30 يومًا)', 'الإجازات المأخوذة (بالأيام)']) {
+    await expect(page.getByRole('heading', { name: title })).toBeVisible();
+  }
+  for (const english of ['Workforce', 'Today', 'Finance & Compliance', 'Last Payroll Run', 'Headcount Trend', 'Enterprise reporting, live analytics, and scheduled delivery']) {
+    await expect(page.getByText(english, { exact: true })).toHaveCount(0);
+  }
+  if (process.env.AR_SHOTS) await page.screenshot({ path: `${process.env.AR_SHOTS}/reports-ar.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
