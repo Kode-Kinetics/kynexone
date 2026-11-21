@@ -56,9 +56,9 @@ function words(name: string): string {
   return parts.join(' ');
 }
 
-/** The dictionary's word for a code when it has one (`record.<kind>.<code>`), else the readable English. */
+/** The dictionary's word for a code when it has one (`enum.RecordEvent.<code>` / `enum.RecordField.<code>`), else the readable English. */
 function named(t: Translate, kind: 'event' | 'field', code: string): string {
-  const key = `record.${kind}.${code.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+  const key = `enum.${kind === 'event' ? 'RecordEvent' : 'RecordField'}.${code.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
   const known = t(key);
   if (known !== key) return known;
   const plain = words(code);
@@ -79,7 +79,7 @@ export function humaniseFieldList(t: Translate, list: string | null | undefined)
   if (names.length === 0) return '';
   // After the first name the list reads as one sentence: lower-case the initial unless it starts an acronym (ID number, IBAN).
   const lowered = (text: string) => (/^[A-Z][a-z]/.test(text) ? text.charAt(0).toLowerCase() + text.slice(1) : text);
-  return names.map((n, i) => (i === 0 ? named(t, 'field', n) : lowered(named(t, 'field', n)))).join(`${t('record.listComma')} `);
+  return names.map((n, i) => (i === 0 ? named(t, 'field', n) : lowered(named(t, 'field', n)))).join(`${t('List separator')} `);
 }
 
 export interface ChangeRow {
@@ -105,5 +105,5 @@ export function describeChange(t: Translate, fx: DateFormatter, row: ChangeRow):
   const before = shownValue(fx, row.oldValue);
   const after = shownValue(fx, row.newValue);
   if (!before && !after) return { field, detail: t('Details withheld') };
-  return { field, detail: t('record.change', { old: before || '—', new: after || '—' }) };
+  return { field, detail: t('{old} → {new}', { old: before || '—', new: after || '—' }) };
 }
