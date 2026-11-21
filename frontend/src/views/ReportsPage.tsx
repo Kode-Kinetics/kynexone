@@ -1,6 +1,7 @@
 'use client';
 
 import { moneyByCurrency } from '../lib/exitDebts';
+import { msg } from '../i18n/translations';
 import { useConfirm } from '../components/ui/useConfirm';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiErrorReason, notifyApiError } from '../api/client';
@@ -42,17 +43,17 @@ import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 type Tab = 'analytics' | 'library' | 'saved' | 'schedules' | 'executions';
 
 const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
-  { id: 'analytics', label: 'Analytics Dashboard', icon: BarChart2 },
-  { id: 'library', label: 'Report Library', icon: BookOpen },
-  { id: 'saved', label: 'Saved Reports', icon: Save },
-  { id: 'schedules', label: 'Scheduled Reports', icon: Clock },
-  { id: 'executions', label: 'Execution History', icon: RefreshCw },
+  { id: 'analytics', label: msg('Analytics Dashboard'), icon: BarChart2 },
+  { id: 'library', label: msg('Report Library'), icon: BookOpen },
+  { id: 'saved', label: msg('Saved Reports'), icon: Save },
+  { id: 'schedules', label: msg('Scheduled Reports'), icon: Clock },
+  { id: 'executions', label: msg('Execution History'), icon: RefreshCw },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function fmt(n: number | null | undefined) {
-  return n == null ? 'Restricted' : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function fmt(n: number | null | undefined, restricted = '—') {
+  return n == null ? restricted : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 /**
@@ -96,11 +97,12 @@ function FormError({ error }: { error: string }) {
 
 /** Shown in place of a list whose load failed, so an outage never reads as "nothing here". */
 function LoadFailure({ what, reason, onRetry }: { what: string; reason: string; onRetry: () => void }) {
+  const { t } = useLocale();
   return (
     <div role="alert" className="flex flex-col items-center gap-2 py-10 text-center">
       <AlertTriangle className="h-5 w-5 text-amber-500" aria-hidden="true" />
-      <p className="text-sm font-medium text-slate-700 dark:text-slate-200">{what} could not be loaded. {reason}</p>
-      <button type="button" onClick={onRetry} className="btn-secondary h-7 px-2 text-xs"><RefreshCw className="h-3 w-3" /> Retry</button>
+      <p className="text-sm font-medium text-slate-700 dark:text-slate-200">{t('{what} could not be loaded. {reason}', { what: t(what), reason })}</p>
+      <button type="button" onClick={onRetry} className="btn-secondary h-7 px-2 text-xs"><RefreshCw className="h-3 w-3" /> {t('Retry')}</button>
     </div>
   );
 }
@@ -110,11 +112,11 @@ const CHART_COLORS = ['#2F6BFF', '#00C896', '#5EEBFF', '#F59E0B', '#EF4444', '#8
 // ── Analytics Dashboard ───────────────────────────────────────────────────────
 
 const ANALYTICS_SOURCE_LABELS = {
-  kpis: 'KPI summary',
-  headcount: 'Headcount trend',
-  payroll: 'Payroll trend',
-  attendance: 'Attendance trend',
-  leave: 'Leave trend',
+  kpis: msg('KPI summary'),
+  headcount: msg('Headcount trend'),
+  payroll: msg('Payroll trend'),
+  attendance: msg('Attendance trend'),
+  leave: msg('Leave trend'),
 } as const;
 
 type AnalyticsSource = keyof typeof ANALYTICS_SOURCE_LABELS;
@@ -175,22 +177,22 @@ function AnalyticsDashboard() {
       {failedCount > 0 && (
         <div role="alert" className="flex items-center justify-between gap-3 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-400">
           <span>
-            {allFailed ? 'Analytics data could not be loaded.' : `Some analytics data could not be loaded: ${[...failedSources].map((s) => ANALYTICS_SOURCE_LABELS[s]).join(', ')}.`}
+            {allFailed ? t('Analytics data could not be loaded.') : t('Some analytics data could not be loaded: {sources}.', { sources: [...failedSources].map((s) => t(ANALYTICS_SOURCE_LABELS[s])).join(', ') })}
           </span>
           <button type="button" onClick={load} className="btn-secondary h-7 px-2 text-xs shrink-0">
-            <RefreshCw className="h-3 w-3" /> Retry
+            <RefreshCw className="h-3 w-3" /> {t('Retry')}
           </button>
         </div>
       )}
 
       {/* KPI Section */}
       {failedSources.has('kpis') ? (
-        <div className="surface p-4 text-sm text-slate-400">KPI summary unavailable</div>
+        <div className="surface p-4 text-sm text-slate-400">{t('KPI summary unavailable')}</div>
       ) : kpis && (
         <>
           <div className="grid gap-x-4 gap-y-3 lg:grid-cols-3" data-testid="kpi-groups">
           <div>
-            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">Workforce</h3>
+            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">{t('Workforce')}</h3>
             <div className="grid grid-cols-2 gap-2">
               <KpiCard label={t('Active Employees')} value={kpis.headcount.totalActive} definition={t('Employees whose status is Active.')}
                 drill={{ href: '/people?status=Active', label: t('Show these employees') }} />
@@ -201,7 +203,7 @@ function AnalyticsDashboard() {
             </div>
           </div>
           <div>
-            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">Today</h3>
+            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">{t('Today')}</h3>
             <div className="grid grid-cols-2 gap-2">
               <KpiCard label={t('Present Today')} value={kpis.attendance.presentToday} definition={t("Today's attendance records marked present, late or half day.")} />
               <KpiCard label={t('Late Today')} value={kpis.attendance.lateToday} definition={t("Today's attendance records with late minutes.")} />
@@ -211,13 +213,13 @@ function AnalyticsDashboard() {
             </div>
           </div>
           <div>
-            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">Finance & Compliance</h3>
+            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">{t('Finance & Compliance')}</h3>
             <div className="grid grid-cols-2 gap-2">
               <KpiCard label={t('Pending OT')} value={kpis.overtime.pendingOT} definition={t('Overtime requests waiting for a decision.')} />
               <KpiCard label={t('Active Loans')} value={kpis.financial.activeLoans} sub={(kpis.financial.outstandingLoanBalanceByCurrency?.length ?? 0) > 1
                   // Several currencies: one figure per currency, never one total adding them together.
                   ? t('Outstanding by currency: {amounts}', { amounts: moneyByCurrency(kpis.financial.outstandingLoanBalanceByCurrency ?? [], (n, c) => `${c} ${fmt(n)}`) ?? '—' })
-                  : t('Outstanding: {amount}', { amount: fmt(kpis.financial.outstandingLoanBalance) })}
+                  : t('Outstanding: {amount}', { amount: fmt(kpis.financial.outstandingLoanBalance, t('Restricted')) })}
                 definition={t('Open employee loans, overdue ones included. Outstanding is what is still to be repaid on them, per currency.')}
                 drill={{ href: '/reports?report=finance.loan-balance', label: t('Open the Loan Balance report') }} />
               <KpiCard label={t('Visas Expiring (30d)')} value={kpis.compliance.visasExpiring} definition={t('Active visas that expire in the next 30 days.')} />
@@ -227,7 +229,7 @@ function AnalyticsDashboard() {
           </div>
           {kpis.payroll.lastRunYear && (
             <div>
-              <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">Last Payroll Run</h3>
+              <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">{t('Last Payroll Run')}</h3>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                 <KpiCard label={t('Period')} value={`${kpis.payroll.lastRunYear}-${String(kpis.payroll.lastRunMonth).padStart(2, '0')}`}
                   definition={t('The latest pay period with a payroll run. Draft and voided runs are not counted.')}
@@ -246,44 +248,44 @@ function AnalyticsDashboard() {
       {/* Charts */}
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="surface p-4">
-          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Headcount Trend</h3>
+          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">{t('Headcount Trend')}</h3>
           {failedSources.has('headcount') ? (
-            <p className="text-sm text-slate-400">Unavailable</p>
+            <p className="text-sm text-slate-400">{t('Unavailable')}</p>
           ) : loadedSources.has('headcount') && headcountTrend.length === 0 ? (
-            <p className="text-sm text-slate-400">No data for this period</p>
+            <p className="text-sm text-slate-400">{t('No data for this period')}</p>
           ) : headcountTrend.length > 0 ? (
             <ReportsHeadcountTrendChart data={headcountTrend} />
           ) : null}
         </div>
 
         <div className="surface p-4">
-          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Payroll Trend (Net Salary)</h3>
+          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">{t('Payroll Trend (Net Salary)')}</h3>
           {failedSources.has('payroll') ? (
-            <p className="text-sm text-slate-400">Unavailable</p>
+            <p className="text-sm text-slate-400">{t('Unavailable')}</p>
           ) : loadedSources.has('payroll') && payrollTrend.length === 0 ? (
-            <p className="text-sm text-slate-400">No data for this period</p>
+            <p className="text-sm text-slate-400">{t('No data for this period')}</p>
           ) : payrollTrend.length > 0 ? (
             <ReportsPayrollTrendChart data={payrollTrend} />
           ) : null}
         </div>
 
         <div className="surface p-4">
-          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Attendance (Last 30 Days)</h3>
+          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">{t('Attendance (Last 30 Days)')}</h3>
           {failedSources.has('attendance') ? (
-            <p className="text-sm text-slate-400">Unavailable</p>
+            <p className="text-sm text-slate-400">{t('Unavailable')}</p>
           ) : loadedSources.has('attendance') && attendanceTrend.length === 0 ? (
-            <p className="text-sm text-slate-400">No data for this period</p>
+            <p className="text-sm text-slate-400">{t('No data for this period')}</p>
           ) : attendanceTrend.length > 0 ? (
             <ReportsAttendanceTrendChart data={attendanceTrend} />
           ) : null}
         </div>
 
         <div className="surface p-4">
-          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">Leave Taken (Days)</h3>
+          <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-300">{t('Leave Taken (Days)')}</h3>
           {failedSources.has('leave') ? (
-            <p className="text-sm text-slate-400">Unavailable</p>
+            <p className="text-sm text-slate-400">{t('Unavailable')}</p>
           ) : loadedSources.has('leave') && leaveTrend.length === 0 ? (
-            <p className="text-sm text-slate-400">No data for this period</p>
+            <p className="text-sm text-slate-400">{t('No data for this period')}</p>
           ) : leaveTrend.length > 0 ? (
             <ReportsLeaveTrendChart data={leaveTrend} />
           ) : null}
@@ -295,9 +297,10 @@ function AnalyticsDashboard() {
 
 // ── Report Library & Runner ───────────────────────────────────────────────────
 
-const CATEGORIES = ['HR', 'Attendance', 'Leave', 'Overtime', 'Payroll', 'Recruitment', 'Compliance', 'Finance'];
+const CATEGORIES = [msg('HR'), msg('Attendance'), msg('Leave'), msg('Overtime'), msg('Payroll'), msg('Recruitment'), msg('Compliance'), msg('Finance')];
 
 function ReportLibrary() {
+  const { t } = useLocale();
   // CSV/Excel export is `reports.export` on the API (ReportsController.ExportReport), held by Admin
   // and HR Director only; every other report reader was offered the buttons and got a 403.
   const { hasPermission } = useAuth();
@@ -350,7 +353,7 @@ function ReportLibrary() {
     if (!selectedReport) return;
     setRunning(true); setRunError(''); setResult(null);
     try { setResult(await reportsApi.run(selectedReport.key, filters)); }
-    catch { setRunError('Failed to run report. Please try again.'); }
+    catch { setRunError(t('Failed to run report. Please try again.')); }
     finally { setRunning(false); }
   };
 
@@ -360,7 +363,7 @@ function ReportLibrary() {
     try {
       await reportsApi.save({ reportKey: selectedReport.key, name: saveName, category: selectedReport.category, filters, isShared: saveShared });
       setSaveModal(false);
-    } catch (e) { setSaveError(`The report was not saved. ${requestFailureReason(e)}`); }
+    } catch (e) { setSaveError(t('The report was not saved. {reason}', { reason: requestFailureReason(e) })); }
     finally { setSaving(false); }
   };
 
@@ -373,10 +376,10 @@ function ReportLibrary() {
     setRunError('');
     try {
       const { filename, rowCount } = await reportsApi.export(selectedReport.key, format, filters);
-      setExportNote(`Downloaded ${filename} — ${rowCount.toLocaleString()} rows.`);
+      setExportNote(t('Downloaded {filename} — {rows} rows.', { filename, rows: rowCount.toLocaleString() }));
     } catch (e) {
       notifyApiError(e);
-      setRunError('The export could not be produced. You may not have the Export Reports permission.');
+      setRunError(t('The export could not be produced. You may not have the Export Reports permission.'));
     } finally {
       setExporting(null);
     }
@@ -387,18 +390,18 @@ function ReportLibrary() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <select value={filterCat} onChange={(e) => setFilterCat(e.target.value)} className="select" title="Filter by category">
-          <option value="">All Categories</option>
-          {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+        <select value={filterCat} onChange={(e) => setFilterCat(e.target.value)} className="select" title={t('Filter by category')}>
+          <option value="">{t('All Categories')}</option>
+          {CATEGORIES.map((c) => <option key={c} value={c}>{t(c)}</option>)}
         </select>
-        {!catalogError && <span className="text-xs text-slate-400">{displayed.length} reports</span>}
+        {!catalogError && <span className="text-xs text-slate-400">{t('{count} reports', { count: displayed.length })}</span>}
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {loading ? (
           <div className="col-span-3 flex justify-center py-12"><div className="h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>
         ) : catalogError ? (
-          <div className="col-span-3"><LoadFailure what="The report catalog" reason={catalogError} onRetry={load} /></div>
+          <div className="col-span-3"><LoadFailure what={msg('The report catalog')} reason={catalogError} onRetry={load} /></div>
         ) : displayed.map((r) => (
           <button
             key={r.key}
@@ -407,10 +410,10 @@ function ReportLibrary() {
             className={`surface p-4 text-start transition hover:border-sapphire/40 ${selectedReport?.key === r.key ? 'border border-sapphire bg-sapphire/5' : ''}`}
           >
             <div className="mb-1 flex items-center justify-between">
-              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-400">{r.category}</span>
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-400">{t(r.category)}</span>
             </div>
-            <p className="font-semibold text-slate-900 dark:text-white">{r.name}</p>
-            <p className="mt-0.5 text-xs text-slate-400">{r.description}</p>
+            <p className="font-semibold text-slate-900 dark:text-white">{t(r.name)}</p>
+            <p className="mt-0.5 text-xs text-slate-400">{t(r.description)}</p>
           </button>
         ))}
       </div>
@@ -419,8 +422,8 @@ function ReportLibrary() {
         <div className="surface p-4 space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="font-semibold text-slate-900 dark:text-white">{selectedReport.name}</h3>
-              <p className="text-xs text-slate-400">{selectedReport.description}</p>
+              <h3 className="font-semibold text-slate-900 dark:text-white">{t(selectedReport.name)}</h3>
+              <p className="text-xs text-slate-400">{t(selectedReport.description)}</p>
             </div>
             <div className="flex gap-2">
               {result && (
@@ -432,42 +435,42 @@ function ReportLibrary() {
                     {exporting === 'csv' ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} CSV
                   </button>
                   <button type="button" onClick={() => exportReport('xlsx')} disabled={exporting !== null} className="btn-secondary h-8 px-3 text-sm disabled:opacity-60">
-                    {exporting === 'xlsx' ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} Excel
+                    {exporting === 'xlsx' ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} {t('Excel')}
                   </button>
                   </>}
                   <button type="button" onClick={() => { setSaveName(selectedReport.name); setSaveShared(false); setSaveError(''); setSaveModal(true); }} className="btn-secondary h-8 px-3 text-sm">
-                    <Save className="h-3.5 w-3.5" /> Save
+                    <Save className="h-3.5 w-3.5" /> {t('Save')}
                   </button>
                 </>
               )}
               <button type="button" onClick={runReport} disabled={running} className="btn-primary h-8 px-3 text-sm disabled:opacity-60">
                 {running ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                {running ? 'Running…' : 'Run Report'}
+                {running ? t('Running…') : t('Run Report')}
               </button>
             </div>
           </div>
 
           {/* Filters */}
           <div className="grid grid-cols-3 gap-3">
-            <FormField label="Date From">
+            <FormField label={t('Date From')}>
               <input type="date" value={filters.dateFrom ?? ''} onChange={(e) => setFilters(x => ({ ...x, dateFrom: e.target.value || undefined }))} className="input w-full" />
             </FormField>
-            <FormField label="Date To">
+            <FormField label={t('Date To')}>
               <input type="date" value={filters.dateTo ?? ''} onChange={(e) => setFilters(x => ({ ...x, dateTo: e.target.value || undefined }))} className="input w-full" />
             </FormField>
-            <FormField label="Status">
-              <input type="text" value={filters.status ?? ''} onChange={(e) => setFilters(x => ({ ...x, status: e.target.value || undefined }))} className="input w-full" placeholder="e.g. Active" />
+            <FormField label={t('Status')}>
+              <input type="text" value={filters.status ?? ''} onChange={(e) => setFilters(x => ({ ...x, status: e.target.value || undefined }))} className="input w-full" placeholder={t('Example: Active')} />
             </FormField>
-            <FormField label="Department">
-              <input type="text" value={filters.department ?? ''} onChange={(e) => setFilters(x => ({ ...x, department: e.target.value || undefined }))} className="input w-full" placeholder="Optional" />
+            <FormField label={t('Department')}>
+              <input type="text" value={filters.department ?? ''} onChange={(e) => setFilters(x => ({ ...x, department: e.target.value || undefined }))} className="input w-full" placeholder={t('Optional')} />
             </FormField>
-            <FormField label="Location / Branch">
-              <input type="text" value={filters.location ?? ''} onChange={(e) => setFilters(x => ({ ...x, location: e.target.value || undefined }))} className="input w-full" placeholder="Optional" />
+            <FormField label={t('Location / Branch')}>
+              <input type="text" value={filters.location ?? ''} onChange={(e) => setFilters(x => ({ ...x, location: e.target.value || undefined }))} className="input w-full" placeholder={t('Optional')} />
             </FormField>
-            <FormField label="Period">
-              <input type="text" value={filters.period ?? ''} onChange={(e) => setFilters(x => ({ ...x, period: e.target.value || undefined }))} className="input w-full" placeholder="e.g. 2025-01" />
+            <FormField label={t('Period')}>
+              <input type="text" value={filters.period ?? ''} onChange={(e) => setFilters(x => ({ ...x, period: e.target.value || undefined }))} className="input w-full" placeholder={t('Example: 2025-01')} />
             </FormField>
-            <FormField label="Days Ahead">
+            <FormField label={t('Days Ahead')}>
               <input type="number" value={filters.daysAhead ?? ''} onChange={(e) => setFilters(x => ({ ...x, daysAhead: e.target.value ? Number(e.target.value) : undefined }))} className="input w-full" placeholder="30" />
             </FormField>
           </div>
@@ -478,8 +481,8 @@ function ReportLibrary() {
           {result && (
             <div className="space-y-2">
               <div className="flex items-center gap-4 text-xs text-slate-400">
-                <span>{result.rowCount} rows</span>
-                <span>{result.durationMs}ms</span>
+                <span>{t('{count} rows', { count: result.rowCount })}</span>
+                <span>{t('{ms}ms', { ms: result.durationMs })}</span>
                 <span>{new Date(result.generatedAt).toLocaleTimeString()}</span>
               </div>
               <div className="overflow-x-auto max-h-80 surface">
@@ -504,19 +507,19 @@ function ReportLibrary() {
                   </tbody>
                 </table>
               </div>
-              {result.rowCount > 200 && <p className="text-xs text-slate-400">Showing first 200 of {result.rowCount} rows</p>}
+              {result.rowCount > 200 && <p className="text-xs text-slate-400">{t('Showing first 200 of {count} rows', { count: result.rowCount })}</p>}
             </div>
           )}
         </div>
       )}
 
-      <Modal isOpen={saveModal} title="Save Report" onClose={() => setSaveModal(false)}
-        footer={<><button type="button" onClick={() => setSaveModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={saveReport} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
+      <Modal isOpen={saveModal} title={t('Save Report')} onClose={() => setSaveModal(false)}
+        footer={<><button type="button" onClick={() => setSaveModal(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={saveReport} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <div className="space-y-3">
           <FormError error={saveError} />
-          <FormField label="Report Name" required><input value={saveName} onChange={(e) => setSaveName(e.target.value)} className="input w-full" placeholder="My Report" autoFocus /></FormField>
+          <FormField label={t('Report Name')} required><input value={saveName} onChange={(e) => setSaveName(e.target.value)} className="input w-full" placeholder={t('My Report')} autoFocus /></FormField>
           <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-            <input type="checkbox" checked={saveShared} onChange={(e) => setSaveShared(e.target.checked)} className="h-4 w-4 accent-sapphire" title="Share with team" /> Share with team
+            <input type="checkbox" checked={saveShared} onChange={(e) => setSaveShared(e.target.checked)} className="h-4 w-4 accent-sapphire" title={t('Share with team')} /> {t('Share with team')}
           </label>
         </div>
       </Modal>
@@ -559,7 +562,7 @@ function SavedReportsTab() {
       setResult({ report: r, data });
     } catch (e) {
       setResult(null);
-      setRunError(`“${r.name}” could not be run. ${requestFailureReason(e)}`);
+      setRunError(t('“{name}” could not be run. {reason}', { name: r.name, reason: requestFailureReason(e) }));
     }
     finally { setRunning(null); }
   };
@@ -579,8 +582,8 @@ function SavedReportsTab() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-              {['Name', 'Category', 'Report', 'Created By', 'Shared', ''].map((h) => (
-                <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
+              {[msg('Name'), msg('Category'), msg('Report'), msg('Created By'), msg('Shared'), ''].map((h) => (
+                <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h && t(h)}</th>
               ))}
             </tr>
           </thead>
@@ -588,22 +591,22 @@ function SavedReportsTab() {
             {loading ? (
               <tr><td colSpan={6} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
             ) : loadError ? (
-              <tr><td colSpan={6}><LoadFailure what="Saved reports" reason={loadError} onRetry={load} /></td></tr>
+              <tr><td colSpan={6}><LoadFailure what={msg('Saved reports')} reason={loadError} onRetry={load} /></td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={6} className="py-12 text-center text-slate-400">No saved reports. Run a report and click Save.</td></tr>
+              <tr><td colSpan={6} className="py-12 text-center text-slate-400">{t('No saved reports. Run a report and click Save.')}</td></tr>
             ) : items.map((r) => (
               <tr key={r.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                 <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{r.name}</td>
                 <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.category}</td>
                 <td className="px-4 py-3 font-mono text-xs text-slate-400">{r.reportKey}</td>
                 <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.createdByName}</td>
-                <td className="px-4 py-3">{r.isShared ? <span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire">Shared</span> : '—'}</td>
+                <td className="px-4 py-3">{r.isShared ? <span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire">{t('Shared')}</span> : '—'}</td>
                 <td className="px-4 py-3">
                   <div className="flex gap-1 opacity-0 group-hover:opacity-100">
                     <button type="button" onClick={() => runSaved(r)} disabled={running === r.id} className="btn-primary h-6 px-2 text-xs disabled:opacity-60">
-                      {running === r.id ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />} Run
+                      {running === r.id ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />} {t('Run')}
                     </button>
-                    <button type="button" onClick={() => deleteSaved(r.id)} className="h-6 w-6 flex items-center justify-center rounded-lg border border-red-200 text-red-500 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/20" aria-label="Delete saved report">
+                    <button type="button" onClick={() => deleteSaved(r.id)} className="h-6 w-6 flex items-center justify-center rounded-lg border border-red-200 text-red-500 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/20" aria-label={t('Delete saved report')}>
                       <Trash2 className="h-3 w-3" />
                     </button>
                   </div>
@@ -619,9 +622,9 @@ function SavedReportsTab() {
           <div className="flex items-center justify-between">
             <div>
               <h3 className="font-semibold text-slate-900 dark:text-white">{result.report.name}</h3>
-              <p className="text-xs text-slate-400">{result.data.rowCount} rows · {result.data.durationMs}ms</p>
+              <p className="text-xs text-slate-400">{t('{rows} rows · {ms}ms', { rows: result.data.rowCount, ms: result.data.durationMs })}</p>
             </div>
-            <button type="button" onClick={() => setResult(null)} className="btn-secondary h-7 px-2 text-xs">Clear</button>
+            <button type="button" onClick={() => setResult(null)} className="btn-secondary h-7 px-2 text-xs">{t('Clear')}</button>
           </div>
           <div className="overflow-x-auto max-h-64 surface">
             <table className="w-full text-xs">
@@ -677,17 +680,19 @@ function ScheduledReportsTab() {
   useEffect(() => { load(); }, [load]);
 
   const createSchedule = async () => {
-    if (!form.reportKey || !form.recipients.trim()) { setError('Report and recipients are required'); return; }
+    if (!form.reportKey || !form.recipients.trim()) { setError(t('Report and recipients are required')); return; }
     setSaving(true); setError('');
     try { await reportsApi.createSchedule(form); setCreateModal(false); load(); }
-    catch (e) { setError(apiErrorReason(e, 'Failed to create schedule.')); }
+    catch (e) { setError(apiErrorReason(e, t('Failed to create schedule.'))); }
     finally { setSaving(false); }
   };
 
   const toggle = async (s: ReportSchedule) => {
     setToggling(s.id); setActionError('');
     try { await reportsApi.toggleSchedule(s.id); load(); }
-    catch (e) { setActionError(`“${s.reportName}” was not ${s.isActive ? 'paused' : 'resumed'}. ${requestFailureReason(e)}`); }
+    catch (e) { setActionError(s.isActive
+      ? t('“{name}” was not paused. {reason}', { name: s.reportName, reason: requestFailureReason(e) })
+      : t('“{name}” was not resumed. {reason}', { name: s.reportName, reason: requestFailureReason(e) })); }
     finally { setToggling(null); }
   };
 
@@ -708,12 +713,12 @@ function ScheduledReportsTab() {
         <div className="flex items-center justify-end gap-3">
           {!loading && catalogError && (
             <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">
-              New schedules need the report catalog, which could not be loaded. {catalogError}{' '}
-              <button type="button" onClick={load} className="font-semibold underline">Retry</button>
+              {t('New schedules need the report catalog, which could not be loaded. {reason}', { reason: catalogError })}{' '}
+              <button type="button" onClick={load} className="font-semibold underline">{t('Retry')}</button>
             </p>
           )}
           {canSchedule && <button type="button" disabled={!!catalogError} onClick={() => { setForm({ reportKey: catalog[0]?.key ?? '', reportName: catalog[0]?.name ?? '', category: catalog[0]?.category ?? '', frequency: 'Daily', deliveryMethod: 'Email', recipients: '', exportFormat: 'xlsx' }); setError(''); setCreateModal(true); }} className="btn-primary shrink-0 disabled:opacity-60">
-            <Plus className="h-4 w-4" /> New Schedule
+            <Plus className="h-4 w-4" /> {t('New Schedule')}
           </button>}
         </div>
         <FormError error={actionError} />
@@ -721,8 +726,8 @@ function ScheduledReportsTab() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                {['Report', 'Frequency', 'Delivery', 'Recipients', 'Format', 'Next Run', 'Health', 'Active', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
+                {[msg('Report'), msg('Frequency'), msg('Delivery'), msg('Recipients'), msg('Format'), msg('Next Run'), msg('Health'), msg('Active'), ''].map((h) => (
+                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h && t(h)}</th>
                 ))}
               </tr>
             </thead>
@@ -730,14 +735,14 @@ function ScheduledReportsTab() {
               {loading ? (
                 <tr><td colSpan={9} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
               ) : loadError ? (
-                <tr><td colSpan={9}><LoadFailure what="Scheduled reports" reason={loadError} onRetry={load} /></td></tr>
+                <tr><td colSpan={9}><LoadFailure what={msg('Scheduled reports')} reason={loadError} onRetry={load} /></td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={9} className="py-12 text-center text-slate-400">No schedules configured</td></tr>
+                <tr><td colSpan={9} className="py-12 text-center text-slate-400">{t('No schedules configured')}</td></tr>
               ) : items.map((s) => (
                 <tr key={s.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                   <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{s.reportName}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{s.frequency}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{s.deliveryMethod}</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{t(s.frequency)}</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{t(s.deliveryMethod)}</td>
                   <td className="px-4 py-3 text-slate-500 text-xs max-w-[150px] truncate">{s.recipients}</td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{s.exportFormat}</td>
                   <td className="px-4 py-3 text-slate-500 text-xs">{s.nextRunAtUtc ? new Date(s.nextRunAtUtc).toLocaleDateString() : '—'}</td>
@@ -753,19 +758,19 @@ function ScheduledReportsTab() {
                         }`}
                       >
                         <AlertTriangle className="h-3 w-3" aria-hidden="true" />
-                        {s.ownerInvalidatedAtUtc ? 'No valid owner' : `Failed ${s.consecutiveFailureCount}×`}
+                        {s.ownerInvalidatedAtUtc ? t('No valid owner') : t('Failed {count}×', { count: s.consecutiveFailureCount })}
                       </span>
                     ) : (
-                      <span className="text-xs text-slate-400">OK</span>
+                      <span className="text-xs text-slate-400">{t('OK')}</span>
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    <button type="button" onClick={() => toggle(s)} disabled={toggling === s.id || !canSchedule} aria-label="Toggle schedule" className="text-slate-400 hover:text-sapphire disabled:opacity-50 transition">
+                    <button type="button" onClick={() => toggle(s)} disabled={toggling === s.id || !canSchedule} aria-label={t('Toggle schedule')} className="text-slate-400 hover:text-sapphire disabled:opacity-50 transition">
                       {s.isActive ? <ToggleRight className="h-5 w-5 text-emerald-500" /> : <ToggleLeft className="h-5 w-5" />}
                     </button>
                   </td>
                   <td className="px-4 py-3">
-                    {canSchedule && <button type="button" onClick={() => deleteSchedule(s.id)} className="h-6 w-6 flex items-center justify-center rounded-lg border border-red-200 text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 dark:border-red-800 dark:hover:bg-red-900/20" aria-label="Delete schedule">
+                    {canSchedule && <button type="button" onClick={() => deleteSchedule(s.id)} className="h-6 w-6 flex items-center justify-center rounded-lg border border-red-200 text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 dark:border-red-800 dark:hover:bg-red-900/20" aria-label={t('Delete schedule')}>
                       <Trash2 className="h-3 w-3" />
                     </button>}
                   </td>
@@ -776,39 +781,39 @@ function ScheduledReportsTab() {
         </div>
       </div>
 
-      <Modal isOpen={createModal} title="New Report Schedule" onClose={() => setCreateModal(false)} size="lg"
-        footer={<><button type="button" onClick={() => setCreateModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={createSchedule} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Creating…' : 'Create'}</button></>}>
+      <Modal isOpen={createModal} title={t('New Report Schedule')} onClose={() => setCreateModal(false)} size="lg"
+        footer={<><button type="button" onClick={() => setCreateModal(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={createSchedule} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Creating…') : t('Create')}</button></>}>
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3">
           <div className="col-span-2">
-            <FormField label="Report" required>
-              <select value={form.reportKey} onChange={(e) => selectReport(e.target.value)} className="select w-full" title="Report">
-                <option value="">Select report</option>
-                {catalog.map((r) => <option key={r.key} value={r.key}>{r.category} — {r.name}</option>)}
+            <FormField label={t('Report')} required>
+              <select value={form.reportKey} onChange={(e) => selectReport(e.target.value)} className="select w-full" title={t('Report')}>
+                <option value="">{t('Select report')}</option>
+                {catalog.map((r) => <option key={r.key} value={r.key}>{t(r.category)} — {t(r.name)}</option>)}
               </select>
             </FormField>
           </div>
-          <FormField label="Frequency">
-            <select value={form.frequency} onChange={(e) => setForm(x => ({ ...x, frequency: e.target.value }))} className="select w-full" title="Frequency">
-              {['Daily', 'Weekly', 'Monthly', 'Quarterly'].map((v) => <option key={v}>{v}</option>)}
+          <FormField label={t('Frequency')}>
+            <select value={form.frequency} onChange={(e) => setForm(x => ({ ...x, frequency: e.target.value }))} className="select w-full" title={t('Frequency')}>
+              {[msg('Daily'), msg('Weekly'), msg('Monthly'), msg('Quarterly')].map((v) => <option key={v} value={v}>{t(v)}</option>)}
             </select>
           </FormField>
           {/* Delivery was Email / SFTP / Portal and only Email ever validated server-side, so
               picking either of the others failed after the form was filled in — and the UI
               swallowed the reason into "Failed to create schedule." SFTP and Portal are gone
               until they exist. Same for PDF, which used to be delivered as a .csv. */}
-          <FormField label="Delivery Method">
-            <input value="Email" readOnly disabled className="input w-full" title="Delivery Method" aria-label="Delivery Method" />
+          <FormField label={t('Delivery Method')}>
+            <input value={t('Email')} readOnly disabled className="input w-full" title={t('Delivery Method')} aria-label={t('Delivery Method')} />
           </FormField>
-          <FormField label="Export Format">
-            <select value={form.exportFormat} onChange={(e) => setForm(x => ({ ...x, exportFormat: e.target.value }))} className="select w-full" title="Export Format">
-              <option value="xlsx">Excel (.xlsx)</option>
+          <FormField label={t('Export Format')}>
+            <select value={form.exportFormat} onChange={(e) => setForm(x => ({ ...x, exportFormat: e.target.value }))} className="select w-full" title={t('Export Format')}>
+              <option value="xlsx">{t('Excel (.xlsx)')}</option>
               <option value="csv">CSV</option>
               <option value="json">JSON</option>
             </select>
           </FormField>
           <div className="col-span-2">
-            <FormField label="Recipients" required>
+            <FormField label={t('Recipients')} required>
               <input value={form.recipients} onChange={(e) => setForm(x => ({ ...x, recipients: e.target.value }))} className="input w-full" placeholder="hr@company.com, finance@company.com" />
             </FormField>
           </div>
@@ -822,6 +827,7 @@ function ScheduledReportsTab() {
 // ── Execution History ─────────────────────────────────────────────────────────
 
 function ExecutionHistoryTab() {
+  const { t } = useLocale();
   const [items, setItems] = useState<ReportExecutionLog[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -859,8 +865,8 @@ function ExecutionHistoryTab() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-              {['Report', 'Format', 'Rows', 'Duration', 'Run By', 'Time', 'Status'].map((h) => (
-                <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
+              {[msg('Report'), msg('Format'), msg('Rows'), msg('Duration'), msg('Run By'), msg('Time'), msg('Status')].map((h) => (
+                <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{t(h)}</th>
               ))}
             </tr>
           </thead>
@@ -868,9 +874,9 @@ function ExecutionHistoryTab() {
             {loading ? (
               <tr><td colSpan={7} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
             ) : loadError ? (
-              <tr><td colSpan={7}><LoadFailure what="Execution history" reason={loadError} onRetry={load} /></td></tr>
+              <tr><td colSpan={7}><LoadFailure what={msg('Execution history')} reason={loadError} onRetry={load} /></td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={7} className="py-12 text-center text-slate-400">No executions yet</td></tr>
+              <tr><td colSpan={7} className="py-12 text-center text-slate-400">{t('No executions yet')}</td></tr>
             ) : items.map((log) => (
               <tr key={log.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                 <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{log.reportName}</td>
@@ -884,7 +890,7 @@ function ExecutionHistoryTab() {
                     title={log.errorMessage ?? undefined}
                     className={`rounded-full px-2 py-0.5 text-xs font-semibold ${statusColor(log.status)}`}
                   >
-                    {reportRunStatusLabel(log.status)}
+                    {t(reportRunStatusLabel(log.status))}
                   </span>
                 </td>
               </tr>
@@ -894,11 +900,11 @@ function ExecutionHistoryTab() {
       </div>
       {total > pageSize && (
         <div className="flex items-center justify-between text-sm text-slate-500">
-          <span>{total} total</span>
+          <span>{t('{count} total', { count: total })}</span>
           <div className="flex gap-2">
-            <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">← Prev</button>
-            <span className="px-2">Page {page} of {Math.ceil(total / pageSize)}</span>
-            <button type="button" onClick={() => setPage((p) => p + 1)} disabled={page >= Math.ceil(total / pageSize)} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">Next →</button>
+            <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">{t('Previous')}</button>
+            <span className="px-2">{t('Page {page} of {pages}', { page, pages: Math.ceil(total / pageSize) })}</span>
+            <button type="button" onClick={() => setPage((p) => p + 1)} disabled={page >= Math.ceil(total / pageSize)} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">{t('Next')}</button>
           </div>
         </div>
       )}
@@ -921,11 +927,11 @@ export function ReportsPage() {
       <div>
         <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Reports & Analytics')}</h1>
         <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-          Enterprise reporting, live analytics, and scheduled delivery
+          {t('Enterprise reporting, live analytics, and scheduled delivery')}
         </p>
       </div>
 
-      <RovingTabList items={tabs} activeId={activeTab} onChange={setActiveTab} idPrefix="reports" label="Reports sections" variant="underline" />
+      <RovingTabList items={tabs.map((tab) => ({ ...tab, label: t(tab.label) }))} activeId={activeTab} onChange={setActiveTab} idPrefix="reports" label={t('Reports sections')} variant="underline" />
 
       <TabPanel idPrefix="reports" tabId={activeTab}>
         {activeTab === 'analytics' && <AnalyticsDashboard />}
