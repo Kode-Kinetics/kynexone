@@ -338,6 +338,7 @@ public class ApprovalSeparationOfDutiesGapTests
         var tenantId = Guid.NewGuid();
         var author = Guid.NewGuid();
         var role = new Role { TenantId = tenantId, Name = "HR Manager", NormalizedName = "HR MANAGER", IsActive = true };
+        await OfferWorkflowTestSupport.GrantApprovalKeyAsync(db, role);
         var approver = new User
         {
             TenantId = tenantId, Email = "head@example.test", NormalizedEmail = "HEAD@EXAMPLE.TEST", FullName = "Head of Eng",

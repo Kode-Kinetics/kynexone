@@ -223,7 +223,8 @@ public static class OfferRules
         var author = await AuthorAsync(db, tenantId, offerId, ct);
         if (author is null) return OfferApproverVerdict.AuthorUnknown;
         if ((await TermsWritersAsync(db, tenantId, offerId, ct)).Contains(approver)) return OfferApproverVerdict.ApproverIsAuthor;
-        if (!await EligibleApprovers(db, tenantId).AnyAsync(u => u.Id == approver, ct)) return OfferApproverVerdict.NotAnEligibleUser;
+        // The same set the picker lists: eligible role AND the approval key AND no personal Deny, so a name that could not decide the step is refused up front.
+        if (!await ApproversWhoCanDecide(db, tenantId).AnyAsync(u => u.Id == approver, ct)) return OfferApproverVerdict.NotAnEligibleUser;
         return OfferApproverVerdict.Eligible;
     }
 
