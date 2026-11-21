@@ -53,14 +53,15 @@ export function DeductionsHistory({ data, audience, months }: { data: EmployeeDe
                   className="flex w-full flex-wrap items-center justify-between gap-2 px-4 py-3 text-start">
                   <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">{period(s.year, s.month)}</span>
                   <span className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
-                    {t('Counted: {amount}', { amount: fx.money(s.debtTotal, s.currency) })}
+                    {audience === 'hr' && s.slipStatus !== 'Final' && s.capStatus !== 'Voided' && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-caption font-semibold text-slate-600 dark:bg-white/[0.06] dark:text-slate-300">{t('Not final yet')}</span>}
+                    <span className="tabular-nums">{t('Counted: {amount}', { amount: fx.money(s.debtTotal, s.currency) })}</span>
                     <CapStatusChip status={s.capStatus} />
                     <ChevronDown className={`h-4 w-4 transition-transform ${isOpen ? 'rotate-180' : ''}`} aria-hidden />
                   </span>
                 </button>
                 {isOpen && (
                   <div className="border-t border-slate-100 px-4 py-4 dark:border-white/[0.06]">
-                    <DeductionStatementView statement={s} audience={audience} showHeader={audience === 'hr'} />
+                    <DeductionStatementView statement={s} audience={audience} showHeader={false} />
                   </div>
                 )}
               </li>
@@ -80,7 +81,7 @@ function BalanceRow({ balance: b, advance, audience, money }: { balance: DebtBal
     <li className="py-2.5 text-sm" data-testid="balance">
       <div className="flex items-start justify-between gap-3">
         <p className="font-semibold text-slate-800 dark:text-slate-100">{type} <span className="font-mono text-xs font-normal text-slate-500">{b.loanNo}</span></p>
-        <span className="font-mono font-semibold tabular-nums text-slate-900 dark:text-white">{money(b.outstanding)}</span>
+        <span className="font-semibold tabular-nums text-slate-900 dark:text-white">{money(b.outstanding)}</span>
       </div>
       <p className="text-xs text-slate-600 dark:text-slate-300">
         {b.remaining != null

@@ -122,7 +122,7 @@ export function AccessStatesPanel({
   return (
     <div role="group" aria-labelledby={titleId} data-testid="access-states">
       <p id={titleId} className="sr-only">{t('Employment and sign-in status')}</p>
-      <dl className="divide-y divide-slate-100 dark:divide-white/10">
+      <dl className="divide-y divide-slate-100 dark:divide-white/10 xl:grid xl:grid-cols-3 xl:gap-4 xl:divide-y-0 [&>div]:xl:py-0">
         <Row label={t('Employee active')} testId="state-employee" chip={<StatusChip label={t(employeeStateLabel(states.employee, employeeStatus))} tone={employeeChip.tone} icon={employeeChip.icon} />}
           who={t('An HR approver with employee approval rights')} next={t(activateNext)}
           button={states.employee !== 'active' && activation.allowed

@@ -77,6 +77,7 @@ import { complianceActions } from './complianceActions';
 import { insights as insightsText } from './insights';
 import { attendanceExceptions } from './attendanceExceptions';
 import { employeeWorkspace } from './employeeWorkspace';
+import { employeeRecord } from './employeeRecord';
 import { companyWizard } from './companyWizard';
 import { companyWizardRules } from './companyWizardRules';
 import { setupDataEntry } from './setupDataEntry';
@@ -171,6 +172,7 @@ const en: Dict = {
   ...appraisalCycle.en,
   ...gradePackage.en,
   ...employeeWorkspace.en,
+  ...employeeRecord.en,
   "Navigation could not be resumed. Try the action again.": "Navigation could not be resumed. Try the action again.",
   "Cost center": "Cost center",
   "Line manager": "Line manager",
@@ -1804,6 +1806,7 @@ const ar: Dict = {
   ...appraisalCycle.ar,
   ...gradePackage.ar,
   ...employeeWorkspace.ar,
+  ...employeeRecord.ar,
   "Navigation could not be resumed. Try the action again.": "تعذر استئناف التنقل. أعد المحاولة.",
   "Cost center": "مركز التكلفة",
   "Line manager": "المدير المباشر",

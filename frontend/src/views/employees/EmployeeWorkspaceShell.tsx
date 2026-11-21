@@ -85,26 +85,26 @@ export function EmployeeWorkspaceShell({
 
   return (
     <section className="employee-workspace min-h-full bg-slate-50/80 dark:bg-slate-950/30" aria-labelledby="employee-workspace-heading">
-      <div className="sticky top-0 z-20 border-b border-line bg-surface px-4 py-3 shadow-e1 lg:px-6">
-        <Link href={returnTo} className="mb-3 inline-flex min-h-9 items-center text-sm font-semibold text-sapphire hover:underline">
-          <span aria-hidden="true" className="me-2 rtl:rotate-180">←</span> {t('Back to People')}
-        </Link>
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-warning-soft text-lg font-semibold text-warning-fg">
+      <div className="sticky top-0 z-20 border-b border-line bg-surface px-4 py-2 shadow-e1 lg:px-6">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <Link href={returnTo} className="inline-flex min-h-9 shrink-0 items-center text-sm font-semibold text-sapphire hover:underline">
+            <span aria-hidden="true" className="me-2 rtl:rotate-180">←</span> {t('Back to People')}
+          </Link>
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-warning-soft text-sm font-semibold text-warning-fg">
             {initials(employee.fullName)}
           </div>
           <div className="min-w-[12rem] flex-1">
-            <div className="flex flex-wrap items-center gap-3">
-              <h1 id="employee-workspace-heading" tabIndex={-1} dir="auto" title={employee.fullName} className="line-clamp-2 min-w-0 break-words text-2xl font-semibold text-slate-950 outline-none dark:text-white">
+            <div className="flex items-center gap-2">
+              <h1 id="employee-workspace-heading" tabIndex={-1} dir="auto" title={employee.fullName} className="line-clamp-1 min-w-0 break-words text-lg font-semibold text-slate-950 outline-none dark:text-white">
                 {employee.fullName}
               </h1>
-              <span className="rounded-lg bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800 dark:bg-amber-500/15 dark:text-amber-200" data-testid="employee-status-badge">{statusLabel(employee.status)}</span>
+              <span className="shrink-0 rounded-lg bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:bg-amber-500/15 dark:text-amber-200" data-testid="employee-status-badge">{statusLabel(employee.status)}</span>
             </div>
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+            <p className="line-clamp-1 text-xs text-slate-500 dark:text-slate-400">
               {employee.employeeCode} <span aria-hidden="true">·</span> {employee.department || 'Department not set'} <span aria-hidden="true">·</span> {employee.designation || employee.jobTitle || 'Designation not set'}
             </p>
           </div>
-          <div className="min-w-44 border-slate-200 ps-0 dark:border-white/10 sm:border-s sm:ps-5">
+          <div className="min-w-40 border-slate-200 ps-0 dark:border-white/10 sm:border-s sm:ps-4">
             {readiness.loading ? (
               <p role="status" className="text-sm text-slate-500">{t('Loading readiness…')}</p>
             ) : readiness.error ? (
@@ -114,20 +114,20 @@ export function EmployeeWorkspaceShell({
               </div>
             ) : (
               <>
-                <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('{complete} of {total} complete', { complete: completed, total: required })}</p>
-                <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-white/10" aria-label="Employee readiness progress" role="progressbar" aria-valuenow={completed} aria-valuemin={0} aria-valuemax={Math.max(required, 1)}>
+                <p className="text-xs font-semibold text-slate-900 dark:text-white">{t('{complete} of {total} complete', { complete: completed, total: required })}</p>
+                <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-white/10" aria-label="Employee readiness progress" role="progressbar" aria-valuenow={completed} aria-valuemin={0} aria-valuemax={Math.max(required, 1)}>
                   <div className="h-full rounded-full bg-blue-600 transition-[width] motion-reduce:transition-none" style={{ width: `${progress}%` }} />
                 </div>
               </>
             )}
           </div>
           {canWrite && (
-            <Link href={employeeWorkspaceHref(employee.id, { edit: true, section, returnTo })} className="btn-secondary min-h-11">
+            <Link href={employeeWorkspaceHref(employee.id, { edit: true, section, returnTo })} className="btn-secondary min-h-11 lg:min-h-9">
               <Pencil className="h-4 w-4" aria-hidden="true" /> {t('Edit full record')}
             </Link>
           )}
           <details className="group relative">
-            <summary className="btn-secondary min-h-11 cursor-pointer list-none" aria-label="More employee actions">
+            <summary className="btn-secondary min-h-11 cursor-pointer list-none lg:min-h-9" aria-label="More employee actions">
               {t('More actions')} <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" aria-hidden="true" />
             </summary>
             <div className="absolute end-0 top-full z-30 mt-2 w-56 rounded-xl border border-slate-200 bg-white p-2 shadow-xl dark:border-white/10 dark:bg-slate-900">
@@ -138,8 +138,8 @@ export function EmployeeWorkspaceShell({
         </div>
       </div>
 
-      <div className="mx-auto grid max-w-[1500px] gap-5 px-4 py-5 lg:grid-cols-[230px_minmax(0,1fr)] lg:px-6">
-        <nav aria-label={t('Employee record sections')} className="surface h-fit overflow-hidden p-2 lg:sticky lg:top-40">
+      <div className="mx-auto grid max-w-[1500px] gap-4 px-4 py-4 lg:grid-cols-[220px_minmax(0,1fr)] lg:px-6">
+        <nav aria-label={t('Employee record sections')} className="surface h-fit overflow-hidden p-2 lg:sticky lg:top-24">
           <div className="flex gap-1 overflow-x-auto lg:block lg:space-y-1">
             {destinations.map(destination => {
               const Icon = destination.icon;
@@ -149,7 +149,7 @@ export function EmployeeWorkspaceShell({
                   key={destination.id}
                   href={sectionHref(destination.id)}
                   aria-current={active ? 'page' : undefined}
-                  className={`flex min-h-11 shrink-0 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold transition-colors ${active ? 'bg-blue-50 text-blue-700 shadow-sm dark:bg-blue-500/15 dark:text-blue-200' : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-white/[0.05]'}`}
+                  className={`flex min-h-11 shrink-0 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold lg:min-h-9 lg:py-1.5 transition-colors ${active ? 'bg-blue-50 text-blue-700 shadow-sm dark:bg-blue-500/15 dark:text-blue-200' : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-white/[0.05]'}`}
                 >
                   <Icon className="h-4 w-4" aria-hidden="true" /> {t(destination.label)}
                 </Link>
@@ -158,7 +158,7 @@ export function EmployeeWorkspaceShell({
           </div>
         </nav>
 
-        <section data-employee-workspace-scroll className="min-w-0" aria-live="polite">
+        <section data-employee-workspace-scroll className="min-w-0 pb-24" aria-live="polite">
           {savedNotice && <p role="status" className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200">{t(savedNotice)}</p>}
           {section === 'overview' && <EmployeeOverview employee={employee} readiness={readiness.data} returnTo={returnTo} />}
           {section === 'personal' && <EmployeePersonalSection employee={employee} canWrite={canWrite} returnTo={returnTo} />}

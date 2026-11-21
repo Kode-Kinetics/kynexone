@@ -8,42 +8,42 @@ import { useLocale } from '../../contexts/LocaleContext';
 import { useEmployeeReferenceLists } from '../../hooks/useReferenceLists';
 import { employeeWorkspaceHref } from '../../lib/peopleRoutes';
 import { referenceLabel } from '../../lib/referenceLists';
+import { useFormat } from '../../hooks/useFormat';
+import { recordDate } from '../../lib/recordFormat';
+import { RecordField, RecordFieldGrid } from '../../components/employee/RecordField';
+import { RecordCallout, RecordSection } from '../../components/employee/RecordSection';
 import { EmployeeCostCentreField } from '../../components/employees/EmployeeCostCentreField';
 import { EmployeeTransfersPanel } from './EmployeeTransfersPanel';
 
-function ReadField({ label, value, help }: { label: string; value?: string; help: string }) {
-  return <div><dt className="mb-1.5 text-sm font-semibold text-slate-800 dark:text-slate-100">{label}</dt><dd><span className="block min-h-11 rounded-lg border border-slate-200 bg-white px-3 py-2.5 font-medium text-slate-900 dark:border-white/10 dark:bg-white/[0.03] dark:text-white">{value || 'Not provided'}</span><span className="mt-1 block text-xs font-normal text-slate-500">{help}</span></dd></div>;
-}
-
 export function EmployeeEmploymentSection({ employee, panel, canWrite, returnTo, onEmployeeChanged }: { employee: EmployeeDetail; panel?: string; canWrite: boolean; returnTo: string; onEmployeeChanged?(): void }) {
   const { companies } = useCompany();
-  const { locale } = useLocale();
+  const { t, locale } = useLocale();
+  const fx = useFormat();
   // Stored as the reference-list code (or, on older rows, the English label): shown in the reader's language.
   const { lists } = useEmployeeReferenceLists();
   const companyName = companies.find(company => company.id === employee.companyId)?.name ?? employee.companyId;
   if (panel === 'transfers') return <EmployeeTransfersPanel employeeId={employee.id} onEmployeeChanged={onEmployeeChanged} />;
-  return <section className="surface overflow-hidden">
-    <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-5 dark:border-white/10"><div><h2 className="text-2xl font-semibold text-slate-950 dark:text-white">Employment details</h2><p className="mt-1 text-sm text-slate-500">The employee’s company, role, reporting line, and contract information.</p></div>{canWrite && <Link href={employeeWorkspaceHref(employee.id, { edit: true, section: 'employment', returnTo })} className="btn-secondary">Edit section</Link>}</header>
-    <div className="grid gap-6 p-5 xl:grid-cols-[minmax(0,1fr)_320px]">
-      <div className="min-w-0 space-y-5">
-      <dl className="grid gap-x-6 gap-y-5 sm:grid-cols-2">
-        <ReadField label="Company" value={companyName} help="The legal entity employing this person." />
-        <ReadField label="Branch" value={employee.branch} help="Employee’s primary work location branch." />
-        <ReadField label="Department" value={employee.department} help="Department responsible for this employee." />
-        <ReadField label="Designation" value={employee.designation} help="Job designation in the organization structure." />
-        <ReadField label="Grade" value={employee.grade} help="Position grade defining salary band and level." />
-        <ReadField label="Line manager" value={employee.managerEmployeeId ? `Employee #${employee.managerEmployeeId}` : undefined} help="Employee’s direct reporting manager." />
-        <ReadField label="Joining date" value={employee.joiningDate} help="The date the employee joined the company." />
-        <ReadField label="Work location" value={employee.workLocation} help="Primary place of work for this employee." />
-        <ReadField label="Employment type" value={referenceLabel(lists.employmentType, employee.employmentType, locale)} help="Nature of employment as per company policy." />
-        <ReadField label="Contract type" value={referenceLabel(lists.contractType, employee.contractType, locale)} help="Type of employment contract." />
-      </dl>
-      <EmployeeCostCentreField employee={employee} onChanged={onEmployeeChanged} />
-      </div>
-      <aside className="space-y-4">
-        <div className="rounded-xl border border-blue-200 bg-blue-50 p-5 dark:border-blue-500/30 dark:bg-blue-500/10"><div className="flex items-center gap-3"><Info className="h-5 w-5 text-blue-600" /><h3 className="font-semibold text-slate-950 dark:text-white">What happens next?</h3></div><p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">Changes that require approval are sent to the Approval Center. Other reviewed changes apply to the employee record after saving.</p></div>
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-5 dark:border-emerald-500/30 dark:bg-emerald-500/10"><p className="text-sm font-semibold text-slate-800 dark:text-slate-100">{employee.grade || 'Grade'} salary band</p><p className="mt-2 text-xl font-semibold text-blue-700 dark:text-blue-300">Configured by compensation policy</p><p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Salary ranges remain authoritative in the grade and compensation setup.</p></div>
-      </aside>
+  return <RecordSection
+    title={t('Employment details')}
+    description={t('The employee’s company, role, reporting line, and contract information.')}
+    actions={canWrite && <Link href={employeeWorkspaceHref(employee.id, { edit: true, section: 'employment', returnTo })} className="btn-secondary">{t('Edit section')}</Link>}
+  >
+    <RecordFieldGrid>
+      <RecordField label={t('Company')} value={companyName} />
+      <RecordField label={t('Branch')} value={employee.branch} />
+      <RecordField label={t('Department')} value={employee.department} />
+      <RecordField label={t('Designation')} value={employee.designation} />
+      <RecordField label={t('Grade')} value={employee.grade} />
+      <RecordField label={t('Line manager')} value={employee.managerEmployeeId ? `${t('Employee')} #${employee.managerEmployeeId}` : undefined} />
+      <RecordField label={t('Joining date')} value={employee.joiningDate ? recordDate(fx, employee.joiningDate) : undefined} />
+      <RecordField label={t('Work location')} value={employee.workLocation} />
+      <RecordField label={t('Employment type')} value={referenceLabel(lists.employmentType, employee.employmentType, locale)} />
+      <RecordField label={t('Contract type')} value={referenceLabel(lists.contractType, employee.contractType, locale)} />
+    </RecordFieldGrid>
+    <div className="mt-4"><EmployeeCostCentreField employee={employee} onChanged={onEmployeeChanged} /></div>
+    <div className="mt-4 grid gap-3 md:grid-cols-2">
+      <RecordCallout title={t('What happens next?')} icon={<Info className="h-4 w-4 text-blue-600" aria-hidden="true" />}>{t('Changes that require approval are sent to the Approval Center. Other reviewed changes apply to the employee record after saving.')}</RecordCallout>
+      <RecordCallout tone="emerald" title={t('{grade} salary band', { grade: employee.grade || t('Grade') })}>{t('Configured by compensation policy. Salary ranges remain authoritative in the grade and compensation setup.')}</RecordCallout>
     </div>
-  </section>;
+  </RecordSection>;
 }
