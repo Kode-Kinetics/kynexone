@@ -470,6 +470,49 @@ public sealed class EmployeeDraftLifecyclePostgresTests
         }
     }
 
+    [Fact]
+    public async Task TheList_SaysWhetherTheEmployeeAnActivatedDraftBecameIsActuallyActive()
+    {
+        // "Activated" means the draft was approved and the employee record created; that record can still be a Draft
+        // (pay approval and start date pending). The list must say which, and the counts must not call them all active.
+        var first = await SeedAsync("PendingHrApproval");
+        var second = await AddDraftAsync(first.TenantId, "PendingHrApproval", first.Maker, "Second Hire");
+        foreach (var draftId in new[] { first.DraftId, second })
+            await using (var db = _fixture.CreateDb())
+                (await Employees(db, first.TenantId, first.Checker).ApproveDraft(draftId, CancellationToken.None))
+                    .Result.Should().BeOfType<OkObjectResult>();
+
+        EmployeeDraftListResponse before;
+        await using (var db = _fixture.CreateDb())
+            before = Ok(await Employees(db, first.TenantId, first.Maker).ListDrafts(status: "Activated", cancellationToken: CancellationToken.None));
+        var byDraft = before.Items.ToDictionary(i => i.Id);
+        var codeOfFirst = byDraft[first.DraftId].ActivatedEmployeeCode;
+        var codeOfSecond = byDraft[second].ActivatedEmployeeCode;
+
+        await using (var db = _fixture.CreateDb())
+        {
+            // IgnoreQueryFilters is intentional: the test edits the two employees this tenant owns.
+            var employees = await db.Employees.IgnoreQueryFilters().Where(x => x.TenantId == first.TenantId).ToListAsync();
+            employees.Single(e => e.EmployeeCode == codeOfFirst).Status = EmployeeStatuses.Draft;
+            employees.Single(e => e.EmployeeCode == codeOfSecond).Status = EmployeeStatuses.Active;
+            await db.SaveChangesAsync();
+        }
+
+        EmployeeDraftListResponse after;
+        await using (var db = _fixture.CreateDb())
+            after = Ok(await Employees(db, first.TenantId, first.Maker).ListDrafts(status: "Activated", cancellationToken: CancellationToken.None));
+        after.Items.Single(i => i.Id == first.DraftId).EmployeeStatus.Should().Be("Draft");
+        after.Items.Single(i => i.Id == second).EmployeeStatus.Should().Be("Active");
+        after.Counts.Activated.Should().Be(2, "the existing count keeps its meaning");
+        after.Counts.ActiveEmployees.Should().Be(1, "only the draft whose employee record is Active counts");
+
+        // A draft with no linked employee carries no employee status.
+        var open = await AddDraftAsync(first.TenantId, "Draft", first.Maker, "Still A Draft");
+        await using (var db = _fixture.CreateDb())
+            Ok(await Employees(db, first.TenantId, first.Maker).ListDrafts(status: "all", cancellationToken: CancellationToken.None))
+                .Items.Single(i => i.Id == open).EmployeeStatus.Should().BeNull();
+    }
+
     // ── Under production query filters (an HttpContext accessor) ─────────────
     // _fixture.CreateDb() has no request principal, so the DbContext runs in system scope with every
     // tenant and company filter OFF. These run the same calls the way production does.

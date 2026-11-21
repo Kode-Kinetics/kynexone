@@ -3261,7 +3261,8 @@ public class EmployeesController : ControllerBase
             CountOf(EmployeeDraftStatuses.Draft),
             CountOf(EmployeeDraftStatuses.Activated),
             CountOf(EmployeeDraftStatuses.Rejected),
-            CountOf(EmployeeDraftStatuses.Cancelled));
+            CountOf(EmployeeDraftStatuses.Cancelled),
+            await CountActiveEmployeesOfActivatedDraftsAsync(tenantId, visible, CountOf(EmployeeDraftStatuses.Activated), cancellationToken));
 
         var query = visible;
         var filter = (status ?? "awaiting").Trim();
@@ -6960,7 +6961,17 @@ public class EmployeesController : ControllerBase
         catch (Exception ex) { _logger?.LogWarning(ex, "Draft {DraftId} changed state, but the notification failed.", draftId); }
     }
 
-    private sealed record DraftDecision(string Action, Guid? UserId, DateTime AtUtc, string? Reason, int? EmployeeId, string? EmployeeCode);
+    private sealed record DraftDecision(string Action, Guid? UserId, DateTime AtUtc, string? Reason, int? EmployeeId, string? EmployeeCode, string? EmployeeStatus = null);
+
+    /// <summary>Activated drafts (over the caller's visible set) whose linked employee record is itself Active; the "Activated" count also
+    /// includes records still in Draft. Skipped (zero reads) when nothing is activated.</summary>
+    private async Task<int> CountActiveEmployeesOfActivatedDraftsAsync(Guid tenantId, IQueryable<EmployeeDraft> visible, int activatedCount, CancellationToken ct)
+    {
+        if (activatedCount == 0) return 0;
+        var activated = await visible.AsNoTracking().Where(d => d.Status == EmployeeDraftStatuses.Activated).ToListAsync(ct);
+        var decisions = await LoadDraftDecisionsAsync(tenantId, activated, ct);
+        return decisions.Values.Count(v => v.EmployeeStatus == EmployeeStatuses.Active);
+    }
 
     /// <summary>The latest decision recorded for each closed draft (activated, rejected, withdrawn),
     /// read from the draft's own audit rows. An activation from before those rows existed is found by
@@ -7032,11 +7043,11 @@ public class EmployeesController : ControllerBase
                     "The codes of the employees drafts the caller can already see became, in whichever company they landed.")
                 .AsNoTracking()
                 .Where(e => employeeIds.Contains(e.Id))
-                .Select(e => new { e.Id, e.EmployeeCode })
-                .ToDictionaryAsync(e => e.Id, e => e.EmployeeCode, ct);
+                .Select(e => new { e.Id, e.EmployeeCode, e.Status })
+                .ToDictionaryAsync(e => e.Id, e => new { e.EmployeeCode, e.Status }, ct);
             foreach (var (draftId, decision) in result.ToList())
-                if (decision.EmployeeId is { } eid && codes.TryGetValue(eid, out var code))
-                    result[draftId] = decision with { EmployeeCode = code };
+                if (decision.EmployeeId is { } eid && codes.TryGetValue(eid, out var linked))
+                    result[draftId] = decision with { EmployeeCode = linked.EmployeeCode, EmployeeStatus = linked.Status };
         }
         return result;
     }
@@ -7107,7 +7118,8 @@ public class EmployeesController : ControllerBase
                 decision?.Reason,
                 decision?.EmployeeId, decision?.EmployeeCode,
                 d.AcceptedOfferId is null ? null : OfferCompensationHandoff.PlacementProvenance(d),
-                compensationBlocked.Contains(d.Id) ? OfferCompensationHandoff.ReviewGuidance(d) : null);
+                compensationBlocked.Contains(d.Id) ? OfferCompensationHandoff.ReviewGuidance(d) : null,
+                decision?.EmployeeStatus);
         }).ToList();
     }
 

@@ -34,6 +34,12 @@ public sealed record EmployeeAccessDto(
     public bool LoginEnabled { get; init; }
     /// <summary>The login's password is set, whether or not a new welcome code is live. Independent of <see cref="State"/>.</summary>
     public bool PasswordConfigured { get; init; }
+    /// <summary>The signed-in caller entered this employee's work email (<see cref="WorkEmailSetterRule"/>): a first sign-in code
+    /// is then never emailed to them, it is printed and handed over in person.</summary>
+    public bool WorkEmailEnteredByCaller { get; init; }
+    /// <summary>What "give sign-in code" will do for THIS caller now: <see cref="EmployeeAccessService.DeliveryEmail"/> or
+    /// <see cref="EmployeeAccessService.DeliveryPrintedSlip"/>. Decided by the rule the issue endpoint itself uses.</summary>
+    public string SignInCodeDelivery { get; init; } = EmployeeAccessService.DeliveryEmail;
 }
 
 /// <summary><c>Delivery</c>: "print" never emails — the codes come back (and are recorded as disclosed) even when the
@@ -181,11 +187,18 @@ public sealed class EmployeeAccessService
         var reasonCode = verdict.ReasonCode;
         var allowed = verdict.CanIssue;
 
+        var emailConfigured = await _email.IsConfiguredAsync(tenantId, ct);
+        // Same inputs the issue path reads: an active login is a reset, and whether the caller entered the work email.
+        var enteredByCaller = await WorkEmailSetterRule.IsCallerSetterAsync(_db, tenantId, employeeId, caller.UserId, ct);
+        var resetOfActive = facts.Login is { IsActive: true };
+
         return new EmployeeAccessDto(facts.EmployeeId, facts.EmployeeName, facts.EmployeeCode, facts.WorkEmail, state.State,
             state.CodeExpiresAtUtc, issuerName, state.LastCodeExpiredAtUtc, state.LastSignInAtUtc,
             state.StoppedReason, state.BlockedCode, state.BlockedCode, allowed,
-            await _email.IsConfiguredAsync(tenantId, ct))
+            emailConfigured)
         {
+            WorkEmailEnteredByCaller = enteredByCaller,
+            SignInCodeDelivery = DeliveryFor(emailConfigured, ForcesPrint(resetOfActive, printRequested: false, setterPrintOnly: enteredByCaller)),
             ReasonCode = reasonCode,
             StoppedReasonText = state.StoppedText,
             BlockedReasonText = state.BlockedReason,
@@ -199,6 +212,21 @@ public sealed class EmployeeAccessService
     /// <param name="SetterPrintOnly">The caller set this employee's work email (WorkEmailSetterRule): the code is never
     /// emailed to an address they chose — it is printed and handed over in person, and they become its handler.</param>
     private sealed record Pending(IssuedCodeDto Item, Guid UserId, string Email, bool ResetOfActive, bool SetterPrintOnly);
+
+    public const string DeliveryEmail = "Email";
+    public const string DeliveryPrintedSlip = "PrintedSlip";
+
+    /// <summary>
+    /// THE rule for a sign-in code (used by issuing it and by the access status that forecasts it): a RESET of a login already in use
+    /// goes by email whenever email exists, never printed by choice, so no second person ever holds it. A first code is printed when
+    /// asked to, or when the caller entered the work email (the setter rule: never emailed to an address they chose).
+    /// </summary>
+    internal static bool ForcesPrint(bool resetOfActive, bool printRequested, bool setterPrintOnly) =>
+        !resetOfActive && (printRequested || setterPrintOnly);
+
+    /// <summary>What happens to a code when it is issued: emailed when the workspace can email and print is not forced, else a printed slip.</summary>
+    internal static string DeliveryFor(bool emailConfigured, bool forcesPrint) =>
+        emailConfigured && !forcesPrint ? DeliveryEmail : DeliveryPrintedSlip;
 
     public const string PrivilegedResetReason = "A security admin must reset their sign-in.";
 
@@ -262,8 +290,8 @@ public sealed class EmployeeAccessService
             // A RESET of a login already in use goes by email whenever email exists — never printed by choice, so no
             // second person ever holds it (its username was fixed at activation, not chosen by the work-email setter).
             // A first code is printed when asked to, or when the caller set the work email.
-            var forcePrint = !p.ResetOfActive && (request.PrintOnly || p.SetterPrintOnly);
-            var sent = configured && !forcePrint && await TryEmailAsync(tenantId, p, ct);
+            var forcePrint = ForcesPrint(p.ResetOfActive, request.PrintOnly, p.SetterPrintOnly);
+            var sent = DeliveryFor(configured, forcePrint) == DeliveryEmail && await TryEmailAsync(tenantId, p, ct);
             if (sent) { items.Add(p.Item with { Code = null, Delivery = IssuedCodeDto.EmailDelivery }); anyEmailed = true; continue; }
             allEmailed = false;
             _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, DisclosedAction, "User", p.UserId.ToString(),
