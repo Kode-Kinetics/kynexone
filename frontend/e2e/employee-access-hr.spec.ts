@@ -593,12 +593,12 @@ test('Add work emails: paste, preview counts, save, then give access and print',
   expect(errors).toEqual([]);
 });
 
-test('when the company can email codes, the profile row offers Email sign-in code', async ({ page }) => {
+test('when the company can email codes, the profile row offers Issue sign-in code', async ({ page }) => {
   const { writes } = await openPeople(page, { emailDelivery: true });
   const card = await openProfile(page, 'Noah Williams');
-  // One button per row: Email leads; slips are printed from the list's bulk Print.
-  await expect(card.getByRole('button')).toHaveText(['Email sign-in code']);
-  await card.getByRole('button', { name: 'Email sign-in code' }).click();
+  // One button per row: Issue leads (the server emails it, or prints a slip when the issuer entered the work email); slips are printed from the list's bulk Print.
+  await expect(card.getByRole('button')).toHaveText(['Issue sign-in code']);
+  await card.getByRole('button', { name: 'Issue sign-in code' }).click();
   const summary = page.getByTestId('welcome-codes-summary');
   await expect(summary).toContainText('Sign-in codes emailed: 1.');
   await expect(page.getByTestId('sign-in-slips')).toHaveCount(0);

@@ -50,6 +50,7 @@ import {
 import { OfferTemplateSelect } from '../components/OfferTemplateSelect';
 import { OfferLetterDesigner } from '../components/OfferLetterDesigner';
 import { yearsLabel } from '../lib/displayLabels';
+import { OVERVIEW_OPENING_STATUSES, mergeOverviewOpenings } from '../lib/recruitmentOverview';
 import { checklistOptionLabel } from '../lib/checklistLabel';
 import { offerApprovalNote } from '../lib/offerDisplay';
 import { approverPickerBlock } from '../lib/offerWorkspaceState';
@@ -319,7 +320,9 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
     openingsApi.stats().then(setStats).catch(() => {});
     requisitionsApi.stats().then(setReqStats).catch(() => {});
     // A five-row preview beside "View all".
-    openingsApi.list({ status: 'Open', pageSize: 5 }).then(r => setRecentOpenings(r.items.slice(0, 5))).catch(() => {});
+    // The same openings the "Open Positions" tile counts: Open and In Progress (the list takes one status at a time).
+    Promise.allSettled(OVERVIEW_OPENING_STATUSES.map(status => openingsApi.list({ status, pageSize: 5 }).then(r => r.items)))
+      .then(results => setRecentOpenings(mergeOverviewOpenings(results.flatMap(r => (r.status === 'fulfilled' ? [r.value] : [])), 5)));
   }, []);
 
   return (

@@ -106,7 +106,11 @@ export function AccessStatesPanel({
   const doIssue = (delivery?: 'email' | 'print') => { setConfirming(null); onIssue(delivery); };
 
   const loginButton = !!access && !states.needsWorkEmail && access.state === 'not_started' && canGive
-    ? <RowButton primary disabled={issuing} onClick={() => doIssue()}>{issuing ? t('Preparing the slips…') : emailing ? t('Email sign-in code') : t('Give access')}</RowButton>
+    ? <>
+      <RowButton primary disabled={issuing} onClick={() => doIssue()}>{issuing ? t('Preparing the slips…') : emailing ? t('Issue sign-in code') : t('Give access')}</RowButton>
+      {/* The server emails the code unless the issuer entered this work email, then it prints a slip: say both, promise neither. */}
+      {emailing && <p className="mt-1.5 text-xs text-slate-600 dark:text-slate-300" data-testid="issue-code-help">{t('The code is emailed to the work email. If you entered that email yourself, a slip is printed for you to hand over.')}</p>}
+    </>
     : null;
   const passwordButton = states.needsWorkEmail || !canGive || confirming || states.login === 'access_stopped' ? null
     : states.password === 'code_given' || (states.password === 'password_set' && states.newCodeLive) ? <RowButton disabled={issuing} onClick={() => setConfirming('new_code')}>{t('Give new code')}</RowButton>

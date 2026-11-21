@@ -170,15 +170,19 @@ export function draftRequestFailureReason(err: unknown, t: Translate = english):
 }
 
 /**
- * The notice after a draft is approved. An accepted offer's pay package is not applied by the HR approver: it waits as a
- * salary request for a second approver, and the employee stays out of post until then, so the notice says so instead
- * of calling them active.
+ * The notice after a draft is approved, from what the approval returned. Two separate facts, never mixed:
+ *   - is the employee record active, or created but not active yet (status);
+ *   - is the first pay package still waiting for a second approver (an accepted offer's package is not applied by the HR approver).
+ * A record that is not active yet is not called an employee in post, and an active one is not told to be activated.
  */
-export function draftApprovalNotice(employee: { name: string; employeeCode: string; status: string }, t: Translate = english): string {
+export function draftApprovalNotice(employee: { name: string; employeeCode: string; status: string; salaryApprovalState?: 'Pending' | null }, t: Translate = english): string {
   const params = { name: employee.name, code: employee.employeeCode };
-  return employee.status === 'Active'
-    ? t(msg('{name} is now employee {code}.'), params)
-    : t(msg('{name} is now employee {code}. Their pay package is waiting for a second approver; activate them once it is approved.'), params);
+  if (employee.status !== 'Active') {
+    return t(msg("{name}'s employee record {code} is created but not active yet. Their pay package is waiting for a second approver; activate them once it is approved."), params);
+  }
+  return employee.salaryApprovalState === 'Pending'
+    ? t(msg('{name} is now employee {code}. Their pay package is still waiting for a second approver.'), params)
+    : t(msg('{name} is now employee {code}.'), params);
 }
 
 /** True when the server refused because the draft had already been decided (409 draft_closed). */

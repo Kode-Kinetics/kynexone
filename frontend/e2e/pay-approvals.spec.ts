@@ -123,7 +123,10 @@ test.describe('Pay approvals queue', () => {
   });
   test('explains all 46 hidden packages and links the administrator to reviewer setup', async ({ page }) => {
     await boot(page, '/pay-approvals', { empty: true, requiresOtherReviewerCount: 46, permissions: ['payroll.approve', 'security.manage', 'dashboard.read'] });
-    await expect(page.getByText('You created 46 pay packages, so someone else must approve them. They do not appear in your queue.')).toBeVisible();
+    const notice = page.getByTestId('pay-approvals-hidden-notice');
+    await expect(notice).toContainText('46 pay packages are waiting for approval, but you cannot approve them.');
+    await expect(notice).toContainText("A pay package must be approved by someone other than the person who entered it, the employee, or the person who issued the employee's sign-in code.");
+    await expect(notice).toContainText('A different person with the payroll approve permission can approve it.');
     await expect(page.getByRole('link', { name: 'Check reviewer setup' })).toHaveAttribute('href', '/setup?tab=users');
     expect(await page.locator('main').innerText()).not.toContain('10,500');
   });

@@ -18,7 +18,7 @@ import { describeApiError } from '../../lib/apiError';
 import { activationFormError, todayCalendarDay } from '../../lib/employeeActivation';
 import { activationRejectionMessage, employeeActivationFailure, settledServiceRefusal } from '../../lib/employeeActivationFailure';
 
-export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo, onEmployeeChanged, onRetryReadiness, readinessLoading = false }: { employee: EmployeeDetail; readiness: EmployeeReadiness | null; returnTo: string; onEmployeeChanged?(): void; onRetryReadiness?(): void; readinessLoading?: boolean }) {
+export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo, onEmployeeChanged, onActivated, onRetryReadiness, readinessLoading = false }: { employee: EmployeeDetail; readiness: EmployeeReadiness | null; returnTo: string; onEmployeeChanged?(): void; /** Re-read the record and its readiness in place after a successful Activate (resolves when both are back). */ onActivated?(): Promise<void>; onRetryReadiness?(): void; readinessLoading?: boolean }) {
   const router = useRouter();
   const { hasPermission, user } = useAuth();
   const { t, locale } = useLocale();
@@ -55,6 +55,9 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
     try {
       await employeesApi.activate(employee.id, { effectiveDate: form.effectiveDate, reason: form.reason.trim() });
       setConfirming(false);
+      // The server now says Active: read the record again before anything else, so the page behind the dialog never shows Draft and
+      // no second Activate is offered. `activating` stays on (the row's button stays disabled) until the fresh record is back.
+      await onActivated?.();
       const access = canIssue ? await employeeAccessApi.get(employee.id).catch(() => null) : null;
       setActivated({ emailDelivery: !!access?.emailDelivery });
       setAccessRefresh((current) => current + 1);

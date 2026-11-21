@@ -40,6 +40,8 @@ interface EmployeeWorkspaceShellProps {
   savedNotice?: string;
   onRetryReadiness(): void;
   onEmployeeChanged?(): void;
+  /** Activate succeeded: re-read the record and readiness in place. */
+  onActivated?(): Promise<void>;
   /** The employee's cost centre was saved: re-read the record in place. */
   onCostCentreChanged?(): void;
 }
@@ -69,6 +71,7 @@ export function EmployeeWorkspaceShell({
   savedNotice,
   onRetryReadiness,
   onEmployeeChanged,
+  onActivated,
   onCostCentreChanged,
 }: EmployeeWorkspaceShellProps) {
   const { hasPermission } = useAuth();
@@ -162,7 +165,7 @@ export function EmployeeWorkspaceShell({
           {section === 'employment' && <EmployeeEmploymentSection employee={employee} panel={panel} canWrite={canWrite} returnTo={returnTo} onEmployeeChanged={onCostCentreChanged} />}
           {section === 'pay-benefits' && <EmployeePayBenefitsSection employee={employee} panel={panel} canWrite={canWrite} returnTo={returnTo} />}
           {section === 'compliance-documents' && <EmployeeComplianceDocumentsSection employee={employee} readiness={readiness.data} panel={panel} returnTo={returnTo} />}
-          {section === 'access-onboarding' && <EmployeeAccessOnboardingSection employee={employee} readiness={readiness.data} returnTo={returnTo} onEmployeeChanged={onEmployeeChanged} onRetryReadiness={onRetryReadiness} readinessLoading={readiness.loading} />}
+          {section === 'access-onboarding' && <EmployeeAccessOnboardingSection employee={employee} readiness={readiness.data} returnTo={returnTo} onEmployeeChanged={onEmployeeChanged} onActivated={onActivated} onRetryReadiness={onRetryReadiness} readinessLoading={readiness.loading} />}
           {section === 'activity' && <EmployeeActivitySection employee={employee} panel={panel} returnTo={returnTo} />}
         </section>
       </div>

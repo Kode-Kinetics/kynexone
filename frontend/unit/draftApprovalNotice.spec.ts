@@ -10,7 +10,7 @@ test.describe('what the New hires screen says once a draft is approved', () => {
 
   test('an employee whose pay waits for a second approver is not called active; HR is told what happens next', () => {
     const notice = draftApprovalNotice({ name: 'Layla', employeeCode: 'EMP-7', status: 'Draft' });
-    expect(notice).toBe('Layla is now employee EMP-7. Their pay package is waiting for a second approver; activate them once it is approved.');
+    expect(notice).toBe("Layla's employee record EMP-7 is created but not active yet. Their pay package is waiting for a second approver; activate them once it is approved.");
   });
 
   test('the Arabic wording exists', () => {
@@ -20,5 +20,6 @@ test.describe('what the New hires screen says once a draft is approved', () => {
     });
     expect(arabic).toContain('معتمِد ثانٍ');
     expect(arabic).toContain('EMP-7');
+    expect(arabic).not.toContain('أصبح');
   });
 });
