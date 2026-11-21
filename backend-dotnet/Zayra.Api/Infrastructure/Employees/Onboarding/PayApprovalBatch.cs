@@ -136,14 +136,18 @@ internal sealed class PayApprovalBatch
     }
 
     /// <summary><see cref="CompensationApprovalGate.IsBarredAsync"/>: the creator, anyone who wrote the pay since the last approval, the profile's editors, the subject, or the person who issued the sign-in code.</summary>
-    public bool IsBarred(Employee e, Guid caller)
+    public bool IsBarred(Employee e, Guid caller) => BlockedReason(e, caller) is not null;
+
+    /// <summary><see cref="CompensationApprovalGate.BlockedReasonAsync"/> from the rows read here: why the caller may not approve (the gate's own reason names), or null.</summary>
+    public string? BlockedReason(Employee e, Guid caller)
     {
         var profile = Profile(e);
         var makers = new HashSet<Guid>(RowsSinceApproval(e).Where(a => a.Action is CompensationApprovalGate.CreatedAction or CompensationApprovalGate.WrittenAction).Select(a => a.UserId));
         if (profile?.CreatedBy is Guid pc) makers.Add(pc);
         if (profile?.UpdatedBy is Guid pu) makers.Add(pu);
-        if (CompensationApprovalGate.RefusalFor(caller, e.CreatedBy, e.UserAccountId, makers) is not null) return true;
-        if (e.UserAccountId is not Guid user) return false;
-        return _redemptions.GetValueOrDefault(user.ToString())?.Any(meta => CredentialHandlerBar.IssuedCodeTo(meta, caller)) == true;
+        var refusal = CompensationApprovalGate.RefusalFor(caller, e.CreatedBy, e.UserAccountId, makers);
+        var issuedCode = refusal is null && e.UserAccountId is Guid user
+            && _redemptions.GetValueOrDefault(user.ToString())?.Any(meta => CredentialHandlerBar.IssuedCodeTo(meta, caller)) == true;
+        return CompensationApprovalGate.BlockedReasonFor(refusal, issuedCode);
     }
 }

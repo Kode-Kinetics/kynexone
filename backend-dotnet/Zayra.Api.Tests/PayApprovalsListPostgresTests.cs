@@ -45,7 +45,9 @@ public sealed class PayApprovalsListPostgresTests(PostgresFixture fixture)
         // The three cases the snapshot pins, named: pending with its author and designation, sent back, and the barred creator counted but not listed.
         actual.Should().Contain("\"employeeCode\":\"E-001\"").And.Contain("\"designation\":\"Senior Analyst\"").And.Contain("\"Name\":\"Huda HR Officer\"");
         actual.Should().Contain("\"employeeCode\":\"E-002\"").And.Contain("\"status\":\"rejected\"").And.Contain("\"ibanLast4\":\"7519\"");   // E-002 shares E-001's account
-        actual.Should().NotContain("E-003").And.Contain("\"requiresOtherReviewerCount\":1");
+        actual.Should().Contain("\"requiresOtherReviewerCount\":1");
+        actual.Should().NotContain("\"employeeCode\":\"E-003\",\"name\":\"Created By Caller\",\"companyId\"", "the barred creator is not an item the caller can approve");
+        actual.Should().Contain("\"blockedItems\":[{\"employeeId\":0,\"employeeCode\":\"E-003\"").And.Contain("\"blockedForCaller\":\"EnteredByYou\"");
     }
 
     [Fact]
