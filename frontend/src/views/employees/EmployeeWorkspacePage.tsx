@@ -109,6 +109,7 @@ function ValidEmployeeWorkspace({ employeeId, mode }: { employeeId: number; mode
       : searchParams.get('saved') === 'updated' ? 'Employee details saved.' : undefined}
     onRetryReadiness={() => void record.refreshReadiness()}
     onEmployeeChanged={() => void record.refreshRecord()}
+    onActivated={async () => { await Promise.all([record.reloadRecordQuietly(), record.refreshReadiness()]); }}
     onCostCentreChanged={() => void record.reloadRecordQuietly()}
   />;
 }

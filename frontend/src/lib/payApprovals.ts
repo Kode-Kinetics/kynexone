@@ -52,3 +52,13 @@ export function filterPayApprovals<T extends { name: string; employeeCode: strin
   if (!q) return items;
   return items.filter(i => [i.name, i.employeeCode, i.designation ?? '', i.companyName ?? ''].some(v => v.toLowerCase().includes(q)));
 }
+
+/** Why the reader may not approve a package, from the API's blockedForCaller; null for a missing or unrecognised value. */
+export function blockedReasonKey(reason: string | null | undefined): string | null {
+  switch (reason) {
+    case 'EnteredByYou': return 'You entered this pay package.';
+    case 'YouAreTheEmployee': return 'You are the employee.';
+    case 'YouIssuedSignInCode': return "You issued this employee's sign-in code.";
+    default: return null;
+  }
+}

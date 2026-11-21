@@ -14,6 +14,14 @@ internal static class OfferWorkflowTestSupport
     private static readonly OfferMemoryStorage Storage = new();
     internal static OfferArtifactService Artifacts(ZayraDbContext db) => new(db, Storage, OfferLifecycleServiceTests.Config());
     internal static OfferLifecycleService Lifecycle(ZayraDbContext db) => new(db, OfferLifecycleServiceTests.Config(), Artifacts(db));
+    /// <summary>Gives a test role the approval key a real HR Manager holds (recruitment.approve): the approval request names only people who can actually decide.</summary>
+    internal static async Task GrantApprovalKeyAsync(ZayraDbContext db, Zayra.Api.Domain.Entities.Role role)
+    {
+        const string key = "recruitment.approve";
+        var permission = await db.Permissions.FirstOrDefaultAsync(p => p.Key == key)
+            ?? db.Permissions.Add(new Zayra.Api.Domain.Entities.Permission { Key = key, Module = "Recruitment", Description = "Approve requisitions and offers" }).Entity;
+        role.RolePermissions.Add(new Zayra.Api.Domain.Entities.RolePermission { RoleId = role.Id, Role = role, PermissionId = permission.Id, Permission = permission });
+    }
     internal static Task<long> VersionAsync(ZayraDbContext db, Guid id) => db.OfferLetters.AsNoTracking().Where(o => o.Id == id).Select(o => o.Version).SingleAsync();
     internal static async Task<OfferResponseRequest> ResponseAsync(ZayraDbContext db, Guid id) =>
         new(await VersionAsync(db, id), "Accepted", "StaffRecorded", DateTime.UtcNow, "Synthetic candidate confirmed", "test/case");

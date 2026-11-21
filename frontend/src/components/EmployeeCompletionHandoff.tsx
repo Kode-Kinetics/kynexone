@@ -4,12 +4,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, Loader2, Send } from 'lucide-react';
 import { COMPLETION_FIELDS, employeeCompletionApi, type EmployeeCompletion } from '../api/employeeCompletion';
 import { useLocale } from '../contexts/LocaleContext';
+import { completionUnavailableKey } from '../lib/handoffNotices';
 
-export function EmployeeCompletionHandoff({ employeeId, onChanged }: { employeeId: number; onChanged?: () => void }) {
-  return <CompletionHandoffContent key={employeeId} employeeId={employeeId} onChanged={onChanged} />;
+export function EmployeeCompletionHandoff({ employeeId, employeeStatus, onChanged }: { employeeId: number; employeeStatus?: string | null; onChanged?: () => void }) {
+  return <CompletionHandoffContent key={employeeId} employeeId={employeeId} employeeStatus={employeeStatus} onChanged={onChanged} />;
 }
 
-function CompletionHandoffContent({ employeeId, onChanged }: { employeeId: number; onChanged?: () => void }) {
+function CompletionHandoffContent({ employeeId, employeeStatus, onChanged }: { employeeId: number; employeeStatus?: string | null; onChanged?: () => void }) {
   const { t } = useLocale();
   const [state, setState] = useState<EmployeeCompletion | null>(null);
   const [busy, setBusy] = useState(false);
@@ -46,7 +47,7 @@ function CompletionHandoffContent({ employeeId, onChanged }: { employeeId: numbe
     {error && <div role="alert" className="mt-3 text-sm text-red-600">{error} <button type="button" onClick={() => void load()} className="underline">{t('Retry')}</button></div>}
     {!state && !error && <Loader2 className="mt-3 h-4 w-4 motion-safe:animate-spin" aria-label={t('Loading…')} />}
     {state && <div className="mt-3 space-y-3">
-      {!state.selfServiceAvailable && <p className="text-sm text-amber-800 dark:text-amber-200">{t('The request will be available after the employee has eligible Self-Service access. HR must complete activation requirements first.')}</p>}
+      {!state.selfServiceAvailable && <p className="text-sm text-amber-800 dark:text-amber-200">{t(completionUnavailableKey(employeeStatus))}</p>}
       {!state.requested ? <button type="button" className="btn-secondary" disabled={busy} onClick={() => void act()}><Send className="h-4 w-4" aria-hidden="true" />{t(busy ? 'Saving...' : 'Request employee details')}</button> : <p role="status" className="flex items-center gap-2 text-sm font-medium"><CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden="true" />{t(state.status === 'Approved' ? 'Employee details approved' : state.status === 'PendingHR' ? 'Employee details awaiting HR review' : state.status === 'Rejected' ? 'Returned to employee for correction' : 'Completion request saved')}</p>}
       {state.status === 'PendingHR' && state.changes && <>
         <dl className="grid gap-3 sm:grid-cols-2">{COMPLETION_FIELDS.filter(f => Object.hasOwn(state.changes!, f.key)).map(f => <div key={f.key}><dt className="text-xs text-slate-500">{t(f.label)}</dt><dd className="mt-1 break-words text-sm"><bdi>{state.changes?.[f.key] || t('Not provided')}</bdi></dd></div>)}</dl>

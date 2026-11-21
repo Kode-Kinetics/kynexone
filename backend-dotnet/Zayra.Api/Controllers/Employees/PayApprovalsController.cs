@@ -69,6 +69,8 @@ public sealed class PayApprovalsController : ControllerBase
         var items = new List<object>();
         var hasMore = false;
         var requiresOtherReviewerCount = 0;
+        var blockedItems = new List<object>();
+        var blockedEmployees = new List<(Employee Employee, string Reason)>();
         if (candidates.Count > 0)
         {
             var batch = await PayApprovalBatch.LoadAsync(_db, tenantId, candidates, ct);
@@ -76,14 +78,29 @@ public sealed class PayApprovalsController : ControllerBase
             foreach (var e in candidates)
             {
                 if (!batch.NeedsApproval(e)) continue;
-                if (batch.IsBarred(e, caller.Value)) { requiresOtherReviewerCount++; continue; }
+                if (batch.BlockedReason(e, caller.Value) is { } blockedReason)
+                {
+                    requiresOtherReviewerCount++;
+                    if (blockedEmployees.Count < MaxListed) blockedEmployees.Add((e, blockedReason));
+                    continue;
+                }
                 if (listed.Count >= MaxListed) { hasMore = true; continue; }
                 listed.Add(e);
             }
-            var companyIds = listed.Where(e => e.CompanyId != null).Select(e => e.CompanyId!.Value).Distinct().ToList();
+            var companyIds = listed.Concat(blockedEmployees.Select(b => b.Employee)).Where(e => e.CompanyId != null).Select(e => e.CompanyId!.Value).Distinct().ToList();
             var companyNames = companyIds.Count == 0 ? new Dictionary<Guid, string>()
                 : await _db.Companies.AsNoTracking().Where(c => companyIds.Contains(c.Id))
                     .Select(c => new { c.Id, Name = string.IsNullOrEmpty(c.TradeName) ? c.LegalNameEn : c.TradeName }).ToDictionaryAsync(c => c.Id, c => c.Name, ct);
+            // The packages the caller may not approve are not in `items`; each says why, from the rule the approve route refuses with.
+            foreach (var (e, reason) in blockedEmployees)
+                blockedItems.Add(new
+                {
+                    employeeId = e.Id,
+                    employeeCode = e.EmployeeCode,
+                    name = DisplayName(e),
+                    companyName = e.CompanyId is Guid bid ? companyNames.GetValueOrDefault(bid) ?? "" : "",
+                    blockedForCaller = reason,
+                });
             var designationIds = listed.Where(e => e.DesignationId != null).Select(e => e.DesignationId!.Value).Distinct().ToList();
             var designations = designationIds.Count == 0 ? new Dictionary<Guid, string?>()
                 : await _db.Designations.AsNoTracking().Where(d => designationIds.Contains(d.Id)).Select(d => new { d.Id, d.TitleEn }).ToDictionaryAsync(d => d.Id, d => (string?)d.TitleEn, ct);
@@ -121,10 +138,11 @@ public sealed class PayApprovalsController : ControllerBase
                     enteredBy = entered is null ? null : ToActor(entered.UserId, entered.CreatedAtUtc),
                     lastChangedAtUtc = last?.CreatedAtUtc,
                     status = rejected ? "rejected" : "pending",
+                    blockedForCaller = (string?)null,
                 });
             }
         }
-        return Ok(new { items, count = items.Count, hasMore, requiresOtherReviewerCount });
+        return Ok(new { items, count = items.Count, hasMore, requiresOtherReviewerCount, blockedItems });
     }
 
     [HttpGet("setup")]

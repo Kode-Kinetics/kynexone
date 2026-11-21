@@ -5,6 +5,7 @@ import { Ban, CheckCircle2, Circle, Clock, KeyRound } from 'lucide-react';
 import type { EmployeeAccessDto } from '../../api/employeeAccess';
 import { useLocale } from '../../contexts/LocaleContext';
 import { employeeStateLabel, type AccessTone, type EmployeeRowState, type LoginRowState, type PasswordRowState, type ThreeStates } from '../../lib/employeeAccess';
+import { signInCodeButtonKey, signInCodeHelpKey } from '../../lib/handoffNotices';
 import { StatusChip } from '../StatusChip';
 
 const ICON = 'h-3.5 w-3.5 shrink-0';
@@ -76,6 +77,7 @@ export function AccessStatesPanel({
   const titleId = useId();
   const [confirming, setConfirming] = useState<null | 'new_code' | 'reset'>(null);
   const emailing = !!access?.emailDelivery;
+  const signInCodeHelp = signInCodeHelpKey(access?.signInCodeDelivery, emailing);
   const canGive = !!access && canIssue && access.canIssue && !waitingReason;
   const employeeChip = EMPLOYEE_CHIP[states.employee];
   const loginChip = states.login ? LOGIN_CHIP[states.login] : null;
@@ -106,7 +108,11 @@ export function AccessStatesPanel({
   const doIssue = (delivery?: 'email' | 'print') => { setConfirming(null); onIssue(delivery); };
 
   const loginButton = !!access && !states.needsWorkEmail && access.state === 'not_started' && canGive
-    ? <RowButton primary disabled={issuing} onClick={() => doIssue()}>{issuing ? t('Preparing the slips…') : emailing ? t('Email sign-in code') : t('Give access')}</RowButton>
+    ? <>
+      <RowButton primary disabled={issuing} onClick={() => doIssue()}>{issuing ? t('Preparing the slips…') : t(signInCodeButtonKey(access.signInCodeDelivery, emailing))}</RowButton>
+      {/* The API says what will happen (email or printed slip) and the label names it; the help line is only for an API that does not say. */}
+      {signInCodeHelp && <p className="mt-1.5 text-xs text-slate-600 dark:text-slate-300" data-testid="issue-code-help">{t(signInCodeHelp)}</p>}
+    </>
     : null;
   const passwordButton = states.needsWorkEmail || !canGive || confirming || states.login === 'access_stopped' ? null
     : states.password === 'code_given' || (states.password === 'password_set' && states.newCodeLive) ? <RowButton disabled={issuing} onClick={() => setConfirming('new_code')}>{t('Give new code')}</RowButton>
@@ -116,7 +122,7 @@ export function AccessStatesPanel({
   return (
     <div role="group" aria-labelledby={titleId} data-testid="access-states">
       <p id={titleId} className="sr-only">{t('Employment and sign-in status')}</p>
-      <dl className="divide-y divide-slate-100 dark:divide-white/10">
+      <dl className="divide-y divide-slate-100 dark:divide-white/10 xl:grid xl:grid-cols-3 xl:gap-4 xl:divide-y-0 [&>div]:xl:py-0">
         <Row label={t('Employee active')} testId="state-employee" chip={<StatusChip label={t(employeeStateLabel(states.employee, employeeStatus))} tone={employeeChip.tone} icon={employeeChip.icon} />}
           who={t('An HR approver with employee approval rights')} next={t(activateNext)}
           button={states.employee !== 'active' && activation.allowed

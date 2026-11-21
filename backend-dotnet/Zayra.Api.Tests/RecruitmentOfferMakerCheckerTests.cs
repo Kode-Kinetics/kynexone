@@ -313,6 +313,7 @@ public sealed class RecruitmentOfferMakerCheckerTests
             });
 
         var hrRole = new Role { Id = Guid.NewGuid(), TenantId = tenantId, Name = "HR Manager", NormalizedName = "HR MANAGER", IsActive = true };
+        await OfferWorkflowTestSupport.GrantApprovalKeyAsync(db, hrRole);
         db.Roles.Add(hrRole);
         var employeeRole = await db.Roles.SingleAsync(r => r.TenantId == tenantId && r.NormalizedName == "EMPLOYEE");
         var author = NewUser(tenantId, "author", hrRole);

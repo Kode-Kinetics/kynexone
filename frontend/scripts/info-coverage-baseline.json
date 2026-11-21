@@ -1,8 +1,8 @@
 {
  "totals": {
-  "withInfo": 32,
-  "noInfo": 6,
-  "withoutInfo": 410
+  "withInfo": 45,
+  "noInfo": 31,
+  "withoutInfo": 401
  },
  "files": {
   "app/platform/tenants/[id]/billing/page.tsx": {
@@ -44,6 +44,16 @@
    "withInfo": 0,
    "noInfo": 0,
    "withoutInfo": 5
+  },
+  "src/components/entitlements/MyBenefitUsageCard.tsx": {
+   "withInfo": 0,
+   "noInfo": 1,
+   "withoutInfo": 0
+  },
+  "src/components/entitlements/RequestUsageDialog.tsx": {
+   "withInfo": 2,
+   "noInfo": 6,
+   "withoutInfo": 0
   },
   "src/components/gl/AccountsMappingsPanel.tsx": {
    "withInfo": 0,
@@ -110,6 +120,41 @@
    "noInfo": 0,
    "withoutInfo": 0
   },
+  "src/components/performance/EditDraftCycle.tsx": {
+   "withInfo": 3,
+   "noInfo": 3,
+   "withoutInfo": 0
+  },
+  "src/components/performance/Feedback360.tsx": {
+   "withInfo": 2,
+   "noInfo": 3,
+   "withoutInfo": 0
+  },
+  "src/components/performance/PipCheckInModal.tsx": {
+   "withInfo": 1,
+   "noInfo": 2,
+   "withoutInfo": 0
+  },
+  "src/components/performance/ProbationForms.tsx": {
+   "withInfo": 2,
+   "noInfo": 5,
+   "withoutInfo": 0
+  },
+  "src/components/performance/ReviewDetailDrawer.tsx": {
+   "withInfo": 1,
+   "noInfo": 1,
+   "withoutInfo": 0
+  },
+  "src/components/performance/ReviewHrActions.tsx": {
+   "withInfo": 0,
+   "noInfo": 2,
+   "withoutInfo": 0
+  },
+  "src/components/performance/ScorecardTemplateSelect.tsx": {
+   "withInfo": 1,
+   "noInfo": 0,
+   "withoutInfo": 0
+  },
   "src/components/setup/DesignationAccessRolesField.tsx": {
    "withInfo": 1,
    "noInfo": 0,
@@ -145,10 +190,10 @@
    "noInfo": 1,
    "withoutInfo": 0
   },
-  "src/views/employees/EmployeePersonalSection.tsx": {
+  "src/views/BenefitUsagePage.tsx": {
    "withInfo": 0,
-   "noInfo": 0,
-   "withoutInfo": 9
+   "noInfo": 2,
+   "withoutInfo": 0
   },
   "src/views/HrLettersPage.tsx": {
    "withInfo": 0,
@@ -181,7 +226,7 @@
    "withoutInfo": 9
   },
   "src/views/PerformancePage.tsx": {
-   "withInfo": 0,
+   "withInfo": 1,
    "noInfo": 0,
    "withoutInfo": 55
   },

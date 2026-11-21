@@ -75,9 +75,10 @@ public class OpeningBalanceCutoverTests
         return ctrl;
     }
 
-    private static ParallelRunController Parallel(ZayraDbContext db, Guid tenantId)
+    private static ParallelRunController Parallel(
+        ZayraDbContext db, Guid tenantId, Zayra.Api.Application.Common.IDataScopeService? scope = null)
     {
-        var ctrl = new ParallelRunController(db);
+        var ctrl = new ParallelRunController(db, scope ?? new _ObScope());
         ctrl.ControllerContext = new ControllerContext
         { HttpContext = new DefaultHttpContext { User = Principal(tenantId, Maker, "consultant") } };
         return ctrl;
@@ -880,6 +881,253 @@ public class OpeningBalanceCutoverTests
             "statutory lines present here and absent there must appear on the report");
     }
 
+    /// <summary>A group tenant's companies pay in different currencies; the report must name the run's own, not the tenant default.</summary>
+    [Fact]
+    public async Task VarianceReport_NamesTheRunsCompanyCurrency()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        // The tenant already has a company paying in SAR. "The tenant's currency" resolves to the most active
+        // company's, so with only one company the old tenant-only rule and the run's own rule agree and prove nothing.
+        await SeedCompany(db, tid, "2020202020");
+        var co = await SeedCompany(db, tid);
+        // SeedCompany detaches its entity, so change the stored row rather than the stale object.
+        await db.Companies.Where(c => c.Id == co.Id).ExecuteUpdateAsync(u => u.SetProperty(c => c.DefaultCurrency, "KWD"));
+        db.ChangeTracker.Clear();
+        await SeedEmployee(db, tid, co.Id, "EMP-001");
+        var run = await CreateRun(db, tid, 2026, 9, co.Id);
+        (await Payroll(db, tid, Maker).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        // From here the tenant default (the one active company) is SAR; the run's company is the KWD one.
+        await db.Companies.Where(c => c.Id == co.Id).ExecuteUpdateAsync(u => u.SetProperty(c => c.IsActive, false));
+        db.ChangeTracker.Clear();
+
+        var res = await Parallel(db, tid).Variance(run.Id,
+            new ParallelRunController.VarianceRequest("EmployeeCode,ComponentCode,Amount\nEMP-001,NET,1\n"), CancellationToken.None);
+        var report = (ParallelRunController.VarianceReport)((OkObjectResult)res.Result!).Value!;
+
+        report.Currency.Should().Be("KWD");
+    }
+
+    /// <summary>A payroll user limited to some employees must not read the others' pay through the variance screen.</summary>
+    [Fact]
+    public async Task VarianceReport_ForAScopedCaller_CoversOnlyTheirEmployees()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        var one = await SeedEmployee(db, tid, co.Id, "EMP-001");
+        await SeedEmployee(db, tid, co.Id, "EMP-002");
+        var run = await CreateRun(db, tid, 2026, 9, co.Id);
+        (await Payroll(db, tid, Maker).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        var slips = await db.PayrollSlips.AsNoTracking().Where(s => s.RunId == run.Id).ToDictionaryAsync(s => s.EmployeeCode);
+
+        // The register is the customer's whole file: both employees.
+        var register = "EmployeeCode,ComponentCode,Amount\n" +
+                       $"EMP-001,NET,{slips["EMP-001"].NetSalary}\n" +
+                       $"EMP-002,NET,{slips["EMP-002"].NetSalary}\n";
+
+        var res = await Parallel(db, tid, new _ObScopedTo(slips["EMP-001"].EmployeeId)).Variance(run.Id,
+            new ParallelRunController.VarianceRequest(register, Tolerance: 0.01m), CancellationToken.None);
+        var report = (ParallelRunController.VarianceReport)((OkObjectResult)res.Result!).Value!;
+
+        report.Lines.Select(l => l.EmployeeCode).Distinct().Should().BeEquivalentTo(new[] { "EMP-001" },
+            "an out-of-scope employee's pay must not be readable, from either side");
+        report.EmployeesInRun.Should().Be(1);
+        report.EmployeesOnlyInRegister.Should().Be(0, "a hidden employee is not 'missing', they are out of this caller's scope");
+        report.KynexOneNetTotal.Should().Be(slips["EMP-001"].NetSalary);
+    }
+
+    /// <summary>
+    /// A scoped caller uploads the customer's whole file. Rows for people outside their scope must go whether or not that
+    /// person has a payslip in this run (one hired after processing has none), or their pay feeds the register totals and
+    /// the "only in the register" count. A code that names no KynexOne employee reveals nothing and stays.
+    /// </summary>
+    [Fact]
+    public async Task VarianceReport_ForAScopedCaller_DropsOutOfScopeRegisterRowsWithOrWithoutAPayslip()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        await SeedEmployee(db, tid, co.Id, "EMP-001");   // in scope, has a payslip
+        await SeedEmployee(db, tid, co.Id, "EMP-002");   // out of scope, has a payslip
+        var run = await CreateRun(db, tid, 2026, 9, co.Id);
+        (await Payroll(db, tid, Maker).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        await SeedEmployee(db, tid, co.Id, "EMP-003");   // out of scope, exists in the tenant, NO payslip in this run
+        db.ChangeTracker.Clear();
+        var slips = await db.PayrollSlips.AsNoTracking().Where(s => s.RunId == run.Id).ToDictionaryAsync(s => s.EmployeeCode);
+        slips.Should().NotContainKey("EMP-003");
+
+        var register = "EmployeeCode,ComponentCode,Amount\n" +
+                       $"EMP-001,NET,{slips["EMP-001"].NetSalary}\n" +
+                       $"EMP-002,NET,{slips["EMP-002"].NetSalary}\n" +
+                       " emp-003 ,NET,5000\n" +          // case and spaces: still that person
+                       "ZZZ-999,NET,7000\n";             // names no employee at all
+        var request = new ParallelRunController.VarianceRequest(register, Tolerance: 0.01m);
+
+        var all = (ParallelRunController.VarianceReport)((OkObjectResult)(await Parallel(db, tid).Variance(run.Id, request, CancellationToken.None)).Result!).Value!;
+        all.EmployeesOnlyInRegister.Should().Be(2, "an unrestricted caller sees everyone, EMP-003 and the unknown code");
+        all.ExternalNetTotal.Should().Be(slips["EMP-001"].NetSalary + slips["EMP-002"].NetSalary + 5000m + 7000m);
+
+        var scopedController = Parallel(db, tid, new _ObScopedTo(slips["EMP-001"].EmployeeId));
+        var report = (ParallelRunController.VarianceReport)((OkObjectResult)(await scopedController.Variance(run.Id, request, CancellationToken.None)).Result!).Value!;
+
+        report.Lines.Select(l => l.EmployeeCode.Trim().ToUpperInvariant()).Distinct().Should().BeEquivalentTo(new[] { "EMP-001", "ZZZ-999" },
+            "both out-of-scope people are gone from the lines; the unknown code is register-only and stays");
+        report.ExternalNetTotal.Should().Be(slips["EMP-001"].NetSalary + 7000m, "no out-of-scope figure feeds the register total");
+        report.KynexOneNetTotal.Should().Be(slips["EMP-001"].NetSalary);
+        report.EmployeesInRegister.Should().Be(2);
+        report.EmployeesInRun.Should().Be(1);
+        report.EmployeesOnlyInRegister.Should().Be(1, "only the unknown code; the out-of-scope employee without a payslip is not 'missing'");
+        report.MatchedEmployees.Should().Be(1);
+    }
+
+    /// <summary>A run with no payslips would report every register employee as missing — the server refuses, not just the UI.</summary>
+    [Fact]
+    public async Task VarianceReport_RefusesARunThatHasNoPayslips()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        await SeedEmployee(db, tid, co.Id, "EMP-001");
+        var run = await CreateRun(db, tid, 2026, 9, co.Id); // Draft: never processed
+
+        var res = await Parallel(db, tid).Variance(run.Id,
+            new ParallelRunController.VarianceRequest("EmployeeCode,ComponentCode,Amount\nEMP-001,NET,100\n"), CancellationToken.None);
+
+        var refused = res.Result.Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
+        refused.Value!.ToString().Should().Contain("no payslips", "the message must say why and what to do");
+    }
+
+    /// <summary>The page translates the refusal, so the body carries a stable code and the run's status next to the English message.</summary>
+    [Fact]
+    public async Task VarianceReport_RefusalCarriesAStableCodeAndTheRunStatus()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        await SeedEmployee(db, tid, co.Id, "EMP-001");
+        var run = await CreateRun(db, tid, 2026, 9, co.Id); // Draft: never processed
+
+        var res = await Parallel(db, tid).Variance(run.Id,
+            new ParallelRunController.VarianceRequest("EmployeeCode,ComponentCode,Amount\nEMP-001,NET,100\n"), CancellationToken.None);
+
+        var body = System.Text.Json.JsonSerializer.Serialize(res.Result.Should().BeOfType<UnprocessableEntityObjectResult>().Subject.Value);
+        body.Should().Contain("\"code\":\"run_has_no_payslips\"");
+        body.Should().Contain("\"status\":\"Draft\"");
+    }
+
+    /// <summary>The same employee and component twice is almost always a doubled export row; summing it hides a real mismatch.</summary>
+    [Fact]
+    public async Task VarianceReport_FlagsADuplicateRegisterRowInsteadOfSummingIt()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        await SeedEmployee(db, tid, co.Id, "EMP-001");
+        var run = await CreateRun(db, tid, 2026, 9, co.Id);
+        (await Payroll(db, tid, Maker).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        var slip = await db.PayrollSlips.AsNoTracking().SingleAsync(s => s.RunId == run.Id);
+
+        var register = "EmployeeCode,ComponentCode,Amount\n" +
+                       $"EMP-001,NET,{slip.NetSalary}\n" +
+                       $"emp-001,NET,{slip.NetSalary}\n";
+
+        var res = await Parallel(db, tid).Variance(run.Id,
+            new ParallelRunController.VarianceRequest(register, Tolerance: 0.01m), CancellationToken.None);
+        var report = (ParallelRunController.VarianceReport)((OkObjectResult)res.Result!).Value!;
+
+        report.RegisterErrors.Should().ContainSingle(e => e.Contains("row 3") && e.Contains("duplicate"));
+        report.Lines.Single(l => l.ComponentCode == "NET").ExternalAmount.Should().Be(slip.NetSalary,
+            "the first row stands; the duplicate is reported, not added on top");
+    }
+
+    /// <summary>The page renders register errors in the viewer's language from a stable code and its parameters; the English text stays as the fallback.</summary>
+    [Fact]
+    public async Task VarianceReport_RegisterErrorsCarryAStableCodeAndParameters()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        await SeedEmployee(db, tid, co.Id, "EMP-001");
+        var run = await CreateRun(db, tid, 2026, 9, co.Id);
+        (await Payroll(db, tid, Maker).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+
+        var register = "EmployeeCode,ComponentCode,Amount\n" +
+                       "EMP-001,NET,100\n" +      // row 2: fine
+                       ",NET,100\n" +             // row 3: no employee code
+                       "EMP-001,,100\n" +         // row 4: no component
+                       "EMP-001,GROSS,\n" +       // row 5: blank amount
+                       "EMP-001,BASIC,abc\n" +    // row 6: not a number
+                       "emp-001,NET,100\n";       // row 7: duplicate of row 2
+        var res = await Parallel(db, tid).Variance(run.Id,
+            new ParallelRunController.VarianceRequest(register, Tolerance: 0.01m), CancellationToken.None);
+        var report = ((OkObjectResult)res.Result!).Value!;
+
+        var details = ErrorDetails(report, "RegisterErrorDetails");
+        details.Select(d => (d.Code, d.Row)).Should().BeEquivalentTo(new[]
+        {
+            ("register_row_employee_code_required", (int?)3),
+            ("register_row_component_required", 4),
+            ("register_row_amount_required", 5),
+            ("register_row_amount_not_a_number", 6),
+            ("register_row_duplicate", 7),
+        });
+        details.Single(d => d.Code == "register_row_amount_not_a_number").Params["value"].Should().Be("abc");
+        var dup = details.Single(d => d.Code == "register_row_duplicate").Params;
+        dup["row"].Should().Be("7");
+        dup["firstRow"].Should().Be("2");
+        dup["employeeCode"].Should().Be("emp-001");
+        dup["component"].Should().Be("NET");
+        details.Should().OnlyContain(d => d.Message.Length > 0, "the English text stays as the fallback");
+    }
+
+    /// <summary>An unreadable register is refused with the same codes, so the refusal can be translated too.</summary>
+    [Fact]
+    public async Task VarianceReport_AnEmptyRegisterIsRefusedWithACode()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await SeedCompany(db, tid);
+        await SeedEmployee(db, tid, co.Id, "EMP-001");
+        var run = await CreateRun(db, tid, 2026, 9, co.Id);
+        (await Payroll(db, tid, Maker).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+
+        var res = await Parallel(db, tid).Variance(run.Id, new ParallelRunController.VarianceRequest("  "), CancellationToken.None);
+
+        var refused = res.Result.Should().BeOfType<UnprocessableEntityObjectResult>().Subject.Value!;
+        ErrorDetails(refused, "ErrorDetails").Should().ContainSingle(d => d.Code == "register_empty");
+    }
+
+    private sealed record ErrorDetail(string Code, int? Row, Dictionary<string, string> Params, string Message);
+
+    /// <summary>Reads the camel- or Pascal-cased detail list off a controller result without naming its type, so the test fails at run time, not compile time, before the field exists.</summary>
+    private static List<ErrorDetail> ErrorDetails(object body, string property)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(body));
+        var props = doc.RootElement.EnumerateObject().Where(p => string.Equals(p.Name, property, StringComparison.OrdinalIgnoreCase)).ToList();
+        props.Should().ContainSingle($"the body must carry {property}");
+        return props[0].Value.EnumerateArray().Select(e =>
+        {
+            string Get(string n) => e.EnumerateObject().First(p => string.Equals(p.Name, n, StringComparison.OrdinalIgnoreCase)).Value.ToString();
+            var row = e.EnumerateObject().First(p => string.Equals(p.Name, "row", StringComparison.OrdinalIgnoreCase)).Value;
+            var pars = e.EnumerateObject().First(p => string.Equals(p.Name, "params", StringComparison.OrdinalIgnoreCase)).Value
+                .EnumerateObject().ToDictionary(p => p.Name, p => p.Value.ToString());
+            return new ErrorDetail(Get("code"), row.ValueKind == System.Text.Json.JsonValueKind.Number ? row.GetInt32() : null, pars, Get("message"));
+        }).ToList();
+    }
+
     /// <summary>
     /// A legacy register routinely writes employee codes in a different case or with stray spaces
     /// ("emp-001 " for "EMP-001"). The coverage counts already treated those as one person; the lines
@@ -1002,6 +1250,15 @@ file sealed class _ObScope : Zayra.Api.Application.Common.IDataScopeService
     public Task<Zayra.Api.Application.Common.DataScope> ResolveAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct)
         => Task.FromResult(new Zayra.Api.Application.Common.DataScope
         { Level = Zayra.Api.Application.Common.DataScopeLevel.Organization, AllowedEmployeeIds = null });
+}
+
+file sealed class _ObScopedTo : Zayra.Api.Application.Common.IDataScopeService
+{
+    private readonly int[] _ids;
+    public _ObScopedTo(params int[] ids) => _ids = ids;
+    public Task<Zayra.Api.Application.Common.DataScope> ResolveAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct)
+        => Task.FromResult(new Zayra.Api.Application.Common.DataScope
+        { Level = Zayra.Api.Application.Common.DataScopeLevel.Department, AllowedEmployeeIds = _ids });
 }
 
 file sealed class _ObHttp : IHttpContextAccessor

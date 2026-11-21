@@ -15,6 +15,7 @@ public sealed class OfferApprovalLifecycleTests(PostgresFixture fixture)
         var seed = await OfferArtifactPostgresTests.ManagedDraftAsync(fixture);
         await using var db = fixture.CreateDb();
         var role = new Role { TenantId = seed.Actor.TenantId, Name = "HR Manager", NormalizedName = "HR MANAGER" };
+        await OfferWorkflowTestSupport.GrantApprovalKeyAsync(db, role);
         var checker = new User { TenantId = seed.Actor.TenantId, Email = $"checker-{Guid.NewGuid():N}@example.invalid",
             NormalizedEmail = Guid.NewGuid().ToString(), FullName = "Independent checker",
             IsGroupScope = true }; // a checker must be able to reach the offer's company

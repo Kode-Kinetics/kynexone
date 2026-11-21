@@ -27,6 +27,8 @@ interface RovingTabListProps<T extends string> {
    * list of tabs: arrow keys, Home and End move through all of them in order.
    */
   groups?: { label: string; ids: T[] }[];
+  /** Opt in: from `md` up the tabs wrap onto rows instead of scrolling; below it the strip scrolls (no groups needed). */
+  wrapFromMd?: boolean;
 }
 
 /**
@@ -44,6 +46,7 @@ export function RovingTabList<T extends string>({
   compact = false,
   scrollCue = false,
   groups,
+  wrapFromMd = false,
 }: RovingTabListProps<T>) {
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
   const activeIndex = items.findIndex((item) => item.id === activeId);
@@ -140,8 +143,8 @@ export function RovingTabList<T extends string>({
 
   const grouped = groups?.map((g) => ({ label: g.label, tabs: g.ids.flatMap((id) => items.filter((i) => i.id === id)) })).filter((g) => g.tabs.length > 0);
   const strip = (
-    <div ref={scrollerRef} className={`overflow-x-auto pb-1 ${grouped ? 'md:overflow-visible md:pb-0' : ''}`} data-roving-tabs={idPrefix}>
-      <div ref={tablist} className={`flex w-max min-w-full items-center gap-1 ${shell} ${grouped ? 'md:w-auto md:flex-wrap md:gap-x-4 md:gap-y-1' : ''}`} role="tablist" aria-label={label}>
+    <div ref={scrollerRef} className={`overflow-x-auto pb-1 ${grouped || wrapFromMd ? 'md:overflow-visible md:pb-0' : ''}`} data-roving-tabs={idPrefix}>
+      <div ref={tablist} className={`flex w-max min-w-full items-center gap-1 ${shell} ${grouped ? 'md:w-auto md:flex-wrap md:gap-x-4 md:gap-y-1' : wrapFromMd ? 'md:w-auto md:flex-wrap' : ''}`} role="tablist" aria-label={label}>
         {grouped
           ? grouped.map((g) => (
             <div key={g.label} role="presentation" data-tab-group={g.label} className="flex shrink-0 items-center gap-1">

@@ -15,6 +15,10 @@ import { essJobs } from './essJobs';
 import { recruitmentFixesA } from './recruitmentFixesA';
 import { recruitmentFixesB } from './recruitmentFixesB';
 import { recruitmentFixesC } from './recruitmentFixesC';
+import { hireWalkFixes } from './hireWalkFixes';
+import { demoReadyA } from './demoReadyA';
+import { demoReadyB } from './demoReadyB';
+import { demoReadyC } from './demoReadyC';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { hireWizard } from './hireWizard';
@@ -36,10 +40,12 @@ import { statutoryRules } from './statutoryRules';
 import { glApiKeys } from './glApiKeys';
 import { signInSecurity } from './signInSecurity';
 import { payApprovals } from './payApprovals';
+import { setupUsersPermissions } from './setupUsersPermissions';
 import { approvers } from './approvers';
 import { accessStates } from './accessStates';
 import { userPasswordReset } from './userPasswordReset';
 import { reportsAnalytics } from './reportsAnalytics';
+import { reportsPage } from './reportsPage';
 import { approvalChanges } from './approvalChanges';
 import { compensation } from './compensation';
 import { learning } from './learning';
@@ -64,6 +70,7 @@ import { engagement } from './engagement';
 import { payrollAttendance } from './payrollAttendance';
 import { payrollPipeline } from './payrollPipeline';
 import { payrollRecon } from './payrollRecon';
+import { payrollVariance } from './payrollVariance';
 import { launchPolish } from './launchPolish';
 import { glAccountNames } from './glAccountNames';
 import { polishB } from './polishB';
@@ -72,6 +79,7 @@ import { complianceActions } from './complianceActions';
 import { insights as insightsText } from './insights';
 import { attendanceExceptions } from './attendanceExceptions';
 import { employeeWorkspace } from './employeeWorkspace';
+import { employeeRecord } from './employeeRecord';
 import { companyWizard } from './companyWizard';
 import { companyWizardRules } from './companyWizardRules';
 import { setupDataEntry } from './setupDataEntry';
@@ -166,6 +174,7 @@ const en: Dict = {
   ...appraisalCycle.en,
   ...gradePackage.en,
   ...employeeWorkspace.en,
+  ...employeeRecord.en,
   "Navigation could not be resumed. Try the action again.": "Navigation could not be resumed. Try the action again.",
   "Cost center": "Cost center",
   "Line manager": "Line manager",
@@ -1672,6 +1681,10 @@ const en: Dict = {
   ...recruitmentFixesA.en,
   ...recruitmentFixesB.en,
   ...recruitmentFixesC.en,
+  ...hireWalkFixes.en,
+  ...demoReadyA.en,
+  ...demoReadyB.en,
+  ...demoReadyC.en,
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.en,
   // Payroll's attendance check before Process — see ./payrollAttendance.
@@ -1680,6 +1693,8 @@ const en: Dict = {
   ...payrollPipeline.en,
   // Payroll's manpower + value reconciliation and its sign-off — see ./payrollRecon.
   ...payrollRecon.en,
+  // Parallel-run variance screen — see ./payrollVariance.
+  ...payrollVariance.en,
   // Launch polish: payment readiness, compliance, home and offer sentences — see ./launchPolish.
   ...launchPolish.en,
   // The seeded chart-of-accounts names, so a journal reads in Arabic — see ./glAccountNames.
@@ -1715,12 +1730,14 @@ const en: Dict = {
   ...signInSecurity.en,
   // Pay approvals (scoped new-hire pay approval view) — see ./payApprovals.
   ...payApprovals.en,
+  ...setupUsersPermissions.en,
   ...approvers.en,
   // Employee active / login enabled / password configured, kept separate — see ./accessStates.
   ...accessStates.en,
   // Resetting another user's password, readable user statuses — see ./userPasswordReset.
   ...userPasswordReset.en,
   ...reportsAnalytics.en,
+  ...reportsPage.en,
   ...approvalChanges.en,
   ...compensation.en,
   // Engagement surveys — see ./engagement.
@@ -1794,6 +1811,7 @@ const ar: Dict = {
   ...appraisalCycle.ar,
   ...gradePackage.ar,
   ...employeeWorkspace.ar,
+  ...employeeRecord.ar,
   "Navigation could not be resumed. Try the action again.": "تعذر استئناف التنقل. أعد المحاولة.",
   "Cost center": "مركز التكلفة",
   "Line manager": "المدير المباشر",
@@ -3301,6 +3319,10 @@ const ar: Dict = {
   ...recruitmentFixesA.ar,
   ...recruitmentFixesB.ar,
   ...recruitmentFixesC.ar,
+  ...hireWalkFixes.ar,
+  ...demoReadyA.ar,
+  ...demoReadyB.ar,
+  ...demoReadyC.ar,
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.ar,
   // Payroll's attendance check before Process — see ./payrollAttendance.
@@ -3308,6 +3330,7 @@ const ar: Dict = {
   // Payroll's run pipeline — see ./payrollPipeline.
   ...payrollPipeline.ar,
   ...payrollRecon.ar,
+  ...payrollVariance.ar,
   ...launchPolish.ar,
   ...glAccountNames.ar,
   ...complianceActions.ar,
@@ -3336,10 +3359,12 @@ const ar: Dict = {
   ...glApiKeys.ar,
   ...signInSecurity.ar,
   ...payApprovals.ar,
+  ...setupUsersPermissions.ar,
   ...approvers.ar,
   ...accessStates.ar,
   ...userPasswordReset.ar,
   ...reportsAnalytics.ar,
+  ...reportsPage.ar,
   ...approvalChanges.ar,
   ...compensation.ar,
   ...engagement.ar,

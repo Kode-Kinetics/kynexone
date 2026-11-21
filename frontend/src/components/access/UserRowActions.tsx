@@ -2,7 +2,7 @@
 
 import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown, Eye } from 'lucide-react';
+import { Eye, MoreHorizontal } from 'lucide-react';
 import { useLocale } from '@/src/contexts/LocaleContext';
 
 export type UserRowAction = {
@@ -86,7 +86,7 @@ export function UserRowActions({ userName, onView, actions }: { userName: string
       </button>
       {actions.length > 0 && (
         <button ref={trigger} type="button" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
-          aria-label={`${t('More actions')}: ${userName}`} className="btn-secondary min-h-8 whitespace-nowrap px-2 text-xs"
+          aria-label={`${t('More actions')}: ${userName}`} title={t('More actions')} className="btn-secondary min-h-8 whitespace-nowrap px-2 text-xs"
           data-testid="user-more-actions"
           onClick={() => { lastItem.current = false; setOpen(value => !value); }}
           onKeyDown={event => {
@@ -94,7 +94,7 @@ export function UserRowActions({ userName, onView, actions }: { userName: string
               event.preventDefault(); lastItem.current = event.key === 'ArrowUp'; setOpen(true);
             }
           }}>
-          {t('More actions')} <ChevronDown className="h-3 w-3" aria-hidden="true" />
+          <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
         </button>
       )}
       {open && createPortal(

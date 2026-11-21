@@ -136,9 +136,9 @@ export function offerRevisionLabel(revisionNumber: number | null | undefined): s
 }
 
 /** How an offer approver appears in the picker: the name (the email when there is none) and, when known, the role. */
-export function approverOptionLabel(o: { name: string; email: string; role?: string | null }): string {
+export function approverOptionLabel(o: { name: string; email: string; role?: string | null }, translate: (key: string) => string = k => k): string {
   const who = o.name || o.email;
-  return o.role ? `${who} · ${o.role}` : who;
+  return o.role ? `${who} · ${translate(o.role)}` : who;
 }
 
 /** The API's refusal to move an application to Offer when nobody has interviewed or assessed the candidate and no reason was given. */

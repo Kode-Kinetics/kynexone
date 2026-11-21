@@ -105,16 +105,19 @@ export function DeductionStatementView({ statement, audience, showHeader = true 
             testId="cap-room"
           />
         </dl>
-        <p className="mt-2 text-caption text-slate-500 dark:text-slate-400" data-testid="cap-wage-note">
+        {!voided && !cannotBreakDown && <p className="mt-2 text-xs text-slate-700 dark:text-slate-200">{t(summary.key, summary.params)}</p>}
+        <details className="mt-2 text-caption text-slate-500 dark:text-slate-400" data-testid="cap-explanation">
+          <summary className="cursor-pointer font-semibold text-sapphire dark:text-cyanAccent">{t('How this works')}</summary>
+        <p className="mt-1.5 text-caption text-slate-500 dark:text-slate-400" data-testid="cap-wage-note">
           {t('Gross pay {gross} minus pay not earned for absence {absence}.', { gross: fmt.money(statement.grossPay), absence: fmt.money(statement.payNotEarned) })}
           {statement.otherRuns > 0 && <> {t('Includes {count, plural, one {# other payroll run} other {# other payroll runs}} this month: the limit covers the whole month.', { count: statement.otherRuns })}</>}
           {audience === 'hr' && statement.otherRunsNotFinal > 0 && <> {t('{count, plural, one {# of them is} other {# of them are}} not final yet.', { count: statement.otherRunsNotFinal })}</>}
           {' '}{t('Counting the limit on the wage after absence is pending legal confirmation.')}
         </p>
-        {!voided && !cannotBreakDown && <p className="mt-2 text-xs text-slate-700 dark:text-slate-200">{t(summary.key, summary.params)}</p>}
-        <p className="mt-1 text-caption text-slate-500 dark:text-slate-400">
+        <p className="mt-1.5 text-caption text-slate-500 dark:text-slate-400">
           {t('Article 93: loan, advance, penalty and court-ordered deductions together may not exceed half of the wage due. Social insurance (GOSI) and pay not earned for absence are not counted.')}
         </p>
+        </details>
       </section>
 
       {!voided && statement.reasons.length > 0 && (
@@ -158,7 +161,7 @@ function Figure({ label, value, tone, testId }: { label: string; value: string; 
   return (
     <div>
       <dt className="text-caption font-medium text-slate-500 dark:text-slate-400">{label}</dt>
-      <dd data-testid={testId} className={`font-mono text-sm font-semibold tabular-nums ${tone === 'bad' ? 'text-rose-700 dark:text-rose-300' : 'text-slate-900 dark:text-white'}`}>{value}</dd>
+      <dd data-testid={testId} className={`text-sm font-semibold tabular-nums ${tone === 'bad' ? 'text-rose-700 dark:text-rose-300' : 'text-slate-900 dark:text-white'}`}>{value}</dd>
     </div>
   );
 }
@@ -171,7 +174,7 @@ function LineGroup({ title, total, lines, audience, fmt, empty, testId }: {
     <section data-testid={testId}>
       <div className="mb-1.5 flex items-baseline justify-between gap-2">
         <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</h4>
-        <span className="font-mono text-xs font-semibold tabular-nums text-slate-700 dark:text-slate-200">{total}</span>
+        <span className="text-xs font-semibold tabular-nums text-slate-700 dark:text-slate-200">{total}</span>
       </div>
       {lines.length === 0 ? (
         <p className="text-xs text-slate-500 dark:text-slate-400">{empty}</p>
@@ -195,7 +198,7 @@ function LineRow({ line, audience, fmt }: { line: DeductionLine; audience: Audie
     <li className="space-y-1 px-3 py-2.5" data-testid="deduction-line">
       <div className="flex items-start justify-between gap-3">
         <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t(COMPONENT_LABEL[line.componentCode] ?? CATEGORY_LABEL[line.category])}</p>
-        <span className="font-mono text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{fmt.money(line.amount)}</span>
+        <span className="text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{fmt.money(line.amount)}</span>
       </div>
       {isDebtLine && <p className="text-xs text-slate-700 dark:text-slate-200" data-testid="deduction-sentence">{t(sentence.key, sentence.params)}</p>}
       {!isDebtLine && line.label && !COMPONENT_LABEL[line.componentCode] && <p className="text-caption text-slate-500 dark:text-slate-400">{line.label}</p>}

@@ -337,7 +337,9 @@ test.describe('pay approvals creator notice', () => {
   test('an empty queue with 2 hidden packages says you created them and someone else must approve', async ({ page }) => {
     await boot(page, '/pay-approvals', { permissions: ['payroll.approve', 'security.manage', 'dashboard.read'], emptyQueueCount: 2 });
     const notice = page.getByTestId('pay-approvals-hidden-notice');
-    await expect(notice).toContainText('You created 2 pay packages, so someone else must approve them. They do not appear in your queue.', { timeout: 45_000 });
+    await expect(notice).toContainText('2 pay packages are waiting for approval, but you cannot approve them.', { timeout: 45_000 });
+    await expect(notice).toContainText('A different person with the payroll approve permission can approve it.');
+    await expect(notice).not.toContainText('Ask your administrator');
     await expect(notice.getByRole('link', { name: 'Check reviewer setup' })).toHaveAttribute('href', '/setup?tab=users');
   });
 

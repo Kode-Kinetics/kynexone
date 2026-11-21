@@ -308,7 +308,25 @@ public static class CompensationApprovalGate
     /// the last approval (including the workflow approver of a change), the last editor of the payroll profile, the subject, or
     /// the person who handed the subject their sign-in code. Shared by the full approve route and the scoped approval view.
     /// </summary>
-    public static async Task<bool> IsBarredAsync(ZayraDbContext db, Guid tenantId, Employee employee, Guid caller, CancellationToken ct)
+    public static async Task<bool> IsBarredAsync(ZayraDbContext db, Guid tenantId, Employee employee, Guid caller, CancellationToken ct) =>
+        await BlockedReasonAsync(db, tenantId, employee, caller, ct) is not null;
+
+    public const string BlockedEnteredByYou = "EnteredByYou";
+    public const string BlockedYouAreTheEmployee = "YouAreTheEmployee";
+    public const string BlockedYouIssuedSignInCode = "YouIssuedSignInCode";
+
+    /// <summary>Names the second-person refusal for the caller: the maker (<see cref="RefusalFor"/> "creator"), the employee ("subject"), or the
+    /// person who issued the employee's sign-in code. Null when nothing bars them. The one place the three reasons are named.</summary>
+    public static string? BlockedReasonFor(string? refusal, bool issuedSignInCode) => refusal switch
+    {
+        "creator" => BlockedEnteredByYou,
+        "subject" => BlockedYouAreTheEmployee,
+        _ => issuedSignInCode ? BlockedYouIssuedSignInCode : null,
+    };
+
+    /// <summary>Why the caller may not approve this package (one of the <c>Blocked*</c> reasons), or null when they may. The approve routes refuse
+    /// with <c>second_person_required</c> exactly when this is non-null (<see cref="IsBarredAsync"/>); the scoped queue names the reason from it.</summary>
+    public static async Task<string?> BlockedReasonAsync(ZayraDbContext db, Guid tenantId, Employee employee, Guid caller, CancellationToken ct)
     {
         var profile = await db.EmployeePayrollProfiles.AsNoTracking()
             .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == employee.Id && !p.IsDeleted, ct);
@@ -320,7 +338,7 @@ public static class CompensationApprovalGate
         var subjects = new HashSet<Guid>(await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.SubjectUserIdsAsync(db, tenantId, employee.Id, ct));
         if (employee.UserAccountId is Guid u) subjects.Add(u);
         var refusal = RefusalFor(caller, employee.CreatedBy, subjects.Contains(caller) ? caller : employee.UserAccountId, makers);
-        return refusal is not null || await CredentialHandlerBar.IsBarredAsync(db, tenantId, employee.Id, caller, DateTime.UtcNow, ct);
+        return BlockedReasonFor(refusal, refusal is null && await CredentialHandlerBar.IsBarredAsync(db, tenantId, employee.Id, caller, DateTime.UtcNow, ct));
     }
 
     private static object Fingerprint(decimal? salary, string? iban)

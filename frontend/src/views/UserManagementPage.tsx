@@ -9,7 +9,7 @@ import {
   RefreshCw, Plus, Search, ChevronLeft, ChevronRight, Eye, EyeOff,
   UserCheck, RotateCcw,
   CheckSquare, MinusSquare, Square, Edit2, Power, PowerOff, Trash2,
-  Building2, Circle,
+  Building2, Circle, ChevronDown,
 } from 'lucide-react';
 import {
   usersApi, rolesApi, delegationsApi, authoritiesApi, securitySettingsApi,
@@ -111,6 +111,11 @@ function FormField({ label, htmlFor, children }: { label: string; htmlFor?: stri
       {children}
     </div>
   );
+}
+
+/** A field that sizes itself (a select beside other controls): `inp` without the full-width default, which would override any width given here. */
+function inpFit(extra = '') {
+  return inp(extra).replace(/^w-full /, '');
 }
 
 function inp(extra = '') {
@@ -335,7 +340,7 @@ export function UsersTab() {
   return (
     <div className="space-y-4">
       <ApprovalDeadEndCard companyId={searchParams?.get('companyId') || selectedCompanyId} canManage={canManageUsers} onCreate={() => setShowCreate(true)} />
-      {canManageUsers && <PayApprovalSetupCard companyId={searchParams?.get('companyId') || selectedCompanyId} revision={users} onCreate={() => setShowCreate(true)} />}
+      {canManageUsers && <PayApprovalSetupCard companyId={searchParams?.get('companyId') || selectedCompanyId} revision={users} />}
       {/* Subscription inactive banner */}
       {subscriptionBanner && (
         <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-300">
@@ -344,19 +349,19 @@ export function UsersTab() {
       )}
 
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-start gap-2">
         <div className="relative flex-1 min-w-52">
           <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-          <input className={inp('ps-9')} placeholder="Search name or email…" value={search}
+          <input className={inp('ps-9')} placeholder={t('Search name or email…')} aria-label={t('Search name or email…')} value={search}
             onChange={e => { setSearch(e.target.value); setPage(1); }} />
         </div>
-        <select className={inp('w-40')} value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }}>
-          <option value="">All Statuses</option>
+        <select className={inpFit('w-44 shrink-0')} aria-label={t('Status')} value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }}>
+          <option value="">{t('All Statuses')}</option>
           {USER_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
           <option value="Deleted">{t('Deleted (restorable)')}</option>
         </select>
-        <button onClick={load} className="rounded-lg border border-slate-200 p-2 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700">
-          <RefreshCw className="h-4 w-4 text-slate-500" />
+        <button type="button" onClick={load} aria-label={t('Reload')} title={t('Reload')} className="inline-flex h-[38px] w-[38px] items-center justify-center rounded-lg border border-slate-200 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700">
+          <RefreshCw className="h-4 w-4 text-slate-500" aria-hidden="true" />
         </button>
         <div className="flex flex-col items-start gap-1">
           <button
@@ -364,16 +369,16 @@ export function UsersTab() {
             onClick={() => { if (!atUserLimit) setShowCreate(true); }}
             disabled={atUserLimit}
             aria-describedby={atUserLimit && usage ? 'user-limit-reason' : undefined}
-            className="flex items-center gap-2 rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 whitespace-nowrap rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <Plus className="h-4 w-4" /> Create User
+            <Plus className="h-4 w-4" aria-hidden="true" /> {t('Create User')}
           </button>
           {atUserLimit && usage && <PlanLimitNote id="user-limit-reason" kind="users" used={usage.activeUsers} max={usage.maxUsers} />}
         </div>
         <button
           type="button"
           onClick={() => setEmployeeLink({ user: null })}
-          className="flex items-center gap-2 rounded-lg border border-violet-300 px-3 py-2 text-sm font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-300 dark:hover:bg-violet-900/30"
+          className="flex items-center gap-2 whitespace-nowrap rounded-lg border border-violet-300 px-3 py-2 text-sm font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-300 dark:hover:bg-violet-900/30"
         >
           <UserCheck className="h-4 w-4" aria-hidden="true" /> {t('Invite employee')}
         </button>
@@ -386,51 +391,54 @@ export function UsersTab() {
         <table className="w-full text-sm">
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/60">
             <tr>
-              {['Name / Email', 'Status', 'Roles', 'Access Mode', 'Last Login', 'Actions'].map(h => (
-                <th key={h} className="px-4 py-2.5 text-start text-xs font-semibold text-slate-500">{h}</th>
+              {['Name / Email', 'Status', 'Roles', 'Last Login', 'Actions'].map(h => (
+                <th key={h} className="px-3 py-2 text-start text-xs font-semibold text-slate-500">{t(h)}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {loading ? (
-              <tr><td colSpan={6} className="py-8 text-center text-sm text-slate-500">Loading…</td></tr>
+              <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-500">{t('Loading…')}</td></tr>
             ) : users.length === 0 ? (
-              <tr><td colSpan={6} className="py-8 text-center text-sm text-slate-500">No users found.</td></tr>
+              <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-500">{t('No users found.')}</td></tr>
             ) : users.map(u => (
               <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                <td className="px-4 py-3">
-                  <p className="flex items-center gap-1.5 font-medium text-slate-800 dark:text-slate-200">
-                    {u.fullName}
+                <td className="min-w-0 px-3 py-1.5">
+                  <p className="flex min-w-0 items-center gap-1.5 font-medium text-slate-800 dark:text-slate-200">
+                    <span className="min-w-0 max-w-[60%] shrink-0 truncate" title={u.fullName}>{u.fullName}</span>
                     {u.isOwner && (
-                      <span className="rounded-lg bg-amber-50 px-1.5 py-0.5 text-caption font-semibold text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-800"
+                      <span className="shrink-0 rounded-lg bg-amber-50 px-1.5 py-0.5 text-caption font-semibold text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-800"
                         title={t('Workspace owner: no other administrator can change this account.')} data-testid="user-owner-badge">
                         {t('Owner')}
                       </span>
                     )}
+                    {u.mfaEnabled && (
+                      <span className="inline-flex shrink-0 items-center text-emerald-700 dark:text-emerald-400" data-testid="user-two-step-on" title={t('Two-step sign-in is on')}>
+                        <Shield className="h-3.5 w-3.5" aria-hidden="true" /><span className="sr-only">{t('Two-step sign-in is on')}</span>
+                      </span>
+                    )}
+                    {u.employeeId && (
+                      <span className="min-w-0 truncate text-xs font-normal text-violet-600 dark:text-violet-400"
+                        title={u.employeeName ? (u.employeeCode ? t('Employee: {name} ({code})', { name: u.employeeName, code: u.employeeCode }) : t('Employee: {name}', { name: u.employeeName })) : `Emp #${u.employeeId}`}>
+                        {!u.employeeName
+                          ? `Emp #${u.employeeId}`
+                          : u.employeeCode
+                            ? t('Employee: {name} ({code})', { name: u.employeeName, code: u.employeeCode })
+                            : t('Employee: {name}', { name: u.employeeName })}
+                      </span>
+                    )}
                   </p>
-                  <p className="text-xs text-slate-500">{u.email}</p>
-                  {u.mfaEnabled && (
-                    <p className="mt-0.5 flex items-center gap-1 text-xs text-emerald-700 rtl:text-body-sm dark:text-emerald-400" data-testid="user-two-step-on">
-                      <Shield className="h-3 w-3" aria-hidden="true" /> {t('Two-step sign-in is on')}
-                    </p>
-                  )}
-                  {u.employeeId && (
-                    <p className="text-xs text-violet-500">
-                      {!u.employeeName
-                        ? `Emp #${u.employeeId}`
-                        : u.employeeCode
-                          ? t('Employee: {name} ({code})', { name: u.employeeName, code: u.employeeCode })
-                          : t('Employee: {name}', { name: u.employeeName })}
-                    </p>
-                  )}
+                  <p className="truncate text-xs text-slate-500" title={u.email}>{u.email}</p>
                 </td>
-                <td className="px-4 py-3"><StatusBadge value={u.accessMode === 'NoLogin' && u.status === 'Active' ? 'NoLogin' : u.status} /></td>
-                <td className="max-w-[14rem] px-4 py-3 text-xs text-slate-600 dark:text-slate-400">
+                <td className="px-3 py-1.5">
+                  <StatusBadge value={u.accessMode === 'NoLogin' && u.status === 'Active' ? 'NoLogin' : u.status} />
+                  <p className="whitespace-nowrap text-xs text-slate-600 dark:text-slate-400">{t(ACCESS_MODE_LABELS[u.accessMode] ?? u.accessMode)}</p>
+                </td>
+                <td className="max-w-[18rem] px-3 py-2 text-xs text-slate-600 dark:text-slate-400">
                   <RoleChips roles={u.roles} />
                 </td>
-                <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{t(ACCESS_MODE_LABELS[u.accessMode] ?? u.accessMode)}</td>
-                <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-500">{u.lastLoginAtUtc ? fmtDateTime(u.lastLoginAtUtc) : t('Never')}</td>
-                <td className="px-4 py-3">
+                <td className="whitespace-nowrap px-3 py-2 text-xs text-slate-500" title={u.lastLoginAtUtc ? fmtDateTime(u.lastLoginAtUtc) : undefined}>{u.lastLoginAtUtc ? fmtDate(u.lastLoginAtUtc) : t('Never')}</td>
+                <td className="px-3 py-1.5">
                   {deletedView ? (
                     <button type="button" onClick={() => restoreUser(u)} disabled={restoringId === u.id} data-testid="user-restore"
                       className="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5">
@@ -442,7 +450,7 @@ export function UsersTab() {
                     ? <UserRowActions userName={u.fullName || u.email} onView={() => setSelected(u)} actions={[]} />
                     : <UserRowActions userName={u.fullName || u.email} onView={() => setSelected(u)} actions={rowActions(u)} />
                   )}
-                  {!deletedView && !protectedOwner(u) && deleteBlockedReason(u) && <p className="mt-1 max-w-[16rem] text-caption leading-4 text-slate-500 dark:text-slate-400" data-testid="user-delete-reason">{deleteBlockedReason(u)}</p>}
+                  {!deletedView && !protectedOwner(u) && deleteBlockedReason(u) && <p className="mt-1 max-w-[18rem] text-caption leading-4 text-slate-500 dark:text-slate-400" data-testid="user-delete-reason">{deleteBlockedReason(u)}</p>}
                 </td>
               </tr>
             ))}
@@ -1665,9 +1673,12 @@ export function RolesTab() {
 // ── Permissions Tab ────────────────────────────────────────────────────────────
 
 export function PermissionsTab() {
+  const { t } = useLocale();
   const [permissions, setPermissions] = useState<PermissionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  // Every module starts open. Which ones are folded is only this visit's: nothing is remembered.
+  const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
 
   useEffect(() => {
     rolesApi.permissions().then(setPermissions).catch(() => {}).finally(() => setLoading(false));
@@ -1680,30 +1691,56 @@ export function PermissionsTab() {
       acc[p.module].push(p);
       return acc;
     }, {});
+  const modules = Object.entries(grouped).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const permissionCount = modules.reduce((sum, [, perms]) => sum + perms.length, 0);
+  const toggle = (module: string) => setFolded(prev => { const next = new Set(prev); if (!next.delete(module)) next.add(module); return next; });
 
   return (
-    <div className="space-y-4">
-      <div className="relative">
-        <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-        <input className={inp('ps-9 max-w-xs')} placeholder="Filter permissions…" value={search} onChange={e => setSearch(e.target.value)} />
-      </div>
-      {loading ? <p className="text-sm text-slate-500">Loading…</p> : Object.entries(grouped).sort().map(([module, perms]) => (
-        <div key={module} className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
-          <div className="bg-slate-50 dark:bg-slate-800/60 px-4 py-2.5 border-b border-slate-200 dark:border-slate-700">
-            <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300">{module}</h4>
-          </div>
-          <div className="divide-y divide-slate-100 dark:divide-slate-800">
-            {perms.map(p => (
-              <div key={p.id} className="flex items-center justify-between px-4 py-2.5">
-                <div>
-                  <p className="text-sm font-mono text-violet-700 dark:text-violet-400">{p.key}</p>
-                  <p className="text-xs text-slate-500">{p.description}</p>
-                </div>
-              </div>
-            ))}
-          </div>
+    <div>
+      <div data-testid="permissions-toolbar"
+        className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-200 bg-white py-2 dark:border-slate-700 dark:bg-slate-900">
+        <div className="relative w-full sm:w-72">
+          <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+          <input className={inp('ps-9')} placeholder={t('Filter permissions…')} aria-label={t('Filter permissions…')} value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-      ))}
+        <p className="text-xs text-slate-500 dark:text-slate-400" aria-live="polite">
+          {t('{count, plural, one {# permission} other {# permissions}} in {modules, plural, one {# module} other {# modules}}', { count: permissionCount, modules: modules.length })}
+        </p>
+        <div className="ms-auto flex items-center gap-1">
+          <button type="button" onClick={() => setFolded(new Set(modules.map(([module]) => module)))}
+            className="min-h-8 rounded-lg px-2 text-xs font-medium text-violet-700 hover:bg-violet-50 dark:text-violet-300 dark:hover:bg-violet-900/30">{t('Collapse all')}</button>
+          <button type="button" onClick={() => setFolded(new Set())}
+            className="min-h-8 rounded-lg px-2 text-xs font-medium text-violet-700 hover:bg-violet-50 dark:text-violet-300 dark:hover:bg-violet-900/30">{t('Expand all')}</button>
+        </div>
+      </div>
+      {loading ? <p className="mt-3 text-sm text-slate-500">{t('Loading…')}</p> : (
+        <div className="mt-3 columns-1 gap-3 lg:columns-2 2xl:columns-3">
+          {modules.map(([module, perms]) => {
+            const open = !folded.has(module);
+            const listId = `permission-module-${module.replace(/\W+/g, '-')}`;
+            return (
+              <section key={module} data-testid="permission-module" className="mb-3 break-inside-avoid overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
+                <h4 className="m-0">
+                  <button type="button" aria-expanded={open} aria-controls={listId} onClick={() => toggle(module)}
+                    className="flex w-full items-center gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2 text-start dark:border-slate-700 dark:bg-slate-800/60">
+                    <ChevronDown className={`h-4 w-4 shrink-0 text-slate-500 transition-transform motion-reduce:transition-none ${open ? '' : '-rotate-90 rtl:rotate-90'}`} aria-hidden="true" />
+                    <span className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-700 dark:text-slate-300">{module}</span>
+                    <span className="rounded-full bg-white px-2 text-caption font-medium text-slate-600 ring-1 ring-inset ring-slate-200 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-700">{perms.length}</span>
+                  </button>
+                </h4>
+                <ul id={listId} hidden={!open} className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {perms.map(p => (
+                    <li key={p.id} data-testid="permission-row" className="flex items-baseline gap-2 px-3 py-1.5">
+                      <span className="shrink-0 font-mono text-sm text-violet-700 dark:text-violet-400">{p.key}</span>
+                      <span className="min-w-0 flex-1 truncate text-xs text-slate-500" title={p.description}>{p.description}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1932,9 +1969,9 @@ export function PermissionGrantorsTab() {
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {loading ? (
-              <tr><td colSpan={6} className="py-8 text-center text-sm text-slate-500">Loading…</td></tr>
+              <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-500">Loading…</td></tr>
             ) : grantors.length === 0 ? (
-              <tr><td colSpan={6} className="py-8 text-center text-sm text-slate-500">No permission grantors designated yet.</td></tr>
+              <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-500">No permission grantors designated yet.</td></tr>
             ) : grantors.map(g => (
               <tr key={g.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                 <td className="px-4 py-3">
@@ -2179,9 +2216,9 @@ export function AuthoritiesTab() {
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {loading ? (
-              <tr><td colSpan={6} className="py-8 text-center text-sm text-slate-500">Loading…</td></tr>
+              <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-500">Loading…</td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={6} className="py-8 text-center text-sm text-slate-500">No authorities configured.</td></tr>
+              <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-500">No authorities configured.</td></tr>
             ) : items.map(a => (
               <tr key={a.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                 <td className="px-4 py-3 text-slate-700 dark:text-slate-300">#{a.employeeId}</td>

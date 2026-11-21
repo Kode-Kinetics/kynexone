@@ -63,12 +63,12 @@ async function shot(page: Page, name: string, locale: string) {
 }
 
 // The list renders a card list and a table, one of them hidden: a text query must look at the one on screen.
-const tab = (page: Page, name: RegExp) => page.getByRole('button', { name }).first().click();
+const tab = (page: Page, name: RegExp) => page.getByRole('tab', { name }).first().click();
 
 for (const locale of ['en', 'ar'] as const) {
   const L = locale === 'en'
-    ? { requisitions: /^Requisitions$/, openings: /^Job Openings$/, newReq: 'New Requisition', dialog: 'New Manpower Requisition', approve: 'Approve', reject: 'Reject', submit: 'Submit', openJob: 'Open Job', edit: 'Edit and resubmit', saveSend: 'Save and resubmit', reason: 'Budget not approved for this quarter', close: 'Close opening', closeTitle: 'Close this opening?', cancel: 'Cancel', closeX: 'Close', newOpening: 'New Opening', ai: 'AI Tools', aiTitle: 'Recruitment AI Tools', openingDialog: 'New Job Opening', alreadyOpened: 'This requisition already has an opening.' }
-    : { requisitions: /^طلبات التوظيف$/, openings: /^الوظائف الشاغرة$/, newReq: 'طلب توظيف جديد', dialog: 'طلب قوى عاملة جديد', approve: 'موافقة', reject: 'رفض', submit: 'إرسال', openJob: 'فتح الوظيفة', edit: 'تعديل وإعادة الإرسال', saveSend: 'حفظ وإعادة الإرسال', reason: 'Budget not approved for this quarter', close: 'إغلاق الوظيفة الشاغرة', closeTitle: 'إغلاق هذه الوظيفة الشاغرة؟', cancel: 'إلغاء', closeX: 'إغلاق', newOpening: 'وظيفة شاغرة جديدة', ai: 'أدوات الذكاء الاصطناعي', aiTitle: 'أدوات الذكاء الاصطناعي للتوظيف', openingDialog: 'وظيفة شاغرة جديدة', alreadyOpened: 'لهذا الطلب وظيفة شاغرة بالفعل.' };
+    ? { requisitions: /^Requisitions$/, openings: /^Job Openings$/, newReq: 'New Requisition', dialog: 'New Manpower Requisition', approve: 'Approve', reject: 'Reject', submit: 'Submit for approval', openJob: 'Open Job', edit: 'Edit and resubmit', saveSend: 'Save and resubmit', reason: 'Budget not approved for this quarter', close: 'Close opening', closeTitle: 'Close this opening?', cancel: 'Cancel', closeX: 'Close', newOpening: 'New Opening', ai: 'AI Tools', aiTitle: 'Recruitment AI Tools', openingDialog: 'New Job Opening', alreadyOpened: 'This requisition already has an opening.' }
+    : { requisitions: /^طلبات التوظيف$/, openings: /^الوظائف الشاغرة$/, newReq: 'طلب توظيف جديد', dialog: 'طلب قوى عاملة جديد', approve: 'موافقة', reject: 'رفض', submit: 'إرسال للموافقة', openJob: 'فتح الوظيفة', edit: 'تعديل وإعادة الإرسال', saveSend: 'حفظ وإعادة الإرسال', reason: 'Budget not approved for this quarter', close: 'إغلاق الوظيفة الشاغرة', closeTitle: 'إغلاق هذه الوظيفة الشاغرة؟', cancel: 'إلغاء', closeX: 'إغلاق', newOpening: 'وظيفة شاغرة جديدة', ai: 'أدوات الذكاء الاصطناعي', aiTitle: 'أدوات الذكاء الاصطناعي للتوظيف', openingDialog: 'وظيفة شاغرة جديدة', alreadyOpened: 'لهذا الطلب وظيفة شاغرة بالفعل.' };
   const phone = (page: Page) => page.viewportSize()!.width < 640;
 
   test.describe(`recruitment fixes A (${locale})`, () => {

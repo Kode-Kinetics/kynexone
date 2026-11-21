@@ -84,7 +84,7 @@ async function shot(page: Page, name: string, locale: string) {
   await page.screenshot({ path: `${dir}/${name}-${locale}-${page.viewportSize()!.width >= 1000 ? 'desktop' : 'phone'}.png` });
 }
 
-const openTab = (page: Page, name: RegExp) => page.getByRole('button', { name }).first().click();
+const openTab = (page: Page, name: RegExp) => page.getByRole('tab', { name }).first().click();
 async function openDrawer(page: Page) {
   await openTab(page, /^Job Openings|^الوظائف الشاغرة/);
   await page.getByText('Sales Executive').first().click();
@@ -193,7 +193,7 @@ for (const locale of ['en', 'ar'] as const) {
       await expect(page.getByRole('heading', { name: locale === 'en' ? 'My interviews' : 'مقابلاتي' })).toBeVisible();
       await expect(page.getByText('MRQ-0001')).toBeVisible();
       await expect(page.getByText('Nora Alharbi')).toBeVisible();
-      await expect(page.getByRole('button', { name: /^Job Openings|^Talent Pool|^Offers/ })).toHaveCount(0);
+      await expect(page.getByRole('tab', { name: /^Job Openings|^Talent Pool|^Offers/ })).toHaveCount(0);
       expect(errors).toEqual([]);
       await shot(page, 'manager-screen', locale);
     });

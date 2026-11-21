@@ -32,9 +32,6 @@ export function EmployeeDeductionsPanel({ employee }: { employee: EmployeeDetail
 
   return (
     <div className="space-y-3" data-employee-id={employee.id} data-testid="employee-deductions-panel">
-      <p className="text-xs text-slate-500 dark:text-slate-400">
-        {t('Deductions from each payslip, with their legal basis and the remaining balance, appear here.')}
-      </p>
       {error ? (
         <div role="alert" className="flex items-center justify-between gap-3 rounded-xl bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
           <span>{error}</span>

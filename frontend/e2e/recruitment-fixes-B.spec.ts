@@ -80,7 +80,7 @@ async function shot(page: Page, name: string, locale: string) {
   await page.screenshot({ path: `${dir}/B-${name}-${locale}-${page.viewportSize()!.width >= 1000 ? 'desktop' : 'phone'}.png` });
 }
 
-const openTab = (page: Page, name: RegExp) => page.getByRole('button', { name }).first().click();
+const openTab = (page: Page, name: RegExp) => page.getByRole('tab', { name }).first().click();
 const POOL = /^Talent Pool|^مجمع المواهب|^قاعدة المواهب/;
 const OPENINGS = /^Job Openings|^الوظائف الشاغرة/;
 async function openPipeline(page: Page) {

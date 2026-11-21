@@ -9,7 +9,7 @@ import { useNavigationBlocker } from '../hooks/useNavigationBlocker';
 import { useCompany } from '../contexts/CompanyContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
-import { useOfferLetterT } from '../i18n/offerLetter';
+import { mergeFieldKey, useOfferLetterT } from '../i18n/offerLetter';
 
 const input = 'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sapphire dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100';
 const button = 'inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800';
@@ -259,7 +259,7 @@ export function OfferLetterDesigner({ onClose, draftAdapter }: { onClose: () => 
                 {b.kind === 'compensation' && <p className="text-sm text-slate-600 dark:text-slate-300">{t('Rows and totals come from the saved offer. Hiding this section changes presentation only; it never removes compensation.')}</p>}
                 {['heading', 'text'].includes(b.kind) && <>
                   <label className="block space-y-2 text-sm font-medium"><span>{t(b.kind === 'heading' ? 'Heading text' : 'Wording')}</span><textarea ref={textRef} className={`${input} min-h-44 resize-y`} value={b.text} dir={design.direction} onChange={e => updateBlock({ text: e.target.value })} /></label>
-                  <Select label="Insert offer field at cursor" value="" options={[[ '', 'Choose a merge field…' ], ...[...tokens, ...Object.keys(design.customFields)].map(token => [token, t(token.replaceAll('_', ' '))] as [string, string])]} onChange={insertToken} />
+                  <Select label="Insert offer field at cursor" value="" options={[[ '', 'Choose a merge field…' ], ...[...tokens, ...Object.keys(design.customFields)].map(token => [token, t(mergeFieldKey(token))] as [string, string])]} onChange={insertToken} />
                 </>}
                 {b.kind === 'table' && <div className="space-y-3">{b.rows.map((row, i) => <div key={i} className="rounded-lg border border-slate-200 p-3 dark:border-slate-700"><div className="grid gap-2"><Field label={t('Row {n} label', { n: i + 1 })} value={row.label} onChange={label => updateBlock({ rows: b.rows.map((r, n) => n === i ? { ...r, label } : r) })} /><Field label={t('Row {n} value', { n: i + 1 })} value={row.value} onChange={value => updateBlock({ rows: b.rows.map((r, n) => n === i ? { ...r, value } : r) })} /></div><button type="button" className="mt-2 text-xs text-rose-600 underline" onClick={() => updateBlock({ rows: b.rows.filter((_, n) => n !== i) })}>{t('Remove row {n}', { n: i + 1 })}</button></div>)}<button type="button" className={button} disabled={b.rows.length >= 30} onClick={() => updateBlock({ rows: [...b.rows, { label: '', value: '' }] })}><Plus size={16} />{t("Add table row")}</button><p className="text-xs text-slate-500">{t('Use merge fields such as {token}. See Merge fields for all available values.', { token: '{{gross_salary}}' })}</p></div>}
                 {b.kind === 'image' && <><Asset label="Section image" value={b.image} onChange={image => updateBlock({ image })} onError={setError} /><Field label="Image width (pt)" type="number" min={24} max={300} value={b.imageWidth} onChange={v => updateBlock({ imageWidth: Number(v) })} /></>}

@@ -89,11 +89,12 @@ test.describe('/welcome from the slip QR', () => {
     await expect(page.locator('input[autocomplete="new-password"]')).toHaveCount(1);
     await expect(page.getByText(CODE)).toHaveCount(0);
 
-    // Shown by default, with an eye toggle to hide it.
+    // Masked by default, with an eye toggle to show it.
+    await expect(passwordBox(page)).toHaveAttribute('type', 'password');
+    await page.getByTestId('welcome-password-toggle').click();
     await expect(passwordBox(page)).toHaveAttribute('type', 'text');
     await page.getByTestId('welcome-password-toggle').click();
     await expect(passwordBox(page)).toHaveAttribute('type', 'password');
-    await page.getByTestId('welcome-password-toggle').click();
 
     const save = page.getByRole('button', { name: 'Save password and sign in' });
     await passwordBox(page).fill('Noah2026xyz');

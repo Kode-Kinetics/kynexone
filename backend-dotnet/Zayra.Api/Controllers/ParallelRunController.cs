@@ -43,8 +43,13 @@ namespace Zayra.Api.Controllers;
 public sealed class ParallelRunController : ControllerBase
 {
     private readonly ZayraDbContext _db;
+    private readonly IDataScopeService _scopeService;
 
-    public ParallelRunController(ZayraDbContext db) => _db = db;
+    public ParallelRunController(ZayraDbContext db, IDataScopeService scopeService)
+    {
+        _db = db;
+        _scopeService = scopeService;
+    }
 
     /// <summary>
     /// The register the legacy system produced, in long form. Long rather than wide because "per
@@ -94,7 +99,15 @@ public sealed class ParallelRunController : ControllerBase
         decimal KynexOneNetTotal,
         decimal ExternalNetTotal,
         IReadOnlyList<VarianceLine> Lines,
-        IReadOnlyList<string> RegisterErrors);
+        IReadOnlyList<string> RegisterErrors,
+        string Currency,
+        IReadOnlyList<RegisterError> RegisterErrorDetails);
+
+    /// <summary>
+    /// One complaint about the uploaded register: a stable <see cref="Code"/> and its <see cref="Params"/> let the page
+    /// say it in the viewer's language; <see cref="Message"/> is the English text, the fallback for older pages and API callers.
+    /// </summary>
+    public sealed record RegisterError(string Code, int? Row, IReadOnlyDictionary<string, string> Params, string Message);
 
     /// <summary>
     /// Compare a processed run against an uploaded external register, per employee and per component.
@@ -117,14 +130,58 @@ public sealed class ParallelRunController : ControllerBase
         if (request.Tolerance < 0)
             return UnprocessableEntity(new { message = "Tolerance cannot be negative." });
 
-        var (external, registerErrors) = ParseRegister(request.RegisterCsv);
+        var (external, registerErrorDetails) = ParseRegister(request.RegisterCsv);
+        var registerErrors = registerErrorDetails.Select(e => e.Message).ToList();
         if (external.Count == 0 && registerErrors.Count > 0)
-            return UnprocessableEntity(new { message = "The external register could not be read.", errors = registerErrors });
+            return UnprocessableEntity(new { message = "The external register could not be read.", errors = registerErrors, errorDetails = registerErrorDetails });
 
-        var slips = await _db.PayrollSlips.AsNoTracking()
+        var allSlips = await _db.PayrollSlips.AsNoTracking()
             .Where(s => s.TenantId == tenantId && s.RunId == runId)
             .Select(s => new { s.EmployeeId, s.EmployeeCode, s.EmployeeName, s.GrossSalary, s.Deductions, s.NetSalary })
             .ToListAsync(ct);
+
+        // A run with no payslips would report every register employee as missing. The page warns about
+        // it, but the server is the one that must not produce a misleading reconciliation.
+        if (allSlips.Count == 0)
+            return UnprocessableEntity(new
+            {
+                // Stable code and status let the page show this in the viewer's language; the message stays for API callers.
+                code = "run_has_no_payslips",
+                status = run.Status,
+                message = $"This payroll run has no payslips yet (status {run.Status}), so there is nothing to compare. "
+                        + "Process the run first — a processed-but-unlocked run posts no GL and publishes nothing, so it is safe to compare and re-process."
+            });
+
+        // Same employee scope as the payslip list: a caller limited to some employees reads only theirs.
+        // Register rows for the employees they cannot see are dropped too, so those people are not
+        // reported as "missing" and no figure of theirs appears from either side.
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        var slips = scope.IsUnrestricted
+            ? allSlips
+            : allSlips.Where(s => scope.CanAccessEmployee(s.EmployeeId)).ToList();
+        if (!scope.IsUnrestricted)
+        {
+            // Who is out of scope is decided by the employee master, not by who has a payslip in this run: a person
+            // hired after processing has no payslip here but is still outside this caller's scope. The register's
+            // codes are matched to the tenant's employees the way the rest of the report matches them (trimmed,
+            // case-insensitive). A code that names no employee in the tenant reveals nothing and stays.
+            var registerCodes = external.Keys.Select(k => k.Code.Trim().ToUpperInvariant()).Distinct().ToList();
+            var named = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && registerCodes.Contains(e.EmployeeCode.Trim().ToUpper()))
+                .Select(e => new { e.Id, e.EmployeeCode })
+                .ToListAsync(ct);
+            var inScopeCodes = named.Where(e => scope.CanAccessEmployee(e.Id))
+                .Select(e => e.EmployeeCode.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var hiddenCodes = named.Where(e => !scope.CanAccessEmployee(e.Id))
+                .Select(e => e.EmployeeCode.Trim())
+                .Where(c => c.Length > 0 && !inScopeCodes.Contains(c))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var c in allSlips.Where(x => !scope.CanAccessEmployee(x.EmployeeId))
+                         .Select(x => (x.EmployeeCode ?? string.Empty).Trim()).Where(c => c.Length > 0))
+                hiddenCodes.Add(c);
+            foreach (var key in external.Keys.Where(k => hiddenCodes.Contains(k.Code.Trim())).ToList())
+                external.Remove(key);
+        }
         var earnings = await _db.PayrollEarnings.AsNoTracking()
             .Where(e => e.TenantId == tenantId && e.PayrollRunId == runId)
             .Select(e => new { e.EmployeeId, e.ComponentCode, e.Amount })
@@ -211,7 +268,9 @@ public sealed class ParallelRunController : ControllerBase
             KynexOneNetTotal: Math.Round(lines.Where(l => l.ComponentCode == TotalNet).Sum(l => l.KynexOneAmount), 2),
             ExternalNetTotal: Math.Round(lines.Where(l => l.ComponentCode == TotalNet).Sum(l => l.ExternalAmount), 2),
             Lines: lines,
-            RegisterErrors: registerErrors);
+            RegisterErrors: registerErrors,
+            Currency: await ResolveRunCurrencyAsync(tenantId, run.CompanyId, ct),
+            RegisterErrorDetails: registerErrorDetails);
 
         return Ok(report);
     }
@@ -337,33 +396,55 @@ public sealed class ParallelRunController : ControllerBase
 
     // ── Register parsing ────────────────────────────────────────────────────────────────────────────
 
-    private static (Dictionary<(string Code, string Component), decimal> Rows, List<string> Errors) ParseRegister(string csv)
+    private static (Dictionary<(string Code, string Component), decimal> Rows, List<RegisterError> Errors) ParseRegister(string csv)
     {
         var rows = new Dictionary<(string Code, string Component), decimal>(CodeComponentComparer.Instance);
-        var errors = new List<string>();
+        var firstRow = new Dictionary<(string Code, string Component), int>(CodeComponentComparer.Instance);
+        var errors = new List<RegisterError>();
+        static IReadOnlyDictionary<string, string> P(params (string Key, string Value)[] pairs) => pairs.ToDictionary(p => p.Key, p => p.Value);
         if (string.IsNullOrWhiteSpace(csv))
         {
-            errors.Add("The external register was empty.");
+            errors.Add(new RegisterError("register_empty", null, P(), "The external register was empty."));
             return (rows, errors);
         }
 
         List<Dictionary<string, string>> parsed;
         try { parsed = Csv.Parse(csv); }
-        catch (Exception ex) { errors.Add($"The external register is not readable as CSV: {ex.Message}"); return (rows, errors); }
+        catch (Exception ex)
+        {
+            errors.Add(new RegisterError("register_unreadable", null, P(("reason", ex.Message)), $"The external register is not readable as CSV: {ex.Message}"));
+            return (rows, errors);
+        }
 
         foreach (var (row, index) in parsed.Select((r, i) => (r, i + 2)))
         {
             var code = row.GetValueOrDefault("EmployeeCode", string.Empty).Trim();
             var component = Normalise(row.GetValueOrDefault("ComponentCode", string.Empty));
             var amountRaw = row.GetValueOrDefault("Amount", string.Empty).Trim();
-            if (code.Length == 0) { errors.Add($"register row {index}: EmployeeCode is required."); continue; }
-            if (component.Length == 0) { errors.Add($"register row {index}: ComponentCode is required (use GROSS, DEDUCTIONS or NET for the totals)."); continue; }
-            if (amountRaw.Length == 0) { errors.Add($"register row {index}: Amount is required and was blank — a blank is not read as zero."); continue; }
+            var rowText = index.ToString(CultureInfo.InvariantCulture);
+            if (code.Length == 0)
+            { errors.Add(new RegisterError("register_row_employee_code_required", index, P(("row", rowText)), $"register row {index}: EmployeeCode is required.")); continue; }
+            if (component.Length == 0)
+            { errors.Add(new RegisterError("register_row_component_required", index, P(("row", rowText)), $"register row {index}: ComponentCode is required (use GROSS, DEDUCTIONS or NET for the totals).")); continue; }
+            if (amountRaw.Length == 0)
+            { errors.Add(new RegisterError("register_row_amount_required", index, P(("row", rowText)), $"register row {index}: Amount is required and was blank — a blank is not read as zero.")); continue; }
             if (!decimal.TryParse(amountRaw, NumberStyles.Number, CultureInfo.InvariantCulture, out var amount))
-            { errors.Add($"register row {index}: Amount is not a number (found '{amountRaw}')."); continue; }
+            { errors.Add(new RegisterError("register_row_amount_not_a_number", index, P(("row", rowText), ("value", amountRaw)), $"register row {index}: Amount is not a number (found '{amountRaw}').")); continue; }
 
             var key = (code, component);
-            rows[key] = rows.GetValueOrDefault(key) + amount;
+            // The same employee and component twice is nearly always a doubled export row. Summing it
+            // would hide a real mismatch behind a number that looks plausible, so the first row stands
+            // and the repeat is reported (and, like any errored row, is not compared).
+            if (firstRow.TryGetValue(key, out var first))
+            {
+                errors.Add(new RegisterError("register_row_duplicate", index,
+                    P(("row", rowText), ("firstRow", first.ToString(CultureInfo.InvariantCulture)), ("employeeCode", code), ("component", component)),
+                    $"register row {index}: duplicate of row {first} for {code} / {component} — ignored, the first row was kept. "
+                    + "If the legacy system really has several lines for one component, add them up before uploading."));
+                continue;
+            }
+            firstRow[key] = index;
+            rows[key] = amount;
         }
         return (rows, errors);
     }
@@ -398,6 +479,21 @@ public sealed class ParallelRunController : ControllerBase
             .Select(ch => char.IsLetterOrDigit(ch) ? ch : '_')
             .ToArray();
         return new string(chars).Trim('_');
+    }
+
+    /// <summary>The run's own currency: its company's default, else the tenant's — the same rule the payroll run uses.</summary>
+    private async Task<string> ResolveRunCurrencyAsync(Guid tenantId, Guid? companyId, CancellationToken ct)
+    {
+        if (companyId.HasValue)
+        {
+            var companyCurrency = await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && c.Id == companyId.Value && !c.IsDeleted)
+                .Select(c => c.DefaultCurrency)
+                .FirstOrDefaultAsync(ct);
+            if (!string.IsNullOrWhiteSpace(companyCurrency))
+                return companyCurrency.Trim().ToUpperInvariant();
+        }
+        return (await _db.ResolveTenantCurrencyAsync(tenantId, ct)).Trim().ToUpperInvariant();
     }
 
     private Guid RequireTenant() => this.GetTenantId() ?? throw new UnauthorizedAccessException("Tenant context is required.");

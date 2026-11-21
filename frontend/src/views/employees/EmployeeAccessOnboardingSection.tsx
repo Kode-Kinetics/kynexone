@@ -13,12 +13,14 @@ import { EmployeeCompletionHandoff } from '../../components/EmployeeCompletionHa
 import { EmployeeAccessCard } from '../../components/employeeAccess/EmployeeAccessCard';
 import { useWelcomeCodes } from '../../components/employeeAccess/useWelcomeCodes';
 import { Modal } from '../../components/Modal';
+import { RecordSection } from '../../components/employee/RecordSection';
+import { StatusChip } from '../../components/StatusChip';
 import { ActivationBlockers } from '../../components/employeeAccess/ActivationBlockers';
 import { describeApiError } from '../../lib/apiError';
 import { activationFormError, todayCalendarDay } from '../../lib/employeeActivation';
 import { activationRejectionMessage, employeeActivationFailure, settledServiceRefusal } from '../../lib/employeeActivationFailure';
 
-export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo, onEmployeeChanged, onRetryReadiness, readinessLoading = false }: { employee: EmployeeDetail; readiness: EmployeeReadiness | null; returnTo: string; onEmployeeChanged?(): void; onRetryReadiness?(): void; readinessLoading?: boolean }) {
+export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo, onEmployeeChanged, onActivated, onRetryReadiness, readinessLoading = false }: { employee: EmployeeDetail; readiness: EmployeeReadiness | null; returnTo: string; onEmployeeChanged?(): void; /** Re-read the record and its readiness in place after a successful Activate (resolves when both are back). */ onActivated?(): Promise<void>; onRetryReadiness?(): void; readinessLoading?: boolean }) {
   const router = useRouter();
   const { hasPermission, user } = useAuth();
   const { t, locale } = useLocale();
@@ -55,6 +57,9 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
     try {
       await employeesApi.activate(employee.id, { effectiveDate: form.effectiveDate, reason: form.reason.trim() });
       setConfirming(false);
+      // The server now says Active: read the record again before anything else, so the page behind the dialog never shows Draft and
+      // no second Activate is offered. `activating` stays on (the row's button stays disabled) until the fresh record is back.
+      await onActivated?.();
       const access = canIssue ? await employeeAccessApi.get(employee.id).catch(() => null) : null;
       setActivated({ emailDelivery: !!access?.emailDelivery });
       setAccessRefresh((current) => current + 1);
@@ -75,14 +80,19 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
     }
   };
 
-  return <div className="space-y-5">
-    <section className="surface overflow-hidden">
-      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-5 dark:border-white/10">
-        <div><h2 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Access & Onboarding')}</h2><p className="mt-1 text-sm text-slate-500">{t('Work email, sign-in access, employee completion, readiness, and activation.')}</p></div>
-        {canWrite && <Link href={editHref} className="btn-secondary">{t('Edit onboarding')}</Link>}
-      </header>
-      <div className="grid gap-4 p-5 md:grid-cols-2">
-        <div className="rounded-xl border border-slate-200 p-5 dark:border-white/10"><Mail className="h-5 w-5 text-blue-600" /><h3 className="mt-3 font-semibold">{t('Work email')}</h3><p className="mt-1 break-words text-sm text-slate-500" dir="auto">{employee.workEmail || t('No work email has been recorded.')}</p></div>
+  return <div className="space-y-4">
+    <RecordSection
+      title={t('Access & Onboarding')}
+      description={t('Work email, sign-in access, employee completion, readiness, and activation.')}
+      actions={canWrite && <Link href={editHref} className="btn-secondary">{t('Edit onboarding')}</Link>}
+    >
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-slate-200 px-3 py-2 dark:border-white/10" data-testid="work-email-row">
+          <Mail className="h-4 w-4 shrink-0 text-blue-600" aria-hidden="true" />
+          <span className="text-xs text-slate-500 dark:text-slate-400">{t('Work email')}</span>
+          <span className="min-w-0 flex-1 break-all text-sm font-medium text-slate-900 dark:text-white" dir="auto">{employee.workEmail || t('No work email has been recorded.')}</span>
+          <StatusChip label={employee.workEmail ? t('Email on file') : t('Email missing')} tone={employee.workEmail ? 'emerald' : 'amber'} />
+        </div>
         <EmployeeAccessCard
           employeeId={employee.id}
           employeeName={employee.fullName}
@@ -102,11 +112,11 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
           onAddWorkEmail={() => router.push(editHref)}
         />
       </div>
-    </section>
-    {canWrite && <EmployeeCompletionHandoff employeeId={employee.id} onChanged={onEmployeeChanged} />}
-    <section className="surface p-5" aria-labelledby="onboarding-readiness-title">
-      <div className="flex items-center gap-3"><ShieldCheck className="h-5 w-5 text-emerald-600" aria-hidden="true" /><h2 id="onboarding-readiness-title" className="text-lg font-semibold">{t('Onboarding readiness')}</h2></div>
-      <p className="mt-3 text-sm text-slate-500">{readiness ? t('{done} of {total} readiness checks are complete.', { done: readiness.progress.present, total: readiness.progress.requiredTotal }) : readinessLoading ? t('Loading readiness…') : t('Readiness is currently unavailable.')}</p>
+    </RecordSection>
+    {canWrite && <EmployeeCompletionHandoff employeeId={employee.id} employeeStatus={employee.status} onChanged={onEmployeeChanged} />}
+    <section className="surface p-4" aria-labelledby="onboarding-readiness-title">
+      <div className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-emerald-600" aria-hidden="true" /><h2 id="onboarding-readiness-title" className="text-base font-semibold">{t('Onboarding readiness')}</h2></div>
+      <p className="mt-2 text-sm text-slate-500">{readiness ? t('{done} of {total} readiness checks are complete.', { done: readiness.progress.present, total: readiness.progress.requiredTotal }) : readinessLoading ? t('Loading readiness…') : t('Readiness is currently unavailable.')}</p>
       {readiness && <p className="mt-1 text-sm font-semibold text-slate-700 dark:text-slate-200">{activationBlockers > 0
         ? (activationBlockers === 1 ? t('1 activation blocker remains.') : t('{count} activation blockers remain.', { count: activationBlockers }))
         : recommendations > 0

@@ -102,7 +102,7 @@ test.describe('People crawl: left-menu links from /people', () => {
 
     await page.goto('/people/new-hires');
     await page.getByRole('tab', { name: /Activated/ }).or(page.getByRole('button', { name: /Activated/ })).first().click();
-    const open_ = page.locator('main a[href^="/people/1000"]').first();
+    const open_ = page.locator('main a[href^="/people/1000"]:visible').first(); // New Hires renders a phone card list (md:hidden) before the table, so only the visible link counts
     await expect(open_).toBeVisible();
     await open_.click();
     await expect(page).toHaveURL(/\/people\/1000\?section=overview&returnTo=%2Fpeople%2Fnew-hires$/);

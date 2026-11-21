@@ -112,6 +112,8 @@ async function noSidewaysScroll(page: Page) {
 async function noInnerSideScroll(page: Page) {
   const strips = await page.evaluate(() => [...document.querySelectorAll('main *')].filter(el => {
     const style = getComputedStyle(el);
+    // The section tab strip is meant to scroll sideways on a phone (the active tab stays in view).
+    if (el.hasAttribute('data-roving-tabs')) return false;
     return ['auto', 'scroll'].includes(style.overflowX) && el.scrollWidth > el.clientWidth + 1;
   }).map(el => el.tagName + '.' + String(el.className).slice(0, 40)));
   expect(strips).toEqual([]);
@@ -157,7 +159,7 @@ for (const locale of ['en', 'ar'] as const) {
     approvals: 'Approvals', sendReview: 'Send review', radioEmail: 'Email it from here', radioExternal: 'I already sent it myself', record: 'Record external sending', sendEmail: 'Send email', notIssued: /The offer is not issued until you press Record external sending/,
     needsReview: 'Needs review', acceptedOffer: 'Accepted offer', banner: 'Two-step sign-in is required for your role',
   };
-  const tab = (page: Page, name: string) => page.getByRole('button', { name, exact: true }).first().click();
+  const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true }).first().click();
 
   test.describe(`recruitment fixes C (${locale})`, () => {
     test('1/2/3 Interviews: fits the phone, shows the panel feedback, confirms a cancel, refuses a past start', async ({ page }) => {
@@ -360,7 +362,7 @@ for (const locale of ['en', 'ar'] as const) {
 
     test('8 new-hire draft shows human labels and the company name, not codes or ids', async ({ page }) => {
       const { errors } = await boot(page, { locale, url: '/people/new-hires' });
-      await page.locator('table tbody tr button').first().click();
+      await page.locator('table tbody tr button, [data-testid="new-hires-cards"] button').locator('visible=true').first().click(); // table on desktop, card list on a phone
       const dialog = page.getByRole('dialog');
       await expect(dialog).toContainText(L.needsReview);
       await expect(dialog).toContainText(L.acceptedOffer);

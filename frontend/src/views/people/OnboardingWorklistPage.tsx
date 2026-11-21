@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { useCallback, useEffect, useId, useState, useSyncExternalStore } from 'react';
 import { OWNER_ROLES, onboardingTemplatesApi, type WorklistItem } from '@/src/api/onboardingTemplates';
 import { useLocale } from '@/src/contexts/LocaleContext';
+import { useAuth } from '@/src/contexts/AuthContext';
+import { canOpenOnboardingTemplateSetup, ONBOARDING_TEMPLATES_SETUP_HREF } from '@/src/lib/handoffNotices';
 import { onboardingProblemKey } from '@/src/lib/onboardingProblem';
 import { formatIsoDate } from '@/src/lib/hire/dates';
 import { employeeWorkspaceHref } from '@/src/lib/peopleRoutes';
@@ -29,6 +31,8 @@ const STATUSES = ['Pending', 'InProgress', 'Blocked'] as const;
 /** Open onboarding tasks across employees for the roles the signed-in person works. */
 export function OnboardingWorklistPage() {
   const { t, locale } = useLocale();
+  const { hasPermission, hasRole } = useAuth();
+  const canOpenTemplates = canOpenOnboardingTemplateSetup({ hasPermission, hasRole });
   const ar = locale === 'ar';
   const uid = useId();
   const narrow = useNarrow();
@@ -87,7 +91,11 @@ export function OnboardingWorklistPage() {
       {!loading && loadError == null && total > items.length && <p role="status" className="text-sm text-amber-800">{t('Showing the first {shown} of {total, plural, one {# task} other {# tasks}}. Narrow the filters to see the rest.', { shown: Number(items.length), total: Number(total) })}</p>}
       {loading ? <p role="status" className="text-sm text-slate-500">{t('Loading…')}</p>
         : loadError != null ? <div className="surface"><LoadFailedNotice error={loadError} onRetry={() => { void load(); }} /></div>
-        : items.length === 0 ? <p className="surface p-6 text-sm text-slate-600 dark:text-slate-300" data-testid="worklist-empty">{t('No open onboarding tasks for you right now.')}</p>
+        : items.length === 0 ? <div className="surface space-y-1 p-6 text-sm text-slate-600 dark:text-slate-300" data-testid="worklist-empty">
+          <p>{t('No open onboarding tasks for you right now.')}</p>
+          <p>{t('Open onboarding tasks appear here when a new hire is activated and a checklist template applies to them.')}</p>
+          {canOpenTemplates && <p><Link className="font-semibold text-sapphire hover:underline" href={ONBOARDING_TEMPLATES_SETUP_HREF}>{t('Create the checklist in Setup, under Onboarding checklist templates.')}</Link></p>}
+        </div>
         : (
           narrow ? (
             <ul className="space-y-3" data-testid="worklist-cards" aria-label={t('Open onboarding tasks, {total} in total', { total })}>

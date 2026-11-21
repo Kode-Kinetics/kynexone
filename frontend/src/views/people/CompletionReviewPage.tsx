@@ -123,7 +123,7 @@ export function CompletionReviewPage() {
       {!sensitive && <p className="text-xs text-slate-500">{t('Values are masked. You need the sensitive-data permission to see them in full.')}</p>}
       <div aria-live="polite">{message && <EssNotice tone={message.tone}>{message.text}</EssNotice>}</div>
 
-      {error ? <EssLoadError error={error} onRetry={() => void load()} /> : !items ? <p aria-busy="true">{t('Loading…')}</p> : items.length === 0 ? <EssEmpty text={t('Nothing is waiting for review.')} /> : (
+      {error ? <EssLoadError error={error} onRetry={() => void load()} /> : !items ? <p aria-busy="true">{t('Loading…')}</p> : items.length === 0 ? <div className="space-y-2"><EssEmpty text={t('Nothing is waiting for review.')} /><p className="text-sm text-slate-600 dark:text-slate-300" data-testid="review-empty-next">{t("Submissions appear here after you request an employee's details from their record (Access tab) and the employee sends them back.")}</p></div> : (
         <ul className="space-y-3">
           {items.map(item => (
             <li key={item.requestId} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/[0.06] dark:bg-white/[0.03]" data-testid="inbox-item">

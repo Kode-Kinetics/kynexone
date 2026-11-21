@@ -132,9 +132,12 @@ public sealed record EmployeeDraftListItemDto(
     int? ActivatedEmployeeId,
     string? ActivatedEmployeeCode,
     string? OfferPlacementProvenance = null,
-    string? OfferCompensationGuidance = null);
+    string? OfferCompensationGuidance = null,
+    string? EmployeeStatus = null);
 
-public sealed record EmployeeDraftStatusCounts(int AwaitingApproval, int Draft, int Activated, int Rejected, int Cancelled);
+/// <param name="ActiveEmployees">Activated drafts whose linked employee record is itself Active. <c>Activated</c> keeps its
+/// meaning (the draft was approved and the employee record created), so it can include records that are still Draft.</param>
+public sealed record EmployeeDraftStatusCounts(int AwaitingApproval, int Draft, int Activated, int Rejected, int Cancelled, int ActiveEmployees = 0);
 
 public sealed record EmployeeDraftListResponse(
     IReadOnlyCollection<EmployeeDraftListItemDto> Items, int Total, int Page, int PageSize, EmployeeDraftStatusCounts Counts);

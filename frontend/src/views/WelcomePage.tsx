@@ -64,7 +64,7 @@ function WelcomeCard() {
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
-  const [showPw, setShowPw] = useState(true);
+  const [showPw, setShowPw] = useState(false);
   const [workspace, setWorkspace] = useState('');
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [error, setError] = useState('');

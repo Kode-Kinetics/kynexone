@@ -35,13 +35,14 @@ import type { NavGroup } from '../types/ui';
 import { PERFORMANCE_MODULE_PERMISSIONS } from '../lib/performanceAccess';
 import { SETUP_ROUTE_PERMISSIONS } from '../lib/setupModuleSections';
 import { essNavItems } from './essSections';
+import { GROUP_OVERVIEW_ROLES } from '../lib/navRoles';
 
 export const navigationGroups: NavGroup[] = [
   {
     label: 'Overview',
     items: [
       { label: 'Dashboard', icon: Gauge, path: '/dashboard', requiredPermissions: ['dashboard.read'] },
-      { label: 'Group Overview', icon: Building2, path: '/group', requiredPermissions: ['dashboard.read'], groupAccountOnly: true },
+      { label: 'Group Overview', icon: Building2, path: '/group', requiredPermissions: ['dashboard.read'], groupAccountOnly: true, requiredRoles: GROUP_OVERVIEW_ROLES },
       // Every login is an employee first: one entry opens the employee's own workspace, whose
       // sections (pay, leave, requests, benefits) live inside it (routes/essSections.ts).
       { label: 'Self-Service', icon: UserCircle2, path: '/ess', requiredPermissions: ['ess.read'] },

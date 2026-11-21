@@ -157,6 +157,101 @@ public sealed class OfferApproverScopeFixTests(PostgresFixture fixture)
         (await db.OfferApprovals.CountAsync(a => a.OfferLetterId == offerId)).Should().Be(2);
     }
 
+    // ── The request path uses the same people as the picker (role AND recruitment.approve AND no personal Deny) ──
+
+    private async Task<Guid> AddHrManagerAsync(World w, string name, Action<ZayraDbContext, User>? configure = null, Guid? tenantId = null, Guid? companyAccess = null,
+        string mode = EntityGrantModes.SelectedCompanies)
+    {
+        await using var db = fixture.CreateDb();
+        var tenant = tenantId ?? w.TenantId;
+        var hr = await db.Roles.SingleAsync(r => r.TenantId == tenant && r.Name == "HR Manager");
+        var email = $"{name}-{Guid.NewGuid():N}@example.test";
+        var user = new User { TenantId = tenant, Email = email, NormalizedEmail = email.ToUpperInvariant(), FullName = $"Test {name}", Status = "Active", IsActive = true };
+        user.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = hr.Id });
+        db.Users.Add(user);
+        if (companyAccess is Guid company)
+            db.UserEntityAccesses.Add(new UserEntityAccess { TenantId = tenant, UserId = user.Id, CompanyId = mode == EntityGrantModes.SelectedCompanies ? company : null, GrantMode = mode, Role = "HR Manager", IsActive = true });
+        configure?.Invoke(db, user);
+        await db.SaveChangesAsync();
+        return user.Id;
+    }
+
+    private static Task<HttpResponseMessage> RequestAsync(HttpClient author, Guid offerId, Guid approver, long version) =>
+        author.PostAsJsonAsync($"/api/recruitment/offers/{offerId}/approvals", new { approverName = "Checker", approverUserId = approver, approverRole = "HR Manager", expectedVersion = version });
+
+    [Fact]
+    public async Task A_role_eligible_user_with_a_personal_deny_on_the_approval_key_is_refused_and_creates_no_step()
+    {
+        var w = await SeedAsync();
+        using var host = Host();
+        using var author = await ClientAsync(host, w, w.AuthorId);
+        var offerId = await FrozenOfferAsync(host, w, author);
+        var denied = await AddHrManagerAsync(w, "denied", (db, u) => db.UserPermissionOverrides.Add(
+            new UserPermissionOverride { TenantId = w.TenantId, UserId = u.Id, PermissionKey = "recruitment.approve", Effect = "Deny", Reason = "test", IsActive = true }),
+            companyAccess: w.CompanyA);
+        var version = await OfferVersionAsync(offerId);
+
+        var refused = await RequestAsync(author, offerId, denied, version);
+
+        refused.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity, await refused.Content.ReadAsStringAsync());
+        (await refused.Content.ReadAsStringAsync()).Should().Contain("offer_approver_ineligible");
+        await using var db = fixture.CreateDb();
+        (await db.OfferApprovals.CountAsync(a => a.OfferLetterId == offerId)).Should().Be(0, "no step may be created");
+        (await OfferVersionAsync(offerId)).Should().Be(version);
+        // The picker never offered this person either: both paths use the same set.
+        (await author.GetFromJsonAsync<JsonElement[]>($"/api/recruitment/offers/{offerId}/approver-options"))!
+            .Select(o => o.GetProperty("userId").GetGuid()).Should().NotContain(denied);
+    }
+
+    [Fact]
+    public async Task A_normal_hr_manager_and_an_all_current_and_future_companies_grant_are_accepted()
+    {
+        var w = await SeedAsync();
+        using var host = Host();
+        using var author = await ClientAsync(host, w, w.AuthorId);
+        var offerId = await FrozenOfferAsync(host, w, author);
+        var future = await AddHrManagerAsync(w, "future", companyAccess: w.CompanyA, mode: EntityGrantModes.AllCurrentAndFutureCompanies);
+
+        foreach (var approver in new[] { w.InScopeId, future })
+        {
+            var ok = await RequestAsync(author, offerId, approver, await OfferVersionAsync(offerId));
+            ok.StatusCode.Should().Be(HttpStatusCode.OK, await ok.Content.ReadAsStringAsync());
+        }
+        await using var db = fixture.CreateDb();
+        (await db.OfferApprovals.CountAsync(a => a.OfferLetterId == offerId)).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task A_user_of_another_tenant_is_refused_and_creates_no_step()
+    {
+        var w = await SeedAsync();
+        var other = await OfferLifecycleTestData.SeedAsync(fixture);   // a second, unrelated tenant with its own HR Manager role
+        await using (var db = fixture.CreateDb()) await new AuthSeeder(db).EnsureTenantRolesAsync(other.Actor.TenantId, default);
+        var foreigner = await AddHrManagerAsync(w, "foreign", tenantId: other.Actor.TenantId);
+        using var host = Host();
+        using var author = await ClientAsync(host, w, w.AuthorId);
+        var offerId = await FrozenOfferAsync(host, w, author);
+
+        var refused = await RequestAsync(author, offerId, foreigner, await OfferVersionAsync(offerId));
+
+        refused.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity, await refused.Content.ReadAsStringAsync());
+        await using var db2 = fixture.CreateDb();
+        (await db2.OfferApprovals.CountAsync(a => a.OfferLetterId == offerId)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task An_offer_with_no_company_is_reached_by_group_wide_scope_only()
+    {
+        var w = await SeedAsync();
+        var future = await AddHrManagerAsync(w, "future2", companyAccess: w.CompanyA, mode: EntityGrantModes.AllCurrentAndFutureCompanies);
+        await using var db = fixture.CreateDb();
+
+        var reach = await OfferRules.UsersWhoReachCompanyAsync(db, w.TenantId, null, [w.GroupId, w.InScopeId, w.AllCurrentId, future, w.AuthorId], default);
+
+        reach.Should().BeEquivalentTo(new[] { w.GroupId, future },
+            "an offer owned by no company is opened only by group-wide scope (group users and the dynamic all-companies grant), never by a company grant or a snapshot grant");
+    }
+
     private async Task<long> ApplicationVersionAsync(Guid id) { await using var db = fixture.CreateDb(); return await db.JobApplications.AsNoTracking().Where(a => a.Id == id).Select(a => a.Version).SingleAsync(); }
     private async Task<long> OfferVersionAsync(Guid id) { await using var db = fixture.CreateDb(); return await db.OfferLetters.AsNoTracking().Where(o => o.Id == id).Select(o => o.Version).SingleAsync(); }
 

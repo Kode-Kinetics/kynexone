@@ -7,7 +7,7 @@ import { Loader2, RefreshCw, Search, WalletCards } from 'lucide-react';
 import { payApprovalsApi, type PayApprovalList } from '../api/payApprovals';
 import { useLocale } from '../contexts/LocaleContext';
 import { useFormat } from '../hooks/useFormat';
-import { filterPayApprovals, maskedAccount } from '../lib/payApprovals';
+import { blockedReasonKey, filterPayApprovals, maskedAccount } from '../lib/payApprovals';
 import { useAuth } from '../contexts/AuthContext';
 
 /** How long the queue waits for the API before offering Reload. */
@@ -23,6 +23,8 @@ export function PayApprovalsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const when = (iso: string) => fmt.date(iso);
+  // Why each package is out of reach (the API's blockedItems); an older API sends none and the rule text below is the fallback.
+  const blocked = data?.blockedItems ?? [];
 
   // A queue request that never answers (a slow API, a connection held up behind others) must end in the retryable error,
   // not an endless "Loading…". The deadline is a JS timer so it also covers a request the browser has not yet sent.
@@ -54,13 +56,14 @@ export function PayApprovalsPage() {
       <div aria-live="polite">
         {data && !loading && (data.requiresOtherReviewerCount ?? 0) > 0 && <p data-testid="pay-approvals-hidden-notice" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
           {data.items.length === 0
-            ? (data.requiresOtherReviewerCount === 1
-              ? t('You created {count} pay package, so someone else must approve it. It does not appear in your queue.', { count: 1 })
-              : t('You created {count} pay packages, so someone else must approve them. They do not appear in your queue.', { count: data.requiresOtherReviewerCount ?? 0 }))
+            ? t('{count, plural, one {# pay package is waiting for approval, but you cannot approve it.} other {# pay packages are waiting for approval, but you cannot approve them.}}', { count: data.requiresOtherReviewerCount ?? 0 })
             : t('{count, plural, one {# package needs another reviewer because you are not independent of it.} other {# packages need another reviewer because you are not independent of them.}}', { count: data.requiresOtherReviewerCount ?? 0 })}
-          {hasPermission('security.manage')
-            ? <Link className="ms-2 underline" href="/setup?tab=users">{t('Check reviewer setup')}</Link>
-            : data.items.length === 0 && <span className="ms-2">{t('Ask your administrator.')}</span>}
+          {!blocked.some(item => blockedReasonKey(item.blockedForCaller)) && <>{' '}{t("A pay package must be approved by someone other than the person who entered it, the employee, or the person who issued the employee's sign-in code.")}</>}
+          {' '}{t('A different person with the payroll approve permission can approve it.')}
+          {blocked.some(item => blockedReasonKey(item.blockedForCaller)) && <ul data-testid="pay-approvals-blocked-list" className="mt-2 list-disc space-y-0.5 ps-5">
+            {blocked.map(item => { const key = blockedReasonKey(item.blockedForCaller); return <li key={item.employeeId}><bdi>{isolateName(item.name)}</bdi> <bdi>{item.employeeCode}</bdi>: {key ? t(key) : t('You cannot approve this pay package.')}</li>; })}
+          </ul>}
+          {hasPermission('security.manage') && <Link className="ms-2 underline" href="/setup?tab=users">{t('Check reviewer setup')}</Link>}
         </p>}
         {loading && <p className="flex items-center gap-2 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />{t('Loading…')}</p>}
         {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800 dark:border-rose-400/30 dark:bg-rose-500/10 dark:text-rose-200">{t('Could not load the pay approvals.')}</p>}

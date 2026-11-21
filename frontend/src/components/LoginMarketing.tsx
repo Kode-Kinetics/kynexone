@@ -1057,6 +1057,8 @@ export function Brief() {
    evidenced on those pages appears here.
    ══════════════════════════════════════════════════════════════════════════ */
 export function VendorFooter() {
+  /* The links follow the page's language, like the rest of the sign-in and welcome pages. */
+  const { t } = useLocale();
   return (
     <div className="lx-vendor lx-plate">
       <p className="lx-vendor-copy">{`© ${new Date().getFullYear()} Kode Kinetics`}</p>
@@ -1065,9 +1067,9 @@ export function VendorFooter() {
           customer yet actually hesitates — not in the quietest row on the
           screen, and not twice. */}
       <nav className="lx-vendor-nav" aria-label="Legal and security">
-        <a href="/security">Security</a>
-        <a href="/privacy" target="_blank" rel="noopener noreferrer">Privacy</a>
-        <a href="/terms" target="_blank" rel="noopener noreferrer">Terms</a>
+        <a href="/security">{t('Security')}</a>
+        <a href="/privacy" target="_blank" rel="noopener noreferrer">{t('Privacy')}</a>
+        <a href="/terms" target="_blank" rel="noopener noreferrer">{t('Terms')}</a>
       </nav>
     </div>
   );

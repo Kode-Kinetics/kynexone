@@ -651,6 +651,7 @@ public class ApprovalDecisionCharacterisationTests
     private static async Task<Guid> SeedApproverAsync(ZayraDbContext db, Guid tenantId, string name = "CFO")
     {
         var role = new Zayra.Api.Domain.Entities.Role { TenantId = tenantId, Name = "HR Manager", NormalizedName = "HR MANAGER", IsActive = true };
+        await OfferWorkflowTestSupport.GrantApprovalKeyAsync(db, role);
         var email = $"{name.Replace(" ", ".").ToLowerInvariant()}@example.test";
         var user = new Zayra.Api.Domain.Entities.User
         {

@@ -6,10 +6,13 @@ import {
   Plus, ChevronLeft, Users, Briefcase, ClipboardList, UserPlus,
   CheckCircle, Clock, XCircle, ChevronRight, X, Star, Send,
   FileText, AlertCircle, ArrowRight, Calendar, BarChart3, Lightbulb,
-  Target, BookOpen, Award, TrendingUp, LayoutGrid, Wand2, Sparkles,
+  Target, BookOpen, Award, TrendingUp, LayoutGrid, Wand2, Sparkles, Building2, Video, Phone, Loader2,
 } from 'lucide-react';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
+import { EmptyState } from '../components/ui/EmptyState';
+import { useFeatureFlags } from '../contexts/FeatureFlagContext';
+import { SETUP_MODULE_SECTIONS, moduleSectionAvailable } from '../lib/setupModuleSections';
 import client, { apiErrorReason, notifyApiError } from '../api/client';
 
 // ── Recruitment import/export helpers ─────────────────────────────────────────
@@ -50,6 +53,7 @@ import {
 import { OfferTemplateSelect } from '../components/OfferTemplateSelect';
 import { OfferLetterDesigner } from '../components/OfferLetterDesigner';
 import { yearsLabel } from '../lib/displayLabels';
+import { OVERVIEW_OPENING_STATUSES, mergeOverviewOpenings } from '../lib/recruitmentOverview';
 import { checklistOptionLabel } from '../lib/checklistLabel';
 import { offerApprovalNote } from '../lib/offerDisplay';
 import { approverPickerBlock } from '../lib/offerWorkspaceState';
@@ -71,7 +75,8 @@ import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
 import { useFormat } from '../hooks/useFormat';
 import { useMediaQuery } from '../hooks/useMediaQuery';
-import { DateTimePicker } from '../components/ui/DateParts';
+import { DatePicker, DateTimePicker } from '../components/ui/DateParts';
+import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import { enumLabel } from '../i18n/enumLabel';
 import { EmployeeSearchSelect, type EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { useConfirm } from '../components/ui/useConfirm';
@@ -84,7 +89,7 @@ import { canBlacklistCandidate, isBlacklisted, refusalReason, stageMoveBlock } f
 import { useLocale } from '../contexts/LocaleContext';
 import { useOfferLetterT } from '../i18n/offerLetter';
 import { useOfferLifecycleT } from '../i18n/offerLifecycle';
-import { mayCloseOpening, mayDecideRequisition, mayEditRejectedRequisition } from '../lib/requisitionDecision';
+import { showsPositionsLeft, mayCloseOpening, mayDecideRequisition, mayEditDraftRequisition, mayEditRejectedRequisition } from '../lib/requisitionDecision';
 import { isManagerRecruitmentUser, recruitmentAccess } from '../lib/recruitmentAccess';
 import { ManagerRecruitment } from './ManagerRecruitment';
 import { endOfLocalDayInstant, localInputToInstant } from '../lib/localDateTime';
@@ -204,10 +209,10 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
               <select aria-label={t('Offer approver')} value={approverId} onChange={e => setApproverId(e.target.value)}
                 className="w-full min-w-0 max-w-md text-ellipsis rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs dark:border-white/10 dark:bg-white/5">
                 <option value="">{t('Choose approver…')}</option>
-                {options.map(o => <option key={o.userId} value={o.userId}>{approverOptionLabel(o)}</option>)}
+                {options.map(o => <option key={o.userId} value={o.userId}>{approverOptionLabel(o, t)}</option>)}
               </select>
-              <button type="button" disabled={busy || !approverId} onClick={requestApproval}
-                className="rounded-lg bg-sapphire px-2.5 py-1 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">{t('Request approval')}</button>
+              <button type="button" disabled={busy || !approverId} aria-busy={busy || undefined} onClick={requestApproval}
+                className="rounded-lg bg-sapphire px-2.5 py-1 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">{busy && <Loader2 className="me-1 inline h-3.5 w-3.5 animate-spin" aria-hidden="true" />}{t('Request approval')}</button>
             </div>
           )
       )}
@@ -275,13 +280,13 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
   icon: React.ComponentType<{ className?: string }>; color: string;
 }) {
   return (
-    <div className="surface flex items-center gap-4 p-4">
+    <div className="surface flex items-center gap-3 p-3 sm:gap-4 sm:p-4">
       <div className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${color}`}>
         <Icon className="h-5 w-5" />
       </div>
       <div className="min-w-0">
         <p className="text-2xl font-semibold tabular-nums text-slate-900 dark:text-white">{value}</p>
-        <p className="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">{label}</p>
+        <p className="mt-0.5 text-xs leading-snug text-slate-500 dark:text-slate-400">{label}</p>
         {sub && <p className="text-caption text-slate-400 dark:text-slate-500">{sub}</p>}
       </div>
     </div>
@@ -319,7 +324,9 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
     openingsApi.stats().then(setStats).catch(() => {});
     requisitionsApi.stats().then(setReqStats).catch(() => {});
     // A five-row preview beside "View all".
-    openingsApi.list({ status: 'Open', pageSize: 5 }).then(r => setRecentOpenings(r.items.slice(0, 5))).catch(() => {});
+    // The same openings the "Open Positions" tile counts: Open and In Progress (the list takes one status at a time).
+    Promise.allSettled(OVERVIEW_OPENING_STATUSES.map(status => openingsApi.list({ status, pageSize: 5 }).then(r => r.items)))
+      .then(results => setRecentOpenings(mergeOverviewOpenings(results.flatMap(r => (r.status === 'fulfilled' ? [r.value] : [])), 5)));
   }, []);
 
   return (
@@ -368,7 +375,9 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
                   <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{o.title}</p>
                   <p className="text-xs text-slate-400 dark:text-slate-500">{t('{departmentName} · {value} applicants', { departmentName: o.departmentName, value: o.activeApplications ?? 0 })}</p>
                 </div>
-                <span className="ms-3 shrink-0 text-xs font-semibold text-sapphire dark:text-cyanAccent">{t('{value} left', { value: o.remaining ?? o.headCount - o.filledCount })}</span>
+                {showsPositionsLeft(o.status)
+                  ? <span className="ms-3 shrink-0 text-xs font-semibold text-sapphire dark:text-cyanAccent">{t('{value} left', { value: o.remaining ?? o.headCount - o.filledCount })}</span>
+                  : <span className="ms-3 shrink-0 text-xs font-semibold text-slate-500 dark:text-slate-400">{t(openingStatusTone(o.status).label)}</span>}
               </div>
             ))}
           </div>
@@ -433,10 +442,13 @@ function CreateReqModal({ onClose, onSaved, requisition }: CreateReqModalProps) 
     setError('');
     if (requisition) {
       // Editing a rejected requisition: save it (the API sets it back to Draft), then send it for approval again.
+      // Editing a Draft only saves it; sending for approval stays a separate, deliberate step on the list.
       try { await requisitionsApi.update(requisition.id, requisitionRequestBody(form, catalogue)); }
       catch (e) { setError(apiErrorReason(e, t('Failed to create requisition.'))); setSaving(false); return; }
-      try { await requisitionsApi.submit(requisition.id); }
-      catch (e) { window.dispatchEvent(new CustomEvent('zayra:error', { detail: `${t('Your changes were saved as a draft, but sending the requisition for approval failed. Use Submit on the list to send it.')} ${apiErrorReason(e, '')}`.trim() })); }
+      if (requisition.status === 'Rejected') {
+        try { await requisitionsApi.submit(requisition.id); }
+        catch (e) { window.dispatchEvent(new CustomEvent('zayra:error', { detail: `${t('Your changes were saved as a draft, but sending the requisition for approval failed. Use Submit for approval on the list to send it.')} ${apiErrorReason(e, '')}`.trim() })); }
+      }
       onSaved();
       return;
     }
@@ -458,7 +470,7 @@ function CreateReqModal({ onClose, onSaved, requisition }: CreateReqModalProps) 
       closeLabel={t('Close')}
       footer={<>
         <button type="button" className="btn-secondary text-sm" onClick={onClose}>{t('Cancel')}</button>
-        <button type="button" className="btn-primary text-sm" onClick={save} disabled={saving}>{saving ? t('Saving…') : requisition ? t('Save and resubmit') : t('Create Requisition')}</button>
+        <button type="button" className="btn-primary text-sm" onClick={save} disabled={saving}>{saving ? t('Saving…') : requisition ? (requisition.status === 'Rejected' ? t('Save and resubmit') : t('Save changes')) : t('Create Requisition')}</button>
       </>}
     >
       <div ref={bodyRef}>
@@ -518,7 +530,7 @@ function CreateReqModal({ onClose, onSaved, requisition }: CreateReqModalProps) 
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Target Join Date')}</label>
-                <input type="date" className="input w-full" value={form.targetJoiningDate} onChange={e => set('targetJoiningDate', e.target.value)} aria-label={t('Target joining date')} />
+                <DatePicker className="w-full" value={form.targetJoiningDate} onChange={v => set('targetJoiningDate', v)} aria-label={t('Target joining date')} />
               </div>
             </div>
             <div>
@@ -545,6 +557,8 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<ManpowerRequisition | null>(null);
   const [acting, setActing] = useState<string | null>(null);
+  // Which action is in flight on that row, so only its own button shows the spinner.
+  const [actingKind, setActingKind] = useState<'submit' | 'approve' | 'reject' | null>(null);
 
   // One page at a time with the server's total. The count already came from the total, but the
   // table stopped at the server's first 25 with no way to reach the rest.
@@ -557,15 +571,15 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
   useEffect(() => { load(); }, [statusFilter, load]);
 
   const submit = async (id: string) => {
-    setActing(id);
+    setActing(id); setActingKind('submit');
     try { await requisitionsApi.submit(id); load(); } catch (e) { notifyApiError(e); }
-    finally { setActing(null); }
+    finally { setActing(null); setActingKind(null); }
   };
 
   const approve = async (id: string) => {
-    setActing(id);
+    setActing(id); setActingKind('approve');
     try { await requisitionsApi.approve(id); load(); } catch (e) { notifyApiError(e); }
-    finally { setActing(null); }
+    finally { setActing(null); setActingKind(null); }
   };
 
   const reject = async (id: string) => {
@@ -576,23 +590,28 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
       reason: { required: true, label: t('Rejection reason') },
     });
     if (!answer.confirmed) return;
-    setActing(id);
+    setActing(id); setActingKind('reject');
     try { await requisitionsApi.reject(id, answer.reason); load(); } catch (e) { notifyApiError(e); }
-    finally { setActing(null); }
+    finally { setActing(null); setActingKind(null); }
   };
 
   // The row's actions, shared by the table (from 768 px) and the card list (a phone), so both offer exactly the same.
   const rowActions = (r: ManpowerRequisition) => (
     <div className="flex flex-wrap items-center gap-2 md:gap-1">
       {r.status === 'Draft' && (
-        <button type="button" disabled={acting === r.id} onClick={() => submit(r.id)} className="whitespace-nowrap rounded-lg bg-sapphire/10 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-sapphire hover:bg-sapphire/20 disabled:opacity-50 dark:bg-sapphire/20 dark:text-cyanAccent">
-          {t('Submit')}
+        <button type="button" disabled={acting === r.id} aria-busy={(acting === r.id && actingKind === 'submit') || undefined} onClick={() => submit(r.id)} className="whitespace-nowrap rounded-lg bg-sapphire/10 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-sapphire hover:bg-sapphire/20 disabled:opacity-50 dark:bg-sapphire/20 dark:text-cyanAccent">
+          {acting === r.id && actingKind === 'submit' && <Loader2 className="me-1 inline h-3.5 w-3.5 animate-spin" aria-hidden="true" />}{t('Submit for approval')}
+        </button>
+      )}
+      {mayEditDraftRequisition(r, hasRole) && (
+        <button type="button" disabled={acting === r.id} onClick={() => setEditing(r)} className="whitespace-nowrap rounded-lg bg-sapphire/10 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-sapphire hover:bg-sapphire/20 disabled:opacity-50 dark:bg-sapphire/20 dark:text-cyanAccent">
+          {t('Edit')}
         </button>
       )}
       {mayDecideRequisition(r, user?.id, canDecide) && (
         <>
-          <button type="button" disabled={acting === r.id} onClick={() => approve(r.id)} className="whitespace-nowrap rounded-lg bg-emerald-50 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-emerald-600 hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-500/10 dark:text-emerald-400">{t('Approve')}</button>
-          <button type="button" disabled={acting === r.id} onClick={() => reject(r.id)} className="whitespace-nowrap rounded-lg bg-rose-50 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-rose-600 hover:bg-rose-100 disabled:opacity-50 dark:bg-rose-500/10 dark:text-rose-400">{t('Reject')}</button>
+          <button type="button" disabled={acting === r.id} aria-busy={(acting === r.id && actingKind === 'approve') || undefined} onClick={() => approve(r.id)} className="whitespace-nowrap rounded-lg bg-emerald-50 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-emerald-600 hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-500/10 dark:text-emerald-400">{acting === r.id && actingKind === 'approve' && <Loader2 className="me-1 inline h-3.5 w-3.5 animate-spin" aria-hidden="true" />}{t('Approve')}</button>
+          <button type="button" disabled={acting === r.id} aria-busy={(acting === r.id && actingKind === 'reject') || undefined} onClick={() => reject(r.id)} className="whitespace-nowrap rounded-lg bg-rose-50 px-2.5 py-1 text-xs max-md:min-h-11 max-md:px-4 font-medium text-rose-600 hover:bg-rose-100 disabled:opacity-50 dark:bg-rose-500/10 dark:text-rose-400">{acting === r.id && actingKind === 'reject' && <Loader2 className="me-1 inline h-3.5 w-3.5 animate-spin" aria-hidden="true" />}{t('Reject')}</button>
         </>
       )}
       {mayEditRejectedRequisition(r, hasRole) && (
@@ -1028,7 +1047,7 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
                 <span className="text-slate-400">{t('Applicants')}</span>
               </div>
               <div className="flex items-center gap-1 text-xs text-slate-400">
-                <span>{t('{count, plural, one {# position left} other {# positions left}}', { count: o.headCount - o.filledCount })}</span>
+                {showsPositionsLeft(o.status) && <span>{t('{count, plural, one {# position left} other {# positions left}}', { count: o.headCount - o.filledCount })}</span>}
                 <ChevronRight className="h-3.5 w-3.5" />
               </div>
             </div>
@@ -1365,7 +1384,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                     </select>
                     <input className="input w-full" placeholder={t('Interviewer names')} value={interviewForm.interviewerNames} onChange={e => setInterviewForm(f => ({ ...f, interviewerNames: e.target.value }))} />
                     <div className="grid grid-cols-2 gap-2">
-                      <input type="datetime-local" className="input w-full" value={interviewForm.scheduledAt} onChange={e => setInterviewForm(f => ({ ...f, scheduledAt: e.target.value }))} aria-label={t('Scheduled at')} />
+                      <DateTimePicker className="col-span-2" value={interviewForm.scheduledAt} onChange={v => setInterviewForm(f => ({ ...f, scheduledAt: v }))} aria-label={t('Scheduled at')} />
                       <select className="select w-full" value={interviewForm.mode} onChange={e => setInterviewForm(f => ({ ...f, mode: e.target.value }))} aria-label={t('Interview mode')}>
                         {[msg('Video'), msg('InPerson'), msg('Phone')].map(m => <option value={m} key={m}>{t(m)}</option>)}
                       </select>
@@ -2016,7 +2035,7 @@ function InterviewsTab() {
     }
   };
 
-  const MODE_ICON: Record<string, string> = { InPerson: '🏢', Video: '📹', Phone: '📞' };
+  const MODE_ICON: Record<string, React.ComponentType<{ className?: string }>> = { InPerson: Building2, Video: Video, Phone: Phone };
   const RECOMMENDATION_COLORS: Record<string, string> = {
     StrongHire: 'text-emerald-600 dark:text-emerald-400',
     Hire: 'text-blue-600 dark:text-blue-400',
@@ -2123,7 +2142,7 @@ function InterviewsTab() {
                   )}
                   <div className="flex flex-wrap items-center gap-2 mb-1">
                     <span className="text-sm font-semibold text-slate-900 dark:text-white">{t(iv.interviewType)}</span>
-                    <span className="text-xs text-slate-400">{MODE_ICON[iv.mode] ?? '🗓'} {t(iv.mode)}</span>
+                    <span data-mode-icon={iv.mode} className="inline-flex items-center gap-1 text-xs text-slate-400">{(() => { const ModeIcon = MODE_ICON[iv.mode] ?? Calendar; return <ModeIcon className="h-3.5 w-3.5" aria-hidden="true" />; })()}{t(iv.mode)}</span>
                     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
                       iv.status === 'Completed' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' :
                       iv.status === 'Cancelled' ? 'bg-rose-50 text-rose-700' : 'bg-blue-50 text-blue-700'
@@ -2704,6 +2723,14 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
   const [templatesLoadedFor, setTemplatesLoadedFor] = useState('');
   const templateRequest = useRef(0);
   const [checklists, setChecklists] = useState<OnboardingChecklist[]>([]);
+  const [checklistsLoaded, setChecklistsLoaded] = useState(false);
+  // Where a checklist template is created (Setup), only when this person may open it: the same rule as the "Onboarding settings" door.
+  const { hasRole } = useAuth();
+  const featureFlags = useFeatureFlags();
+  const checklistSection = SETUP_MODULE_SECTIONS.find(section => section.id === 'onboardingChecklists');
+  const checklistSetupLink = checklistSection && moduleSectionAvailable(checklistSection, {
+    hasPermission, hasRole, isFeatureEnabled: featureFlags.isFeatureEnabled, verdictForPath: featureFlags.verdictForPath, flagStatus: featureFlags.status,
+  }) ? `/setup?tab=${checklistSection.id}` : '';
   const [selectedChecklistId, setSelectedChecklistId] = useState('');
   const [templateTasks, setTemplateTasks] = useState<OnboardingChecklistTemplateTask[]>([]);
   const [summary, setSummary] = useState<{ total: number; pending: number; completed: number; blocked: number; completionPct: number } | null>(null);
@@ -2805,6 +2832,7 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
     try {
       const items = await onboardingApi.listChecklists(configurationOnly ? { includeOff: true } : undefined);
       setChecklists(items);
+      setChecklistsLoaded(true);
       setSelectedChecklistId(current => current || ((configurationOnly && (policyDraft ?? new URLSearchParams(window.location.search).get('policyDraft') === '1')) ? '' : items[0]?.id) || '');
     } catch (e) { notifyApiError(e); }
   };
@@ -2937,6 +2965,13 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
       )}
 
       <div className="surface p-4">
+        {!configurationOnly && checklistsLoaded && checklists.length === 0 && (
+          <div data-onboarding-empty className="mb-4 rounded-xl border border-line">
+            {checklistSetupLink
+              ? <EmptyState kind="first-use" title={t('Onboarding checklists are not set up')} description={t('Onboarding tasks come from a checklist template, and this company has none. Create a checklist template in Setup, then come back here to generate tasks for a new hire.')} action={{ label: t('Create a checklist template'), href: checklistSetupLink }} />
+              : <EmptyState kind="restricted" title={t('Onboarding checklists are not set up')} description={t('Onboarding tasks come from a checklist template, and this company has none. Ask an administrator to create a checklist template in Setup.')} />}
+          </div>
+        )}
         {configurationOnly && policyRequested && !policyBundle && <p role="status" className="mb-3 text-sm text-amber-800 dark:text-amber-200">{t('No policy task draft is available for this signed-in user and selected company. Return to Setup to prepare it.')}</p>}
         {configurationOnly && policyBundle && <section aria-label={t('Policy task drafts')} className="mb-4 space-y-2 rounded-lg border border-blue-200 p-3 dark:border-blue-700">
           <p className="text-sm font-semibold">{t('Policy task drafts')} · {policyBundle.companyName}</p>
@@ -3354,26 +3389,19 @@ function RecruitmentWorkspace({ initialTab, initialOfferDesigner = false }: { in
         </p>
       </div>
 
-      {/* Tab bar */}
-      <div className="flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]">
-        {tabs.map(t => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => navigationGuard.run(`recruitment:${t.id}`, () => { setTab(t.id); if (t.id !== 'openings') setSelectedOpening(null); })}
-            className={`flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-sm font-medium transition ${
-              tab === t.id
-                ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent'
-                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
-            }`}
-          >
-            <t.icon className="h-3.5 w-3.5" />
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {/* Tab bar: one strip that scrolls on a phone (the active tab stays in view) and wraps on a wider screen. */}
+      <RovingTabList<Tab>
+        items={tabs.map(x => ({ id: x.id, label: x.label, icon: x.icon }))}
+        activeId={tab}
+        onChange={id => navigationGuard.run(`recruitment:${id}`, () => { setTab(id); if (id !== 'openings') setSelectedOpening(null); })}
+        idPrefix="recruitment"
+        label={t('Recruitment sections')}
+        scrollCue
+        wrapFromMd
+      />
 
       {/* Content */}
+      <TabPanel idPrefix="recruitment" tabId={tab}>
       {tab === 'overview' && <OverviewTab onNavigate={setTab} />}
       {tab === 'workforce' && <WorkforcePlanningTab />}
       {tab === 'requisitions' && <RequisitionsTab onCreateOpening={handleCreateOpening} />}
@@ -3397,6 +3425,7 @@ function RecruitmentWorkspace({ initialTab, initialOfferDesigner = false }: { in
       {tab === 'onboarding' && <OnboardingTab />}
       {tab === 'reports' && <ReportsTab />}
       {tab === 'ai' && <RecruitmentAITab />}
+      </TabPanel>
     </div>
   );
 }

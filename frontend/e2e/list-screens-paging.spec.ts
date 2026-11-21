@@ -216,8 +216,9 @@ test.describe('recruitment lists page with the server total', () => {
     expect(history).toContain('offerLifecycleApi.history({ applicationId, search: search || undefined, status: status || undefined, communicationOutcome: outcome || undefined, page, pageSize: 20 })');
     expect(history).toContain('data?.total');
     expect(history).toContain('page * 20');
-    // The overview asks for the five openings it previews.
-    expect(rec).toContain("openingsApi.list({ status: 'Open', pageSize: 5 })");
+    // The overview asks for the five openings it previews, for each status its Open Positions tile counts (Open and In Progress).
+    expect(rec).toContain('openingsApi.list({ status, pageSize: 5 })');
+    expect(rec).toContain('OVERVIEW_OPENING_STATUSES.map(');
   });
 });
 

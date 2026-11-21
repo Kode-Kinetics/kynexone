@@ -71,6 +71,7 @@ export function PayApprovalDetailPage() {
         <div ref={outcomeRef} tabIndex={-1} role="status" data-testid="pay-approval-outcome" className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 text-sm text-slate-900 outline-none dark:border-emerald-400/30 dark:bg-emerald-500/10 dark:text-white">
           <p className="flex items-center gap-2 font-semibold"><CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />{detail.employee.name}</p>
           <p className="mt-1">{outcome === 'approved' ? t('Approved. The pay package no longer blocks activation.') : t('Sent back. The pay package still blocks activation until it is corrected and approved.')}</p>
+          {outcome === 'approved' && <p className="mt-1" data-testid="pay-approval-next-step">{t('Next: a second HR person activates the employee from New hires.')}</p>}
         </div>
         {back}
       </div>

@@ -86,6 +86,8 @@ test.describe('Pay approvals queue', () => {
     await expect(section).toBeVisible({ timeout: 30_000 });
     await expect(section.getByText('Pending pay packages: 46')).toBeVisible();
     await expect(section.getByText('No eligible reviewer for 1 checked packages.')).toBeVisible();
+    // The explanation and the reviewer list sit behind Details (the section is one status line until it is opened).
+    await section.getByRole('button', { name: 'Details' }).click();
     await section.getByText('See who can review each pending package').click();
     await expect(section.getByText('Another independent reviewer is needed')).toBeVisible();
     await expect(section.getByText('Fatima Finance Approver', { exact: false })).toBeVisible();
@@ -123,7 +125,10 @@ test.describe('Pay approvals queue', () => {
   });
   test('explains all 46 hidden packages and links the administrator to reviewer setup', async ({ page }) => {
     await boot(page, '/pay-approvals', { empty: true, requiresOtherReviewerCount: 46, permissions: ['payroll.approve', 'security.manage', 'dashboard.read'] });
-    await expect(page.getByText('You created 46 pay packages, so someone else must approve them. They do not appear in your queue.')).toBeVisible();
+    const notice = page.getByTestId('pay-approvals-hidden-notice');
+    await expect(notice).toContainText('46 pay packages are waiting for approval, but you cannot approve them.');
+    await expect(notice).toContainText("A pay package must be approved by someone other than the person who entered it, the employee, or the person who issued the employee's sign-in code.");
+    await expect(notice).toContainText('A different person with the payroll approve permission can approve it.');
     await expect(page.getByRole('link', { name: 'Check reviewer setup' })).toHaveAttribute('href', '/setup?tab=users');
     expect(await page.locator('main').innerText()).not.toContain('10,500');
   });
