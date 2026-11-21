@@ -24,6 +24,9 @@ public sealed partial class OfferLifecycleService
                 throw new OfferLifecycleException(refusal.Error, refusal.Message,
                     verdict == OfferApproverVerdict.ApproverIsAuthor ? 403 : verdict == OfferApproverVerdict.AuthorUnknown ? 409 : 422);
             }
+            // The named person must be able to open this offer: an approver outside the offer's company would get "not found" and stall the step.
+            if (approverId is not { } named || !(await OfferRules.UsersWhoReachCompanyAsync(db, actor.TenantId, offer.CompanyId, [named], ct)).Contains(named))
+                throw new OfferLifecycleException(OfferRules.ApproverOutOfScopeError, OfferRules.ApproverOutOfScopeMessage, 422) { MessageAr = OfferRules.ApproverOutOfScopeMessageAr };
             var steps = await db.OfferApprovals.Where(a => a.TenantId == actor.TenantId && a.OfferLetterId == offerId).ToListAsync(ct);
             if (steps.Any(a => a.ApproverUserId == approverId && a.Status is "Pending" or "Approved"))
                 throw new OfferLifecycleException("offer_approver_already_named", "This person is already an approver on the offer.");

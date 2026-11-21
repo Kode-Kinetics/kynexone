@@ -236,7 +236,9 @@ public sealed class HrManagerOfferLifecycleHttpTests(PostgresFixture fixture)
     private static User NewUser(Guid tenantId, string name, Role role)
     {
         var email = $"{name}-{Guid.NewGuid():N}@example.test";
-        var user = new User { TenantId = tenantId, Email = email, NormalizedEmail = email.ToUpperInvariant(), FullName = $"Test {name}", Status = "Active", IsActive = true };
+        var user = new User { TenantId = tenantId, Email = email, NormalizedEmail = email.ToUpperInvariant(), FullName = $"Test {name}", Status = "Active", IsActive = true,
+            // Group scope: an approver must be able to reach the offer's company (the picker and the approval request both check it).
+            IsGroupScope = true };
         user.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id });
         return user;
     }

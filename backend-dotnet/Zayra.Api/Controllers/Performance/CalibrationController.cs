@@ -75,6 +75,9 @@ public class CalibrationController : ControllerBase
                 AvgScore    = Math.Round(g.Average(r => r.FinalScore), 1),
                 Count       = g.Count(),
                 PossibleBias = g.Average(r => r.FinalScore) > 85 || g.Average(r => r.FinalScore) < 50,
+                // Which way: the board's bias alert names it (the screen read these two and never got them).
+                PossibleLeniency = g.Average(r => r.FinalScore) > 85,
+                PossibleSeverity = g.Average(r => r.FinalScore) < 50,
             })
             .ToList();
 

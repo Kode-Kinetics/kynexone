@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { endOfLocalDayInstant, instantToLocalInput, localInputToInstant } from '../src/lib/localDateTime';
+import { endOfLocalDayInstant, instantToLocalInput, localInputToInstant, nowLocalInput } from '../src/lib/localDateTime';
 
 /**
  * A datetime-local input holds a WALL time ("2026-11-20T10:00") with no zone. Posted as it stands, the server reads it as UTC, so a
@@ -111,4 +111,19 @@ test('F7: the Recruitment offer form sends its date-only deadline as the end of 
   expect(read('src', 'views', 'RecruitmentPage.tsx')).toContain('endOfLocalDayInstant(offerForm.responseDeadline)');
   expect(read('src', 'components', 'recruitment', 'OfferSendDialog.tsx')).toContain('f.date(offer.responseDeadline)');
   expect(read('src', 'components', 'recruitment', 'OfferHistoryRegister.tsx')).toContain('f.date(row.responseDeadline)');
+});
+
+/** A "when did this happen" field starts at the moment the user is acting, in the browser's own wall time, so a staff-recorded response is never left blank or entered in the future. */
+test.describe('current time as a datetime-local default', () => {
+  let saved: string | undefined;
+  test.beforeEach(() => { saved = process.env.TZ; });
+  test.afterEach(() => { if (saved === undefined) delete process.env.TZ; else process.env.TZ = saved; });
+  for (const [zone, wall] of [['Asia/Riyadh', '2026-11-20T11:05'], ['America/New_York', '2026-11-20T03:05'], ['UTC', '2026-11-20T08:05']] as const) {
+    test(`${zone}: 08:05Z reads as ${wall} and parses back to the same instant`, () => {
+      process.env.TZ = zone;
+      const now = new Date('2026-11-20T08:05:42.000Z');
+      expect(nowLocalInput(now)).toBe(wall);
+      expect(localInputToInstant(nowLocalInput(now))).toBe('2026-11-20T08:05:00.000Z');
+    });
+  }
 });

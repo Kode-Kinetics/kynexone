@@ -12,6 +12,9 @@ import { managerRecruitment } from './managerRecruitment';
 import { launchNewHires } from './launchNewHires';
 import { essWorkspace } from './essWorkspace';
 import { essJobs } from './essJobs';
+import { recruitmentFixesA } from './recruitmentFixesA';
+import { recruitmentFixesB } from './recruitmentFixesB';
+import { recruitmentFixesC } from './recruitmentFixesC';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { hireWizard } from './hireWizard';
@@ -41,10 +44,12 @@ import { approvalChanges } from './approvalChanges';
 import { compensation } from './compensation';
 import { learning } from './learning';
 import { succession } from './succession';
+import { appraisalsUi } from './appraisalsUi';
 import { glEosb } from './glEosb';
 import { glLeaveProvision } from './glLeaveProvision';
 import { belowMinimum } from './belowMinimum';
 import { loanBatchApprover } from './loanBatchApprover';
+import { loanExit } from './loanExit';
 import { deadEnds } from './deadEnds';
 import { leaveDocument } from './leaveDocument';
 import { recruitmentDemo } from './recruitmentDemo';
@@ -60,6 +65,7 @@ import { payrollAttendance } from './payrollAttendance';
 import { payrollPipeline } from './payrollPipeline';
 import { payrollRecon } from './payrollRecon';
 import { launchPolish } from './launchPolish';
+import { glAccountNames } from './glAccountNames';
 import { polishB } from './polishB';
 import { statusTail } from './statusTail';
 import { complianceActions } from './complianceActions';
@@ -81,8 +87,10 @@ import { setupRollout } from './setupRollout';
 import { attendanceRules } from './attendanceRules';
 import { payrollRules } from './payrollRules';
 import { heldPay } from './heldPay';
+import { appraisalCycle } from './appraisalCycle';
 import { gradePackage } from './gradePackage';
 import { appChrome } from './appChrome';
+import { peopleList } from './peopleList';
 import { removalSafety } from './removalSafety';
 import { companyStructure } from './companyStructure';
 import { dailyA } from './dailyA';
@@ -129,6 +137,7 @@ const en: Dict = {
   ...removalSafety.en,
   ...companyStructure.en,
   ...appChrome.en,
+  ...peopleList.en,
   ...dailyA.en,
   ...attendanceBulk.en,
   ...attendanceDashboard.en,
@@ -154,6 +163,7 @@ const en: Dict = {
   ...attendanceRules.en,
   ...payrollRules.en,
   ...heldPay.en,
+  ...appraisalCycle.en,
   ...gradePackage.en,
   ...employeeWorkspace.en,
   "Navigation could not be resumed. Try the action again.": "Navigation could not be resumed. Try the action again.",
@@ -1659,6 +1669,9 @@ const en: Dict = {
   ...essWorkspace.en,
   // Self-Service open positions — see ./essJobs.
   ...essJobs.en,
+  ...recruitmentFixesA.en,
+  ...recruitmentFixesB.en,
+  ...recruitmentFixesC.en,
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.en,
   // Payroll's attendance check before Process — see ./payrollAttendance.
@@ -1669,6 +1682,8 @@ const en: Dict = {
   ...payrollRecon.en,
   // Launch polish: payment readiness, compliance, home and offer sentences — see ./launchPolish.
   ...launchPolish.en,
+  // The seeded chart-of-accounts names, so a journal reads in Arabic — see ./glAccountNames.
+  ...glAccountNames.en,
   // Saudi Compliance action items and GOSI findings — see ./complianceActions.
   ...complianceActions.en,
   // Rules-engine findings on the home dashboard — see ./insights.
@@ -1714,6 +1729,7 @@ const en: Dict = {
   ...glLeaveProvision.en,
   ...belowMinimum.en,
   ...loanBatchApprover.en,
+  ...loanExit.en,
   ...deadEnds.en,
   ...leaveDocument.en,
   ...recruitmentDemo.en,
@@ -1726,6 +1742,8 @@ const en: Dict = {
   ...learning.en,
   // SUC — succession and career development (./succession).
   ...succession.en,
+  // Appraisal screens: scorecard picker, own review and appeal, probation, PIP check-ins, 360 (./appraisalsUi).
+  ...appraisalsUi.en,
   // Demo polish B: statuses, offer events and sentences still English under Arabic — see ./polishB.
   ...polishB.en,
   // Status tail: Loans and Compliance screens and raw status words — see ./statusTail.
@@ -1747,6 +1765,7 @@ const ar: Dict = {
   ...removalSafety.ar,
   ...companyStructure.ar,
   ...appChrome.ar,
+  ...peopleList.ar,
   ...dailyA.ar,
   ...attendanceBulk.ar,
   ...attendanceDashboard.ar,
@@ -1772,6 +1791,7 @@ const ar: Dict = {
   ...attendanceRules.ar,
   ...payrollRules.ar,
   ...heldPay.ar,
+  ...appraisalCycle.ar,
   ...gradePackage.ar,
   ...employeeWorkspace.ar,
   "Navigation could not be resumed. Try the action again.": "تعذر استئناف التنقل. أعد المحاولة.",
@@ -3278,6 +3298,9 @@ const ar: Dict = {
   ...essWorkspace.ar,
   // Self-Service open positions — see ./essJobs.
   ...essJobs.ar,
+  ...recruitmentFixesA.ar,
+  ...recruitmentFixesB.ar,
+  ...recruitmentFixesC.ar,
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.ar,
   // Payroll's attendance check before Process — see ./payrollAttendance.
@@ -3286,6 +3309,7 @@ const ar: Dict = {
   ...payrollPipeline.ar,
   ...payrollRecon.ar,
   ...launchPolish.ar,
+  ...glAccountNames.ar,
   ...complianceActions.ar,
   ...insightsText.ar,
   // Attendance → Exceptions — see ./attendanceExceptions.
@@ -3323,6 +3347,7 @@ const ar: Dict = {
   ...glLeaveProvision.ar,
   ...belowMinimum.ar,
   ...loanBatchApprover.ar,
+  ...loanExit.ar,
   ...deadEnds.ar,
   ...leaveDocument.ar,
   ...recruitmentDemo.ar,
@@ -3334,6 +3359,7 @@ const ar: Dict = {
   ...learning.ar,
   // SUC — succession and career development (./succession).
   ...succession.ar,
+  ...appraisalsUi.ar,
   ...polishB.ar,
   ...statusTail.ar,
 };

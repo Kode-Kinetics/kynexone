@@ -40,7 +40,7 @@ test('the dictionaries carry the Release A strings', () => {
 
 test('Release A navigation is flag-gated, permission-gated, explained and translated', () => {
   // Admin screens are sidebar entries; the employee's own two are tabs inside Self-Service.
-  const menuPaths = ['/benefits/by-grade', '/contract-renewals'];
+  const menuPaths = ['/benefits/by-grade', '/benefits/usage', '/contract-renewals'];
   for (const path of menuPaths) {
     const item = navigationItems.find((i) => i.path === path);
     expect(item, path).toBeDefined();
@@ -50,6 +50,11 @@ test('Release A navigation is flag-gated, permission-gated, explained and transl
     expect(ARABIC.test(translate('ar', item!.label)), path).toBe(true);
   }
   expect(navigationItems.filter((i) => i.requiredFeatureKey === RELEASE_A_FLAG).map((i) => i.path).sort()).toEqual([...menuPaths].sort());
+
+  // Benefit usage: Finance decides with its own key. payroll.approve (held by HR Manager) must not open the Finance side of the screen.
+  const usagePermissions = navigationItems.find((i) => i.path === '/benefits/usage')?.requiredPermissions;
+  expect(usagePermissions).toContain('benefits.usage.approve');
+  expect(usagePermissions).not.toContain('payroll.approve');
 
   const essPaths = ['/ess/package', '/ess/deductions'];
   for (const path of essPaths) {

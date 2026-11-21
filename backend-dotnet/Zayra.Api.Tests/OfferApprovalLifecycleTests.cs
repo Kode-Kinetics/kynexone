@@ -16,7 +16,8 @@ public sealed class OfferApprovalLifecycleTests(PostgresFixture fixture)
         await using var db = fixture.CreateDb();
         var role = new Role { TenantId = seed.Actor.TenantId, Name = "HR Manager", NormalizedName = "HR MANAGER" };
         var checker = new User { TenantId = seed.Actor.TenantId, Email = $"checker-{Guid.NewGuid():N}@example.invalid",
-            NormalizedEmail = Guid.NewGuid().ToString(), FullName = "Independent checker" };
+            NormalizedEmail = Guid.NewGuid().ToString(), FullName = "Independent checker",
+            IsGroupScope = true }; // a checker must be able to reach the offer's company
         checker.UserRoles.Add(new() { UserId = checker.Id, RoleId = role.Id });
         db.Roles.Add(role); db.Users.Add(checker);
         db.RecruitmentAuditLogs.Add(OfferRules.AuditRow(seed.Actor.TenantId, seed.OfferId, OfferRules.CreatedAction, seed.Actor.UserId, seed.Actor.Name));

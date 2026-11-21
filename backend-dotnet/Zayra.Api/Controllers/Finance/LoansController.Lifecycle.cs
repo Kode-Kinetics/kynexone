@@ -105,7 +105,7 @@ public partial class LoansController
         var loan = await FindVisibleLoanForReadAsync(id, ct);
         if (loan == null) return NotFound();
         if (!await CanReadLoanAsync(loan, ct)) return Forbid();
-        var ownLoan = await _db.Employees.AnyAsync(x => x.TenantId == GetTenantId() && x.Id == loan.EmployeeIntId && x.UserAccountId == GetUserId() && !x.IsDeleted, ct);
+        var ownLoan = await IsCallerEmployeeAsync(loan.EmployeeIntId, ct);
         var changesQuery = ownLoan
             ? Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.LoanChangeRequests, GetTenantId(), "Owner-only historical changes after transfer, restricted to the authorized loan and linked employee.")
             : _db.LoanChangeRequests.AsQueryable();
@@ -257,7 +257,12 @@ public partial class LoansController
         await Zayra.Api.Infrastructure.Data.ScopedBypass.NullableTenantWide(_db.Employees, loan.TenantId,
             "Exclude the authenticated borrower from deciding their own loan even after a legal-entity transfer.")
             .AnyAsync(x => x.UserAccountId == userId
-                && (x.Id == loan.EmployeeIntId || x.PublicId == loan.EmployeeId), ct);
+                && (x.Id == loan.EmployeeIntId || x.PublicId == loan.EmployeeId), ct)
+        // The borrower the way an advance's subject is barred: any login linked to the employee through the login-link table,
+        // whatever its status, and the logins the Approval Center counts (SubjectDecisionBar). A login linked only through the
+        // link table (UserAccountId cleared) used to pass as an independent decider of its own loan.
+        || (loan.EmployeeIntId is int borrowerId
+            && await Zayra.Api.Infrastructure.Approvals.SubjectDecisionBar.CallerIsSubjectAsync(_db, loan.TenantId, userId, borrowerId, ct));
 
     /// <summary>The instalments a reschedule keeps (the last one with money paid against it): the new schedule's total
     /// is this plus the requested count, exactly as the decision writes <c>ApprovedInstallments</c>.</summary>

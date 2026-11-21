@@ -303,7 +303,7 @@ public class ApprovalSeparationOfDutiesGapTests
         var tenantId = Guid.NewGuid();
         // The decider must still be an eligible approver (an active HR Manager) when deciding.
         var approverRole = new Role { TenantId = tenantId, Name = "HR Manager", NormalizedName = "HR MANAGER", IsActive = true };
-        var approverUser = new User { TenantId = tenantId, Email = "head@example.test", NormalizedEmail = "HEAD@EXAMPLE.TEST", FullName = "Head", Status = "Active", IsActive = true };
+        var approverUser = new User { TenantId = tenantId, Email = "head@example.test", NormalizedEmail = "HEAD@EXAMPLE.TEST", FullName = "Head", Status = "Active", IsActive = true, IsGroupScope = true /* an approver must reach the offer's company */ };
         approverUser.UserRoles.Add(new UserRole { UserId = approverUser.Id, RoleId = approverRole.Id, Role = approverRole });
         db.AddRange(approverRole, approverUser);
         var approver = approverUser.Id;
@@ -342,6 +342,7 @@ public class ApprovalSeparationOfDutiesGapTests
         {
             TenantId = tenantId, Email = "head@example.test", NormalizedEmail = "HEAD@EXAMPLE.TEST", FullName = "Head of Eng",
             Status = "Active", IsActive = true,
+            IsGroupScope = true, // an approver must be able to reach the offer's company
         };
         approver.UserRoles.Add(new UserRole { UserId = approver.Id, RoleId = role.Id, Role = role });
         var applicationId = Guid.NewGuid();

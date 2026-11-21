@@ -358,6 +358,7 @@ public sealed class RecruitmentOfferMakerCheckerTests
         {
             TenantId = tenantId, Email = email, NormalizedEmail = email.ToUpperInvariant(), FullName = $"Test {name}",
             Status = "Active", IsActive = true,
+            IsGroupScope = true, // an approver must be able to reach the offer's company
         };
         user.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id });
         return user;

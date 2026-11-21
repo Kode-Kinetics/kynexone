@@ -1631,6 +1631,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     // Release A (rev 8.3.2): the contract-year package and the renewal case. Mapped in ReleaseAModelConfiguration.
     public DbSet<EmployeeEntitlement> EmployeeEntitlements => Set<EmployeeEntitlement>();
     public DbSet<ContractRenewalCase> ContractRenewalCases => Set<ContractRenewalCase>();
+    // Benefit usage requests (benefit utilisation). Mapped in BenefitUsageModelConfiguration.
+    public DbSet<BenefitUsageRequest> BenefitUsageRequests => Set<BenefitUsageRequest>();
     public DbSet<LoanChangeRequest> LoanChangeRequests => Set<LoanChangeRequest>();
     public DbSet<EmployeeLoan> EmployeeLoans => Set<EmployeeLoan>();
     public DbSet<LoanDisbursementBatch> LoanDisbursementBatches => Set<LoanDisbursementBatch>();
@@ -6029,6 +6031,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         // Release A (entitlements, contract-year package, renewal case) — same append-only convention.
         ReleaseAModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
+        // Benefit usage requests against frozen contract benefits (same append-only convention for this file).
+        BenefitUsageModelConfiguration.Configure(modelBuilder);
         // Employee onboarding P1: nationality code/state, original joining date (migration OnboardingP1).
         OnboardingModelConfiguration.Configure(modelBuilder);
         SelfieAttendanceModelConfiguration.Configure(modelBuilder);

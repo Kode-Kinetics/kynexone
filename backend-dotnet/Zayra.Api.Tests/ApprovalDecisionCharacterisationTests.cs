@@ -656,6 +656,7 @@ public class ApprovalDecisionCharacterisationTests
         {
             TenantId = tenantId, Email = email, NormalizedEmail = email.ToUpperInvariant(), FullName = name,
             Status = "Active", IsActive = true,
+            IsGroupScope = true, // an approver must be able to reach the offer's company
         };
         user.UserRoles.Add(new Zayra.Api.Domain.Entities.UserRole { UserId = user.Id, RoleId = role.Id, Role = role });
         db.AddRange(role, user);

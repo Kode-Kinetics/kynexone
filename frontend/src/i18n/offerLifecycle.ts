@@ -1,5 +1,6 @@
 'use client';
 import { useLocale } from '../contexts/LocaleContext';
+import { HANDOFF_LABELS } from '../lib/recruitmentFixesC';
 export const offerLifecycleArabic: Record<string, string> = {
   'Draft': 'مسودة', 'PendingApproval': 'بانتظار الموافقة', 'Approved': 'معتمد', 'Sent': 'مرسل', 'Accepted': 'مقبول', 'Declined': 'مرفوض', 'Expired': 'منتهي الصلاحية', 'Withdrawn': 'مسحوب', 'Queued': 'في الانتظار', 'Sending': 'جارٍ الإرسال', 'Cancelled': 'ملغى', 'Failed': 'فشل', 'Current': 'الحالي', 'Legacy': 'قديم',
   'NotApplicable': 'غير منطبق', 'LegacySnapshotUnavailable': 'تفاصيل العرض القديم غير متاحة', 'NeedsReview': 'تحتاج إلى مراجعة', 'Confirmed': 'مؤكد',
@@ -16,4 +17,7 @@ export const offerLifecycleArabic: Record<string, string> = {
   'Compensation handoff': 'تسليم التعويضات', 'Disposition': 'طريقة المعالجة', 'Payroll': 'الرواتب', 'NamedProcess': 'إجراء مسمى', 'OfferOnlyBenefit': 'منفعة في العرض فقط', 'Payroll field': 'حقل الرواتب', 'Process name': 'اسم الإجراء', 'Save review': 'حفظ المراجعة', 'Confirm every disposition': 'تأكيد معالجة جميع المكونات', 'Named processes record routing only; they do not complete another workflow.': 'تسجل الإجراءات المسماة جهة المعالجة فقط ولا تنفذ سير عمل آخر.', 'Source company': 'الشركة الأصلية', 'Placement company': 'شركة التعيين', 'Placement provenance': 'مصدر التعيين', 'Not retained': 'غير محفوظ', 'Effective date': 'تاريخ السريان', 'Pay-sensitive permission is required to review offer compensation.': 'يلزم تصريح البيانات المالية الحساسة لمراجعة التعويضات.', 'Reload after a version conflict before saving again.': 'أعد التحميل بعد تعارض النسخة قبل الحفظ مجددًا.', 'Unsaved offer changes. Discard them and leave?': 'تغييرات عرض غير محفوظة. هل تريد تجاهلها والمغادرة؟', 'Saved.': 'تم الحفظ.',
   'Create a new revision to change submitted terms.': 'أنشئ مراجعة جديدة لتغيير الشروط المرسلة.',
 };
-export function useOfferLifecycleT() { const { locale } = useLocale(); return (key: string) => locale === 'ar' ? offerLifecycleArabic[key] ?? key : key; }
+/** Raw state and choice codes the API sends, in plain English (the Arabic is in offerLifecycleArabic above). */
+export const offerLifecycleEnglish: Record<string, string> = { ...HANDOFF_LABELS, OneTime: 'One time' };
+/** The offer screens' translator: its own Arabic first, then the app dictionary, so a key added to the shared dictionary also reaches these screens. */
+export function useOfferLifecycleT() { const { locale, t } = useLocale(); return (key: string) => locale === 'ar' ? offerLifecycleArabic[key] ?? t(key) : offerLifecycleEnglish[key] ?? key; }

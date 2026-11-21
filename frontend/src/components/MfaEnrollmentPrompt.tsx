@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
+import { useLocale } from '../contexts/LocaleContext';
 
 /**
  * Grace-period prompt for mandatory two-step sign-in (backend: PrivilegedMfaPolicy).
@@ -29,17 +30,19 @@ interface Props {
   className?: string;
 }
 
-function formatDate(iso: string): string {
+function formatDate(iso: string, locale: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime())
     ? iso
-    : d.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+    : d.toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
 export function MfaEnrollmentPrompt({ loadStatus, onStart, dismissKey, tone = 'light', className = '' }: Props) {
   const [status, setStatus] = useState<MfaPromptStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // The platform console has no language provider, so it keeps reading English.
+  const { t, locale } = useLocale();
 
   useEffect(() => {
     let dismissed = false;
@@ -55,13 +58,13 @@ export function MfaEnrollmentPrompt({ loadStatus, onStart, dismissKey, tone = 'l
   if (!status?.promptToEnroll) return null;
 
   const when = status.enforceFromUtc
-    ? `From ${formatDate(status.enforceFromUtc)} you will need a code from an authenticator app to sign in.`
-    : 'Soon you will need a code from an authenticator app to sign in.';
+    ? t('From {date} you will need a code from an authenticator app to sign in.', { date: formatDate(status.enforceFromUtc, locale) })
+    : t('Soon you will need a code from an authenticator app to sign in.');
 
   const start = async () => {
     setBusy(true); setError('');
     try { await onStart(); }
-    catch { setError('Could not start setup. Please try again.'); setBusy(false); }
+    catch { setError(t('Could not start setup. Please try again.')); setBusy(false); }
   };
 
   const later = () => {
@@ -76,21 +79,21 @@ export function MfaEnrollmentPrompt({ loadStatus, onStart, dismissKey, tone = 'l
   const errorColour = tone === 'dark' ? 'text-red-300' : 'text-red-700 dark:text-red-400';
 
   return (
-    <section aria-label="Two-step sign-in" className={`${className} flex flex-col gap-3 rounded-xl border px-4 py-3 sm:flex-row sm:items-center ${palette}`}>
+    <section aria-label={t('Two-step sign-in')} className={`${className} flex flex-col gap-3 rounded-xl border px-4 py-3 sm:flex-row sm:items-center ${palette}`}>
       <ShieldCheck className="hidden h-5 w-5 shrink-0 sm:block" aria-hidden />
       <div className="min-w-0 flex-1 text-sm">
-        <p className="font-semibold">Two-step sign-in is required for your role</p>
-        <p className="mt-0.5 opacity-90">{when} Setting it up takes about a minute; you will sign in again afterwards.</p>
+        <p className="font-semibold">{t('Two-step sign-in is required for your role')}</p>
+        <p className="mt-0.5 opacity-90">{when} {t('Setting it up takes about a minute; you will sign in again afterwards.')}</p>
         {error && <p role="alert" className={`mt-1 font-medium ${errorColour}`}>{error}</p>}
       </div>
       <div className="flex shrink-0 gap-2">
         <button type="button" onClick={later} disabled={busy}
           className="rounded-lg px-3 py-2 text-sm font-medium opacity-80 hover:opacity-100 disabled:opacity-50">
-          Remind me later
+          {t('Remind me later')}
         </button>
         <button type="button" onClick={start} disabled={busy}
           className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60">
-          {busy ? 'Starting…' : 'Set up two-step sign-in'}
+          {busy ? t('Starting…') : t('Set up two-step sign-in')}
         </button>
       </div>
     </section>

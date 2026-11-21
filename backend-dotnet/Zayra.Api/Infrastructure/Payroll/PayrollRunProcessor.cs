@@ -581,8 +581,13 @@ public sealed class PayrollRunProcessor
         // The leavers whose final settlement this run pays, filled in once the settlements are read below. A leaver's loans and
         // advances are recovered whole from the final pay whatever their repayment start date (see collectableAdvance).
         var settlingEmployeeIds = new List<int>();
+        // A leaver's final pay recovers EVERY open loan that is not on hold, whatever its repayment method: a loan repaid by bank
+        // transfer was otherwise paid out with the leaver and never recovered (LoanRecoveryScope). Everyone else's run collects
+        // only payroll-deduction loans. A held loan (an estate or review case) is never collected here.
         System.Linq.Expressions.Expression<Func<EmployeeLoan, bool>> collectableLoan = l =>
-            l.TenantId == tenantId && l.CompanyId == loanCompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
+            l.TenantId == tenantId && l.CompanyId == loanCompanyId && !l.IsDeleted && l.CollectionStatus != LoanRecoveryScope.OnHold
+                && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
+                && (l.RepaymentMethod == LoanRecoveryScope.PayrollDeduction || settlingEmployeeIds.Contains(l.EmployeeIntId.Value))
                 && (!l.RepaymentStartDate.HasValue || l.RepaymentStartDate.Value <= periodEnd || settlingEmployeeIds.Contains(l.EmployeeIntId.Value));
         // The loans and salary advances are loaded below, once the leavers this run settles are known.
 

@@ -32,3 +32,13 @@ test('no response at all uses the fallback', () => {
   expect(loanErrorMessage(new Error('Network Error'), FALLBACK)).toBe(FALLBACK);
   expect(loanErrorMessage(http(400, '   '), FALLBACK)).toBe(FALLBACK);
 });
+
+// A loan refusal now carries its sentence in both languages ({ error, message, messageAr }), as an advance refusal does.
+test('an Arabic reader gets the Arabic refusal, an English reader the English one', () => {
+  const refusal = http(400, { error: 'loan_amount_invalid', message: 'Amount must be positive.', messageAr: 'يجب أن يكون المبلغ موجبًا.' });
+  expect(loanErrorMessage(refusal, FALLBACK, 'ar')).toBe('يجب أن يكون المبلغ موجبًا.');
+  expect(loanErrorMessage(refusal, FALLBACK, 'en')).toBe('Amount must be positive.');
+  expect(loanErrorMessage(refusal, FALLBACK)).toBe('Amount must be positive.');
+  // No Arabic on the body: the English sentence is still better than the generic fallback.
+  expect(loanErrorMessage(http(409, { message: 'Only draft batches can be approved.' }), FALLBACK, 'ar')).toBe('Only draft batches can be approved.');
+});

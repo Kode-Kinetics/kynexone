@@ -129,6 +129,8 @@ public static class PrivilegedMfaPolicy
         "payroll.structure_manage", "payroll.rules.manage", "payroll.rates.manage", "payroll.rates.statutory_override",
         ReportAccessPolicy.SensitivePermission, // employees.sensitive — salary, IBAN, identity fields
         "loans.write", "loans.approve", "loans.policy_manage",
+        // Deciding a benefit usage request (Finance approves what HR requested): a money-adjacent decision, classified like loans.approve.
+        "benefits.usage.approve",
         "finance.gl.manage", "finance.gl.export", "finance.gl.drivers.manage", "finance.gl.drivers.author_predicates", "finance.erp.confirm",
         "finance.opening_balances.import", // posts opening journals to the receivables
         "finance.gl.period.reopen", // un-freezes closed books

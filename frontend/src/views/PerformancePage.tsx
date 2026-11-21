@@ -9,6 +9,9 @@ import { Modal as BaseModal } from '../components/Modal';
 import { ConfirmDialog, type ConfirmState } from '../components/ui/ConfirmDialog';
 import { useAppToast } from '../components/ui/AppToast';
 import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
+import { ReviewHrActions } from '../components/performance/ReviewHrActions';
+import { GoalKpiHint } from '../components/performance/GoalKpiHint';
+import { EditDraftCycle } from '../components/performance/EditDraftCycle';
 import { EmployeeSearchSelect } from '../components/EmployeeSearchSelect';
 import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
@@ -30,6 +33,17 @@ import {
   analyticsApi, calibrationApi, cyclesApi, feedbackApi, goalsApi,
   pipApi, probationApi, recommendationsApi, reviewsApi, templatesApi,
 } from '../api/performance';
+import { ScorecardTemplateSelect } from '../components/performance/ScorecardTemplateSelect';
+import { ReviewDetailDrawer } from '../components/performance/ReviewDetailDrawer';
+import { EmptyState } from '../components/ui/EmptyState';
+import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
+import { SkeletonRows } from '../components/ui/Skeleton';
+import { adverseCloseNeedsCheckIn, employeeMaySeeResult, ratingLabel } from '../lib/appraisalsUi';
+import { appraisalRefusal } from '../lib/appraisalsRefusal';
+import { NewProbationModal, ProbationManagerReviewModal } from '../components/performance/ProbationForms';
+import { PipCheckInModal } from '../components/performance/PipCheckInModal';
+import { ResultBanner } from '../components/ui/ResultBanner';
+import { Feedback360Modal, feedbackOpenFor, useCycles360 } from '../components/performance/Feedback360';
 import type {
   AppraisalAppeal, AppraisalReview, BonusRecommendation, CycleAnalytics, EmployeeGoal,
   IncrementRecommendation, PerformanceCycle, PerformanceImprovementPlan,
@@ -208,7 +222,7 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
             ))}
           </div>
           <p className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
-            {t('Approved recommendations are sent to Payroll as pending actions — not applied automatically.')}
+            {t('Approved recommendations are a record for HR to act on. Nothing in pay or payroll changes automatically.')}
           </p>
         </div>
 
@@ -276,6 +290,8 @@ function CreateCycleModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
     enableCalibration: true, enable360Feedback: false, enableSelfAssessment: true,
     enableForcedDistribution: false, notes: '',
   });
+  const [templateId, setTemplateId] = useState('');
+  const [templatesAvailable, setTemplatesAvailable] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const set = (k: keyof typeof form, v: string | boolean) => setForm(f => ({ ...f, [k]: v }));
@@ -284,6 +300,7 @@ function CreateCycleModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
     if (!form.name || !form.reviewPeriodStart || !form.reviewPeriodEnd) {
       setError(t('Name and review period dates are required.')); return;
     }
+    if (!templateId) { setError(t('apr.template.required')); return; }
     setSaving(true); setError('');
     try {
       await cyclesApi.create({
@@ -294,6 +311,7 @@ function CreateCycleModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
         selfAssessmentDeadline: form.selfAssessmentDeadline || undefined,
         managerReviewDeadline: form.managerReviewDeadline || undefined,
         calibrationDeadline: form.calibrationDeadline || undefined,
+        defaultScorecardTemplateId: templateId,
         notes: form.notes || undefined,
       });
       onSaved();
@@ -309,6 +327,7 @@ function CreateCycleModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
             {['Annual', 'Semi-Annual', 'Quarterly', 'Monthly', 'Probation', 'Project'].map(ct => <option key={ct} value={ct}>{valueText(t, ct)}</option>)}
           </select>
         </Field>
+        <ScorecardTemplateSelect value={templateId} onChange={setTemplateId} onReady={setTemplatesAvailable} />
         <div className="grid grid-cols-2 gap-3">
           <Field label={t('Period Start *')}><input type="date" className={inp} value={form.reviewPeriodStart} onChange={e => set('reviewPeriodStart', e.target.value)} /></Field>
           <Field label={t('Period End *')}><input type="date" className={inp} value={form.reviewPeriodEnd} onChange={e => set('reviewPeriodEnd', e.target.value)} /></Field>
@@ -327,10 +346,10 @@ function CreateCycleModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
           ))}
         </div>
         <Field label={t('Notes')}><textarea className={inp} rows={2} value={form.notes} onChange={e => set('notes', e.target.value)} /></Field>
-        {error && <p className="text-xs text-rose-500">{error}</p>}
+        {error && <p role="alert" className="text-xs text-rose-500">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" className={btn.ghost} onClick={onClose}>{t('Cancel')}</button>
-          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? t('Creating…') : t('Create Cycle')}</button>
+          <button type="button" className={btn.primary} onClick={save} disabled={saving || templatesAvailable === 0}>{saving ? t('Creating…') : t('Create Cycle')}</button>
         </div>
       </div>
     </Modal>
@@ -385,6 +404,7 @@ function CyclesTab() {
               </div>
               <div className="ms-4 flex shrink-0 items-center gap-3">
                 <StatusBadge status={c.status} />
+                {c.status === 'Draft' && can.setUpCycles && <EditDraftCycle cycle={c} onSaved={load} />}
                 {c.status === 'Draft' && can.setUpCycles && (
                   <button type="button" onClick={() => launch(c.id)} disabled={launching === c.id} className={btn.primary}>
                     {launching === c.id ? t('Launching…') : t('Launch')}
@@ -392,6 +412,9 @@ function CyclesTab() {
                 )}
                 {['Active', 'InReview', 'Calibration', 'FinalApproval'].includes(c.status) && can.setUpCycles && (
                   <button type="button" onClick={() => advance(c.id)} className={btn.ghost}>{t('Advance')}</button>
+                )}
+                {c.status === 'Published' && can.setUpCycles && (
+                  <button type="button" onClick={() => void cyclesApi.close(c.id).then(load, e => notifyApiError(e, t('Could not close the cycle.')))} className={btn.ghost}>{t('Close cycle')}</button>
                 )}
               </div>
             </div>
@@ -446,6 +469,7 @@ function SelfAssessmentModal({ review, onClose, onSaved }: { review: AppraisalRe
 function MyReviewsTab() {
   const { t } = useLocale();
   const [selected, setSelected] = useState<AppraisalReview | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
 
   // One page at a time with the server's total: this used to show the first 50 as every review.
   // view: 'mine' keeps My Reviews to the caller's own reviews; without it HR would see everyone's.
@@ -455,37 +479,32 @@ function MyReviewsTab() {
   useEffect(load, [list.reload]);
   const reviewCount = list.total ?? reviews.length;
 
-  const acknowledge = async (id: string) => {
-    try { await reviewsApi.acknowledge(id); load(); } catch (e) { notifyApiError(e, t('Failed to acknowledge.')); }
-  };
-
   return (
     <div className="space-y-4">
       <p className="text-sm text-slate-500 dark:text-slate-400">{t('{count, plural, one {# review record} other {# review records}}', { count: reviewCount })}</p>
-      {list.error != null && <LoadFailure what="reviews" error={list.error} />}
-      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : list.error != null && reviews.length === 0 ? null : reviews.length === 0 ? (
-        <div className="surface flex flex-col items-center py-16 text-center">
-          <ClipboardList className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No reviews assigned')}</p>
-        </div>
+      {list.error != null && <LoadFailedNotice error={list.error} onRetry={load} />}
+      {loading ? <div className="surface p-4"><span className="sr-only">{t('Loading…')}</span><SkeletonRows rows={3} /></div> : list.error != null && reviews.length === 0 ? null : reviews.length === 0 ? (
+        <div className="surface"><EmptyState kind="restricted" icon={ClipboardList} title={t('apr.my.emptyTitle')} description={t('apr.my.emptyBody')} /></div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
           {reviews.map(r => (
-            <div key={r.id} className="flex items-center justify-between px-5 py-4">
+            <div key={r.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.cycleName}</p>
                 <p className="mt-0.5 text-xs text-slate-400">{r.departmentName} · {r.designationTitle}</p>
-                {r.finalScore > 0 && (
-                  <p className={`mt-1 text-xs font-semibold ${scoreColor(r.finalScore)}`}>{t('Score: {score} — {rating}', { score: r.finalScore, rating: r.finalRating })}</p>
+                {employeeMaySeeResult(r.status) && r.finalScore > 0 && (
+                  <p className={`mt-1 text-xs font-semibold ${scoreColor(r.finalScore)}`}>{t('Score: {score} — {rating}', { score: r.finalScore, rating: ratingLabel(t, r.finalRating) })}</p>
                 )}
               </div>
-              <div className="ms-4 flex shrink-0 items-center gap-3">
+              <div className="ms-auto flex shrink-0 items-center gap-3">
                 <StatusBadge status={r.status} />
                 {r.status === 'SelfAssessmentDue' && (
                   <button type="button" className={btn.primary} onClick={() => setSelected(r)}>{t('Start Assessment')}</button>
                 )}
-                {r.status === 'Published' && (
-                  <button type="button" className={btn.ghost} onClick={() => acknowledge(r.id)}>{t('Acknowledge')}</button>
+                {r.status === 'Published' ? (
+                  <button type="button" className={btn.primary} onClick={() => setDetailId(r.id)}>{t('apr.row.viewResult')}</button>
+                ) : (
+                  <button type="button" className={btn.ghost} onClick={() => setDetailId(r.id)}>{t('apr.row.details')}</button>
                 )}
               </div>
             </div>
@@ -494,6 +513,7 @@ function MyReviewsTab() {
       )}
       <ListWindowFooter shown={reviews.length} total={list.total} noun="reviews" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} reviews', { shown: reviews.length, total: list.total ?? 0 }), loadMore: t('Load more'), loading: t('Loading…') }} />
       {selected && <SelfAssessmentModal review={selected} onClose={() => setSelected(null)} onSaved={() => { setSelected(null); load(); }} />}
+      {detailId && <ReviewDetailDrawer reviewId={detailId} onClose={() => setDetailId(null)} onChanged={load} />}
     </div>
   );
 }
@@ -513,7 +533,14 @@ function ManagerReviewModal({ review, onClose, onSaved }: { review: AppraisalRev
   const [error, setError] = useState('');
   const set = (k: keyof typeof form, v: string) => setForm(f => ({ ...f, [k]: v }));
 
+  const [goalKpi, setGoalKpi] = useState<{ goalCount: number; totalWeight: number; kpiScore: number } | null>(null);
+
   const save = async () => {
+    // Every component is a 0-100 score; a blank is not a zero. The server refuses anything outside 0-100 too.
+    const keys = ['kpiScore', 'competencyScore', 'attendanceScore', 'productivityScore', 'feedbackScore', 'disciplineScore'] as const;
+    if (keys.some(k => form[k].trim() === '' || !(Number(form[k]) >= 0 && Number(form[k]) <= 100))) {
+      setError(t('Every score must be between 0 and 100.')); return;
+    }
     setSaving(true); setError('');
     try {
       await reviewsApi.submitManagerReview(review.id, {
@@ -535,10 +562,11 @@ function ManagerReviewModal({ review, onClose, onSaved }: { review: AppraisalRev
     <Modal title={t('Manager Review — {name}', { name: review.employeeName })} onClose={onClose} wide>
       <div className="space-y-4">
         <p className="text-xs text-slate-500 dark:text-slate-400">{t('Cycle: {name} · Self-assessment: {notes}', { name: review.cycleName, notes: review.selfAssessmentNotes || t('(none)') })}</p>
+        <GoalKpiHint reviewId={review.id} onKpi={k => { setGoalKpi(k); if (k) set('kpiScore', String(k.kpiScore)); }} />
         <div className="grid grid-cols-3 gap-3">
           {[['kpiScore', t('KPI Score (0–100)')], ['competencyScore', t('Competency Score (0–100)')], ['productivityScore', t('Productivity Score (0–100)')],
             ['feedbackScore', t('Feedback Score (0–100)')], ['disciplineScore', t('Discipline Score (0–100)')]] .map(([k, l]) => (
-            <Field key={k} label={l}><input type="number" min={0} max={100} className={inp} value={form[k as keyof typeof form]} onChange={e => set(k as keyof typeof form, e.target.value)} /></Field>
+            <Field key={k} label={l}><input type="number" min={0} max={100} className={inp} value={form[k as keyof typeof form]} readOnly={k === 'kpiScore' && goalKpi != null} onChange={e => set(k as keyof typeof form, e.target.value)} /></Field>
           ))}
           <Field label={t('Attendance Score (0–100)')}>
             <div className="flex gap-2">
@@ -669,6 +697,8 @@ function TeamReviewsTab() {
   const { t } = useLocale();
   const can = usePerformanceCapabilities();
   const [statusFilter, setStatusFilter] = useState('');
+  const [feedbackReview, setFeedbackReview] = useState<AppraisalReview | null>(null);
+  const cycles360 = useCycles360();
   const [selected, setSelected] = useState<AppraisalReview | null>(null);
 
   // One page at a time with the server's total: this used to show the first 50 as every review.
@@ -696,11 +726,12 @@ function TeamReviewsTab() {
         <p className="text-sm text-slate-500 dark:text-slate-400">{t('{count, plural, one {# review} other {# reviews}}', { count: reviewCount })}</p>
       </div>
 
-      {list.error != null && <LoadFailure what="reviews" error={list.error} />}
-      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : list.error != null && reviews.length === 0 ? null : reviews.length === 0 ? (
-        <div className="surface flex flex-col items-center py-16 text-center">
-          <Users className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No reviews match the filter')}</p>
+      {list.error != null && <LoadFailedNotice error={list.error} onRetry={load} />}
+      {loading ? <div className="surface p-4"><span className="sr-only">{t('Loading…')}</span><SkeletonRows rows={4} /></div> : list.error != null && reviews.length === 0 ? null : reviews.length === 0 ? (
+        <div className="surface">
+          {statusFilter
+            ? <EmptyState kind="filtered" icon={Users} title={t('No reviews match the filter')} description={t('apr.team.filtered', { status: valueText(t, statusFilter) })} action={{ onClick: () => setStatusFilter('') }} />
+            : <EmptyState kind="restricted" icon={Users} title={t('apr.team.emptyTitle')} description={t('apr.team.emptyBody')} />}
         </div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -719,6 +750,12 @@ function TeamReviewsTab() {
                 {r.status === 'FinalApproval' && can.decideRatings && (
                   <button type="button" className={btn.primary} onClick={() => publish(r.id)}>{t('Publish')}</button>
                 )}
+                {can.decideRatings && <ReviewHrActions review={r} onDone={load} />}
+                {cycles360.get(r.cycleId)?.enabled && (
+                  <button type="button" className={btn.ghost} onClick={() => setFeedbackReview(r)}>
+                    {feedbackOpenFor(r, cycles360.get(r.cycleId)) ? t('apr.row.give360') : t('apr.row.view360')}
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -726,6 +763,7 @@ function TeamReviewsTab() {
       )}
       <ListWindowFooter shown={reviews.length} total={list.total} noun="reviews" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} reviews', { shown: reviews.length, total: list.total ?? 0 }), loadMore: t('Load more'), loading: t('Loading…') }} />
       {selected && <ManagerReviewModal review={selected} onClose={() => setSelected(null)} onSaved={() => { setSelected(null); load(); }} />}
+      {feedbackReview && <Feedback360Modal review={feedbackReview} canGive={feedbackOpenFor(feedbackReview, cycles360.get(feedbackReview.cycleId))} onClose={() => setFeedbackReview(null)} />}
     </div>
   );
 }
@@ -738,8 +776,13 @@ function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
   const [form, setForm] = useState({
     title: '', description: '', category: 'KPI',
     kpiType: 'Numeric', measurementUnit: '', baselineValue: '0', targetValue: '', actualValue: '0',
-    weight: '10', priority: 'Medium', startDate: '', dueDate: '',
+    weight: '10', priority: 'Medium', startDate: '', dueDate: '', cycleId: '',
   });
+  // The cycle a goal scores in: its agreed goals make up that review's KPI score (the server computes it).
+  const [cycles, setCycles] = useState<PerformanceCycle[]>([]);
+  useEffect(() => {
+    cyclesApi.listAll().then(all => setCycles(all.filter(c => ['Draft', 'Active', 'InReview'].includes(c.status)))).catch(() => setCycles([]));
+  }, []);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const set = (k: keyof typeof form, v: string) => setForm(f => ({ ...f, [k]: v }));
@@ -759,6 +802,7 @@ function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
         targetValue: Number(form.targetValue), actualValue: Number(form.actualValue),
         weight, priority: form.priority,
         startDate: form.startDate || undefined, dueDate: form.dueDate || undefined,
+        cycleId: form.cycleId || undefined,
       });
       onSaved();
     } catch (e) { setError(goalApiMessage(e, t('Failed to create goal.'))); setSaving(false); }
@@ -769,6 +813,12 @@ function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
       <div className="space-y-4">
         <Field label={t('Employee *')}>
           <EmployeeSearchSelect value={selectedEmployee} onChange={setSelectedEmployee} required />
+        </Field>
+        <Field label={t('Appraisal cycle')} info={t('The appraisal cycle this goal is scored in. Its agreed goals make up the KPI score of the review, and their weights must total 100%.')}>
+          <select className={sel} value={form.cycleId} onChange={e => set('cycleId', e.target.value)}>
+            <option value="">{t('Not part of an appraisal cycle')}</option>
+            {cycles.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
         </Field>
         <Field label={t('Goal Title *')}><input className={inp} value={form.title} onChange={e => set('title', e.target.value)} placeholder={t('Example: Achieve 95% customer satisfaction score')} /></Field>
         <Field label={t('Description')}><textarea className={inp} rows={2} value={form.description} onChange={e => set('description', e.target.value)} /></Field>
@@ -1190,8 +1240,8 @@ function CalibrationTab() {
                 {managerStats.filter(m => m.possibleLeniency || m.possibleSeverity).map(m => (
                   <p key={m.managerName} className="text-xs text-amber-700 dark:text-amber-400">
                     {m.possibleLeniency
-                      ? t('{manager}: avg {avg} — Possible leniency (avg > 87)', { manager: m.managerName, avg: m.avgScore })
-                      : t('{manager}: avg {avg} — Possible severity (avg < 48)', { manager: m.managerName, avg: m.avgScore })}
+                      ? t('{manager}: avg {avg} — Possible leniency (avg above 85)', { manager: m.managerName, avg: m.avgScore })
+                      : t('{manager}: avg {avg} — Possible severity (avg below 50)', { manager: m.managerName, avg: m.avgScore })}
                   </p>
                 ))}
               </div>
@@ -1283,7 +1333,7 @@ function RecommendationsTab() {
       </div>
 
       <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400">
-        {t('Approved recommendations are sent to Payroll as pending approved actions. They are not applied automatically — a Payroll manager must process them.')}
+        {t('Approving records the decision only. Nothing in pay or payroll changes automatically: HR applies an approved increment, promotion or bonus through a compensation cycle or an employee change, each with its own approval.')}
       </div>
 
       {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : (
@@ -1399,7 +1449,7 @@ function PIPProbationTab() {
   const [terminationQueue, setTerminationQueue] = useState<PipTerminationQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreatePIP, setShowCreatePIP] = useState(false);
-  const [statusModal, setStatusModal] = useState<{ id: string; name: string } | null>(null);
+  const [statusModal, setStatusModal] = useState<{ id: string; name: string; checkIns: number } | null>(null);
   const [newStatus, setNewStatus] = useState('Improved');
   const [statusNotes, setStatusNotes] = useState('');
   const [statusError, setStatusError] = useState('');
@@ -1407,9 +1457,14 @@ function PIPProbationTab() {
   const [probationNotes, setProbationNotes] = useState('');
   const [probationDate, setProbationDate] = useState('');
   const [probationError, setProbationError] = useState('');
+  const [loadError, setLoadError] = useState<unknown>(null);
+  const [newProbation, setNewProbation] = useState(false);
+  const [probationReviewFor, setProbationReviewFor] = useState<ProbationReview | null>(null);
+  const [checkInFor, setCheckInFor] = useState<{ id: string; name: string; fromClose?: boolean } | null>(null);
+  const [banner, setBanner] = useState<{ changed: string; where: string; next?: { label: string; onClick: () => void } } | null>(null);
 
   const load = () => {
-    setLoading(true);
+    setLoading(true); setLoadError(null);
     Promise.all([
       pipApi.list().then(setPips),
       probationApi.list().then(setProbations),
@@ -1417,21 +1472,22 @@ function PIPProbationTab() {
       can.decideRatings
         ? pipApi.terminationQueue().then(r => setTerminationQueue(r.items)).catch(() => setTerminationQueue([]))
         : Promise.resolve(setTerminationQueue([])),
-    ]).finally(() => setLoading(false));
+    ]).catch(e => setLoadError(e ?? new Error('failed'))).finally(() => setLoading(false));
   };
   useEffect(load, []);
 
   const updatePIPStatus = async () => {
     if (!statusModal) return;
     setStatusError('');
+    if (adverseCloseNeedsCheckIn(newStatus, statusModal.checkIns)) { setStatusError(t('apr.error.no_monitoring_evidence')); return; }
+    if (newStatus === 'TerminationRecommended' && !statusNotes.trim()) { setStatusError(t('apr.error.reason_required')); return; }
     try {
       const r = await pipApi.updateStatus(statusModal.id, newStatus, statusNotes);
       setStatusModal(null); load();
       if (r.nextStep) toast.info(r.nextStep);
     } catch (e) {
-      // The adverse-close guard answers 409 with a machine-readable code; show what it said.
-      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setStatusError(msg ?? t('Status update failed.'));
+      // The adverse-close guard answers 409 with a machine-readable code; show what it said, in the viewer's language.
+      setStatusError(appraisalRefusal(e, t, t('Status update failed.'), locale));
     }
   };
 
@@ -1457,6 +1513,8 @@ function PIPProbationTab() {
 
   return (
     <div className="space-y-4">
+      {loadError != null && <LoadFailedNotice error={loadError} onRetry={load} />}
+      {banner && <ResultBanner changed={banner.changed} where={banner.where} next={banner.next} onDismiss={() => setBanner(null)} />}
       <div className="flex w-fit gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]">
         <button type="button" onClick={() => setSubTab('pip')} className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${subTab === 'pip' ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}`}>{t('PIPs ({count})', { count: pips.length })}</button>
         <button type="button" onClick={() => setSubTab('probation')} className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${subTab === 'probation' ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}`}>{t('Probation ({count})', { count: probations.length })}</button>
@@ -1492,10 +1550,11 @@ function PIPProbationTab() {
               <button type="button" className={btn.primary} onClick={() => setShowCreatePIP(true)}><Plus className="h-4 w-4" aria-hidden="true" /> {t('New PIP')}</button>
             )}
           </div>
-          {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : pips.length === 0 ? (
-            <div className="surface flex flex-col items-center py-16 text-center">
-              <FileText className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-              <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No active PIPs')}</p>
+          {loading ? <div className="surface p-4"><span className="sr-only">{t('Loading…')}</span><SkeletonRows rows={3} /></div> : loadError != null ? null : pips.length === 0 ? (
+            <div className="surface">
+              {can.writeReviews
+                ? <EmptyState kind="first-use" icon={FileText} title={t('No active PIPs')} description={t('apr.pip.emptyBody')} action={{ label: t('New PIP'), onClick: () => setShowCreatePIP(true) }} />
+                : <EmptyState kind="restricted" icon={FileText} title={t('No active PIPs')} description={t('apr.pip.emptyRestricted')} />}
             </div>
           ) : (
             <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -1511,8 +1570,11 @@ function PIPProbationTab() {
                   </div>
                   <div className="ms-4 flex shrink-0 items-center gap-3">
                     <StatusBadge status={p.status} />
-                    {p.status === 'Active' && can.decideRatings && (
-                      <button type="button" className={btn.ghost} onClick={() => { setStatusModal({ id: p.id, name: p.employeeName }); setNewStatus('Improved'); setStatusNotes(''); }}>{t('Update Status')}</button>
+                    {['Active', 'Extended'].includes(p.status) && can.writeReviews && (
+                      <button type="button" className={btn.ghost} onClick={() => setCheckInFor({ id: p.id, name: p.employeeName })}>{t('apr.pip.recordCheckIn')}</button>
+                    )}
+                    {['Active', 'Extended'].includes(p.status) && can.decideRatings && (
+                      <button type="button" className={btn.ghost} onClick={() => { setStatusModal({ id: p.id, name: p.employeeName, checkIns: p.checkInCount ?? 0 }); setNewStatus('Improved'); setStatusNotes(''); setStatusError(''); }}>{t('Update Status')}</button>
                     )}
                   </div>
                 </div>
@@ -1524,10 +1586,16 @@ function PIPProbationTab() {
 
       {subTab === 'probation' && (
         <div className="space-y-4">
-          {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : probations.length === 0 ? (
-            <div className="surface flex flex-col items-center py-16 text-center">
-              <Clock className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-              <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No probation reviews')}</p>
+          {can.decideRatings && probations.length > 0 && (
+            <div className="flex justify-end">
+              <button type="button" className={btn.primary} onClick={() => setNewProbation(true)}><Plus className="h-4 w-4" aria-hidden="true" /> {t('apr.probation.new')}</button>
+            </div>
+          )}
+          {loading ? <div className="surface p-4"><span className="sr-only">{t('Loading…')}</span><SkeletonRows rows={3} /></div> : loadError != null ? null : probations.length === 0 ? (
+            <div className="surface">
+              {can.decideRatings
+                ? <EmptyState kind="first-use" icon={Clock} title={t('No probation reviews')} description={t('apr.probation.emptyBody')} action={{ label: t('apr.probation.new'), onClick: () => setNewProbation(true) }} />
+                : <EmptyState kind="restricted" icon={Clock} title={t('No probation reviews')} description={t('apr.probation.emptyRestricted')} />}
             </div>
           ) : (
             <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -1541,6 +1609,9 @@ function PIPProbationTab() {
                   </div>
                   <div className="ms-4 flex shrink-0 items-center gap-2">
                     <StatusBadge status={p.status} />
+                    {p.status === 'Pending' && can.writeReviews && (
+                      <button type="button" className={btn.primary} onClick={() => setProbationReviewFor(p)}>{t('apr.probation.writeReview')}</button>
+                    )}
                     {p.status === 'ManagerReviewed' && can.decideRatings && (
                       <div className="flex gap-1">
                         {['Confirmed', 'Extended', 'Terminated'].map(d => (
@@ -1566,6 +1637,26 @@ function PIPProbationTab() {
       )}
 
       {showCreatePIP && <CreatePIPModal onClose={() => setShowCreatePIP(false)} onSaved={() => { setShowCreatePIP(false); load(); }} />}
+      {newProbation && (
+        <NewProbationModal onClose={() => setNewProbation(false)} onSaved={review => {
+          setNewProbation(false); load();
+          setBanner({
+            changed: t('apr.probation.opened', { name: review.employeeName }),
+            where: t('apr.probation.openedWhere'),
+            next: can.writeReviews ? { label: t('apr.probation.writeReview'), onClick: () => { setBanner(null); setProbationReviewFor(review); } } : undefined,
+          });
+        }} />
+      )}
+      {probationReviewFor && (
+        <ProbationManagerReviewModal review={probationReviewFor} onClose={() => setProbationReviewFor(null)} onSaved={review => {
+          setProbationReviewFor(null); load();
+          setBanner({ changed: t('apr.probation.reviewed', { name: review.employeeName }), where: t('apr.probation.reviewedWhere') });
+        }} />
+      )}
+      {checkInFor && (
+        <PipCheckInModal pipId={checkInFor.id} name={checkInFor.name} onClose={() => setCheckInFor(null)} onSaved={load}
+          afterSave={checkInFor.fromClose ? { label: t('apr.pip.continueClosing'), onClick: () => { setStatusModal({ id: checkInFor.id, name: checkInFor.name, checkIns: 1 }); setStatusError(''); setCheckInFor(null); } } : undefined} />
+      )}
       {probationModal && (
         <Modal title={probationModal.decision === 'Confirmed' ? t('Confirm probation — {name}', { name: probationModal.p.employeeName }) : probationModal.decision === 'Extended' ? t('Extend probation — {name}', { name: probationModal.p.employeeName }) : t('Terminate probation — {name}', { name: probationModal.p.employeeName })}
           onClose={() => setProbationModal(null)}>
@@ -1614,11 +1705,17 @@ function PIPProbationTab() {
                 {t('This is a recommendation only — not an automatic termination. HR and leadership must make the final employment decision.')}
               </div>
             )}
+            {adverseCloseNeedsCheckIn(newStatus, statusModal.checkIns) && (
+              <div role="alert" data-testid="pip-needs-checkin" className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
+                <p>{t('apr.error.no_monitoring_evidence')}</p>
+                <button type="button" className={btn.primary} onClick={() => { setCheckInFor({ id: statusModal.id, name: statusModal.name, fromClose: true }); setStatusModal(null); }}>{t('apr.pip.recordCheckInFirst')}</button>
+              </div>
+            )}
             <Field label={t('Notes')}><textarea title={t('Status Notes')} className={inp} rows={3} value={statusNotes} onChange={e => setStatusNotes(e.target.value)} /></Field>
             {statusError && <p className="text-xs text-rose-500">{statusError}</p>}
             <div className="flex justify-end gap-2">
               <button type="button" className={btn.ghost} onClick={() => setStatusModal(null)}>{t('Cancel')}</button>
-              <button type="button" className={newStatus === 'TerminationRecommended' || newStatus === 'Failed' ? btn.danger : btn.primary} onClick={updatePIPStatus}>{t('Update')}</button>
+              <button type="button" className={newStatus === 'TerminationRecommended' || newStatus === 'Failed' ? btn.danger : btn.primary} onClick={updatePIPStatus} disabled={adverseCloseNeedsCheckIn(newStatus, statusModal.checkIns)}>{t('Update')}</button>
             </div>
           </div>
         </Modal>
@@ -1824,7 +1921,7 @@ function FeedbackTab() {
             <Field label={t('Feedback *')}><textarea className={inp} rows={4} value={form.content} onChange={e => set('content', e.target.value)} placeholder={t('Share specific, constructive observations…')} /></Field>
             <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={form.isPrivate} onChange={e => set('isPrivate', e.target.checked)} className="rounded" />
-              {t('Private (only visible to you and HR)')}
+              {t('Private (only visible to you)')}
             </label>
             <div className="flex justify-end gap-2">
               <button type="button" className={btn.ghost} onClick={() => setShowCreate(false)}>{t('Cancel')}</button>

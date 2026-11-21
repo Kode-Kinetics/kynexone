@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { maskedAccount, payApprovalFailure, reasonError } from '../src/lib/payApprovals';
+import { filterPayApprovals, maskedAccount, payApprovalFailure, reasonError } from '../src/lib/payApprovals';
 
 const failure = (status: number, code?: string) => payApprovalFailure({ response: { status, data: code ? { code } : {} } });
 
@@ -31,5 +31,25 @@ test.describe('pay approval view rules', () => {
   test('the account is masked to four characters', () => {
     expect(maskedAccount('7519')).toBe('•••• 7519');
     expect(maskedAccount(null)).toBe('');
+  });
+});
+
+test.describe('pay approvals queue search', () => {
+  const rows = [
+    { name: 'Zain Malik', employeeCode: 'EVT2-0019', designation: 'Accountant', companyName: 'Evostel_Test' },
+    { name: 'Hamza Farooq', employeeCode: 'EVT2-0021', designation: 'HR Officer', companyName: 'Evostel_Test' },
+    { name: 'Faisal Almalki', employeeCode: 'EVT2-0026', designation: 'IT Engineer', companyName: null },
+  ];
+  test('a blank search shows every package', () => {
+    expect(filterPayApprovals(rows, '')).toHaveLength(3);
+    expect(filterPayApprovals(rows, '   ')).toHaveLength(3);
+  });
+  test('it matches name, code and designation, ignoring case', () => {
+    expect(filterPayApprovals(rows, 'zain').map(r => r.employeeCode)).toEqual(['EVT2-0019']);
+    expect(filterPayApprovals(rows, 'evt2-0021').map(r => r.name)).toEqual(['Hamza Farooq']);
+    expect(filterPayApprovals(rows, 'engineer').map(r => r.name)).toEqual(['Faisal Almalki']);
+  });
+  test('a search with no match returns nothing', () => {
+    expect(filterPayApprovals(rows, 'nobody')).toEqual([]);
   });
 });

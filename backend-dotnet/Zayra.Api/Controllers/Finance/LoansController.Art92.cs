@@ -84,7 +84,7 @@ public partial class LoansController
             var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == employeeId && !x.IsDeleted, ct);
             if (employee is null) return NotFound();
 
-            var isBorrower = User.HasPermission("loans.self") && employee.UserAccountId == uid;
+            var isBorrower = User.HasPermission("loans.self") && await IsCallerEmployeeAsync(employee.Id, ct);
             var isHr = User.HasPermission("loans.write") && IsHrLoanActor() && await CanAccessLoanAsync(loan, ct);
             if (!isBorrower && !isHr) return NotFound(); // another person's loan is indistinguishable from a missing one
             if (loan.Status != "Pending")

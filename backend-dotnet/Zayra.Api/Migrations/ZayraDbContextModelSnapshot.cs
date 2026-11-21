@@ -5191,6 +5191,147 @@ namespace Zayra.Api.Migrations
                     b.ToTable("benefit_plans", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.BenefitUsageRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AcademicYear")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("academic_year");
+
+                    b.Property<decimal?>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<string>("BenefitCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("benefit_code");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<DateTime?>("DecidedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("decided_at_utc");
+
+                    b.Property<Guid?>("DecidedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("decided_by_user_id");
+
+                    b.Property<string>("DecisionReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("decision_reason");
+
+                    b.Property<Guid?>("DependantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("dependant_id");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<Guid>("EntitlementId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("entitlement_id");
+
+                    b.Property<string>("EvidenceReference")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("evidence_reference");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("note");
+
+                    b.Property<DateOnly>("PeriodEnd")
+                        .HasColumnType("date")
+                        .HasColumnName("period_end");
+
+                    b.Property<DateOnly>("PeriodStart")
+                        .HasColumnType("date")
+                        .HasColumnName("period_start");
+
+                    b.Property<string>("ProviderName")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("provider_name");
+
+                    b.Property<Guid>("RequestedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("requested_by_user_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(12)
+                        .HasColumnType("character varying(12)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<short?>("Units")
+                        .HasColumnType("smallint")
+                        .HasColumnName("units");
+
+                    b.Property<DateOnly>("UsageDate")
+                        .HasColumnType("date")
+                        .HasColumnName("usage_date");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("DependantId");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "EntitlementId");
+
+                    b.HasIndex("TenantId", "CompanyId", "Status", "CreatedAtUtc")
+                        .HasDatabaseName("ix_benefit_usage_requests__company_status");
+
+                    b.HasIndex("TenantId", "EmployeeId", "BenefitCode", "PeriodStart")
+                        .HasDatabaseName("ix_benefit_usage_requests__employee_benefit_period");
+
+                    b.ToTable("benefit_usage_requests", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_benefit_usage_requests__currency_iff_amount", "(amount IS NULL) = (currency IS NULL)");
+
+                            t.HasCheckConstraint("ck_benefit_usage_requests__decided", "(status = 'Pending') = (decided_by_user_id IS NULL) AND (decided_by_user_id IS NULL) = (decided_at_utc IS NULL)");
+
+                            t.HasCheckConstraint("ck_benefit_usage_requests__measure", "(units IS NULL) <> (amount IS NULL) AND (units IS NULL OR units > 0) AND (amount IS NULL OR amount > 0)");
+
+                            t.HasCheckConstraint("ck_benefit_usage_requests__period", "period_end >= period_start");
+
+                            t.HasCheckConstraint("ck_benefit_usage_requests__reason", "status NOT IN ('Rejected','Cancelled') OR (decision_reason IS NOT NULL AND length(trim(decision_reason)) > 0)");
+
+                            t.HasCheckConstraint("ck_benefit_usage_requests__status", "status IN ('Pending','Approved','Rejected','Cancelled')");
+                        });
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.BiometricConsent", b =>
                 {
                     b.Property<Guid>("Id")
@@ -12049,8 +12190,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("verification_state");
 
                     b.HasKey("Id");
-
-                    b.HasAlternateKey("TenantId", "Id");
 
                     b.HasIndex("CompanyId");
 
@@ -28992,6 +29131,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("closed_at_utc");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -29008,6 +29151,10 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("DefaultScorecardTemplateId")
                         .HasColumnType("uuid")
                         .HasColumnName("default_scorecard_template_id");
+
+                    b.Property<Guid?>("DepartmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("department_id");
 
                     b.Property<bool>("Enable360Feedback")
                         .HasColumnType("boolean")
@@ -34730,6 +34877,33 @@ namespace Zayra.Api.Migrations
                         .WithMany()
                         .HasForeignKey("JobId")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.BenefitUsageRequest", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.EmployeeDependent", null)
+                        .WithMany()
+                        .HasForeignKey("DependantId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.Employee", null)
+                        .WithMany()
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.EmployeeEntitlement", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "EntitlementId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 

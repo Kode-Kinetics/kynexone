@@ -46,7 +46,7 @@ export function neutraliseCsvCell(value: string): string {
   return /^[+-]?(\d+\.?\d*|\.\d+)$/.test(v) ? v : `'${v}`;
 }
 
-function csvCell(value: string | number | null | undefined): string {
+export function csvCell(value: string | number | null | undefined): string {
   if (typeof value === 'number') return String(value);
   const s = neutraliseCsvCell(value ?? '');
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;

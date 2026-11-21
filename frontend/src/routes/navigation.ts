@@ -61,32 +61,51 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Shifts & Rosters', icon: CalendarCheck, path: '/shifts', requiredPermissions: ['attendance.read'], requiredFeatureKey: 'shifts' },
       { label: 'Overtime', icon: TimerReset, path: '/overtime', requiredPermissions: ['overtime.read', 'overtime.write'], requiredFeatureKey: 'overtime' },
       { label: 'Timesheets', icon: Timer, path: '/timesheets', requiredPermissions: ['ess.read', 'attendance.read', 'manager.read'] },
+      { label: 'Offboarding', icon: UserMinus, path: '/offboarding', requiredPermissions: ['employees.write', 'payroll.approve'] },
     ],
   },
   {
-    label: 'Finance & Talent',
+    label: 'Talent',
+    items: [
+      { label: 'Recruitment', icon: BriefcaseBusiness, path: '/recruitment', requiredPermissions: ['recruitment.read', 'recruitment.write', 'recruitment.requisition.raise', 'recruitment.interview.feedback'], requiredFeatureKey: 'recruitment' },
+      // Any performance key opens it; the page then shows each audience its own tabs (lib/performanceAccess).
+      { label: 'Performance', icon: BarChart3, path: '/performance', requiredPermissions: PERFORMANCE_MODULE_PERMISSIONS, requiredFeatureKey: 'performance' },
+      // LRN (learning opt-in flag): any learning key opens it; the page shows each audience its own tabs.
+      // SUC (succession opt-in flag): critical positions, talent review, slates and development plans. Every succession key
+      // but the employee's own opens it; the page shows each audience its own tabs (a manager: nominations and plans only).
+      { label: 'Succession', icon: Sprout, path: '/performance/succession', requiredPermissions: ['succession.read', 'succession.positions.manage', 'succession.pools.manage', 'succession.nominate', 'succession.assess', 'succession.calibrate', 'succession.slates.read', 'succession.slates.manage', 'succession.devplans.read', 'succession.devplans.manage', 'succession.reports.read'], requiredFeatureKey: 'succession' },
+      { label: 'Training & Learning', icon: GraduationCap, path: '/learning', requiredPermissions: ['learning.read', 'learning.manage', 'learning.assign', 'learning.report', 'learning.records.correct'], requiredFeatureKey: 'learning' },
+      // Engagement surveys (engagement opt-in flag). Respondents answer in Self-Service → Surveys.
+      { label: 'Surveys & Engagement', icon: MessageSquareText, path: '/engagement', requiredPermissions: ['engagement.read', 'engagement.manage', 'engagement.actions.manage'], requiredFeatureKey: 'engagement' },
+    ],
+  },
+  {
+    label: 'Finance',
     items: [
       { label: 'Payroll', icon: WalletCards, path: '/payroll', requiredPermissions: ['payroll.read'], requiredFeatureKey: 'payroll' },
+      // New-hire pay packages: the scoped view a Finance approver decides from (no blanket employees.sensitive).
+      { label: 'Pay approvals', icon: WalletCards, path: '/pay-approvals', requiredPermissions: ['payroll.approve'] },
+      { label: 'GOSI Reconciliation', icon: FileSpreadsheet, path: '/gosi-filing', requiredPermissions: ['payroll.read'] },
+      // The other half of a go-live: reconciling a run against the register the OUTGOING system
+      // produced for the same month. The engine was built and unit-proven with no caller.
+      { label: 'Parallel Run Variance', icon: Scale, path: '/payroll/variance', requiredPermissions: ['payroll.read'] },
       { label: 'Loans & Advances', icon: Landmark, path: '/loans', requiredPermissions: ['loans.self', 'loans.read', 'loans.write'] },
       // Release A tenants set every benefit in Benefits by grade (it adds benefits too); the old administration screen is out of their menu.
       { label: 'Benefits', icon: HeartPulse, path: '/benefits', requiredPermissions: ['employees.write'], hiddenWhenFeatureKey: 'release_a' },
       // Release A (release_a opt-in flag): benefits by grade and contract renewals.
       { label: 'Benefits by grade', icon: Layers3, path: '/benefits/by-grade', requiredPermissions: ['entitlements.read'], requiredFeatureKey: 'release_a' },
+      // Benefit utilisation: HR reads and records with entitlements.*, Finance reads and approves with benefits.usage.approve (a key HR Manager does not hold).
+      { label: 'Benefit usage', icon: Layers3, path: '/benefits/usage', requiredPermissions: ['entitlements.read', 'benefits.usage.approve'], requiredFeatureKey: 'release_a' },
       { label: 'Contract renewals', icon: FileSignature, path: '/contract-renewals', requiredPermissions: ['contracts.renewal.read'], requiredFeatureKey: 'release_a' },
       // CMP (compensation opt-in flag): merit cycles, manager worksheets, pay benchmarks and pay equity.
       { label: 'Merit planning', icon: TrendingUp, path: '/compensation', requiredPermissions: ['compensation.read', 'compensation.plan', 'compensation.manage', 'compensation.approve', 'compensation.benchmarks.manage', 'compensation.equity.read'], requiredFeatureKey: 'compensation' },
-      { label: 'Recruitment', icon: BriefcaseBusiness, path: '/recruitment', requiredPermissions: ['recruitment.read', 'recruitment.write', 'recruitment.requisition.raise', 'recruitment.interview.feedback'], requiredFeatureKey: 'recruitment' },
-      { label: 'Offboarding', icon: UserMinus, path: '/offboarding', requiredPermissions: ['employees.write', 'payroll.approve'] },
-      // Any performance key opens it; the page then shows each audience its own tabs (lib/performanceAccess).
-      { label: 'Performance', icon: BarChart3, path: '/performance', requiredPermissions: PERFORMANCE_MODULE_PERMISSIONS, requiredFeatureKey: 'performance' },
-      // Engagement surveys (engagement opt-in flag). Respondents answer in Self-Service → Surveys.
-      { label: 'Engagement', icon: MessageSquareText, path: '/engagement', requiredPermissions: ['engagement.read', 'engagement.manage', 'engagement.actions.manage'], requiredFeatureKey: 'engagement' },
-      // LRN (learning opt-in flag): any learning key opens it; the page shows each audience its own tabs.
-      // SUC (succession opt-in flag): critical positions, talent review, slates and development plans. Every succession key
-      // but the employee's own opens it; the page shows each audience its own tabs (a manager: nominations and plans only).
-      { label: 'Succession', icon: Sprout, path: '/performance/succession', requiredPermissions: ['succession.read', 'succession.positions.manage', 'succession.pools.manage', 'succession.nominate', 'succession.assess', 'succession.calibrate', 'succession.slates.read', 'succession.slates.manage', 'succession.devplans.read', 'succession.devplans.manage', 'succession.reports.read'], requiredFeatureKey: 'succession' },
-      { label: 'Learning', icon: GraduationCap, path: '/learning', requiredPermissions: ['learning.read', 'learning.manage', 'learning.assign', 'learning.report', 'learning.records.correct'], requiredFeatureKey: 'learning' },
+    ],
+  },
+  {
+    label: 'Compliance',
+    items: [
       { label: 'Compliance', icon: ShieldCheck, path: '/compliance', requiredPermissions: ['compliance.read', 'compliance.write'], requiredFeatureKey: 'compliance' },
+      { label: 'Saudi Compliance', icon: ShieldCheck, path: '/saudi-compliance', requiredPermissions: ['compliance.read', 'qiwa.read'] },
     ],
   },
   {
@@ -103,15 +122,8 @@ export const navigationGroups: NavGroup[] = [
       // ess.read used to show this link too, and the page's gate sent them to "Access Denied".
       { label: 'Request Center', icon: Headphones, path: '/hr-requests', requiredPermissions: ['approvals.read', 'approvals.write', 'approvals.decide'] },
       { label: 'Approvals', icon: CheckSquare2, path: '/approvals', requiredPermissions: ['approvals.read', 'approvals.decide'] },
-      // New-hire pay packages: the scoped view a Finance approver decides from (no blanket employees.sensitive).
-      { label: 'Pay approvals', icon: WalletCards, path: '/pay-approvals', requiredPermissions: ['payroll.approve'] },
-      { label: 'Saudi Compliance', icon: ShieldCheck, path: '/saudi-compliance', requiredPermissions: ['compliance.read', 'qiwa.read'] },
-      { label: 'GOSI Reconciliation', icon: FileSpreadsheet, path: '/gosi-filing', requiredPermissions: ['payroll.read'] },
       // The one home for configuration: every module's settings, users and access, and the workspace (lib/setupModuleSections.ts).
       { label: 'Setup', icon: Settings2, path: '/setup', requiredPermissions: [...SETUP_ROUTE_PERMISSIONS], requiresSetupSection: true },
-      // The other half of a go-live: reconciling a run against the register the OUTGOING system
-      // produced for the same month. The engine was built and unit-proven with no caller.
-      { label: 'Parallel Run Variance', icon: Scale, path: '/payroll/variance', requiredPermissions: ['payroll.read'] },
     ],
   },
 ];
@@ -144,6 +156,7 @@ export const navigationHints: Record<string, string> = {
   '/loans': 'Salary advances and loans, with their repayment schedules.',
   '/benefits': 'Benefit plans offered to employees, and who is enrolled.',
   '/benefits/by-grade': 'What each grade is entitled to — housing, transport, tickets, medical, education, per diem — per company.',
+  '/benefits/usage': 'Education and tickets used and left, per employee: a use is requested and Finance approves it.',
   '/contract-renewals': 'Contracts ending soon: what is due next, the legal deadline, and each renewal’s progress.',
   '/compensation': 'Merit cycles, manager worksheets within budget and guidelines, pay benchmarks and pay equity.',
   '/recruitment': 'Open positions, candidates and the hiring pipeline.',

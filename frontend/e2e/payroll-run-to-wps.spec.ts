@@ -77,7 +77,7 @@ function parseAmount(raw: string): number {
 
 /**
  * Everything is scoped to <main>. The sidebar carries its own "Approvals", "Payroll" and
- * "Finance & Talent" entries, so an unscoped getByRole/getByText would match the shell and either
+ * "Finance" entries, so an unscoped getByRole/getByText would match the shell and either
  * click the wrong control or trip strict mode.
  */
 const content = (page: Page): Locator => page.locator('main');

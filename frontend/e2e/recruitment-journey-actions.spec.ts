@@ -123,6 +123,7 @@ test.describe('Recruitment — hire journey actions', () => {
     const source = recruitmentPage();
     expect(source).toContain('parseAssessmentScore(scoreInput[a.id], a.totalMarks)');
     expect(source).toContain('max={assessmentScoreMax(a.totalMarks)}');
-    expect(source).toContain('placeholder={assessmentScoreLabel(a.totalMarks)}');
+    // The box's label is the same scale, now through the translator (scoreLabel mirrors assessmentScoreLabel).
+    expect(source).toContain('placeholder={scoreLabel(a)}');
   });
 });

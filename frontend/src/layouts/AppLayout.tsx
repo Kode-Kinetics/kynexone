@@ -434,6 +434,14 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   // silently disabled every position:sticky inside it (the command bar scrolled away).
   return (
     <div className="tenant-app-shell wg-canvas min-h-screen overflow-x-clip text-slate-950 dark:text-white">
+      {/* First tab stop on every screen: hidden until focused, then jumps past the sidebar and top bar to the page. */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:start-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-white focus:px-4 focus:py-2 focus:text-body-sm focus:font-semibold focus:text-sapphire focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-sapphire dark:focus:bg-slate-900 dark:focus:text-white"
+        data-testid="skip-to-content"
+      >
+        {t('Skip to main content')}
+      </a>
       <div className="flex min-h-screen">
         <Sidebar
           isOpen={sidebarOpen}
@@ -465,7 +473,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
           {/* "Confirm it's you" before actions against an Admin or the workspace owner (src/api/stepUp.ts). */}
           <StepUpHost />
           {/* Bottom padding below lg clears the fixed bottom nav and the device safe area. */}
-          <main key={mainKey} className={`animate-fade-in-up px-4 pt-6 sm:px-6 lg:px-8 ${mayUseAssistant && pathname !== '/ai-assistant' ? 'pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-24' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8'}`}><SetupWorkspaceReturn /><FlashResultHost />{children}</main>
+          <main id="main-content" tabIndex={-1} key={mainKey} className={`animate-fade-in-up focus:outline-none px-4 pt-6 sm:px-6 lg:px-8 ${mayUseAssistant && pathname !== '/ai-assistant' ? 'pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-24' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8'}`}><SetupWorkspaceReturn /><FlashResultHost />{children}</main>
         </div>
       </div>
 

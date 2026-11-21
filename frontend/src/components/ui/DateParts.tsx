@@ -80,15 +80,18 @@ export function DateTimePicker({ value, onChange, className = '', 'aria-label': 
   return (
     <span className={`flex flex-wrap items-center gap-1.5 ${className}`} role="group" aria-label={ariaLabel}>
       <DatePicker value={date ?? ''} onChange={d => emit(d, hour, minute)} />
-      <select className="select w-16" aria-label={t('Hour')} value={hour ?? ''} onChange={e => emit(date ?? '', Number(e.target.value), minute)}>
-        {hour == null && <option value="" />}
-        {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{String(h).padStart(2, '0')}</option>)}
-      </select>
-      <span aria-hidden="true">:</span>
-      <select className="select w-16" aria-label={t('Minute')} value={minute ?? ''} onChange={e => emit(date ?? '', hour, Number(e.target.value))}>
-        {minute == null && <option value="" />}
-        {Array.from({ length: 60 }, (_, m) => <option key={m} value={m}>{String(m).padStart(2, '0')}</option>)}
-      </select>
+      {/* hour:minute is one unbreakable group, left to right in every language, so the colon never strands and the minutes never drop alone */}
+      <span dir="ltr" className="inline-flex flex-nowrap items-center gap-1.5">
+        <select className="select w-16" aria-label={t('Hour')} value={hour ?? ''} onChange={e => emit(date ?? '', Number(e.target.value), minute)}>
+          {hour == null && <option value="" />}
+          {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{String(h).padStart(2, '0')}</option>)}
+        </select>
+        <span aria-hidden="true">:</span>
+        <select className="select w-16" aria-label={t('Minute')} value={minute ?? ''} onChange={e => emit(date ?? '', hour, Number(e.target.value))}>
+          {minute == null && <option value="" />}
+          {Array.from({ length: 60 }, (_, m) => <option key={m} value={m}>{String(m).padStart(2, '0')}</option>)}
+        </select>
+      </span>
     </span>
   );
 }

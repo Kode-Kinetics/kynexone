@@ -56,7 +56,7 @@ public partial class LoansController : ControllerBase
         var tid = GetTenantId();
         if (ValidateLoanType(req) is { } invalid) return invalid;
         if (await _db.LoanTypes.AnyAsync(x => x.TenantId == tid && x.Code == req.Code && !x.IsDeleted, ct))
-            return Conflict("Loan type code already exists.");
+            return Conflict(LoanRefusals.Body("loan_type_code_exists", "Loan type code already exists.", "رمز نوع القرض موجود بالفعل."));
         // Codes that differ only in case or punctuation ("Personal", "PERSONAL", "per-sonal") would share one
         // grade-limit code (LOAN_<CODE>) and so one grade grid. Refuse them here, in plain language.
         var facilityCode = GradeLoanLimitResolver.FacilityCodeFor(req.Code);
@@ -101,12 +101,35 @@ public partial class LoansController : ControllerBase
 
     private bool CanReadLoanBook() => User.HasPermission("loans.read") || User.HasPermission("loans.write");
 
+    /// <summary>
+    /// Which employee the caller IS, the way advances, self-service and the data scope decide it: the login-to-employee link
+    /// (the employee_id claim, issued from employee_user_accounts, <see cref="Zayra.Api.Infrastructure.Common.CallerEmployeeResolver"/>), with the legacy
+    /// Employees.UserAccountId column as the fallback for a login linked only that way. A login linked only through the link
+    /// table (UserAccountId cleared, as NoLogin access and offboarding leave it) used to be refused its own loans.
+    /// </summary>
+    private async Task<int?> CallerEmployeeIdAsync(CancellationToken ct)
+    {
+        var tid = GetTenantId();
+        if (await Zayra.Api.Infrastructure.Common.CallerEmployeeResolver.ResolveAsync(_db, User, tid, ct) is int linked) return linked;
+        if (GetUserId() is not Guid uid) return null;
+        return await _db.Employees.Where(x => x.TenantId == tid && x.UserAccountId == uid && !x.IsDeleted).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+    }
+
+    /// <summary>True when the caller is this employee (link first, legacy column as fallback); grants owner-only access.</summary>
+    private async Task<bool> IsCallerEmployeeAsync(int? employeeIntId, CancellationToken ct)
+    {
+        if (employeeIntId is not int employeeId) return false;
+        var tid = GetTenantId();
+        if (await Zayra.Api.Infrastructure.Common.CallerEmployeeResolver.ResolveAsync(_db, User, tid, ct) == employeeId) return true;
+        return GetUserId() is Guid uid
+            && await _db.Employees.AnyAsync(x => x.TenantId == tid && x.Id == employeeId && x.UserAccountId == uid && !x.IsDeleted, ct);
+    }
+
     private async Task<bool> CanReadLoanAsync(EmployeeLoan loan, CancellationToken ct)
     {
         if (CanReadLoanBook()) return await CanAccessLoanAsync(loan, ct);
-        if (!User.HasPermission("loans.self") || GetUserId() is not { } userId || !loan.EmployeeIntId.HasValue) return false;
-        return await _db.Employees.AnyAsync(x => x.TenantId == GetTenantId() && x.Id == loan.EmployeeIntId
-            && x.UserAccountId == userId && !x.IsDeleted, ct);
+        if (!User.HasPermission("loans.self") || GetUserId() is null || !loan.EmployeeIntId.HasValue) return false;
+        return await IsCallerEmployeeAsync(loan.EmployeeIntId, ct);
     }
 
     [HttpGet]
@@ -125,8 +148,7 @@ public partial class LoansController : ControllerBase
         var q = _db.EmployeeLoans.Where(x => x.TenantId == tid && !x.IsDeleted);
         if (mine)
         {
-            var uid = GetUserId();
-            var ownId = await _db.Employees.Where(x => x.TenantId == tid && x.UserAccountId == uid && !x.IsDeleted).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+            var ownId = await CallerEmployeeIdAsync(ct);
             // IgnoreQueryFilters: an authenticated employee retains access to their own historical loans after a company transfer.
             // The server-resolved employee id, tenant and soft-delete predicates constrain this bypass to that owner only.
             q = ScopedBypass.TenantWide(_db.EmployeeLoans, tid, "Authenticated employee's own loan history across company transfer; employee id is server-resolved.").Where(x => x.TenantId == tid && !x.IsDeleted && ownId.HasValue && x.EmployeeIntId == ownId);
@@ -155,7 +177,7 @@ public partial class LoansController : ControllerBase
         var installments = await _db.LoanInstallments.Where(x => x.LoanId == id && x.TenantId == tid).OrderBy(x => x.InstallmentNumber).ToListAsync(ct);
         var approvals = await _db.LoanApprovals.Where(x => x.LoanId == id && x.TenantId == tid).OrderBy(x => x.StepOrder).ToListAsync(ct);
         var auditLogs = await _db.LoanAuditLogs.AsNoTracking().Where(x => x.LoanId == id && x.TenantId == tid).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
-        var ownLoan = await _db.Employees.AnyAsync(x => x.TenantId == tid && x.Id == loan.EmployeeIntId && x.UserAccountId == GetUserId() && !x.IsDeleted, ct);
+        var ownLoan = await IsCallerEmployeeAsync(loan.EmployeeIntId, ct);
         if (!IsHrLoanActor() && !IsFinanceActor() && !ownLoan)
         {
             // Salary-bearing lifecycle snapshots are not a team-manager entitlement. Redact a detached view, never stored audit evidence.
@@ -180,9 +202,9 @@ public partial class LoansController : ControllerBase
     {
         var tid = GetTenantId();
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
-        if (loan == null && GetUserId() is { } ownUserId)
+        if (loan == null && GetUserId() is not null)
         {
-            var ownEmployeeId = await _db.Employees.Where(x => x.TenantId == tid && x.UserAccountId == ownUserId && !x.IsDeleted).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
+            var ownEmployeeId = await CallerEmployeeIdAsync(ct);
             // IgnoreQueryFilters: owner-only historical detail remains available across a legal-entity transfer.
             // Server-resolved employee identity plus tenant, loan id and soft-delete guards prevent arbitrary cross-company reads.
             loan = await ScopedBypass.TenantWide(_db.EmployeeLoans, tid, "Owner-only historical loan detail after transfer; tenant and linked employee are server-resolved.").FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid
@@ -210,7 +232,10 @@ public partial class LoansController : ControllerBase
                 && employeeCompanies.Any(e => e.Id == x.EmployeeIntId.Value && e.CompanyId != x.CompanyId))));
     }
 
+    // The same keys an advance request needs (AdvancesController.Create): loans.self for the employee's own request, loans.write
+    // for HR or Finance raising one on someone's behalf. Turning loans.self off now stops self-service loan requests.
     [HttpPost]
+    [HasPermission("loans.self", "loans.write")]
     public Task<IActionResult> CreateLoan([FromBody] CreateLoanRequest req, CancellationToken ct) =>
         FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, "finance.loan-create", GetTenantId(), GetTenantId(), () => CreateLoanCore(req, ct), ct);
 
@@ -220,27 +245,28 @@ public partial class LoansController : ControllerBase
         var uid = GetUserId();
         if (uid == null) return Unauthorized();
         if (!IsMoney(req.RequestedAmount) || req.RequestedInstallments < 1 || req.RequestedInstallments > 600 || req.RequestedAmount < req.RequestedInstallments * .01m)
-            return BadRequest("Amount must be positive with at most two decimal places and cover 1–600 installments of at least 0.01 each.");
-        if (!IsRepaymentMethod(req.RepaymentMethod)) return BadRequest("Invalid repayment method.");
+            return BadRequest(LoanRefusals.Body("loan_amount_invalid", "Amount must be positive with at most two decimal places and cover 1–600 installments of at least 0.01 each.", "يجب أن يكون المبلغ موجبًا وبمنزلتين عشريتين على الأكثر، وأن يغطي من 1 إلى 600 قسط لا يقل كل منها عن 0.01."));
+        if (!IsRepaymentMethod(req.RepaymentMethod)) return BadRequest(LoanRefusals.Body("loan_repayment_method_invalid", "Invalid repayment method.", "طريقة السداد غير صالحة."));
         if (req.EmployeeId == Guid.Empty && !req.EmployeeIntId.HasValue)
         {
-            var ownId = await _db.Employees.Where(x => x.TenantId == tid && x.UserAccountId == uid && !x.IsDeleted).Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
-            if (!ownId.HasValue) return BadRequest("No linked employee account was found.");
+            var ownId = await CallerEmployeeIdAsync(ct);
+            if (!ownId.HasValue) return BadRequest(LoanRefusals.Body("ess_link_missing", "No linked employee account was found.", "لم يُعثر على سجل موظف مرتبط بحسابك."));
             req = req with { EmployeeIntId = ownId };
         }
         var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, req.EmployeeIntId, ct);
-        if (!identity.IsSuccess) return BadRequest(identity.Error);
+        if (!identity.IsSuccess) return BadRequest(LoanRefusals.Body("loan_employee_not_found", identity.Error ?? "The employee could not be identified.",
+            "تعذر تحديد الموظف المطلوب له القرض."));
         var employee = identity.Employee!;
         var scope = await _scopeService.ResolveAsync(User, tid, ct);
         if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
-        if (employee.UserAccountId != uid && !IsHrLoanActor() && !IsFinanceActor()) return Forbid();
+        if (!IsHrLoanActor() && !IsFinanceActor() && !await IsCallerEmployeeAsync(employee.Id, ct)) return Forbid();
 
         var loanType = await _db.LoanTypes.FirstOrDefaultAsync(x => x.Id == req.LoanTypeId && x.TenantId == tid && !x.IsDeleted, ct);
-        if (loanType == null || !loanType.IsActive) return NotFound("Loan type not found.");
+        if (loanType == null || !loanType.IsActive) return NotFound(LoanRefusals.Body("loan_type_not_found", "Loan type not found.", "نوع القرض غير موجود."));
         if (loanType.RepaymentFrequency is not ("Monthly" or "Weekly" or "BiWeekly" or "Quarterly"))
-            return BadRequest("This loan type has an unsupported repayment frequency.");
+            return BadRequest(LoanRefusals.Body("loan_frequency_unsupported", "This loan type has an unsupported repayment frequency.", "دورية السداد لنوع القرض هذا غير مدعومة."));
         if (req.RepaymentMethod == "PayrollDeduction" && loanType.RepaymentFrequency != "Monthly")
-            return BadRequest("Payroll deduction supports monthly loans. Use separate repayments for this frequency.");
+            return BadRequest(LoanRefusals.Body("loan_payroll_needs_monthly", "Payroll deduction supports monthly loans. Use separate repayments for this frequency.", "الخصم من الراتب متاح للقروض الشهرية فقط. استخدم السداد المنفصل لهذه الدورية."));
         if (!loanType.IsInterestFree || loanType.InterestRate != 0)
             return BadRequest(new { error = LoanEligibilityCodes.InterestNotPermitted, message = LoanEligibilityCodes.InterestNotPermittedText });
         // Evaluated inside the tenant's loan-creation lock (finance.loan-create), so the grade's outstanding
@@ -315,9 +341,9 @@ public partial class LoansController : ControllerBase
             if (loan == null || loan.IsDeleted) return NotFound();
             if (!await CanAccessLoanAsync(loan, ct)) return Forbid();
             if (!IsHrLoanActor()) return Forbid();
-            if (req.StepOrder < 1 || req.ApproverRole is not ("HR Manager" or "HR Director")) return BadRequest("Loan requests require HR approval roles.");
+            if (req.StepOrder < 1 || req.ApproverRole is not ("HR Manager" or "HR Director")) return BadRequest(LoanRefusals.Body("loan_approval_role_invalid", "Loan requests require HR approval roles.", "تتطلب طلبات القروض أدوار اعتماد من الموارد البشرية."));
             if (await _db.LoanApprovals.AnyAsync(x => x.TenantId == tid && x.LoanId == id && (x.StepOrder >= req.StepOrder || x.Status != "Pending"), ct))
-                return Conflict("Append approval steps in increasing order before any decisions are recorded.");
+                return Conflict(LoanRefusals.Body("loan_approval_step_order", "Append approval steps in increasing order before any decisions are recorded.", "أضف خطوات الاعتماد بترتيب تصاعدي قبل تسجيل أي قرار."));
             // A new Pending step on a decided loan resets the "all steps approved" roll-up that
             // DecideApproval uses, which is the back door around the status guard added there.
             // OffersController.AddApproval refuses the same way.
@@ -441,23 +467,23 @@ public partial class LoansController : ControllerBase
         var requiredRole = approval.ApproverRole is "Finance" or "Finance Approver" or "Manager" ? "HR Manager" : approval.ApproverRole;
         if (!User.IsInRole("Admin") && !User.IsInRole(requiredRole)) return Forbid();
         if (await _db.LoanApprovals.AnyAsync(x => x.TenantId == tid && x.LoanId == id && x.StepOrder < approval.StepOrder && x.Status != "Approved", ct))
-            return Conflict("Earlier approval steps must be approved first.");
+            return Conflict(LoanRefusals.Body("loan_earlier_step_pending", "Earlier approval steps must be approved first.", "يجب اعتماد خطوات الاعتماد السابقة أولًا."));
         var amountLimit = loan.ApprovedAmount > 0 ? Math.Min(loan.ApprovedAmount, loan.RequestedAmount) : loan.RequestedAmount;
         var countLimit = loan.ApprovedInstallments > 0 ? Math.Min(loan.ApprovedInstallments, loan.RequestedInstallments) : loan.RequestedInstallments;
         var amount = req.ApprovedAmount ?? amountLimit;
         var installmentCount = req.ApprovedInstallments ?? countLimit;
         if (req.Decision == "Approved" && (!IsMoney(amount) || amount > amountLimit || installmentCount < 1 || installmentCount > countLimit || amount < installmentCount * .01m))
-            return BadRequest("Approved terms must be positive, within requested terms, and allocate at least 0.01 per installment.");
+            return BadRequest(LoanRefusals.Body("loan_approved_terms_invalid", "Approved terms must be positive, within requested terms, and allocate at least 0.01 per installment.", "يجب أن تكون الشروط المعتمدة موجبة وضمن الشروط المطلوبة، وألا يقل كل قسط عن 0.01."));
         if (req.Decision == "Approved" && req.RepaymentStartDate is { } firstDue
             && (firstDue < DateOnly.FromDateTime(DateTime.UtcNow) || firstDue > DateOnly.FromDateTime(DateTime.UtcNow).AddYears(5)))
-            return BadRequest("The first repayment date must be today or within the next five years.");
+            return BadRequest(LoanRefusals.Body("loan_first_repayment_date_invalid", "The first repayment date must be today or within the next five years.", "يجب أن يكون تاريخ أول سداد اليوم أو خلال السنوات الخمس القادمة."));
         if (req.Decision == "Approved")
         {
             await new LoanLifecycleService(_db).RefreshAsync(tid, loan, ct);
             if (loan.ReviewRequired) { await _db.SaveChangesAsync(ct); return Conflict(new { error = "loan_review_required", message = loan.ReviewReason }); }
             var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == loan.EmployeeIntId && !x.IsDeleted, ct);
             var type = await _db.LoanTypes.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == loan.LoanTypeId, ct);
-            if (employee == null || type == null) return Conflict("Employee or loan type requires HR review.");
+            if (employee == null || type == null) return Conflict(LoanRefusals.Body("loan_hr_review_required", "Employee or loan type requires HR review.", "يحتاج الموظف أو نوع القرض إلى مراجعة من الموارد البشرية."));
             var assessment = await new LoanEligibilityService(_db).EvaluateAsync(tid, employee, type, amount, installmentCount,
                 loan.RepaymentMethod, loan.Id, loan.PolicySnapshotJson, ct);
             if (!assessment.Eligible) return BadRequest(new { error = "loan_ineligible", assessment.Reasons, assessment.Codes,
@@ -511,7 +537,7 @@ public partial class LoansController : ControllerBase
     [HttpPatch("{id:guid}/settle")]
     [Authorize(Roles = "Admin,HR Manager,Finance")]
     public Task<IActionResult> SettleLoan(Guid id, [FromBody] LoanSettlementRequest req, CancellationToken ct) =>
-        Task.FromResult<IActionResult>(Conflict("Record a repayment with its payment reference through the repayments endpoint. Waivers require a separate write-off workflow."));
+        Task.FromResult<IActionResult>(Conflict(RetiredEndpoint));
 
     [HttpGet("{id:guid}/installments")]
     [HasPermission("loans.self", "loans.read", "loans.write")]
@@ -530,7 +556,19 @@ public partial class LoansController : ControllerBase
     [HttpPatch("{id:guid}/installments/{installmentId:guid}/pay")]
     [Authorize(Roles = "Admin,Finance,HR Manager")]
     public Task<IActionResult> MarkInstallmentPaid(Guid id, Guid installmentId, [FromBody] PayInstallmentRequest req, CancellationToken ct) =>
-        Task.FromResult<IActionResult>(Conflict("Record a repayment with a payment reference through the repayments endpoint. Receipts are allocated to the oldest unpaid installments."));
+        Task.FromResult<IActionResult>(Conflict(RetiredEndpoint));
+
+    /// <summary>
+    /// The answer of the two retired endpoints (settle a loan, mark an instalment paid). A loan balance goes down only by a recorded
+    /// repayment with its payment reference, by payroll, or, for a leaver, by the final settlement (what it cannot recover moves
+    /// to the employee receivable). Forgiving a loan balance is not supported; the old text promised a write-off workflow that
+    /// does not exist.
+    /// </summary>
+    private static readonly object RetiredEndpoint = LoanRefusals.Body("loan_endpoint_retired",
+        "This action is no longer available. Record a repayment with its payment reference on the loan (receipts go to the oldest unpaid instalments). " +
+        "Forgiving or writing off a loan balance is not supported.",
+        "لم يعد هذا الإجراء متاحًا. سجّل سدادًا مع مرجع الدفع على القرض (تُخصَّص الإيصالات لأقدم الأقساط غير المدفوعة). " +
+        "الإعفاء من رصيد القرض أو شطبه غير مدعوم.");
 
     // ── Audit & Reconciliation Report ────────────────────────────────────────
 
@@ -554,18 +592,38 @@ public partial class LoansController : ControllerBase
             .Where(x => x.TenantId == tid && x.SourceModule == "Loan" && (loanIds.Contains(x.SourceEntityId) || receiptIds.Contains(x.SourceEntityId)))
             .ToListAsync(ct);
 
+        // Amounts per currency: a loan book in several currencies has no single total, so the totals below are null then and
+        // ByCurrency carries the figures. A loan with no currency of its own is in its company's (or the tenant's) currency.
+        static bool Disbursed(EmployeeLoan l) => l.DisbursementDate.HasValue || l.Status is "Active" or "Settled" or "Overdue" or "Closed";
+        var companyIds = loans.Where(x => x.CompanyId.HasValue).Select(x => x.CompanyId!.Value).Distinct().ToList();
+        var companyCurrency = companyIds.Count == 0 ? new Dictionary<Guid, string>() : await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tid && companyIds.Contains(c.Id)).ToDictionaryAsync(c => c.Id, c => c.DefaultCurrency, ct);
+        var tenantCurrency = await GlAccountResolver.ResolveCurrencyAsync(_db, tid, null, ct);
+        string CurrencyOf(EmployeeLoan l) => !string.IsNullOrWhiteSpace(l.Currency) ? l.Currency!
+            : l.CompanyId is Guid c && companyCurrency.TryGetValue(c, out var cc) ? cc : tenantCurrency;
+        var byCurrency = loans.GroupBy(CurrencyOf).OrderBy(g => g.Key, StringComparer.Ordinal).Select(g => new
+        {
+            Currency = g.Key, Count = g.Count(),
+            Disbursed = g.Where(Disbursed).Sum(x => x.ApprovedAmount),
+            Outstanding = g.Sum(x => x.OutstandingBalance),
+            Repaid = g.Sum(x => x.TotalRepaid),
+        }).ToList();
+        var oneCurrency = byCurrency.Count <= 1;
         var summary = new
         {
             GeneratedAtUtc = DateTime.UtcNow,
             Period = period ?? "All",
             TotalLoans = loans.Count,
             ActiveLoans = loans.Count(x => x.Status == "Active"),
+            OverdueLoans = loans.Count(x => x.Status == "Overdue"),
             SettledLoans = loans.Count(x => x.Status == "Settled"),
             PendingLoans = loans.Count(x => x.Status == "Pending"),
             ApprovedAwaitingDisbursement = loans.Count(x => x.Status == "Approved"),
-            TotalDisbursed = loans.Where(x => x.DisbursementDate.HasValue || x.Status is "Active" or "Settled" or "Overdue" or "Closed").Sum(x => x.ApprovedAmount),
-            TotalOutstanding = loans.Sum(x => x.OutstandingBalance),
-            TotalRepaid = loans.Sum(x => x.TotalRepaid),
+            CurrencyCode = oneCurrency ? byCurrency.FirstOrDefault()?.Currency : null,
+            TotalDisbursed = oneCurrency ? loans.Where(Disbursed).Sum(x => x.ApprovedAmount) : (decimal?)null,
+            TotalOutstanding = oneCurrency ? loans.Sum(x => x.OutstandingBalance) : (decimal?)null,
+            TotalRepaid = oneCurrency ? loans.Sum(x => x.TotalRepaid) : (decimal?)null,
+            ByCurrency = byCurrency,
             GlEntriesCount = glEntries.Count,
             Reconciliation = loans.Select(l => new
             {

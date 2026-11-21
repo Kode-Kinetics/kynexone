@@ -66,7 +66,7 @@ test('every KPI tile says what it counts, and links only to a list that holds ex
   await expect(tile(page, 'Pending Leave').getByRole('link', { name: 'Open the Pending Leave Approvals report' }))
     .toHaveAttribute('href', '/reports?report=leave.pending');
   const loans = tile(page, 'Active Loans');
-  await expect(loans).toContainText('Active employee loans. Outstanding is what is still to be repaid on them.');
+  await expect(loans).toContainText('Open employee loans, overdue ones included. Outstanding is what is still to be repaid on them, per currency.');
   await expect(loans.getByRole('link', { name: 'Open the Loan Balance report' })).toHaveAttribute('href', '/reports?report=finance.loan-balance');
   await expect(tile(page, 'Total Net Salary').getByRole('link', { name: 'Open the payroll runs' })).toHaveAttribute('href', '/payroll');
 

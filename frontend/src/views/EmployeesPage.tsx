@@ -11,6 +11,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { useFormat } from '../hooks/useFormat';
 import { describeApiError } from '../lib/apiError';
+import { bulkFailureMessage, countCannotActivateYet } from '../lib/employeeBulk';
 import { ExEmployeesTable } from './ExEmployeesTable';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { ReadinessBadge, hasExpiringId } from '../components/ReadinessBadge';
@@ -383,6 +384,9 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const selectAllRef = useRef<HTMLInputElement | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // The directory itself failed to load (as opposed to any other message on the page): only then is the record count "unavailable".
+  const [listLoadFailed, setListLoadFailed] = useState(false);
+  const lastGoodTotalRef = useRef<number | null>(null);
   const [actionNotice, setActionNotice] = useState('');
   const [selectionNotice, setSelectionNotice] = useState('');
   const [subscriptionBanner, setSubscriptionBanner] = useState('');
@@ -636,6 +640,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     const query = employeeQueryRef.current;
     setLoading(true);
     setError('');
+    setListLoadFailed(false);
     // Never leave stale employee rows or counts visible while the new server
     // result is pending (or after it fails).
     setEmployees([]);
@@ -657,10 +662,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         // "Everyone" is the default list's total (leavers excluded), not the sum of the chips.
         void employeesApi.list({ page: 1, pageSize: 1 }).then((r) => setEveryoneCount(r.total)).catch(() => setEveryoneCount(null));
         setTotal(res.total);
+        lastGoodTotalRef.current = res.total;
         // Remembered so a selection that spans pages still knows each person's self-service state.
         for (const item of res.items) seenRowsRef.current.set(item.id, item);
       },
-      onError: () => setError('Could not load employees from the API.'),
+      onError: () => { setError('Could not load employees from the API.'); setListLoadFailed(true); },
       onSettled: () => setLoading(false),
     });
   }, [employeeLoadGate]);
@@ -744,6 +750,12 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const somePageSelected = pageIds.some((id) => selectedIds.has(id));
   const selectionCount = selectAllMatching ? total : selectedIds.size;
   const hasSelection = selectionCount > 0;
+  // A hint from the list data only (never a server call); an "all matching" pick spans rows the page has not seen, so it gets none.
+  const activateHint = (() => {
+    if (selectAllMatching) return { blocked: 0, total: 0 };
+    const known = [...selectedIds].map((id) => seenRowsRef.current.get(id)).filter((row): row is EmployeeListItem => !!row);
+    return { blocked: countCannotActivateYet(known).blocked, total: selectedIds.size };
+  })();
   // Not under a Self-service filter: the bulk API's "all matching" filter has no access state, so it
   // would resolve a different set than the one on screen.
   const canOfferSelectAllMatching = allPageSelected && !selectAllMatching && total > selectedIds.size && !accessFilter;
@@ -829,7 +841,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         setError(`The set of matching employees changed (now ${data.actual}, you selected ${data.expected}). The list has been refreshed — review and try again.`);
         await load();
       } else {
-        setError(data?.message ?? 'The bulk action could not be completed.');
+        // A failed call leaves the loaded list, its count and the selection exactly as they were.
+        setError(bulkFailureMessage(e, action));
       }
     } finally {
       setBulkBusy(false);
@@ -2240,7 +2253,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const isReinstatement = !!selectedEmployee && ['Suspended', 'Offboarded'].includes(selectedEmployee.status);
   const activateGateBlocked = !isReinstatement && activationBlockers > 0;
   return (
-    <div className={createOnly ? 'h-0 overflow-hidden' : 'space-y-5'}>
+    <div className={createOnly ? 'h-0 overflow-hidden' : 'space-y-4'}>
       {confirmDialog}
       {subscriptionBanner && (
         <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-300">
@@ -2253,12 +2266,14 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
           <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Employee Management')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
             {view === 'current'
-              ? loading ? 'Loading employee records…' : error ? 'Employee records unavailable' : `${total} employee records`
-              : 'Former employees — retained for statutory audit'}
+              ? loading ? t('Loading employee records…')
+                : listLoadFailed ? (lastGoodTotalRef.current === null ? t('Employee records unavailable') : t('Employee records unavailable · last known count {count}', { count: lastGoodTotalRef.current }))
+                  : t('{count} employee records', { count: total })
+              : t('Former employees — retained for statutory audit')}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-lg border border-slate-200 p-0.5 dark:border-white/10" role="tablist" aria-label="Employee directory view">
+          <div className="inline-flex rounded-lg border border-slate-200 p-0.5 dark:border-white/10" role="tablist" aria-label={t('Employee directory view')}>
             <button
               type="button"
               role="tab"
@@ -2266,7 +2281,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               onClick={() => setView('current')}
               className={`rounded-lg px-3 py-1.5 text-sm font-semibold transition ${view === 'current' ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}
             >
-              Current
+              {t('Current')}
             </button>
             <button
               type="button"
@@ -2275,7 +2290,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               onClick={() => setView('ex')}
               className={`rounded-lg px-3 py-1.5 text-sm font-semibold transition ${view === 'ex' ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}
             >
-              Ex-Employees
+              {t('Ex-Employees')}
             </button>
           </div>
           {view === 'current' && (
@@ -2309,7 +2324,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                   className="btn-primary disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Plus className="h-4 w-4" />
-                  Add Employee
+                  {t('Add Employee')}
                 </button>
                 {atEmployeeLimit && usage && <PlanLimitNote id="employee-limit-reason" kind="employees" used={usage.activeEmployees} max={usage.maxEmployees} />}
               </div>}
@@ -2318,7 +2333,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         </div>
       </div>
 
-      {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">{error}</p>}
+      {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-300">{t(error)}</p>}
       <p role="status" aria-live="polite" className="sr-only">{selectionNotice}</p>
       {actionNotice && <div role="status" aria-live="polite" className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"><span>{actionNotice}</span>
         {lastSavedDraft && actionNotice === t('{name} was saved as a draft.', { name: lastSavedDraft.name }) && canWriteEmployees && <button type="button" onClick={() => openEmployeeWindow(lastSavedDraft.id)} className="font-semibold underline underline-offset-2">{t(canEditEmployees ? 'Resume draft' : 'View draft')}</button>}
@@ -2326,7 +2341,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       {advisoryWarning && (
         <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
           <span>{advisoryWarning}</span>
-          <button type="button" onClick={() => setAdvisoryWarning('')} className="shrink-0 text-xs font-semibold underline">Dismiss</button>
+          <button type="button" onClick={() => setAdvisoryWarning('')} className="shrink-0 text-xs font-semibold underline">{t('Dismiss')}</button>
         </div>
       )}
 
@@ -2339,26 +2354,26 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         />
       ) : (
       <div className="grid grid-cols-1 gap-5" data-testid="people-directory-full-width">
-        <section className="min-w-0 space-y-4">
+        <section className="min-w-0 space-y-3">
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
               <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <label htmlFor="employee-search" className="sr-only">Search employees</label>
-              <input id="employee-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} className="input w-full ps-9" placeholder="Search employee code, name, email" />
+              <label htmlFor="employee-search" className="sr-only">{t('Search employees')}</label>
+              <input id="employee-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} className="input w-full ps-9" placeholder={t('Search employee code, name, email')} />
             </div>
-            <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} className="select sm:w-56" aria-label="Status filter">
-              {activeStatusFilterOptions.map((item) => <option key={item || 'all'} value={item}>{item || 'All statuses'}</option>)}
+            <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} className="select sm:w-56" aria-label={t('Status filter')}>
+              {activeStatusFilterOptions.map((item) => <option key={item || 'all'} value={item}>{t(item || 'All statuses')}</option>)}
             </select>
-            <select value={readinessFilter} onChange={(e) => setReadinessFilter(e.target.value as '' | 'Blocked' | 'NeedsAttention' | 'NotReady' | 'Ready')} className="select sm:w-44" aria-label="Readiness filter">
-              <option value="">All readiness</option>
-              <option value="NotReady">Needs info</option>
-              <option value="Blocked">Blocked only</option>
-              <option value="NeedsAttention">Needs attention</option>
-              <option value="Ready">Ready</option>
+            <select value={readinessFilter} onChange={(e) => setReadinessFilter(e.target.value as '' | 'Blocked' | 'NeedsAttention' | 'NotReady' | 'Ready')} className="select sm:w-44" aria-label={t('Readiness filter')}>
+              <option value="">{t('All readiness')}</option>
+              <option value="NotReady">{t('Needs info')}</option>
+              <option value="Blocked">{t('Blocked only')}</option>
+              <option value="NeedsAttention">{t('Needs attention')}</option>
+              <option value="Ready">{t('Ready')}</option>
             </select>
             <button type="button" onClick={refreshAll} className="btn-secondary" disabled={loading} aria-busy={loading}>
               <RefreshCw className="h-4 w-4" />
-              Refresh
+              {t('Refresh')}
             </button>
           </div>
 
@@ -2399,7 +2414,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                 <FileUp className="h-3.5 w-3.5 shrink-0 text-sapphire" />
                 Showing this import batch{gapTypeFilter ? ` · ${GAP_FILTER_LABELS[gapTypeFilter] ?? gapTypeFilter}` : ''} — <strong>{total}</strong> {total === 1 ? 'employee' : 'employees'} across all pages.
               </span>
-              <button type="button" onClick={clearImportFilter} className="shrink-0 font-semibold text-sapphire underline">Clear</button>
+              <button type="button" onClick={clearImportFilter} className="shrink-0 font-semibold text-sapphire underline">{t('Clear')}</button>
             </div>
           )}
 
@@ -2407,14 +2422,14 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             <div className="flex flex-col gap-2 rounded-lg border border-sapphire/40 bg-sapphire/5 px-3 py-2.5 text-sm dark:border-sapphire/50 dark:bg-sapphire/10 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <span className="font-semibold text-slate-800 dark:text-slate-100">
-                  {selectionCount} selected{selectAllMatching ? ' (all matching this filter)' : ''}
+                  {selectAllMatching ? t('{count} selected (all matching this filter)', { count: selectionCount }) : t('{count} selected', { count: selectionCount })}
                 </span>
                 {canOfferSelectAllMatching && (
                   <button type="button" onClick={() => setSelectAllMatching(true)} className="text-xs font-semibold text-sapphire underline">
-                    Select all {total} matching this filter
+                    {t('Select all {total} matching this filter', { total })}
                   </button>
                 )}
-                <button type="button" onClick={clearSelection} className="text-xs font-semibold text-slate-500 underline">Clear selection</button>
+                <button type="button" onClick={clearSelection} className="text-xs font-semibold text-slate-500 underline">{t('Clear selection')}</button>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
                 {canIssueAccess && (
@@ -2429,33 +2444,39 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                 )}
                 {canBulkActivate && (
                   <button type="button" onClick={() => handleBulkAction('activate')} disabled={bulkBusy} className="btn-secondary h-8 px-2.5 text-xs disabled:opacity-50">
-                    <UserCheck className="h-3.5 w-3.5" /> Activate
+                    <UserCheck className="h-3.5 w-3.5" /> {t('Activate')}
                   </button>
                 )}
                 {canBulkDeactivate && (
                   <button type="button" onClick={() => handleBulkAction('deactivate')} disabled={bulkBusy} className="btn-secondary h-8 px-2.5 text-xs disabled:opacity-50">
-                    <UserX className="h-3.5 w-3.5" /> Deactivate
+                    <UserX className="h-3.5 w-3.5" /> {t('Deactivate')}
                   </button>
                 )}
                 {canBulkExport && (
                   <button type="button" onClick={() => handleBulkAction('export')} disabled={bulkBusy} className="btn-secondary h-8 px-2.5 text-xs disabled:opacity-50">
-                    <Download className="h-3.5 w-3.5" /> Export selected
+                    <Download className="h-3.5 w-3.5" /> {t('Export selected')}
                   </button>
                 )}
                 {canBulkDelete && (
                   <button type="button" onClick={() => handleBulkAction('delete')} disabled={bulkBusy} className="h-8 rounded-lg border border-red-300 px-2.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-500/40 dark:text-red-400 dark:hover:bg-red-500/10">
-                    <span className="inline-flex items-center gap-1.5"><Trash2 className="h-3.5 w-3.5" /> Delete</span>
+                    <span className="inline-flex items-center gap-1.5"><Trash2 className="h-3.5 w-3.5" /> {t('Delete')}</span>
                   </button>
                 )}
               </div>
             </div>
           )}
 
+          {canBulkActivate && activateHint.blocked > 0 && (
+            <p role="status" data-testid="bulk-activate-hint" className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+              {t('{blocked} of {total} selected cannot be activated yet (missing details or pay approval)', { blocked: activateHint.blocked, total: activateHint.total })}
+            </p>
+          )}
+
           {bulkResult && (
             <div className="rounded-lg border border-slate-200 bg-white/70 p-3 text-sm dark:border-white/10 dark:bg-white/[0.03]">
               <div className="mb-1.5 flex items-start justify-between gap-3">
                 <p className="font-semibold text-slate-900 dark:text-white">{bulkResult.summary}</p>
-                <button type="button" onClick={() => setBulkResult(null)} className="shrink-0 text-slate-400 hover:text-slate-600" aria-label="Dismiss result">
+                <button type="button" onClick={() => setBulkResult(null)} className="shrink-0 text-slate-400 hover:text-slate-600" aria-label={t('Dismiss result')}>
                   <X className="h-4 w-4" />
                 </button>
               </div>
@@ -2481,7 +2502,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
 
           <div className="surface overflow-hidden">
             <div
-              className="relative scroll-pt-12 overflow-auto md:max-h-[max(20rem,calc(100dvh-24rem))] md:overscroll-contain"
+              className="relative scroll-pt-12 overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sapphire md:max-h-[max(20rem,calc(100dvh-23rem))] md:overscroll-contain"
               tabIndex={0}
               role="region"
               aria-label={t('Employee list')}
@@ -2490,32 +2511,32 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               <table className="w-full min-w-[960px] text-sm">
                 <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_0_rgb(241_245_249)] dark:bg-slate-900 dark:shadow-[0_1px_0_0_rgb(255_255_255/0.07)]">
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                    <th className="w-10 px-4 py-3 text-start">
+                    <th className="w-10 px-3 py-2 text-start">
                       <input
                         ref={selectAllRef}
                         type="checkbox"
                         checked={selectAllMatching || allPageSelected}
                         onChange={toggleHeader}
                         disabled={loading || employees.length === 0}
-                        className="h-4 w-4 accent-sapphire align-middle disabled:opacity-40"
-                        aria-label="Select all on this page"
+                        className="h-6 w-6 accent-sapphire align-middle disabled:opacity-40"
+                        aria-label={t('Select all on this page')}
                       />
                     </th>
                     {['Employee'].map((head) => (
-                      <th key={head} className="px-4 py-3 text-start text-xs font-semibold uppercase text-slate-400">{head}</th>
+                      <th key={head} className="px-3 py-2 text-start text-xs font-semibold uppercase text-slate-400">{t(head)}</th>
                     ))}
-                    <th className="px-4 py-3 text-start text-xs font-semibold uppercase text-slate-400">{t('Self-service')}</th>
+                    <th className="px-3 py-2 text-start text-xs font-semibold uppercase text-slate-400">{t('Self-service')}</th>
                     {['Department', 'Designation', 'Branch', 'Status', 'Profile'].map((head) => (
-                      <th key={head} className="px-4 py-3 text-start text-xs font-semibold uppercase text-slate-400">{head}</th>
+                      <th key={head} className="px-3 py-2 text-start text-xs font-semibold uppercase text-slate-400">{t(head)}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
-                  {loading && <EmptyRow label="Loading live employees..." />}
+                  {loading && <EmptyRow label={t('Loading live employees...')} />}
                   {!loading && !error && employees.length === 0 && (
                     <tr><td colSpan={8} className="px-4 py-14 text-center">
-                      <p className="font-semibold text-slate-700 dark:text-slate-200">{(search || status || readinessFilter || importFilterActive || accessFilter) ? 'No employees match this filter.' : 'No employees yet'}</p>
-                      <p className="mt-1 text-sm text-slate-400">{(search || status || readinessFilter || importFilterActive || accessFilter) ? 'Adjust or clear the filters to see other records.' : 'Create the first employee to begin onboarding.'}</p>
+                      <p className="font-semibold text-slate-700 dark:text-slate-200">{(search || status || readinessFilter || importFilterActive || accessFilter) ? t('No employees match this filter.') : t('No employees yet')}</p>
+                      <p className="mt-1 text-sm text-slate-400">{(search || status || readinessFilter || importFilterActive || accessFilter) ? t('Adjust or clear the filters to see other records.') : t('Create the first employee to begin onboarding.')}</p>
                       {(search || status || readinessFilter || importFilterActive || accessFilter) ? (
                         <button
                           type="button"
@@ -2530,10 +2551,10 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                             page: undefined,
                             anchor: undefined,
                           })}
-                        >Clear filters</button>
+                        >{t('Clear filters')}</button>
                       ) : canWriteEmployees ? (
                         <>
-                          <button type="button" className="btn-primary mt-4" onClick={openCreateEmployee} disabled={atEmployeeLimit} aria-describedby={atEmployeeLimit && usage ? 'employee-limit-reason-empty' : undefined}><Plus className="h-4 w-4" />Add Employee</button>
+                          <button type="button" className="btn-primary mt-4" onClick={openCreateEmployee} disabled={atEmployeeLimit} aria-describedby={atEmployeeLimit && usage ? 'employee-limit-reason-empty' : undefined}><Plus className="h-4 w-4" />{t('Add Employee')}</button>
                           {atEmployeeLimit && usage && <PlanLimitNote id="employee-limit-reason-empty" kind="employees" used={usage.activeEmployees} max={usage.maxEmployees} className="mx-auto mt-2" />}
                         </>
                       ) : null}
@@ -2543,16 +2564,16 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                     const rowSelected = selectAllMatching || selectedIds.has(employee.id);
                     return (
                     <tr key={employee.id} className={`hover:bg-slate-50 dark:hover:bg-white/[0.03] ${rowSelected ? 'bg-sapphire/[0.04] dark:bg-sapphire/[0.08]' : ''}`}>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
                           checked={rowSelected}
                           onChange={() => toggleRow(employee.id)}
-                          className="h-4 w-4 accent-sapphire align-middle"
-                          aria-label={`Select ${employee.fullName}`}
+                          className="h-6 w-6 accent-sapphire align-middle"
+                          aria-label={t('Select {name}', { name: employee.fullName })}
                         />
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-2">
                         <div className="flex items-center gap-3">
                           <Avatar name={employee.fullName} size="sm" />
                           <div>
@@ -2561,7 +2582,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                               href={employeeWorkspaceHref(employee.id, {
                                 returnTo: buildPeopleReturnTo({ ...directoryQuery.state, anchor: `employee-${employee.id}` }),
                               })}
-                              className="rounded text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
+                              className="-my-1 inline-block whitespace-nowrap rounded py-1 text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
                             >
                               {employee.fullName}
                             </Link>
@@ -2569,7 +2590,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-3" data-testid="access-pill">
+                      <td className="px-3 py-2" data-testid="access-pill">
                         <ThreeStateCell
                           status={employee.status}
                           accessState={employee.accessState}
@@ -2579,17 +2600,17 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           onReset={canResetAccess && employee.accessState === 'active' ? () => setResetFor({ id: employee.id, name: employee.fullName }) : undefined}
                         />
                       </td>
-                      <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.department || '-'}</td>
-                      <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.designation || '-'}</td>
-                      <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.branch || '-'}</td>
-                      <td className="px-4 py-3"><StatusChip {...statusTone(employee.status)} /></td>
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{employee.department || '-'}</td>
+                      <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{employee.designation || '-'}</td>
+                      <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{employee.branch || '-'}</td>
+                      <td className="px-3 py-2"><StatusChip tone={statusTone(employee.status).tone} label={t(employee.status)} /></td>
+                      <td className="px-3 py-2">
                         <ReadinessBadge
                           state={employee.readinessState}
                           blockersCount={employee.activationBlockersCount}
                           expiring={hasExpiringId([employee.visaExpiryDate, employee.passportExpiryDate])}
                           onClick={() => navigation.push(employeeWorkspaceHref(employee.id, { section: 'overview', returnTo: buildPeopleReturnTo({ ...directoryQuery.state, anchor: `employee-${employee.id}` }) }))}
-                          title={`Profile ${employee.profileCompletenessScore.toFixed(0)}% complete — open the activation checklist`}
+                          title={t('Profile {pct}% complete — open the activation checklist', { pct: employee.profileCompletenessScore.toFixed(0) })}
                         />
                       </td>
                     </tr>
@@ -2599,10 +2620,10 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               </table>
             </div>
             <div className="flex items-center justify-between border-t border-slate-100 px-4 py-3 text-xs text-slate-500 dark:border-white/[0.07]">
-              <span>Page {page} of {totalPages}</span>
+              <span>{t('Page {page} of {total}', { page, total: totalPages })}</span>
               <div className="flex gap-1">
-                <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">Prev</button>
-                <button type="button" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">Next</button>
+                <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">{t('Prev')}</button>
+                <button type="button" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">{t('Next')}</button>
               </div>
             </div>
           </div>

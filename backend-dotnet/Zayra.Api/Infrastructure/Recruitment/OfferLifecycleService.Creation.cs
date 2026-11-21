@@ -62,9 +62,13 @@ public sealed partial class OfferLifecycleService
                 ContractType = OfferContractTerm.Normalize(input.ContractType), ContractTermMonths = OfferContractTerm.Normalize(input.ContractType) == OfferContractTerm.FixedTerm ? input.ContractTermMonths : null };
             OfferCompensation.ApplySnapshot(offer, compensation);
             offer.ContentHtml = input.ContentHtml is not null ? HtmlEncoder.Default.Encode(input.ContentHtml)
-                : new RecruitmentService(db).GenerateOfferLetterHtml(new(candidateName, placement.Designation, placement.Department,
+                : new RecruitmentService(db).GenerateOfferLetterHtml(new(candidateName, placement.Designation,
+                    await OfferPlacement.DisplayDepartmentAsync(db, actor.TenantId, actor.CompanyId, placement.Department, false, ct),
                     input.StartDate, compensation.BasicSalary, compensation.HousingAllowance, compensation.TransportAllowance,
-                    compensation.OtherAllowances, compensation.MonthlyCash, input.ProbationMonths, compensation.Currency));
+                    compensation.OtherAllowances, compensation.MonthlyCash, input.ProbationMonths, compensation.Currency,
+                    offer.ContractType, offer.ContractTermMonths,
+                    await db.Companies.AsNoTracking().Where(c => c.TenantId == actor.TenantId && c.Id == actor.CompanyId).Select(c => c.CountryCode).FirstOrDefaultAsync(ct),
+                    deadline));
             try
             {
                 await OfferLetterDesign.ApplyTemplateAsync(db, offer, input.TemplateId, ct);

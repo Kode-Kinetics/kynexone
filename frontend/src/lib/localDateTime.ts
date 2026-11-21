@@ -23,6 +23,11 @@ export function instantToLocalInput(instant: string | null | undefined): string 
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** The given moment (default: now) as the browser's wall time for a datetime-local input; the starting value of a "when did this happen" field. */
+export function nowLocalInput(now: Date = new Date()): string {
+  return instantToLocalInput(now.toISOString());
+}
+
 /**
  * A date with no time ("2026-12-15") that means "by the end of that day", as the instant 23:59:59 on it in the browser's zone,
  * "2026-12-15T20:59:59.000Z" in Riyadh. Sent as the bare date the server reads it as 00:00Z, which is 03:00 in Riyadh on the day itself,

@@ -21,6 +21,7 @@ import {
   type PayrollCompanySummary, type AIInsight,
   type PayrollRunPopulation, type PayrollPopulationEntry, type PayrollValidationOverrideReport, type AuditIntegrityReport,
 } from '../api/payroll';
+import { ExitDebtsPanel } from '../components/offboarding/ExitDebtsPanel';
 import { identityAuditApi } from '../api/identity';
 import { requestFailureReason } from '../lib/requestFailure';
 import { commonPayrollCurrency, resolvePayrollRunCurrency, totalsByCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
@@ -60,6 +61,7 @@ import { useLocale } from '../contexts/LocaleContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { currencyForAmount } from '../lib/moneyCurrency';
 import { SectionNav } from '../components/ui/SectionNav';
 import { PayrollSectionHeader, PAYROLL_SECTION_HEADING_ID } from '../components/payroll/PayrollSectionHeader';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
@@ -89,6 +91,8 @@ import { financeGlApi } from '../api/financeGl';
 import { isCustomFormatId, saudiBankExportsApi } from '../api/saudiBankExports';
 import { CostCentreLockPreview, CostingOffNote, periodLabel } from '../components/payroll/CostCentreLockPreview';
 import { VoidRunForm } from '../components/payroll/VoidRunForm';
+import { validationPanelState } from '../lib/payrollValidationState';
+import { exitLeaveMoney } from '../lib/settlementExitArrears';
 import { HeldPayPanel } from '../components/payroll/HeldPayPanel';
 import { PostedJournalsView, PostedWithoutCostCentresNote } from '../components/payroll/PostedJournals';
 import { costingNote } from '../lib/glJournalView';
@@ -97,6 +101,7 @@ import { UncostedApprovalAck, useUncostedAck } from '../components/payroll/Uncos
 import { CostCentreJournalReport } from '../components/payroll/CostCentreJournalReport';
 import { SettlementRunDutyPanel } from '../components/payroll/SettlementRunDutyPanel';
 import { SettlementRunDutyCard } from '../components/payroll/SettlementRunDutyCard';
+import { glAccountName } from '../lib/glAccountName';
 import { msg } from '../i18n/translations';
 import { insightDetail, insightTitle } from '../lib/insightText';
 import { languageLabel } from '../lib/displayLabels';
@@ -117,7 +122,9 @@ function useFmtDate() {
 /** An amount with its currency in the viewer's language (Arabic shows the Arabic currency symbol and a bidi-safe order). */
 function useFmtAmt() {
   const fx = useFormat();
-  return useCallback((n: number, currency = 'USD') => fx.money(n, currency), [fx]);
+  const { currencyCode } = useTenantSettings();
+  // No currency of its own (e.g. a run with no payment batch yet) reads in the company's currency, never a dollar sign.
+  return useCallback((n: number, currency?: string | null) => fx.money(n, currencyForAmount(currency, currencyCode)), [fx, currencyCode]);
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -1925,6 +1932,9 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
   const [overridableCodes, setOverridableCodes] = useState<string[]>([]);
   const [overriding, setOverriding] = useState<PayrollValidationResult | null>(null);
   const names = useRunEmployeeLabels(runId);
+  // The chosen run's status tells a never-validated Draft from a run with no saved issues.
+  const [runs, setRuns] = useState<PayrollRun[]>([]);
+  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, [runId]);
 
 
   useEffect(() => {
@@ -1957,6 +1967,7 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
   };
 
 
+  const panelState = validationPanelState({ runId, status: runs.find(r => r.id === runId)?.status, loading, failed: error !== '' });
   const warnings = results.filter(r => r.severity === 'Warning');
   const errors = results.filter(r => r.severity === 'Error');
   // F02 — the GOSI entrant cohort is judged per employee; group it so it reads as one decision, not N rows.
@@ -1975,7 +1986,8 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
       {/* The run is the run bar's (shared by every Payroll section): no second picker here. */}
       {runId ? (
         <div className="flex flex-wrap items-center gap-3">
-          <button type="button" className={`${btn.primary} whitespace-nowrap max-sm:min-h-11 max-sm:w-full max-sm:justify-center`} onClick={validate} disabled={loading}>
+          <button type="button" className={`${btn.primary} whitespace-nowrap max-sm:min-h-11 max-sm:w-full max-sm:justify-center`} onClick={validate} disabled={loading || panelState === 'not_run'}
+            title={panelState === 'not_run' ? t('Process the run before validating it.') : undefined}>
             {loading ? t('Validating…') : t('Run Validation')}
           </button>
           {/* The counts share the button's row: one slim toolbar, so the issue list starts in the first screenful. */}
@@ -2034,12 +2046,15 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
       )}
 
       {results.length === 0 && !loading ? (
-        <div className="surface flex flex-col items-center py-16 text-center">
+        panelState === 'unavailable' ? null : (
+        <div className="surface flex flex-col items-center py-16 text-center" data-testid="validation-empty" data-state={panelState}>
           <CheckCircle2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
-            {runId ? t('No saved validation issues. Run validation to refresh the current checks.') : t('Select a run and click validate')}
+            {panelState === 'not_run' ? t('Validation has not been run yet. Process the run first, then run validation.')
+              : runId ? t('No saved validation issues. Run validation to refresh the current checks.') : t('Select a run and click validate')}
           </p>
         </div>
+        )
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5" data-testid="validation-results">
           {shown.map(r => (
@@ -2834,7 +2849,7 @@ function PayslipsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; o
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No payslips yet — click Generate to create payslips for this run')}</p>
         </div>
       ) : (
-        <div className="surface overflow-hidden">
+        <div className="surface overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
@@ -4592,7 +4607,7 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
                     {side.entries.map((e, i) => (
                       <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                         <td className="px-3 py-2 font-mono text-xs text-slate-500">{e.glAccount}</td>
-                        <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{e.glAccountName}</td>
+                        <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{glAccountName(t, e.glAccountName)}</td>
                         <td className={`px-3 py-2 text-end font-semibold tabular-nums ${side.color}`}>{fmtAmt(e.amount, journal.currency)}</td>
                       </tr>
                     ))}
@@ -4830,7 +4845,9 @@ function FinalSettlementTab() {
     try {
       // Empty terminationReason ⇒ backend uses the employee's recorded separation type.
       const res = await payrollApi.finalSettlement(Number(form.employeeId), form.lastWorkingDay, Number(form.noticePeriodDaysShort), form.terminationReason || undefined);
-      setResult(res);
+      // The calculation response does not carry unpaid-leave money no run collected; the settlement detail does.
+      const detail = await payrollApi.getFinalSettlement(res.settlementId).catch(() => null);
+      setResult({ ...res, outstandingLeaveDeductions: detail?.outstandingLeaveDeductions ?? null });
       await loadSettlements();
     } catch (e: unknown) {
       setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('Calculation failed.'));
@@ -4916,6 +4933,35 @@ function FinalSettlementTab() {
             <p className="text-2xl font-extrabold text-sapphire dark:text-cyanAccent">{result.currency} {result.totalPayable.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
           </div>
 
+          {(() => {
+            const exitLeave = exitLeaveMoney(result.outstandingLeaveDeductions);
+            if (!exitLeave) return null;
+            const money = (v: number) => fmtAmt(v, result.currency);
+            return (
+              <div className="rounded-xl border border-amber-200 px-4 py-3 text-sm dark:border-amber-500/30" data-testid="settlement-exit-arrears">
+                {exitLeave.owedByEmployee > 0 && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-slate-600 dark:text-slate-300">{t('Unpaid-leave arrears still owed at exit')}</span>
+                    <span className="font-semibold tabular-nums text-rose-500">{money(exitLeave.owedByEmployee)}</span>
+                  </div>
+                )}
+                {exitLeave.owedToEmployee > 0 && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-slate-600 dark:text-slate-300">{t('Leave deduction refunds still owed to the employee')}</span>
+                    <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{money(exitLeave.owedToEmployee)}</span>
+                  </div>
+                )}
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  {t('Leave months: {months}. No payroll run has collected these. They are shown for your information and are not included in the payable above.', { months: exitLeave.months.join(', ') })}
+                </p>
+              </div>
+            );
+          })()}
+
+          {result.openDebts && (
+            <ExitDebtsPanel debts={result.openDebts} employeeName={result.employeeName} fallbackCurrency={result.currency}
+              showPlanned unrecovered={result.unrecoveredDebt ?? 0} testId="settlement-open-debts" />
+          )}
           <p className="text-xs text-amber-600 dark:text-amber-400">{t('This is a persisted Draft payable. Review every warning and component before submitting or approving it.')}</p>
           {result.warnings?.map(w => <p key={w} className="text-xs text-amber-600 dark:text-amber-400">{w}</p>)}
         </div>

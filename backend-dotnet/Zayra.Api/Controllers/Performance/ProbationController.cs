@@ -118,6 +118,16 @@ public class ProbationController : ControllerBase
         if (!await _scopeService.InScopeAsync(User, tenantId, r.EmployeeId, ct)) return NotFound();
         if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, r.EmployeeId, ct))
             return BadRequest(SubjectDecisionBar.Refusal("You cannot review your own probation. Ask another manager."));
+        // The manager's review is open until HR decides. A decided (HRApproved) or closed probation review is not
+        // reopened by a new recommendation: it used to accept one and move the review back to ManagerReviewed.
+        // An extension returns the review to Pending, so the further review it calls for is still possible.
+        if (r.Status is not ("Pending" or "ManagerReviewed"))
+            return Conflict(new
+            {
+                error = "probation_review_decided",
+                message = $"This probation review is {r.Status}: HR has decided it, so the manager review cannot be changed.",
+                status = r.Status,
+            });
 
         r.PerformanceSummary           = req.PerformanceSummary;
         r.OverallRating                = req.OverallRating;

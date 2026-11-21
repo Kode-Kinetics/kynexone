@@ -1,10 +1,12 @@
 import { accessCeiling } from './accessCeiling';
+import { benefitUsage } from './benefitUsage';
 import { cashAllowanceFinance } from './cashAllowanceFinance';
 import { deductions } from './deductions';
 import { employeeAccess } from './employeeAccess';
 import { employeeLogin } from './employeeLogin';
 import { employeeSignIn } from './employeeSignIn';
 import { ess } from './ess';
+import { loanPayments } from './loanPayments';
 import { matrix } from './matrix';
 import { packageStrings } from './package';
 import { renewals } from './renewals';
@@ -19,7 +21,7 @@ import type { ReleaseADict } from './types';
  */
 export const releaseASlices: Record<string, ReleaseADict> = {
   shared, matrix, package: packageStrings, deductions, renewals, renewalsOffer, ess, accessCeiling, employeeLogin, employeeAccess,
-  employeeSignIn, salaryAllowances, cashAllowanceFinance,
+  employeeSignIn, salaryAllowances, cashAllowanceFinance, benefitUsage, loanPayments,
 };
 
 const merge = (lang: 'en' | 'ar') =>

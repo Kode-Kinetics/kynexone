@@ -7,7 +7,7 @@ using Zayra.Api.Infrastructure.Recruitment;
 namespace Zayra.Api.Controllers;
 
 /// <summary>
-/// The employee internal job board: the OPEN job openings of the caller's OWN company. Read-only (applying is a later phase).
+/// The employee internal job board: the job openings of the caller's OWN company that are still hiring (Open or InProgress). Read-only (applying is a later phase).
 /// The caller's employee comes from their own login link (CallerEmployeeResolver); no employee, company or tenant id is ever
 /// accepted from the request. The management endpoints under api/recruitment/openings keep their own recruitment permissions.
 /// </summary>
@@ -31,7 +31,7 @@ public class EssJobsController(IEssJobBoardService board) : ControllerBase
     {
         var (employeeId, early) = await CallerAsync(ct);
         if (early is not null) return early;
-        // One answer whether the opening does not exist, is not open, or belongs to another company or tenant: no existence leak.
+        // One answer whether the opening does not exist, is no longer hiring (OnHold, Closed, Cancelled), or belongs to another company or tenant: no existence leak.
         return await board.GetAsync(TenantId(), employeeId!.Value, id, ct) is { } job
             ? Ok(job)
             : NotFound(new { message = "Job opening not found.", messageAr = "الوظيفة الشاغرة غير موجودة." });

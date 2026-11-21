@@ -170,15 +170,27 @@ public sealed class MeritBasisLoader(ZayraDbContext db)
         var designationNames = await db.Designations.AsNoTracking().Where(d => d.TenantId == tenantId && designationIds.Contains(d.Id))
             .Select(d => new { d.Id, d.TitleEn }).ToDictionaryAsync(d => d.Id, d => d.TitleEn, ct);
 
-        // Last published rating in a review period that ended on or before the cycle's performance period end.
-        var ratings = (await (from r in db.AppraisalReviews.AsNoTracking()
-                              join pc in db.PerformanceCycles.AsNoTracking() on r.CycleId equals pc.Id
-                              where r.TenantId == tenantId && pc.TenantId == tenantId && ids.Contains(r.EmployeeId)
-                                    && r.PublishedAt != null && r.FinalRating != ""
-                                    && pc.ReviewPeriodEnd <= cycle.PerformancePeriodEnd
-                              select new { r.EmployeeId, r.FinalRating, pc.ReviewPeriodEnd, r.PublishedAt }).ToListAsync(ct))
+        // The rating of the latest review ever published in a review period that ended on or before the cycle's
+        // performance period end, used only when that rating is FINAL (FinalRatingRule: published / acknowledged /
+        // closed with no open appeal). A latest review that is under appeal, or was sent back to Final Approval for
+        // revision by an upheld appeal or an HR correction, leaves the employee Unrated: an older period's rating is
+        // not a stand-in for the one being revised, and pay must not be planned on a rating the employer has
+        // withdrawn.
+        var published = await (from r in db.AppraisalReviews.AsNoTracking()
+                               join pc in db.PerformanceCycles.AsNoTracking() on r.CycleId equals pc.Id
+                               where r.TenantId == tenantId && pc.TenantId == tenantId && ids.Contains(r.EmployeeId)
+                                     && r.PublishedAt != null && r.FinalRating != ""
+                                     && pc.ReviewPeriodEnd <= cycle.PerformancePeriodEnd
+                               select new { r.Id, r.EmployeeId, r.FinalRating, pc.ReviewPeriodEnd, r.PublishedAt }).ToListAsync(ct);
+        var publishedIds = published.Select(r => r.Id).ToList();
+        var finalIds = (await Zayra.Api.Infrastructure.Performance.FinalRatingRule.FinalReviews(db, tenantId)
+                .Where(r => publishedIds.Contains(r.Id)).Select(r => r.Id).ToListAsync(ct))
+            .ToHashSet();
+        var ratings = published
             .GroupBy(r => r.EmployeeId)
-            .ToDictionary(g => g.Key, g => g.OrderByDescending(r => r.ReviewPeriodEnd).ThenByDescending(r => r.PublishedAt).First().FinalRating.Trim());
+            .Select(g => g.OrderByDescending(r => r.ReviewPeriodEnd).ThenByDescending(r => r.PublishedAt).First())
+            .Where(latest => finalIds.Contains(latest.Id))
+            .ToDictionary(latest => latest.EmployeeId, latest => latest.FinalRating.Trim());
 
         // On notice or separated: any offboarding that is not cancelled.
         var separations = (await db.EmployeeOffboardings.AsNoTracking()
