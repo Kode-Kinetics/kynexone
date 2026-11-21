@@ -48,6 +48,10 @@ export interface EmployeeAccessDto {
   reasonCode?: string | null;
   /** The tenant can email codes: "Email sign-in code" leads, "Print sign-in slip" is second. */
   emailDelivery?: boolean;
+  /** What "give sign-in code" will do for this reader: email the code, or return a slip to print. Absent on an older API. */
+  signInCodeDelivery?: 'Email' | 'PrintedSlip';
+  /** The reader entered this employee's work email. */
+  workEmailEnteredByCaller?: boolean;
 }
 
 /** One printed (or emailed) welcome code. `code` is absent when it went by email. */

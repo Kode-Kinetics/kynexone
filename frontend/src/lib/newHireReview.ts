@@ -26,6 +26,20 @@ export function draftStatusChip(status: string): { label: string; tone: DraftTon
   return STATUS[status] ?? { label: status, tone: 'slate' };
 }
 
+/**
+ * The chip for a row. A draft approved into an employee record that is not Active yet is not "Activated": the record exists
+ * and waits for a second person. employeeStatus absent (older API, or no linked record) keeps the draft's own status.
+ */
+export function draftStatusChipFor(row: { status: string; employeeStatus?: string | null }): { label: string; tone: DraftTone } {
+  if (row.status === 'Activated' && row.employeeStatus && row.employeeStatus !== 'Active') return { label: msg('Record created, not active yet'), tone: 'amber' };
+  return draftStatusChip(row.status);
+}
+
+/** The Activated tile counts hires whose employee record is Active; an API without activeEmployees keeps the old count. */
+export function activatedTileCount(counts: { activated: number; activeEmployees?: number | null }): number {
+  return counts.activeEmployees ?? counts.activated;
+}
+
 /** Open drafts can still be approved, rejected or withdrawn; the others are final. */
 export function isOpenDraft(status: string): boolean {
   return status === 'Draft' || status === 'Submitted' || status === 'PendingHrApproval';
@@ -42,6 +56,30 @@ export interface DraftRowFacts {
   canApprove: boolean;
   approveBlockedReason: string | null;
   activatedEmployeeId: number | null;
+}
+
+/**
+ * The API words some refusals with a permission key in brackets or in the sentence (employees.sensitive, employees.approve).
+ * A reader should never see a key, and the sentence must be translatable, so each known sentence maps to a plain one.
+ * Returns the English message key, or null when the sentence is not one of these (show it as the API wrote it).
+ */
+const PLAIN_SERVER_REASONS: Record<string, string> = {
+  'Accepted-offer compensation needs review and confirmation by a user with employees.sensitive before activation.':
+    msg('The accepted offer’s pay needs to be reviewed and confirmed by a person who may see sensitive employee data before activation.'),
+  'A group-level HR user must choose an explicit company placement through department or branch and confirm the legacy offer compensation before activation.':
+    msg('A group-level HR person must choose the company through the department or branch, and confirm the older offer’s pay, before activation.'),
+  'You made this hire (you created or changed the draft, or sent or accepted the offer behind it). A second user with employees.approve must activate this hire.':
+    msg('You made this hire (you created or changed the draft, or sent or accepted the offer behind it). A second person who may approve new hires must activate it.'),
+  "You don't have permission to approve new hires (employees.approve).": msg('You do not have permission to approve new hires.'),
+};
+
+export function plainServerReason(text: string | null | undefined): string | null {
+  return text ? PLAIN_SERVER_REASONS[text.trim()] ?? null : null;
+}
+
+/** The sentence to translate for a server reason: the plain one when known, otherwise the API's own words. */
+export function serverReasonKey(text: string): string {
+  return plainServerReason(text) ?? text;
 }
 
 /** The one next action a row offers. */
@@ -69,7 +107,7 @@ export function nextDraftAction(row: DraftRowFacts): DraftNextAction {
   return {
     kind: 'waiting',
     label: msg('View'),
-    reason: row.approveBlockedReason ?? msg('Waiting for an HR approver.'),
+    reason: row.approveBlockedReason ? serverReasonKey(row.approveBlockedReason) : msg('Waiting for an HR approver.'),
   };
 }
 
@@ -96,7 +134,7 @@ export function approveDisabledReason(
   problemCount: number | null,
   t: Translate = english,
 ): string | null {
-  if (!canApprove) return approveBlockedReason ?? t(msg('You cannot approve this draft.'));
+  if (!canApprove) return approveBlockedReason ? t(serverReasonKey(approveBlockedReason)) : t(msg('You cannot approve this draft.'));
   if (problemCount === null) return t(msg('Checking whether this hire can be activated…'));
   if (problemCount > 0)
     return t(msg('Fix the {count, plural, one {problem} other {# problems}} above before approving. Activation would be refused.'), { count: problemCount });

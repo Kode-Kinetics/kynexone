@@ -65,7 +65,7 @@ async function shot(page: Page, name: string, locale: string) {
   await page.screenshot({ path: `${dir}/${name}-${locale}.png` });
 }
 
-const openTab = (page: Page, name: RegExp) => page.getByRole('button', { name }).first().click();
+const openTab = (page: Page, name: RegExp) => page.getByRole('tab', { name }).first().click();
 
 for (const locale of ['en', 'ar'] as const) {
   const L = locale === 'en'

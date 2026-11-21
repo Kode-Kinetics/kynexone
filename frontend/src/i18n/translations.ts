@@ -16,6 +16,9 @@ import { recruitmentFixesA } from './recruitmentFixesA';
 import { recruitmentFixesB } from './recruitmentFixesB';
 import { recruitmentFixesC } from './recruitmentFixesC';
 import { hireWalkFixes } from './hireWalkFixes';
+import { demoReadyA } from './demoReadyA';
+import { demoReadyB } from './demoReadyB';
+import { demoReadyC } from './demoReadyC';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { hireWizard } from './hireWizard';
@@ -1674,6 +1677,9 @@ const en: Dict = {
   ...recruitmentFixesB.en,
   ...recruitmentFixesC.en,
   ...hireWalkFixes.en,
+  ...demoReadyA.en,
+  ...demoReadyB.en,
+  ...demoReadyC.en,
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.en,
   // Payroll's attendance check before Process — see ./payrollAttendance.
@@ -3304,6 +3310,9 @@ const ar: Dict = {
   ...recruitmentFixesB.ar,
   ...recruitmentFixesC.ar,
   ...hireWalkFixes.ar,
+  ...demoReadyA.ar,
+  ...demoReadyB.ar,
+  ...demoReadyC.ar,
   // HR's selfie review on the Attendance page — see ./attendanceEvidence.
   ...attendanceEvidence.ar,
   // Payroll's attendance check before Process — see ./payrollAttendance.

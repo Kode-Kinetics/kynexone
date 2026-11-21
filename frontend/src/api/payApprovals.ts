@@ -22,7 +22,9 @@ export interface PayApprovalListItem {
   status: 'pending' | 'rejected';
 }
 
-export interface PayApprovalList { items: PayApprovalListItem[]; count: number; hasMore: boolean; requiresOtherReviewerCount?: number }
+/** A package the reader may not approve, and why: EnteredByYou, YouAreTheEmployee or YouIssuedSignInCode. Absent on an older API. */
+export interface PayApprovalBlockedItem { employeeId: number; employeeCode: string; name: string; companyName: string; blockedForCaller?: string | null }
+export interface PayApprovalList { items: PayApprovalListItem[]; count: number; hasMore: boolean; requiresOtherReviewerCount?: number; blockedItems?: PayApprovalBlockedItem[] }
 export interface PayApprovalSetup {
   independentReviewerCount: number;
   readyForNewHires: boolean;

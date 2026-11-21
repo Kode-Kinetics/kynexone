@@ -130,7 +130,7 @@ function MyRequisitions() {
             <span className="text-xs text-slate-500 dark:text-slate-400">{r.departmentName}</span>
             <span className="badge ms-auto">{enumLabel(t, 'Status', r.status)}</span>
             {r.status === 'Draft' && (
-              <button type="button" className="btn-secondary flex items-center gap-1 text-xs" onClick={() => submit(r.id)} disabled={acting === r.id}>
+              <button type="button" className="btn-secondary flex items-center gap-1 text-xs max-md:min-h-11" onClick={() => submit(r.id)} disabled={acting === r.id}>
                 <Send className="h-3 w-3" />{t('Submit for approval')}
               </button>
             )}
@@ -200,7 +200,7 @@ function MyInterviews() {
               <span className="text-slate-600 dark:text-slate-300">{i.jobTitle}</span>
               <span className="text-xs text-slate-500 dark:text-slate-400">{f.dateTime(i.scheduledAt)}</span>
               <span className="badge ms-auto">{enumLabel(t, 'Status', i.status)}</span>
-              <button type="button" className="btn-secondary text-xs" onClick={() => { setOpenId(openId === i.id ? null : i.id); setError(''); }}>
+              <button type="button" className="btn-secondary text-xs max-md:min-h-11" onClick={() => { setOpenId(openId === i.id ? null : i.id); setError(''); }}>
                 {(mine[i.id]?.length ?? 0) > 0 ? t('Add more feedback') : t('Give feedback')}
               </button>
             </div>

@@ -205,6 +205,10 @@
       "disposition": "covered-by-chromium",
       "reason": "Route-mocked recruitment walkthrough fixes (e2e/recruitment-fixes-A|B|C.spec.ts): phone tables, dialogs, requisition reject and resubmit, pipeline blacklist and duplicate handling, interview and offer screens, EN and AR at desktop and phone; also collected by the root chromium project on PRs, this config is the focused fast run."
     },
+    "playwright.demo-ready.config.ts": {
+      "disposition": "covered-by-chromium",
+      "reason": "Route-mocked demo-readiness specs (e2e/demo-ready-A|B.spec.ts): hire-to-Self-Service screens and recruitment polish at desktop and phone, EN and AR; also collected by the root chromium project on PRs, this config is the focused fast run."
+    },
     "playwright.hire-walk-fixes.config.ts": {
       "disposition": "covered-by-chromium",
       "reason": "Route-mocked hire-to-Self-Service screen fixes (e2e/hire-walk-fixes.spec.ts): employee record after Activate, Recruitment overview openings, sign-in code button wording, New hires notice, Pay approvals notice; EN and AR at desktop and phone; also collected by the root chromium project on PRs, this config is the focused fast run."

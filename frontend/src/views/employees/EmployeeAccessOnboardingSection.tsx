@@ -106,7 +106,7 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
         />
       </div>
     </section>
-    {canWrite && <EmployeeCompletionHandoff employeeId={employee.id} onChanged={onEmployeeChanged} />}
+    {canWrite && <EmployeeCompletionHandoff employeeId={employee.id} employeeStatus={employee.status} onChanged={onEmployeeChanged} />}
     <section className="surface p-5" aria-labelledby="onboarding-readiness-title">
       <div className="flex items-center gap-3"><ShieldCheck className="h-5 w-5 text-emerald-600" aria-hidden="true" /><h2 id="onboarding-readiness-title" className="text-lg font-semibold">{t('Onboarding readiness')}</h2></div>
       <p className="mt-3 text-sm text-slate-500">{readiness ? t('{done} of {total} readiness checks are complete.', { done: readiness.progress.present, total: readiness.progress.requiredTotal }) : readinessLoading ? t('Loading readiness…') : t('Readiness is currently unavailable.')}</p>

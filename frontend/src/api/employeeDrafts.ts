@@ -48,12 +48,16 @@ export interface EmployeeDraftListItem {
   decisionReason: string | null;
   activatedEmployeeId: number | null;
   activatedEmployeeCode: string | null;
+  /** Status of the employee record this draft became (Draft, Active, ...); null without one; absent on an older API. */
+  employeeStatus?: string | null;
 }
 
 export interface EmployeeDraftStatusCounts {
   awaitingApproval: number;
   draft: number;
   activated: number;
+  /** Approved hires whose employee record is Active. Absent on an older API. */
+  activeEmployees?: number;
   rejected: number;
   cancelled: number;
 }

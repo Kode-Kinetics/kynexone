@@ -29,10 +29,13 @@ import { StatusChip } from '../components/StatusChip';
 import {
   DRAFT_FILTERS,
   approveDisabledReason,
+  serverReasonKey,
   canDecideDraft,
   draftIdentityFixKind,
   draftRequestFailureReason,
   draftStatusChip,
+  draftStatusChipFor,
+  activatedTileCount,
   draftApprovalNotice,
   isClosedDraftError,
   isOpenDraft,
@@ -254,6 +257,61 @@ export function NewHiresPage() {
   const identityKind = draftIdentityFixKind(check?.problems ?? []);
   const canWithdraw = !!summary && isOpenDraft(summary.status) && summary.isMine;
 
+  const noPlacementText = t('No placement yet');
+
+  // A row's status and next action, shared by the table (from 768 px) and the phone card list, so both offer exactly the same.
+  const rowStatus = (row: EmployeeDraftListItem) => {
+    const chip = draftStatusChipFor(row);
+    return (
+      <>
+          <StatusChip label={t(chip.label)} tone={chip.tone} dot />
+          {row.submittedAtUtc && isOpenDraft(row.status) && (
+            <p className="mt-1 text-xs text-slate-400">{t('Sent {submittedAtUtc}', { submittedAtUtc: fmtDateTime(row.submittedAtUtc) })}</p>
+          )}
+          {!isOpenDraft(row.status) && row.decidedAtUtc && (
+            <p className="mt-1 text-xs text-slate-400">
+              {fmtDateTime(row.decidedAtUtc)}{row.decidedByName ? ` · ${t('By {name}', { name: row.decidedByName })}` : ''}
+            </p>
+          )}
+          {row.decisionReason && (
+            <p className="mt-1 max-w-xs text-xs text-slate-500 dark:text-slate-400">{t('Reason: {decisionReason}', { decisionReason: row.decisionReason })}</p>
+          )}
+      </>
+    );
+  };
+  const rowAction = (row: EmployeeDraftListItem) => {
+    const action = nextDraftAction(row);
+    return (
+      <>
+          {action.kind === 'review' && (
+            <button type="button" onClick={() => openReview(row)} className="btn-primary h-8 px-3 text-xs max-md:min-h-11 max-md:px-4">{t(action.label)}</button>
+          )}
+          {action.kind === 'submit' && (
+            <div className="flex flex-wrap gap-2">
+              <button type="button" disabled={rowBusy === row.id} onClick={() => void submitDraft(row)} className="btn-primary h-8 px-3 text-xs max-md:min-h-11 max-md:px-4 disabled:opacity-60">
+                {rowBusy === row.id ? t('Sending…') : t(action.label)}
+              </button>
+              <button type="button" onClick={() => openReview(row)} className="btn-secondary h-8 px-3 text-xs max-md:min-h-11 max-md:px-4">{t('View')}</button>
+            </div>
+          )}
+          {action.kind === 'waiting' && (
+            <div>
+              <button type="button" onClick={() => openReview(row)} className="btn-secondary h-8 px-3 text-xs max-md:min-h-11 max-md:px-4">{t(action.label)}</button>
+              <p className="mt-1 max-w-xs text-xs text-slate-500 dark:text-slate-400">{t(action.reason)}</p>
+            </div>
+          )}
+          {action.kind === 'openEmployee' && (
+            <Link href={employeeWorkspaceHref(action.employeeId, { section: 'overview', returnTo: NEW_HIRES_ROUTE })} className="btn-secondary inline-flex h-8 items-center px-3 text-xs max-md:min-h-11 max-md:px-4">
+              {t(action.label)}{row.activatedEmployeeCode ? ` ${row.activatedEmployeeCode}` : ''}
+            </Link>
+          )}
+          {action.kind === 'closed' && (
+            <button type="button" onClick={() => openReview(row)} className="btn-secondary h-8 px-3 text-xs max-md:min-h-11 max-md:px-4">{t('View')}</button>
+          )}
+      </>
+    );
+  };
+
   return (
     <div className="space-y-5">
       {confirmDialog}
@@ -302,7 +360,7 @@ export function NewHiresPage() {
 
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-2 dark:border-white/10 dark:bg-white/[0.03]" role="group" aria-label={t('Filter new hires by status')}>
         {DRAFT_FILTERS.map((f) => {
-          const count = f.countKey && counts ? counts[f.countKey] : null;
+          const count = f.countKey && counts ? (f.key === 'Activated' ? activatedTileCount(counts) : counts[f.countKey]) : null;
           return (
             <button
               key={f.key}
@@ -336,7 +394,44 @@ export function NewHiresPage() {
       </div>
 
       <div className="surface overflow-hidden">
-        <div className="overflow-x-auto">
+        {/* A phone gets a card list: the table is 860 px wide and its View button sat off-screen. */}
+        <div className="md:hidden" data-testid="new-hires-cards">
+          {loading && (
+            <div className="py-12 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-sapphire" aria-label={t('Loading new hires')} /></div>
+          )}
+          {!loading && loadError && (
+            <div role="alert" className="flex flex-col items-center gap-3 px-4 py-10 text-center">
+              <AlertTriangle className="h-8 w-8 text-rose-500" aria-hidden="true" />
+              <p className="text-sm font-semibold text-rose-700 dark:text-rose-300">{t('New hires could not be loaded.')}</p>
+              <p className="text-sm text-slate-600 dark:text-slate-300">{loadError}</p>
+              <button type="button" onClick={() => void load()} className="btn-secondary h-8 px-3 text-sm max-md:min-h-11 max-md:px-4">{t('Retry')}</button>
+            </div>
+          )}
+          {!loading && !loadError && data && data.items.length === 0 && (
+            <p className="px-4 py-12 text-center text-sm text-slate-500 dark:text-slate-400">
+              {filter === 'awaiting' ? t('Nothing is waiting for approval.') : t('No new hires in this view.')}
+            </p>
+          )}
+          {!loading && !loadError && data && data.items.length > 0 && (
+            <ul aria-label={t('New hires')} className="divide-y divide-slate-100 dark:divide-white/[0.05]">
+              {data.items.map((row) => (
+                <li key={row.id} className="space-y-2 px-4 py-3">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-slate-900 dark:text-white"><bdi>{row.name}</bdi></p>
+                    <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                      {row.source === 'Recruitment' ? (row.jobTitle ? t('Accepted offer: {jobTitle}', { jobTitle: row.jobTitle }) : t('Accepted offer')) : t('Prepared by HR')}
+                      {row.createdByName ? ` · ${t('By {name}', { name: row.createdByName })}` : ''}
+                    </p>
+                  </div>
+                  <p className="text-xs text-slate-600 dark:text-slate-300">{placement(row, noPlacementText)} · {fmtDate(row.joiningDate)}</p>
+                  <div>{rowStatus(row)}</div>
+                  <div>{rowAction(row)}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[860px] text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
@@ -370,8 +465,6 @@ export function NewHiresPage() {
                 </td></tr>
               )}
               {!loading && !loadError && data?.items.map((row) => {
-                const chip = draftStatusChip(row.status);
-                const action = nextDraftAction(row);
                 return (
                   <tr key={row.id} className="align-top hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                     <td className="px-4 py-3">
@@ -381,48 +474,13 @@ export function NewHiresPage() {
                         {row.createdByName ? ` · ${t('By {name}', { name: row.createdByName })}` : ''}
                       </p>
                     </td>
-                    <td className="px-4 py-3 text-slate-700 dark:text-slate-200">{placement(row, t('No placement yet'))}</td>
+                    <td className="px-4 py-3 text-slate-700 dark:text-slate-200">{placement(row, noPlacementText)}</td>
                     <td className="px-4 py-3 text-slate-700 dark:text-slate-200">{fmtDate(row.joiningDate)}</td>
                     <td className="px-4 py-3">
-                      <StatusChip label={t(chip.label)} tone={chip.tone} dot />
-                      {row.submittedAtUtc && isOpenDraft(row.status) && (
-                        <p className="mt-1 text-xs text-slate-400">{t('Sent {submittedAtUtc}', { submittedAtUtc: fmtDateTime(row.submittedAtUtc) })}</p>
-                      )}
-                      {!isOpenDraft(row.status) && row.decidedAtUtc && (
-                        <p className="mt-1 text-xs text-slate-400">
-                          {fmtDateTime(row.decidedAtUtc)}{row.decidedByName ? ` · ${t('By {name}', { name: row.decidedByName })}` : ''}
-                        </p>
-                      )}
-                      {row.decisionReason && (
-                        <p className="mt-1 max-w-xs text-xs text-slate-500 dark:text-slate-400">{t('Reason: {decisionReason}', { decisionReason: row.decisionReason })}</p>
-                      )}
+                      {rowStatus(row)}
                     </td>
                     <td className="px-4 py-3">
-                      {action.kind === 'review' && (
-                        <button type="button" onClick={() => openReview(row)} className="btn-primary h-8 px-3 text-xs">{t(action.label)}</button>
-                      )}
-                      {action.kind === 'submit' && (
-                        <div className="flex flex-wrap gap-2">
-                          <button type="button" disabled={rowBusy === row.id} onClick={() => void submitDraft(row)} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">
-                            {rowBusy === row.id ? t('Sending…') : t(action.label)}
-                          </button>
-                          <button type="button" onClick={() => openReview(row)} className="btn-secondary h-8 px-3 text-xs">{t('View')}</button>
-                        </div>
-                      )}
-                      {action.kind === 'waiting' && (
-                        <div>
-                          <button type="button" onClick={() => openReview(row)} className="btn-secondary h-8 px-3 text-xs">{t(action.label)}</button>
-                          <p className="mt-1 max-w-xs text-xs text-slate-500 dark:text-slate-400">{t(action.reason)}</p>
-                        </div>
-                      )}
-                      {action.kind === 'openEmployee' && (
-                        <Link href={employeeWorkspaceHref(action.employeeId, { section: 'overview', returnTo: NEW_HIRES_ROUTE })} className="btn-secondary inline-flex h-8 items-center px-3 text-xs">
-                          {t(action.label)}{row.activatedEmployeeCode ? ` ${row.activatedEmployeeCode}` : ''}
-                        </Link>
-                      )}
-                      {action.kind === 'closed' && (
-                        <button type="button" onClick={() => openReview(row)} className="btn-secondary h-8 px-3 text-xs">{t('View')}</button>
-                      )}
+                      {rowAction(row)}
                     </td>
                   </tr>
                 );
@@ -477,7 +535,7 @@ export function NewHiresPage() {
         {summary && (
           <div className="space-y-4">
             <div className="flex flex-wrap items-center gap-2">
-              <StatusChip label={t(draftStatusChip(summary.status).label)} tone={draftStatusChip(summary.status).tone} dot />
+              <StatusChip label={t(draftStatusChipFor(summary).label)} tone={draftStatusChipFor(summary).tone} dot />
               <span className="text-xs text-slate-500 dark:text-slate-400">
                 {summary.source === 'Recruitment' ? (summary.jobTitle ? t('From an accepted offer for {jobTitle}', { jobTitle: summary.jobTitle }) : t('From an accepted offer')) : t('Prepared by HR')}
                 {summary.createdByName ? ` · ${t('Prepared by {name}', { name: summary.createdByName })}` : ''}
@@ -544,8 +602,8 @@ export function NewHiresPage() {
                     <ul className="mt-2 space-y-2">
                       {check.problems.map((p) => (
                         <li key={`${p.key}-${p.reason}`}>
-                          <p className="font-medium">{p.label}: {p.reason}</p>
-                          <p className="text-xs opacity-90">{p.fix}</p>
+                          <p className="font-medium">{t(p.label)}: {t(serverReasonKey(p.reason))}</p>
+                          <p className="text-xs opacity-90">{t(p.fix)}</p>
                         </li>
                       ))}
                     </ul>
@@ -595,7 +653,7 @@ export function NewHiresPage() {
 
             {isOpenDraft(summary.status) && !summary.canApprove && (
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
-                {summary.approveBlockedReason ?? t('Waiting for an HR approver.')}
+                {summary.approveBlockedReason ? t(serverReasonKey(summary.approveBlockedReason)) : t('Waiting for an HR approver.')}
               </div>
             )}
 

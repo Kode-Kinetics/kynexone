@@ -5,6 +5,7 @@ import { Ban, CheckCircle2, Circle, Clock, KeyRound } from 'lucide-react';
 import type { EmployeeAccessDto } from '../../api/employeeAccess';
 import { useLocale } from '../../contexts/LocaleContext';
 import { employeeStateLabel, type AccessTone, type EmployeeRowState, type LoginRowState, type PasswordRowState, type ThreeStates } from '../../lib/employeeAccess';
+import { signInCodeButtonKey, signInCodeHelpKey } from '../../lib/handoffNotices';
 import { StatusChip } from '../StatusChip';
 
 const ICON = 'h-3.5 w-3.5 shrink-0';
@@ -76,6 +77,7 @@ export function AccessStatesPanel({
   const titleId = useId();
   const [confirming, setConfirming] = useState<null | 'new_code' | 'reset'>(null);
   const emailing = !!access?.emailDelivery;
+  const signInCodeHelp = signInCodeHelpKey(access?.signInCodeDelivery, emailing);
   const canGive = !!access && canIssue && access.canIssue && !waitingReason;
   const employeeChip = EMPLOYEE_CHIP[states.employee];
   const loginChip = states.login ? LOGIN_CHIP[states.login] : null;
@@ -107,9 +109,9 @@ export function AccessStatesPanel({
 
   const loginButton = !!access && !states.needsWorkEmail && access.state === 'not_started' && canGive
     ? <>
-      <RowButton primary disabled={issuing} onClick={() => doIssue()}>{issuing ? t('Preparing the slips…') : emailing ? t('Issue sign-in code') : t('Give access')}</RowButton>
-      {/* The server emails the code unless the issuer entered this work email, then it prints a slip: say both, promise neither. */}
-      {emailing && <p className="mt-1.5 text-xs text-slate-600 dark:text-slate-300" data-testid="issue-code-help">{t('The code is emailed to the work email. If you entered that email yourself, a slip is printed for you to hand over.')}</p>}
+      <RowButton primary disabled={issuing} onClick={() => doIssue()}>{issuing ? t('Preparing the slips…') : t(signInCodeButtonKey(access.signInCodeDelivery, emailing))}</RowButton>
+      {/* The API says what will happen (email or printed slip) and the label names it; the help line is only for an API that does not say. */}
+      {signInCodeHelp && <p className="mt-1.5 text-xs text-slate-600 dark:text-slate-300" data-testid="issue-code-help">{t(signInCodeHelp)}</p>}
     </>
     : null;
   const passwordButton = states.needsWorkEmail || !canGive || confirming || states.login === 'access_stopped' ? null
