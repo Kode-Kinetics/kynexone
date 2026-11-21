@@ -220,7 +220,7 @@ test.describe('browserless UI truthfulness contracts', () => {
     expect(offboarding).toContain('This does not mean there are no separations in progress.');
     const reports = read('src/views/ReportsPage.tsx');
     for (const what of ['The report catalog', 'Saved reports', 'Scheduled reports', 'Execution history']) {
-      expect(reports).toContain(`<LoadFailure what="${what}"`);
+      expect(reports).toContain(`<LoadFailure what={msg('${what}')}`); // label is translated through msg() since the Arabic reports pass
     }
   });
 });

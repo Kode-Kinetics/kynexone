@@ -69,7 +69,7 @@ for (const locale of LOCALES) {
 
       test('/reports: the last KPI band (Last Payroll Run) starts in the first screenful and nothing scrolls sideways', async ({ page }) => {
         await boot(page, { persona: persona(['HR Manager'], ['reports.read']), locale, url: '/reports', mocks: REPORTS });
-        const heading = page.getByRole('heading', { level: 3, name: /Last Payroll Run|آخر/ });
+        const heading = page.getByRole('heading', { level: 3, name: /Last Payroll Run|آخر مسير رواتب/ });
         await expect(heading).toBeVisible({ timeout: 60_000 });
         await shot(page, 'reports', locale);
         expect(await heading.evaluate(el => Math.round(el.getBoundingClientRect().top)), 'Last Payroll Run heading top').toBeLessThanOrEqual(viewport.height - 80);
