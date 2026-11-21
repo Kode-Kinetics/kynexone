@@ -9,7 +9,7 @@ import {
   RefreshCw, Plus, Search, ChevronLeft, ChevronRight, Eye, EyeOff,
   UserCheck, RotateCcw,
   CheckSquare, MinusSquare, Square, Edit2, Power, PowerOff, Trash2,
-  Building2, Circle,
+  Building2, Circle, ChevronDown,
 } from 'lucide-react';
 import {
   usersApi, rolesApi, delegationsApi, authoritiesApi, securitySettingsApi,
@@ -1673,9 +1673,12 @@ export function RolesTab() {
 // ── Permissions Tab ────────────────────────────────────────────────────────────
 
 export function PermissionsTab() {
+  const { t } = useLocale();
   const [permissions, setPermissions] = useState<PermissionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  // Every module starts open. Which ones are folded is only this visit's: nothing is remembered.
+  const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
 
   useEffect(() => {
     rolesApi.permissions().then(setPermissions).catch(() => {}).finally(() => setLoading(false));
@@ -1688,30 +1691,56 @@ export function PermissionsTab() {
       acc[p.module].push(p);
       return acc;
     }, {});
+  const modules = Object.entries(grouped).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const permissionCount = modules.reduce((sum, [, perms]) => sum + perms.length, 0);
+  const toggle = (module: string) => setFolded(prev => { const next = new Set(prev); if (!next.delete(module)) next.add(module); return next; });
 
   return (
-    <div className="space-y-4">
-      <div className="relative">
-        <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-        <input className={inp('ps-9 max-w-xs')} placeholder="Filter permissions…" value={search} onChange={e => setSearch(e.target.value)} />
-      </div>
-      {loading ? <p className="text-sm text-slate-500">Loading…</p> : Object.entries(grouped).sort().map(([module, perms]) => (
-        <div key={module} className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
-          <div className="bg-slate-50 dark:bg-slate-800/60 px-4 py-2.5 border-b border-slate-200 dark:border-slate-700">
-            <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300">{module}</h4>
-          </div>
-          <div className="divide-y divide-slate-100 dark:divide-slate-800">
-            {perms.map(p => (
-              <div key={p.id} className="flex items-center justify-between px-4 py-2.5">
-                <div>
-                  <p className="text-sm font-mono text-violet-700 dark:text-violet-400">{p.key}</p>
-                  <p className="text-xs text-slate-500">{p.description}</p>
-                </div>
-              </div>
-            ))}
-          </div>
+    <div>
+      <div data-testid="permissions-toolbar"
+        className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-200 bg-white py-2 dark:border-slate-700 dark:bg-slate-900">
+        <div className="relative w-full sm:w-72">
+          <Search className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+          <input className={inp('ps-9')} placeholder={t('Filter permissions…')} aria-label={t('Filter permissions…')} value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-      ))}
+        <p className="text-xs text-slate-500 dark:text-slate-400" aria-live="polite">
+          {t('{count, plural, one {# permission} other {# permissions}} in {modules, plural, one {# module} other {# modules}}', { count: permissionCount, modules: modules.length })}
+        </p>
+        <div className="ms-auto flex items-center gap-1">
+          <button type="button" onClick={() => setFolded(new Set(modules.map(([module]) => module)))}
+            className="min-h-8 rounded-lg px-2 text-xs font-medium text-violet-700 hover:bg-violet-50 dark:text-violet-300 dark:hover:bg-violet-900/30">{t('Collapse all')}</button>
+          <button type="button" onClick={() => setFolded(new Set())}
+            className="min-h-8 rounded-lg px-2 text-xs font-medium text-violet-700 hover:bg-violet-50 dark:text-violet-300 dark:hover:bg-violet-900/30">{t('Expand all')}</button>
+        </div>
+      </div>
+      {loading ? <p className="mt-3 text-sm text-slate-500">{t('Loading…')}</p> : (
+        <div className="mt-3 columns-1 gap-3 lg:columns-2 2xl:columns-3">
+          {modules.map(([module, perms]) => {
+            const open = !folded.has(module);
+            const listId = `permission-module-${module.replace(/\W+/g, '-')}`;
+            return (
+              <section key={module} data-testid="permission-module" className="mb-3 break-inside-avoid overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
+                <h4 className="m-0">
+                  <button type="button" aria-expanded={open} aria-controls={listId} onClick={() => toggle(module)}
+                    className="flex w-full items-center gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2 text-start dark:border-slate-700 dark:bg-slate-800/60">
+                    <ChevronDown className={`h-4 w-4 shrink-0 text-slate-500 transition-transform motion-reduce:transition-none ${open ? '' : '-rotate-90 rtl:rotate-90'}`} aria-hidden="true" />
+                    <span className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-700 dark:text-slate-300">{module}</span>
+                    <span className="rounded-full bg-white px-2 text-caption font-medium text-slate-600 ring-1 ring-inset ring-slate-200 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-700">{perms.length}</span>
+                  </button>
+                </h4>
+                <ul id={listId} hidden={!open} className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {perms.map(p => (
+                    <li key={p.id} data-testid="permission-row" className="flex items-baseline gap-2 px-3 py-1.5">
+                      <span className="shrink-0 font-mono text-sm text-violet-700 dark:text-violet-400">{p.key}</span>
+                      <span className="min-w-0 flex-1 truncate text-xs text-slate-500" title={p.description}>{p.description}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
