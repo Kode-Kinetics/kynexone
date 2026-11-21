@@ -125,7 +125,7 @@ export function SalaryAllowanceList({ lines, names, currency, basic, pending = f
   const text = useLineText(currency, basic);
   if (lines.length === 0) return null;
   return (
-    <section className="border-t border-slate-200 p-5 dark:border-white/10" aria-labelledby="salary-allowances-heading" data-testid="employee-salary-allowances">
+    <section className="border-t border-slate-200 p-4 dark:border-white/10" aria-labelledby="salary-allowances-heading" data-testid="employee-salary-allowances">
       <h3 id="salary-allowances-heading" className="font-semibold text-slate-950 dark:text-white">{t('Monthly allowances')}</h3>
       <p className="mt-1 text-sm text-slate-500">{pending ? t('Part of the first package. Nothing is paid until Finance approves it.') : t('Paid each month on top of the salary above.')}</p>
       <dl className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
